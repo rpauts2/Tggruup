@@ -1,0 +1,32 @@
+04:58:50 INFO    tgfarm.db.bootstrap    schema ready: 13 tables
+04:58:51 INFO    tgfarm.config          config loaded: 10 channels, 251 sources, 17 slot hours
+04:58:51 INFO    tgfarm.db.bootstrap    channels seeded: 10
+04:58:51 INFO    tgfarm.db.bootstrap    sources seeded: 251
+04:58:51 INFO    tgfarm.s1_sources      s1: no source due yet
+04:58:51 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 2ms
+04:58:51 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 2ms
+04:58:52 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 0 in 845ms
+04:58:53 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 0 in 1071ms
+04:58:53 INFO    tgfarm.core.run        stage s2_score: 0 -> 381 in 273ms
+04:58:53 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 2488ms
+04:58:53 INFO    tgfarm.core.run        stage s3_route: 1 -> 0 in 46ms
+04:58:54 INFO    tgfarm.core.run        stage s3_route: 1 -> 0 in 46ms
+04:58:54 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 121ms
+04:58:54 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+04:58:54 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 17ms
+04:58:54 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+04:58:57 INFO    tgfarm.dzen_web        dzen: публикация как post (444 симв.)
+05:00:10 INFO    tgfarm.s7_publish      dzen published: None
+05:00:11 INFO    tgfarm.s7_publish      vk mirror from dzen: failed
+05:00:11 INFO    tgfarm.core.run        stage s7_publish: 114 -> 1 in 77224ms
+05:00:11 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 77232ms
+05:00:11 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 2ms
+05:00:11 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=0 failed=0
+05:00:11 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 3ms
+05:00:18 INFO    tgfarm.s8_analytics.dzen_web s8 dzen metrics: 4 seen, 0 saved, 0 unchanged, 4 unmatched
+05:00:18 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 9 in 7286ms
+05:00:18 INFO    tgfarm.s8_analytics    s8: 9 channel-days written, angles measured: ['news'], dzen: {'collected_at': '2026-10-27T02:00:11.314988+00:00', 'seen': 4, 'subscribers': 1, 'saved': 0, 'unchanged': 0, 'unmatched': 4, 'unmatched_ids': ['at_sKt2iM0SVUBkq', 'at_rROF9tlMzF42Y', 'at_q4TQE0jD_n9Xk', 'at-nbr5t_VONM72W']}
+05:00:18 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 7286ms
+05:00:18 INFO    tgfarm.s12_learning    s12: 0 lessons updated across 1 channels
+05:00:18 INFO    tgfarm.core.run        stage s12_learning: 0 -> 0 in 48ms
+05:00:18 INFO    tgfarm.pipeline        cycle ab3476d402 finished in 87253ms errors=0

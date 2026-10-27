@@ -1,0 +1,85 @@
+# tgfarm — production stack.
+#
+#   docker compose up -d          # postgres + redis + worker + api + scheduler
+#   docker compose run --rm cli tgfarm doctor
+#
+# The worker and the scheduler are the same image with different commands —
+# the scheduler additionally owns APScheduler and the API process serves both.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tgfarm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tgfarm}
+      POSTGRES_DB: tgfarm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tgfarm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://tgfarm:${POSTGRES_PASSWORD:-tgfarm}@postgres:5432/tgfarm
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - media:/app/data/media
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["tgfarm", "serve"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # One-shot helper: `docker compose run --rm cli tgfarm cycle`
+  cli:
+    build: .
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://tgfarm:${POSTGRES_PASSWORD:-tgfarm}@postgres:5432/tgfarm
+    volumes:
+      - media:/app/data/media
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["tgfarm"]
+    command: ["status"]
+
+volumes:
+  pgdata:
+  media:

@@ -1,0 +1,5 @@
+C:\Users\Administrator\Desktop\ai\Tggruup\tgfarm\desktop.py:453: RuntimeWarning: coroutine 'run_cycle' was never awaited
+  pipeline.run_cycle(collect=True)
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Administrator\AppData\Roaming\Python\Python314\site-packages\dateutil\parser\_parser.py:1207: UnknownTimezoneWarning: tzname EDT identified but not understood.  Pass `tzinfos` argument in order to correctly return a timezone-aware datetime.  In a future version, this will raise an exception.
+  warnings.warn("tzname {tzname} identified but not understood.  "

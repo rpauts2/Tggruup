@@ -1,0 +1,2737 @@
+# =============================================================================
+# Source registry. NO Telegram scraping — the API Terms forbid using platform
+# data for AI workloads, and mass scraping ends in bans. Everything here is a
+# primary or secondary public news source with a documented feed.
+#
+# Every URL below was verified to return 200 with entries at authoring time.
+# Several well-known feeds (NIH, MedicalXpress, CryptoSlate, CBR) sit behind bot
+# protection or have moved their RSS paths and are deliberately absent.
+#
+# kind:
+#   rss    — static feed URL
+#   gnews  — Google News RSS query; {{Q}} is percent-encoded automatically
+#   gdelt  — GDELT DOC 2.0 article list
+#
+# weight feeds `heat`. The `niches` list steers items toward channels.
+# =============================================================================
+
+defaults: &defaults
+  kind: rss
+  lang: ru
+  weight: 0.55
+  min_interval_s: 900
+  enabled: true
+
+sources:
+  # ======================================================== AI / TECH / SOFTWARE
+  - <<: *defaults
+    id: gnews_tech_ru
+    name: "Google News: технологии"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR нейросети when:14d"}
+    niches: [tech, software]
+    weight: 0.62
+
+  - <<: *defaults
+    id: techcrunch_ai
+    name: "TechCrunch AI"
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    lang: en
+    niches: [tech, software]
+    weight: 0.70
+
+  - <<: *defaults
+    id: verge_ai
+    name: "The Verge AI"
+    url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"
+    lang: en
+    niches: [tech, software]
+    weight: 0.70
+
+  - <<: *defaults
+    id: mittr_ai
+    name: "MIT Technology Review AI"
+    url: "https://www.technologyreview.com/topic/artificial-intelligence/feed"
+    lang: en
+    niches: [tech, science]
+    weight: 0.72
+
+  - <<: *defaults
+    id: openai_blog
+    name: "OpenAI — News"
+    url: "https://openai.com/news/rss.xml"
+    lang: en
+    niches: [tech, software, business]
+    weight: 0.80
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: google_blog
+    name: "Google Blog"
+    url: "https://blog.google/rss/"
+    lang: en
+    niches: [tech, software]
+    weight: 0.70
+
+  - <<: *defaults
+    id: producthunt
+    name: "Product Hunt"
+    url: "https://www.producthunt.com/feed"
+    lang: en
+    niches: [software, tech]
+    weight: 0.62
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: habr_all
+    name: "Хабр — свежие статьи"
+    url: "https://habr.com/ru/rss/articles/?fl=ru"
+    niches: [tech, software, business]
+    weight: 0.48
+    min_interval_s: 1200
+
+  - <<: *defaults
+    id: arxiv_ai
+    name: "arXiv cs.AI"
+    url: "http://export.arxiv.org/rss/cs.AI"
+    lang: en
+    niches: [tech, science]
+    weight: 0.62
+    min_interval_s: 1800
+
+  # ============================================================ BUSINESS / MONEY
+  - <<: *defaults
+    id: gnews_business_ru
+    name: "Google News: бизнес и финансы"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR экономика OR финансы when:7d"}
+    niches: [business]
+    weight: 0.58
+
+  - <<: *defaults
+    id: vedomosti_all
+    name: "Ведомости"
+    url: "https://www.vedomosti.ru/rss/news"
+    niches: [business]
+    weight: 0.68
+
+  - <<: *defaults
+    id: interfax_biz
+    name: "Интерфакс — экономика"
+    url: "https://www.interfax.ru/rss.asp?topic=17"
+    niches: [business]
+    weight: 0.62
+
+  - <<: *defaults
+    id: tass_economics
+    name: "ТАСС — экономика"
+    url: "https://tass.com/rss/v2.xml?sections=economics"
+    niches: [business]
+    weight: 0.64
+
+  - <<: *defaults
+    id: lenta_news
+    name: "Lenta.ru — новости"
+    url: "https://lenta.ru/rss/news"
+    niches: [business, local]
+    weight: 0.50
+
+  # ==================================================================== CRYPTO
+  - <<: *defaults
+    id: gnews_crypto_ru
+    name: "Google News: криптовалюты"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR блокчейн OR Bitcoin when:7d"}
+    niches: [crypto]
+    weight: 0.60
+
+  - <<: *defaults
+    id: coindesk
+    name: "CoinDesk"
+    url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    lang: en
+    niches: [crypto, business]
+    weight: 0.68
+
+  - <<: *defaults
+    id: theblock
+    name: "The Block"
+    url: "https://www.theblock.co/rss.xml"
+    lang: en
+    niches: [crypto]
+    weight: 0.64
+
+  - <<: *defaults
+    id: decrypt
+    name: "Decrypt"
+    url: "https://decrypt.co/feed"
+    lang: en
+    niches: [crypto, tech]
+    weight: 0.60
+
+  - <<: *defaults
+    id: beincrypto
+    name: "BeInCrypto"
+    url: "https://beincrypto.com/feed/"
+    lang: en
+    niches: [crypto]
+    weight: 0.56
+
+  # =================================================================== SCIENCE
+  - <<: *defaults
+    id: gnews_science_ru
+    name: "Google News: наука"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "научное исследование OR учёные открытие when:14d"}
+    niches: [science]
+    weight: 0.55
+
+  - <<: *defaults
+    id: nature
+    name: "Nature — news"
+    url: "https://www.nature.com/nature.rss"
+    lang: en
+    niches: [science]
+    weight: 0.80
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: sciencedaily_top
+    name: "ScienceDaily — top science"
+    url: "https://www.sciencedaily.com/rss/top/science.xml"
+    lang: en
+    niches: [science, tech]
+    weight: 0.68
+
+  - <<: *defaults
+    id: physorg
+    name: "Phys.org"
+    url: "https://phys.org/rss-feed/"
+    lang: en
+    niches: [science]
+    weight: 0.66
+
+  - <<: *defaults
+    id: quantamagazine
+    name: "Quanta Magazine"
+    url: "https://api.quantamagazine.org/feed/"
+    lang: en
+    niches: [science]
+    weight: 0.74
+    min_interval_s: 1800
+
+  # ==================================================================== HEALTH
+  - <<: *defaults
+    id: who_news
+    name: "WHO — новости"
+    url: "https://www.who.int/rss-feeds/news-english.xml"
+    lang: en
+    niches: [health, science]
+    weight: 0.80
+    min_interval_s: 3600
+
+  - <<: *defaults
+    id: sciencedaily_health
+    name: "ScienceDaily — health & medicine"
+    url: "https://www.sciencedaily.com/rss/health_medicine.xml"
+    lang: en
+    niches: [health]
+    weight: 0.72
+
+  - <<: *defaults
+    id: gnews_health_ru
+    name: "Google News: здоровье (доказательная медицина)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "исследование OR клинический when:14d (здоровье OR медицина)"}
+    niches: [health]
+    weight: 0.55
+
+  # ============================================================== LOCAL / CITY
+  - <<: *defaults
+    id: gnews_city_ru
+    name: "Google News: {{CITY}}"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "{{CITY}} when:3d"}
+    niches: [local]
+    weight: 0.66
+    min_interval_s: 600
+
+  # ================================================================== UZBEKISTAN
+  - <<: *defaults
+    id: gnews_tech_uz
+    name: "Google News: texnologiya (UZ)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=uz&gl=UZ&ceid=UZ:uz"
+    params: {Q: "texnologiya OR sun'iy intellekt when:14d"}
+    niches: [tech]
+    weight: 0.58
+    min_interval_s: 1200
+
+  # ====================================================================== GDELT
+  - <<: *defaults
+    id: gdelt_tech
+    name: "GDELT: technology (English)"
+    kind: gdelt
+    url: "https://api.gdeltproject.org/api/v2/doc/doc"
+    lang: en
+    niches: [tech, science]
+    weight: 0.50
+    # GDELT rate-limits aggressively per source IP; a short interval just burns
+    # requests and returns 429
+    min_interval_s: 3600
+    params:
+      query: "artificial intelligence"
+      maxrecords: 40
+      timespan: 6h
+  # ============================================================== REDDIT
+  # `.rss` feeds. Reddit wants a descriptive User-Agent, which the collector sets.
+  #
+  # Reddit rate-limits by IP far more aggressively than anyone else and the limit
+  # here is roughly one request per 15–30 s, so only ONE subreddit is enabled by
+  # default. To add a second, raise HOST_INTERVALS["www.reddit.com"] in
+  # tgfarm/s1_sources/base.py to 20–30 and expect slower collection.
+  - <<: *defaults
+    id: reddit_local
+    name: "Reddit: r/LocalLLaMA"
+    kind: reddit
+    url: ""
+    lang: en
+    niches: [tech]
+    weight: 0.50
+    min_interval_s: 1800
+    params: {subreddit: LocalLLaMA, sort: hot}
+
+  - <<: *defaults
+    id: reddit_ml
+    name: "Reddit: r/MachineLearning (отключён: лимит Reddit)"
+    kind: reddit
+    url: ""
+    lang: en
+    niches: [tech, science]
+    weight: 0.55
+    enabled: false
+    min_interval_s: 1800
+    params: {subreddit: MachineLearning, sort: new}
+
+  # ========================================================== HACKER NEWS
+  - <<: *defaults
+    id: hn_front
+    name: "Hacker News: front page"
+    kind: hackernews
+    url: ""
+    lang: en
+    niches: [tech, software]
+    weight: 0.62
+    min_interval_s: 1200
+    params: {min_points: 150}
+
+  - <<: *defaults
+    id: hn_ai
+    name: "Hacker News: AI"
+    kind: hackernews
+    url: ""
+    lang: en
+    niches: [tech]
+    weight: 0.55
+    min_interval_s: 1800
+    params: {query: "AI OR LLM", min_points: 50}
+
+  # =============================================================== GITHUB
+  # Releases are the most reliable "this project just changed" signal there is.
+  - <<: *defaults
+    id: github_vllm
+    name: "GitHub: vllm releases"
+    kind: github
+    url: ""
+    lang: en
+    niches: [tech]
+    weight: 0.58
+    min_interval_s: 3600
+    params: {owner: vllm-project, repo: vllm, what: releases}
+
+  - <<: *defaults
+    id: github_langchain
+    name: "GitHub: langchain releases"
+    kind: github
+    url: ""
+    lang: en
+    niches: [tech, software]
+    weight: 0.52
+    min_interval_s: 3600
+    params: {owner: langchain-ai, repo: langchain, what: releases}
+
+  # ============================================================== YOUTUBE
+  # Feeds carry a title and a description only — the pipeline treats them as
+  # headlines, not articles.
+  - <<: *defaults
+    id: youtube_google
+    name: "YouTube: Google"
+    kind: youtube
+    url: ""
+    lang: en
+    niches: [tech]
+    weight: 0.45
+    min_interval_s: 3600
+    params: {channel_id: UC_x5XG1OV2P6uZZ5FSM9Ttw}
+
+  # ============================================================= TELEGRAM
+  # Needs the read-only user session: `tgfarm telegram login`.
+  # Public channels only — the collector refuses invite links.
+  - <<: *defaults
+    id: tg_habr
+    name: "Telegram: Хабр"
+    kind: telegram
+    url: "https://t.me/habr"
+    lang: ru
+    niches: [tech, software]
+    weight: 0.50
+    min_interval_s: 1800
+    params: {channel: habr, handle: habr}
+
+  - <<: *defaults
+    id: tg_durov
+    name: "Telegram: durov (приватный канал)"
+    kind: telegram
+    url: "https://t.me/durov"
+    lang: ru
+    niches: [tech]
+    weight: 0.35
+    min_interval_s: 3600
+    params: {channel: durov, handle: durov}
+
+  - <<: *defaults
+    id: tg_dark2weboriginal
+    name: "Telegram: Dark2web"
+    kind: telegram
+    url: "https://t.me/Dark2weboriginal"
+    lang: ru
+    niches: [tech, society]
+    weight: 0.45
+    min_interval_s: 3600
+    params: {channel: Dark2weboriginal, handle: Dark2weboriginal}
+    
+  # ============================================================== NEW SOURCES (BATCH 1)
+  - <<: *defaults
+    id: gnews_science_ru_ext
+    name: "Google News: Наука (дополнительно)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "научное исследование OR учёные открытие when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_tech_ru_ext
+    name: "Google News: Технологии (дополнительно)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR нейросети when:14d"}
+    niches: [tech, software]
+    weight: 0.55
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_business_ru_ext
+    name: "Google News: Бизнес (дополнительно)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR экономика OR финансы when:7d"}
+    niches: [business]
+    weight: 0.52
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_health_ru_ext
+    name: "Google News: Здоровье (дополнительно)"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "исследование OR клинический when:14d (здоровье OR медицина)"}
+    niches: [health]
+    weight: 0.50
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: tech_radar
+    name: "TechRadar"
+    url: "https://www.techradar.com/rss"
+    lang: en
+    niches: [tech, software]
+    weight: 0.60
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: cnet_news
+    name: "CNET News"
+    url: "https://www.cnet.com/rss/news/"
+    lang: en
+    niches: [tech, software, business]
+    weight: 0.60
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: digital_trends
+    name: "Digital Trends"
+    url: "https://www.digitaltrends.com/feed/"
+    lang: en
+    niches: [tech, software]
+    weight: 0.58
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: venturebeat
+    name: "VentureBeat"
+    url: "https://feeds.feedburner.com/venturebeat/SZZc"
+    lang: en
+    niches: [tech, business, software]
+    weight: 0.65
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: science_alert
+    name: "Science Alert"
+    url: "https://www.sciencealert.com/feed"
+    lang: en
+    niches: [science, health]
+    weight: 0.60
+    enabled: false
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: live_science
+    name: "Live Science"
+    url: "https://www.livescience.com/feed"
+    lang: en
+    niches: [science, health]
+    weight: 0.58
+    enabled: false
+    min_interval_s: 1800
+
+  # =========================================================== WEB SEARCH
+  # Requires TAVILY_API_KEY or SERPER_API_KEY; silently returns nothing without.
+  - <<: *defaults
+    id: web_ai_news
+    name: "Веб-поиск: ИИ-новости"
+    kind: websearch
+    url: ""
+    lang: ru
+    niches: [tech]
+    weight: 0.45
+    min_interval_s: 3600
+    params: {query: "искусственный интеллект новости", days: 3}
+
+  # ============================================================== NEW SOURCES (BATCH 2 - 100 sources)
+  - <<: *defaults
+    id: gnews_extra_001
+    name: "Google News: tech #1"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_002
+    name: "Google News: software #2"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_003
+    name: "Google News: business #3"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_004
+    name: "Google News: crypto #4"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_005
+    name: "Google News: science #5"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_006
+    name: "Google News: health #6"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_007
+    name: "Google News: society #7"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_008
+    name: "Google News: local #8"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_009
+    name: "Google News: tech #9"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_010
+    name: "Google News: software #10"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_011
+    name: "Google News: business #11"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_012
+    name: "Google News: crypto #12"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_013
+    name: "Google News: science #13"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_014
+    name: "Google News: health #14"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_015
+    name: "Google News: society #15"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_016
+    name: "Google News: local #16"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_017
+    name: "Google News: tech #17"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_018
+    name: "Google News: software #18"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_019
+    name: "Google News: business #19"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_020
+    name: "Google News: crypto #20"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_021
+    name: "Google News: science #21"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_022
+    name: "Google News: health #22"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_023
+    name: "Google News: society #23"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_024
+    name: "Google News: local #24"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_025
+    name: "Google News: tech #25"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_026
+    name: "Google News: software #26"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_027
+    name: "Google News: business #27"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_028
+    name: "Google News: crypto #28"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_029
+    name: "Google News: science #29"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_030
+    name: "Google News: health #30"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_031
+    name: "Google News: society #31"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_032
+    name: "Google News: local #32"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_033
+    name: "Google News: tech #33"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_034
+    name: "Google News: software #34"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_035
+    name: "Google News: business #35"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_036
+    name: "Google News: crypto #36"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_037
+    name: "Google News: science #37"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_038
+    name: "Google News: health #38"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_039
+    name: "Google News: society #39"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_040
+    name: "Google News: local #40"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_041
+    name: "Google News: tech #41"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_042
+    name: "Google News: software #42"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_043
+    name: "Google News: business #43"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_044
+    name: "Google News: crypto #44"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_045
+    name: "Google News: science #45"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_046
+    name: "Google News: health #46"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_047
+    name: "Google News: society #47"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_048
+    name: "Google News: local #48"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_049
+    name: "Google News: tech #49"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_050
+    name: "Google News: software #50"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_051
+    name: "Google News: business #51"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_052
+    name: "Google News: crypto #52"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_053
+    name: "Google News: science #53"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_054
+    name: "Google News: health #54"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_055
+    name: "Google News: society #55"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_056
+    name: "Google News: local #56"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_057
+    name: "Google News: tech #57"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_058
+    name: "Google News: software #58"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_059
+    name: "Google News: business #59"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_060
+    name: "Google News: crypto #60"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_061
+    name: "Google News: science #61"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_062
+    name: "Google News: health #62"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_063
+    name: "Google News: society #63"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_064
+    name: "Google News: local #64"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_065
+    name: "Google News: tech #65"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_066
+    name: "Google News: software #66"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_067
+    name: "Google News: business #67"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_068
+    name: "Google News: crypto #68"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_069
+    name: "Google News: science #69"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_070
+    name: "Google News: health #70"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_071
+    name: "Google News: society #71"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_072
+    name: "Google News: local #72"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_073
+    name: "Google News: tech #73"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_074
+    name: "Google News: software #74"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_075
+    name: "Google News: business #75"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_076
+    name: "Google News: crypto #76"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_077
+    name: "Google News: science #77"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_078
+    name: "Google News: health #78"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_079
+    name: "Google News: society #79"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_080
+    name: "Google News: local #80"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_081
+    name: "Google News: tech #81"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_082
+    name: "Google News: software #82"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_083
+    name: "Google News: business #83"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_084
+    name: "Google News: crypto #84"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_085
+    name: "Google News: science #85"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_086
+    name: "Google News: health #86"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_087
+    name: "Google News: society #87"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_088
+    name: "Google News: local #88"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_089
+    name: "Google News: tech #89"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_090
+    name: "Google News: software #90"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_091
+    name: "Google News: business #91"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_092
+    name: "Google News: crypto #92"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_093
+    name: "Google News: science #93"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_094
+    name: "Google News: health #94"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_095
+    name: "Google News: society #95"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_096
+    name: "Google News: local #96"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_097
+    name: "Google News: tech #97"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_098
+    name: "Google News: software #98"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_099
+    name: "Google News: business #99"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_100
+    name: "Google News: crypto #100"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  # ============================================================== NEW SOURCES (BATCH 2 - 100 sources)
+  - <<: *defaults
+    id: gnews_extra_001
+    name: "Google News: tech #1"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_002
+    name: "Google News: software #2"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_003
+    name: "Google News: business #3"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_004
+    name: "Google News: crypto #4"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_005
+    name: "Google News: science #5"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_006
+    name: "Google News: health #6"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_007
+    name: "Google News: society #7"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_008
+    name: "Google News: local #8"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_009
+    name: "Google News: tech #9"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_010
+    name: "Google News: software #10"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_011
+    name: "Google News: business #11"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_012
+    name: "Google News: crypto #12"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_013
+    name: "Google News: science #13"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_014
+    name: "Google News: health #14"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_015
+    name: "Google News: society #15"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_016
+    name: "Google News: local #16"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_017
+    name: "Google News: tech #17"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_018
+    name: "Google News: software #18"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_019
+    name: "Google News: business #19"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_020
+    name: "Google News: crypto #20"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_021
+    name: "Google News: science #21"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_022
+    name: "Google News: health #22"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_023
+    name: "Google News: society #23"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_024
+    name: "Google News: local #24"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_025
+    name: "Google News: tech #25"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_026
+    name: "Google News: software #26"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_027
+    name: "Google News: business #27"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_028
+    name: "Google News: crypto #28"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_029
+    name: "Google News: science #29"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_030
+    name: "Google News: health #30"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_031
+    name: "Google News: society #31"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_032
+    name: "Google News: local #32"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_033
+    name: "Google News: tech #33"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_034
+    name: "Google News: software #34"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_035
+    name: "Google News: business #35"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_036
+    name: "Google News: crypto #36"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_037
+    name: "Google News: science #37"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_038
+    name: "Google News: health #38"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_039
+    name: "Google News: society #39"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_040
+    name: "Google News: local #40"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_041
+    name: "Google News: tech #41"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_042
+    name: "Google News: software #42"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_043
+    name: "Google News: business #43"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_044
+    name: "Google News: crypto #44"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_045
+    name: "Google News: science #45"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_046
+    name: "Google News: health #46"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_047
+    name: "Google News: society #47"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_048
+    name: "Google News: local #48"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_049
+    name: "Google News: tech #49"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_050
+    name: "Google News: software #50"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_051
+    name: "Google News: business #51"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_052
+    name: "Google News: crypto #52"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_053
+    name: "Google News: science #53"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_054
+    name: "Google News: health #54"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_055
+    name: "Google News: society #55"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_056
+    name: "Google News: local #56"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_057
+    name: "Google News: tech #57"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_058
+    name: "Google News: software #58"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_059
+    name: "Google News: business #59"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_060
+    name: "Google News: crypto #60"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_061
+    name: "Google News: science #61"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_062
+    name: "Google News: health #62"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_063
+    name: "Google News: society #63"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_064
+    name: "Google News: local #64"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_065
+    name: "Google News: tech #65"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_066
+    name: "Google News: software #66"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_067
+    name: "Google News: business #67"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_068
+    name: "Google News: crypto #68"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_069
+    name: "Google News: science #69"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_070
+    name: "Google News: health #70"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_071
+    name: "Google News: society #71"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_072
+    name: "Google News: local #72"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_073
+    name: "Google News: tech #73"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_074
+    name: "Google News: software #74"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_075
+    name: "Google News: business #75"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_076
+    name: "Google News: crypto #76"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_077
+    name: "Google News: science #77"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_078
+    name: "Google News: health #78"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_079
+    name: "Google News: society #79"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_080
+    name: "Google News: local #80"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_081
+    name: "Google News: tech #81"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "искусственный интеллект OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_082
+    name: "Google News: software #82"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "стартап OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_083
+    name: "Google News: business #83"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "криптовалюта OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_084
+    name: "Google News: crypto #84"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "наука OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_085
+    name: "Google News: science #85"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "здоровье OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_086
+    name: "Google News: health #86"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "политика OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_087
+    name: "Google News: society #87"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "город OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_088
+    name: "Google News: local #88"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "технологии OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_089
+    name: "Google News: tech #89"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экономика OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_090
+    name: "Google News: software #90"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "медицина OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_091
+    name: "Google News: business #91"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "космос OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_092
+    name: "Google News: crypto #92"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "экология OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_093
+    name: "Google News: science #93"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "образование OR новости when:14d"}
+    niches: [science]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_094
+    name: "Google News: health #94"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "культура OR новости when:7d"}
+    niches: [health]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_095
+    name: "Google News: society #95"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "спорт OR новости when:14d"}
+    niches: [society]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_096
+    name: "Google News: local #96"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "бизнес OR новости when:7d"}
+    niches: [local]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_097
+    name: "Google News: tech #97"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "инвестиции OR новости when:14d"}
+    niches: [tech]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_098
+    name: "Google News: software #98"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "программирование OR новости when:7d"}
+    niches: [software]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_099
+    name: "Google News: business #99"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "робототехника OR новости when:14d"}
+    niches: [business]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800
+
+  - <<: *defaults
+    id: gnews_extra_100
+    name: "Google News: crypto #100"
+    kind: gnews
+    url: "https://news.google.com/rss/search?q={{Q}}&hl=ru&gl=RU&ceid=RU:ru"
+    params: {Q: "энергетика OR новости when:7d"}
+    niches: [crypto]
+    weight: 0.50
+    enabled: true
+    min_interval_s: 1800

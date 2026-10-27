@@ -1,0 +1,886 @@
+10:16:22 INFO    tgfarm.db.bootstrap    schema ready: 12 tables
+10:16:22 INFO    tgfarm.config          config loaded: 10 channels, 251 sources, 17 slot hours
+10:16:22 INFO    tgfarm.db.bootstrap    channels seeded: 10
+10:16:22 INFO    tgfarm.db.bootstrap    sources seeded: 251
+10:16:23 INFO    tgfarm.db.bootstrap    schema ready: 12 tables
+10:16:23 INFO    tgfarm.db.bootstrap    channels seeded: 10
+10:16:23 INFO    tgfarm.db.bootstrap    sources seeded: 251
+10:16:23 INFO    tgfarm.db.bootstrap    schema ready: 12 tables
+10:16:23 INFO    tgfarm.db.bootstrap    channels seeded: 10
+10:16:23 INFO    tgfarm.db.bootstrap    sources seeded: 251
+10:16:23 INFO    tgfarm.db.vector       vector index rebuilt: 3110 vectors, dim=512
+10:16:23 INFO    tgfarm.api             vector index warmed with 3110 items
+10:16:23 INFO    tgfarm.db.bootstrap    schema ready: 12 tables
+10:16:23 INFO    tgfarm.db.bootstrap    channels seeded: 10
+10:16:23 INFO    tgfarm.db.bootstrap    sources seeded: 251
+10:16:24 INFO    apscheduler.scheduler  Adding job tentatively -- it will be properly scheduled when the scheduler starts
+10:16:24 INFO    apscheduler.scheduler  Adding job tentatively -- it will be properly scheduled when the scheduler starts
+10:16:24 INFO    apscheduler.scheduler  Adding job tentatively -- it will be properly scheduled when the scheduler starts
+10:16:24 INFO    apscheduler.scheduler  Added job "farm cycle" to job store "default"
+10:16:24 INFO    apscheduler.scheduler  Added job "publish tick" to job store "default"
+10:16:24 INFO    apscheduler.scheduler  Added job "cycle watchdog" to job store "default"
+10:16:24 INFO    apscheduler.scheduler  Scheduler started
+10:16:24 INFO    tgfarm.pipeline        scheduler started: cycle every 10 min, publish tick every 5 min
+10:16:24 INFO    tgfarm.desktop         admin API on http://127.0.0.1:53262
+10:16:25 INFO    tgfarm.desktop         TgFarm 1.2.0 ready
+10:18:09 INFO    tgfarm.s7_publish      [dry-run] -> telegram -1 | Google Play now lets anyone build private, vibe-coded apps that run on Android.
+
+Google…
+10:18:09 INFO    tgfarm.core.run        stage s7_publish: 1 -> 1 in 15ms
+10:18:29 INFO    tgfarm.s7_publish      [dry-run] -> telegram -1 | Strive buys 3,311 bitcoin for $280 million in largest acquisition since January. Цифра…
+10:18:29 INFO    tgfarm.core.run        stage s7_publish: 1 -> 1 in 15ms
+10:18:42 INFO    tgfarm.s7_publish      [dry-run] -> telegram -1 | Клиническое исследование на 12 400 пациентах подтвердило снижение сердечно-сосудистого…
+10:18:42 INFO    tgfarm.core.run        stage s7_publish: 1 -> 1 in 13ms
+10:19:37 INFO    tgfarm.api             401 /api/posts header=False query=False cookie=False
+10:20:14 INFO    tgfarm.s7_publish      [dry-run] -> dzen | Венгерская MOL договорилась о выкупе российской доли в сербской NIS. | inline: C:\Users\Administrator\Desktop\ai\Tggruup\data\media\article_37136e39f12205d7.jpg
+10:20:14 INFO    tgfarm.core.run        stage s7_publish: 1 -> 1 in 25ms
+10:21:06 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:06 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:14 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:22 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:24 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 0 in 2ms
+10:21:26 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 0 in 1980ms
+10:21:26 INFO    tgfarm.core.run        stage s2_score: 0 -> 0 in 5ms
+10:21:26 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 2137ms
+10:21:26 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 11ms
+10:21:26 INFO    tgfarm.llm.client      llm provider: longcat
+10:21:28 WARNING tgfarm.llm.client      llm json failed (longcat 402: {"error":{"code":"too_many_requests","message":"AppId:**eo05 Usage limit reached.","type":"rate_limit_error"}}), using offline fallback
+10:21:28 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 41e564eb6f11
+10:21:28 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 2578ms
+10:21:29 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:21:29 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:21:29 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for c2e8b1d42e66
+10:21:29 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 124ms
+10:21:29 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:21:29 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:21:29 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 8135ece8b45a
+10:21:29 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 119ms
+10:21:29 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 2ms
+10:21:29 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:21:30 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 1df736dc33ee
+10:21:30 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 198ms
+10:21:30 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 3841ms
+10:21:30 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 2ms
+10:21:30 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 96ms
+10:21:30 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+10:21:30 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 3ms
+10:21:30 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 94ms
+10:21:30 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:30 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:31 INFO    tgfarm.core.run        stage s9_crosspost: 12 -> 0 in 268ms
+10:21:31 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=27 failed=0
+10:21:31 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 269ms
+10:21:31 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 8 in 15ms
+10:21:31 INFO    tgfarm.s8_analytics    s8: 8 channel-days written, angles measured: ['news'], dzen: skipped
+10:21:31 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 16ms
+10:21:31 INFO    tgfarm.pipeline        cycle b870f5b9b2 finished in 6823ms errors=0
+10:21:38 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:38 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:46 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:21:54 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:02 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:10 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:18 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:26 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:33 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=False
+10:22:34 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:34 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:42 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:50 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:22:58 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:22:58 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:22:58 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:22:58 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:22:58 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:22:59 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:22:59 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:00 WARNING tgfarm.s1_sources.base collector tg_habr failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:23:00 WARNING tgfarm.s1_sources.base collector tg_durov failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:23:00 INFO    tgfarm.s1_sources.base collected web_ai_news              0 items
+10:23:00 WARNING tgfarm.s1_sources.base collector tg_dark2weboriginal failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:23:00 INFO    tgfarm.s1_sources.base collected techcrunch_ai           20 items
+10:23:00 INFO    tgfarm.s1_sources.base collected decrypt                 40 items
+10:23:00 INFO    tgfarm.s1_sources.base collected lenta_news              60 items
+10:23:01 INFO    tgfarm.s1_sources.base collected vedomosti_all           60 items
+10:23:01 INFO    tgfarm.s1_sources.base collected beincrypto              12 items
+10:23:01 INFO    tgfarm.s1_sources.base collected theblock                19 items
+10:23:01 INFO    tgfarm.s1_sources.base collected tass_economics          50 items
+10:23:01 INFO    tgfarm.s1_sources.base collected verge_ai                10 items
+10:23:01 INFO    tgfarm.s1_sources.base collected mittr_ai                10 items
+10:23:01 INFO    tgfarm.s1_sources.base collected habr_all                40 items
+10:23:01 INFO    tgfarm.s1_sources.base collected google_blog             20 items
+10:23:02 INFO    tgfarm.s1_sources.base collected openai_blog             60 items
+10:23:02 INFO    tgfarm.s1_sources.base collected nature                  59 items
+10:23:02 INFO    tgfarm.s1_sources.base collected sciencedaily_top        60 items
+10:23:02 INFO    tgfarm.s1_sources.base collected interfax_biz            25 items
+10:23:02 INFO    tgfarm.s1_sources.base collected physorg                 30 items
+10:23:03 INFO    tgfarm.s1_sources.base collected who_news                60 items
+10:23:03 INFO    tgfarm.s1_sources.base collected coindesk                25 items
+10:23:03 INFO    tgfarm.s1_sources.base collected sciencedaily_health     60 items
+10:23:03 INFO    tgfarm.s1_sources.base collected quantamagazine           5 items
+10:23:03 INFO    tgfarm.s1_sources.base collected hn_front                10 items
+10:23:03 INFO    tgfarm.s1_sources.base collected github_langchain        10 items
+10:23:04 INFO    tgfarm.s1_sources.base collected arxiv_ai                60 items
+10:23:04 INFO    tgfarm.s1_sources.base collected reddit_local            25 items
+10:23:07 INFO    tgfarm.s1_sources.base collected github_vllm              8 items
+10:23:07 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:07 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:12 WARNING tgfarm.s1_sources.base collector gdelt_tech failed: gdelt 429: Please limit requests to one every 5 seconds or contact kalev.leetaru5@gmail.com for larger queries. All high-traffic users should switch to our ngrams dataset:
+10:23:13 INFO    tgfarm.s1_sources.base collected hn_ai                   20 items
+10:23:14 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:14 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:21 WARNING tgfarm.s1_sources.base collector youtube_google failed: 
+10:23:22 WARNING tgfarm.s1_sources.base collector gnews_tech_ru failed: 
+10:23:22 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:22 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:23 WARNING tgfarm.s1_sources.base collector gnews_crypto_ru failed: 
+10:23:24 WARNING tgfarm.s1_sources.base collector gnews_business_ru failed: 
+10:23:25 WARNING tgfarm.s1_sources.base collector gnews_science_ru failed: 
+10:23:26 WARNING tgfarm.s1_sources.base collector producthunt failed: 
+10:23:27 WARNING tgfarm.s1_sources.base collector gnews_health_ru failed: 
+10:23:29 WARNING tgfarm.s1_sources.base collector gnews_city_ru failed: 
+10:23:30 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:30 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:30 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:30 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:30 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:30 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:31 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:31 WARNING tgfarm.s1_sources.base collector gnews_tech_uz failed: 
+10:23:33 WARNING tgfarm.s1_sources.base collector gnews_extra_048 failed: 
+10:23:35 WARNING tgfarm.s1_sources.base collector gnews_extra_081 failed: 
+10:23:37 WARNING tgfarm.s1_sources.base collector gnews_extra_029 failed: 
+10:23:38 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:38 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:39 WARNING tgfarm.s1_sources.base collector gnews_extra_004 failed: 
+10:23:41 WARNING tgfarm.s1_sources.base collector gnews_extra_038 failed: 
+10:23:43 WARNING tgfarm.s1_sources.base collector gnews_extra_079 failed: 
+10:23:45 WARNING tgfarm.s1_sources.base collector gnews_extra_023 failed: 
+10:23:46 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:46 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:47 WARNING tgfarm.s1_sources.base collector gnews_extra_059 failed: 
+10:23:49 WARNING tgfarm.s1_sources.base collector gnews_extra_070 failed: 
+10:23:51 WARNING tgfarm.s1_sources.base collector gnews_extra_064 failed: 
+10:23:53 WARNING tgfarm.s1_sources.base collector gnews_extra_046 failed: 
+10:23:54 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:23:54 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:23:55 WARNING tgfarm.s1_sources.base collector gnews_extra_052 failed: 
+10:23:57 WARNING tgfarm.s1_sources.base collector gnews_extra_085 failed: 
+10:23:59 WARNING tgfarm.s1_sources.base collector gnews_extra_027 failed: 
+10:24:01 WARNING tgfarm.s1_sources.base collector gnews_extra_057 failed: 
+10:24:02 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:02 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:03 WARNING tgfarm.s1_sources.base collector gnews_extra_039 failed: 
+10:24:05 WARNING tgfarm.s1_sources.base collector gnews_extra_100 failed: 
+10:24:07 WARNING tgfarm.s1_sources.base collector gnews_extra_054 failed: 
+10:24:09 WARNING tgfarm.s1_sources.base collector gnews_extra_040 failed: 
+10:24:10 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:10 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:11 WARNING tgfarm.s1_sources.base collector gnews_extra_096 failed: 
+10:24:13 WARNING tgfarm.s1_sources.base collector gnews_extra_043 failed: 
+10:24:15 WARNING tgfarm.s1_sources.base collector gnews_extra_028 failed: 
+10:24:17 WARNING tgfarm.s1_sources.base collector gnews_extra_036 failed: 
+10:24:18 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:18 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:19 WARNING tgfarm.s1_sources.base collector gnews_extra_010 failed: 
+10:24:21 WARNING tgfarm.s1_sources.base collector gnews_extra_087 failed: 
+10:24:24 WARNING tgfarm.s1_sources.base collector gnews_extra_013 failed: 
+10:24:25 WARNING tgfarm.s1_sources.base collector gnews_extra_091 failed: 
+10:24:26 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:26 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:27 WARNING tgfarm.s1_sources.base collector gnews_extra_041 failed: 
+10:24:30 WARNING tgfarm.s1_sources.base collector gnews_extra_080 failed: 
+10:24:31 WARNING tgfarm.s1_sources.base collector gnews_extra_031 failed: 
+10:24:34 WARNING tgfarm.s1_sources.base collector gnews_extra_076 failed: 
+10:24:34 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:34 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:36 WARNING tgfarm.s1_sources.base collector gnews_extra_016 failed: 
+10:24:38 WARNING tgfarm.s1_sources.base collector gnews_extra_047 failed: 
+10:24:40 WARNING tgfarm.s1_sources.base collector gnews_extra_065 failed: 
+10:24:42 WARNING tgfarm.s1_sources.base collector gnews_extra_009 failed: 
+10:24:42 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:42 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:43 INFO    tgfarm.s7_publish      [dry-run] -> dzen | Черногория официально уведомила Россию о введении виз с 1 ноября. Как мы к этому пришли. | inline: none
+10:24:44 INFO    tgfarm.core.run        stage s7_publish: 1 -> 1 in 12ms
+10:24:44 WARNING tgfarm.s1_sources.base collector gnews_extra_030 failed: 
+10:24:46 WARNING tgfarm.s1_sources.base collector gnews_extra_067 failed: 
+10:24:48 WARNING tgfarm.s1_sources.base collector gnews_extra_019 failed: 
+10:24:50 WARNING tgfarm.s1_sources.base collector gnews_extra_056 failed: 
+10:24:50 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:24:50 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:52 WARNING tgfarm.s1_sources.base collector gnews_extra_068 failed: 
+10:24:54 WARNING tgfarm.s1_sources.base collector gnews_extra_099 failed: 
+10:24:56 WARNING tgfarm.s1_sources.base collector gnews_extra_018 failed: 
+10:24:58 WARNING tgfarm.s1_sources.base collector gnews_extra_061 failed: 
+10:24:58 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:24:58 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:00 WARNING tgfarm.s1_sources.base collector gnews_extra_017 failed: 
+10:25:02 WARNING tgfarm.s1_sources.base collector gnews_extra_098 failed: 
+10:25:04 WARNING tgfarm.s1_sources.base collector gnews_extra_062 failed: 
+10:25:06 WARNING tgfarm.s1_sources.base collector gnews_extra_042 failed: 
+10:25:06 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:06 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:08 WARNING tgfarm.s1_sources.base collector gnews_extra_049 failed: 
+10:25:10 WARNING tgfarm.s1_sources.base collector gnews_extra_037 failed: 
+10:25:12 WARNING tgfarm.s1_sources.base collector gnews_extra_053 failed: 
+10:25:14 WARNING tgfarm.s1_sources.base collector gnews_extra_090 failed: 
+10:25:14 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:14 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:16 WARNING tgfarm.s1_sources.base collector gnews_extra_069 failed: 
+10:25:18 WARNING tgfarm.s1_sources.base collector gnews_extra_035 failed: 
+10:25:20 WARNING tgfarm.s1_sources.base collector gnews_extra_089 failed: 
+10:25:22 WARNING tgfarm.s1_sources.base collector gnews_extra_092 failed: 
+10:25:22 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:22 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:24 WARNING tgfarm.s1_sources.base collector gnews_extra_082 failed: 
+10:25:26 WARNING tgfarm.s1_sources.base collector gnews_extra_071 failed: 
+10:25:28 WARNING tgfarm.s1_sources.base collector gnews_extra_012 failed: 
+10:25:30 WARNING tgfarm.s1_sources.base collector gnews_extra_083 failed: 
+10:25:30 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:30 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:32 WARNING tgfarm.s1_sources.base collector gnews_extra_011 failed: 
+10:25:34 WARNING tgfarm.s1_sources.base collector gnews_extra_045 failed: 
+10:25:36 WARNING tgfarm.s1_sources.base collector gnews_extra_063 failed: 
+10:25:38 WARNING tgfarm.s1_sources.base collector gnews_extra_002 failed: 
+10:25:38 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:38 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:40 WARNING tgfarm.s1_sources.base collector gnews_extra_024 failed: 
+10:25:42 WARNING tgfarm.s1_sources.base collector gnews_extra_066 failed: 
+10:25:44 WARNING tgfarm.s1_sources.base collector gnews_extra_001 failed: 
+10:25:46 WARNING tgfarm.s1_sources.base collector gnews_extra_050 failed: 
+10:25:46 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:46 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:48 WARNING tgfarm.s1_sources.base collector gnews_extra_033 failed: 
+10:25:50 WARNING tgfarm.s1_sources.base collector gnews_extra_077 failed: 
+10:25:52 WARNING tgfarm.s1_sources.base collector gnews_extra_014 failed: 
+10:25:54 WARNING tgfarm.s1_sources.base collector gnews_extra_074 failed: 
+10:25:54 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:25:54 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:25:56 WARNING tgfarm.s1_sources.base collector gnews_extra_022 failed: 
+10:25:58 WARNING tgfarm.s1_sources.base collector gnews_extra_078 failed: 
+10:26:00 WARNING tgfarm.s1_sources.base collector gnews_extra_058 failed: 
+10:26:02 WARNING tgfarm.s1_sources.base collector gnews_extra_026 failed: 
+10:26:02 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:02 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:04 WARNING tgfarm.s1_sources.base collector gnews_extra_055 failed: 
+10:26:06 WARNING tgfarm.s1_sources.base collector gnews_extra_032 failed: 
+10:26:08 WARNING tgfarm.s1_sources.base collector gnews_extra_025 failed: 
+10:26:10 WARNING tgfarm.s1_sources.base collector gnews_extra_007 failed: 
+10:26:10 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:10 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:12 WARNING tgfarm.s1_sources.base collector gnews_extra_072 failed: 
+10:26:14 WARNING tgfarm.s1_sources.base collector gnews_extra_006 failed: 
+10:26:16 WARNING tgfarm.s1_sources.base collector gnews_extra_093 failed: 
+10:26:18 WARNING tgfarm.s1_sources.base collector gnews_extra_008 failed: 
+10:26:18 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:18 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:20 WARNING tgfarm.s1_sources.base collector gnews_extra_003 failed: 
+10:26:22 WARNING tgfarm.s1_sources.base collector gnews_extra_086 failed: 
+10:26:24 WARNING tgfarm.s1_sources.base collector tg_habr failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:26:24 WARNING tgfarm.s1_sources.base collector tg_durov failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:26:24 INFO    tgfarm.s1_sources.base collected web_ai_news              0 items
+10:26:24 WARNING tgfarm.s1_sources.base collector tg_dark2weboriginal failed: нет авторизованной сессии Telegram — выполните `tgfarm telegram login`
+10:26:24 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 0 in 15ms
+10:26:24 WARNING tgfarm.s1_sources.base collector gnews_extra_088 failed: 
+10:26:24 INFO    tgfarm.s1_sources.base collected techcrunch_ai           20 items
+10:26:24 INFO    tgfarm.s1_sources.base collected beincrypto              12 items
+10:26:25 INFO    tgfarm.s1_sources.base collected decrypt                 40 items
+10:26:25 INFO    tgfarm.s1_sources.base collected theblock                19 items
+10:26:25 INFO    tgfarm.s1_sources.base collected vedomosti_all           60 items
+10:26:25 INFO    tgfarm.s1_sources.base collected habr_all                40 items
+10:26:25 INFO    tgfarm.s1_sources.base collected tass_economics          51 items
+10:26:25 INFO    tgfarm.s1_sources.base collected verge_ai                10 items
+10:26:25 INFO    tgfarm.s1_sources.base collected lenta_news              60 items
+10:26:25 INFO    tgfarm.s1_sources.base collected mittr_ai                10 items
+10:26:26 INFO    tgfarm.s1_sources.base collected google_blog             20 items
+10:26:26 INFO    tgfarm.s1_sources.base collected sciencedaily_top        60 items
+10:26:26 INFO    tgfarm.s1_sources.base collected openai_blog             60 items
+10:26:26 INFO    tgfarm.s1_sources.base collected nature                  59 items
+10:26:26 WARNING tgfarm.s1_sources.base collector gnews_extra_015 failed: 
+10:26:26 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:27 INFO    tgfarm.s1_sources.base collected physorg                 30 items
+10:26:27 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:27 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:27 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:27 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:27 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:27 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:27 INFO    tgfarm.s1_sources.base collected interfax_biz            25 items
+10:26:27 INFO    tgfarm.s1_sources.base collected who_news                60 items
+10:26:28 INFO    tgfarm.s1_sources.base collected quantamagazine           5 items
+10:26:28 INFO    tgfarm.s1_sources.base collected hn_front                10 items
+10:26:28 INFO    tgfarm.s1_sources.base collected arxiv_ai                60 items
+10:26:28 WARNING tgfarm.s1_sources.base collector gnews_extra_044 failed: 
+10:26:28 INFO    tgfarm.s1_sources.base collected sciencedaily_health     60 items
+10:26:29 INFO    tgfarm.s1_sources.base collected github_vllm              8 items
+10:26:29 INFO    tgfarm.s1_sources.base collected hn_ai                   20 items
+10:26:29 INFO    tgfarm.s1_sources.base collected github_langchain        10 items
+10:26:30 WARNING tgfarm.s1_sources.base collector gnews_extra_073 failed: 
+10:26:30 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 0 in 5992ms
+10:26:30 INFO    tgfarm.core.run        stage s2_score: 0 -> 0 in 2ms
+10:26:30 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 6015ms
+10:26:30 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 2ms
+10:26:30 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:26:30 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 41e564eb6f11
+10:26:30 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 7ms
+10:26:30 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 5ms
+10:26:30 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:26:30 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for c2e8b1d42e66
+10:26:30 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 6ms
+10:26:30 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 6ms
+10:26:30 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:26:30 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 8135ece8b45a
+10:26:30 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 6ms
+10:26:30 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 3ms
+10:26:30 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:26:30 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 1df736dc33ee
+10:26:30 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 6ms
+10:26:30 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 81ms
+10:26:30 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+10:26:30 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+10:26:30 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+10:26:30 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 2ms
+10:26:30 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 5ms
+10:26:30 INFO    tgfarm.core.run        stage s9_crosspost: 12 -> 0 in 128ms
+10:26:30 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=30 failed=0
+10:26:30 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 130ms
+10:26:30 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 8 in 22ms
+10:26:30 INFO    tgfarm.s8_analytics    s8: 8 channel-days written, angles measured: ['news'], dzen: skipped
+10:26:30 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 24ms
+10:26:30 INFO    tgfarm.pipeline        cycle b40af88cff finished in 6278ms errors=0
+10:26:31 INFO    tgfarm.s1_sources.base collected reddit_local            25 items
+10:26:32 WARNING tgfarm.s1_sources.base collector gnews_extra_051 failed: 
+10:26:34 WARNING tgfarm.s1_sources.base collector gnews_extra_095 failed: 
+10:26:34 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:34 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:36 WARNING tgfarm.s1_sources.base collector gnews_extra_097 failed: 
+10:26:38 WARNING tgfarm.s1_sources.base collector gnews_extra_005 failed: 
+10:26:40 WARNING tgfarm.s1_sources.base collector gnews_extra_021 failed: 
+10:26:41 INFO    tgfarm.s1_sources.base collected gdelt_tech              40 items
+10:26:42 WARNING tgfarm.s1_sources.base collector gnews_extra_084 failed: 
+10:26:42 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:42 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:46 WARNING tgfarm.s1_sources.base collector coindesk failed: 
+10:26:46 WARNING tgfarm.s1_sources.base collector gnews_extra_034 failed: 
+10:26:47 WARNING tgfarm.s1_sources.base collector gnews_extra_020 failed: 
+10:26:47 WARNING tgfarm.s1_sources.base collector youtube_google failed: 
+10:26:49 WARNING tgfarm.s1_sources.base collector gnews_extra_094 failed: 
+10:26:50 WARNING tgfarm.s1_sources.base collector producthunt failed: 
+10:26:50 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:50 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:51 WARNING tgfarm.s1_sources.base collector gnews_extra_060 failed: 
+10:26:53 WARNING tgfarm.s1_sources.base collector gnews_extra_075 failed: 
+10:26:53 INFO    tgfarm.llm.embedding   embedder: local-hash dim=512
+10:26:55 WARNING tgfarm.s1_sources.base collector gnews_tech_ru failed: 
+10:26:57 WARNING tgfarm.s1_sources.base collector gnews_business_ru failed: 
+10:26:58 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:26:58 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:26:59 WARNING tgfarm.s1_sources.base collector gnews_crypto_ru failed: 
+10:27:01 WARNING tgfarm.s1_sources.base collector gnews_science_ru failed: 
+10:27:03 WARNING tgfarm.s1_sources.base collector gnews_health_ru failed: 
+10:27:03 INFO    tgfarm.s1_sources      persisted 661 new items (index now 3771 vectors)
+10:27:03 INFO    tgfarm.core.run        stage s1_collect: 858 -> 661 in 244014ms
+10:27:03 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 244016ms
+10:27:05 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 39 in 1130ms
+10:27:05 WARNING tgfarm.s1_sources.base collector gnews_city_ru failed: 
+10:27:06 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:06 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:07 WARNING tgfarm.s1_sources.base collector gnews_tech_uz failed: 
+10:27:09 WARNING tgfarm.s1_sources.base collector gnews_extra_052 failed: 
+10:27:11 WARNING tgfarm.s1_sources.base collector gnews_extra_099 failed: 
+10:27:13 WARNING tgfarm.s1_sources.base collector gnews_extra_098 failed: 
+10:27:14 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:14 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:15 WARNING tgfarm.s1_sources.base collector gnews_extra_071 failed: 
+10:27:17 WARNING tgfarm.s1_sources.base collector gnews_extra_100 failed: 
+10:27:19 WARNING tgfarm.s1_sources.base collector gnews_extra_091 failed: 
+10:27:21 WARNING tgfarm.s1_sources.base collector gnews_extra_046 failed: 
+10:27:22 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:22 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:22 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:23 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:23 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:23 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:23 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:23 WARNING tgfarm.s1_sources.base collector gnews_extra_086 failed: 
+10:27:24 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 622 in 19089ms
+10:27:25 WARNING tgfarm.s1_sources.base collector gnews_extra_072 failed: 
+10:27:27 WARNING tgfarm.s1_sources.base collector gnews_extra_084 failed: 
+10:27:27 INFO    tgfarm.core.run        stage s2_score: 0 -> 622 in 2338ms
+10:27:27 INFO    tgfarm.s2_trends       promoted 1 clusters above heat>=0.62
+10:27:27 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 23718ms
+10:27:27 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:27:27 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:27:27 INFO    tgfarm.s4_generation   draft zen_misc_ru/10401dcba07d format=news angle=news provider=offline editorial=141 total=482 claims=1
+10:27:27 INFO    tgfarm.core.run        stage s4_generate: 1 -> 1 in 21ms
+10:27:27 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:27:27 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:27:27 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 591de5b0e62c
+10:27:27 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 7ms
+10:27:27 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 5ms
+10:27:27 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:27:27 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 41e564eb6f11
+10:27:27 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 9ms
+10:27:27 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 82ms
+10:27:27 INFO    tgfarm.s5_quality      rewrite 1 for 1b0a745ab577 (length: 141 chars < min 350)
+10:27:27 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:27:27 WARNING tgfarm.s5_quality      post 1b0a745ab577 rejected at length: 141 chars < min 350
+10:27:27 INFO    tgfarm.core.run        stage s5_quality: 1 -> 0 in 14ms
+10:27:27 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 14ms
+10:27:27 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+10:27:27 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 2ms
+10:27:27 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 8ms
+10:27:27 INFO    tgfarm.core.run        stage s9_crosspost: 14 -> 0 in 147ms
+10:27:27 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=36 failed=0
+10:27:27 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 149ms
+10:27:27 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 8 in 13ms
+10:27:27 INFO    tgfarm.s8_analytics    s8: 8 channel-days written, angles measured: ['news'], dzen: skipped
+10:27:27 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 14ms
+10:27:28 INFO    tgfarm.pipeline        cycle be279560eb finished in 268041ms errors=0
+10:27:29 WARNING tgfarm.s1_sources.base collector gnews_extra_079 failed: 
+10:27:30 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:30 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:31 WARNING tgfarm.s1_sources.base collector gnews_extra_030 failed: 
+10:27:33 WARNING tgfarm.s1_sources.base collector gnews_extra_016 failed: 
+10:27:35 WARNING tgfarm.s1_sources.base collector gnews_extra_037 failed: 
+10:27:37 WARNING tgfarm.s1_sources.base collector gnews_extra_092 failed: 
+10:27:38 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:38 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:39 WARNING tgfarm.s1_sources.base collector gnews_extra_050 failed: 
+10:27:41 WARNING tgfarm.s1_sources.base collector gnews_extra_049 failed: 
+10:27:43 WARNING tgfarm.s1_sources.base collector gnews_extra_023 failed: 
+10:27:45 WARNING tgfarm.s1_sources.base collector gnews_extra_018 failed: 
+10:27:46 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:46 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:47 WARNING tgfarm.s1_sources.base collector gnews_extra_034 failed: 
+10:27:49 WARNING tgfarm.s1_sources.base collector gnews_extra_001 failed: 
+10:27:51 WARNING tgfarm.s1_sources.base collector gnews_extra_069 failed: 
+10:27:53 WARNING tgfarm.s1_sources.base collector gnews_extra_070 failed: 
+10:27:54 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:27:54 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:27:55 WARNING tgfarm.s1_sources.base collector gnews_extra_083 failed: 
+10:27:57 WARNING tgfarm.s1_sources.base collector gnews_extra_025 failed: 
+10:27:59 WARNING tgfarm.s1_sources.base collector gnews_extra_036 failed: 
+10:28:01 WARNING tgfarm.s1_sources.base collector gnews_extra_068 failed: 
+10:28:02 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:02 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:03 WARNING tgfarm.s1_sources.base collector gnews_extra_094 failed: 
+10:28:05 WARNING tgfarm.s1_sources.base collector gnews_extra_012 failed: 
+10:28:07 WARNING tgfarm.s1_sources.base collector gnews_extra_082 failed: 
+10:28:09 WARNING tgfarm.s1_sources.base collector gnews_extra_061 failed: 
+10:28:10 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:10 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:11 WARNING tgfarm.s1_sources.base collector gnews_extra_003 failed: 
+10:28:13 WARNING tgfarm.s1_sources.base collector gnews_extra_066 failed: 
+10:28:15 WARNING tgfarm.s1_sources.base collector gnews_extra_031 failed: 
+10:28:17 WARNING tgfarm.s1_sources.base collector gnews_extra_013 failed: 
+10:28:18 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:18 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:19 WARNING tgfarm.s1_sources.base collector gnews_extra_029 failed: 
+10:28:21 WARNING tgfarm.s1_sources.base collector gnews_extra_007 failed: 
+10:28:23 WARNING tgfarm.s1_sources.base collector gnews_extra_019 failed: 
+10:28:25 WARNING tgfarm.s1_sources.base collector gnews_extra_005 failed: 
+10:28:26 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:26 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:27 WARNING tgfarm.s1_sources.base collector gnews_extra_097 failed: 
+10:28:29 WARNING tgfarm.s1_sources.base collector gnews_extra_038 failed: 
+10:28:31 WARNING tgfarm.s1_sources.base collector gnews_extra_042 failed: 
+10:28:33 WARNING tgfarm.s1_sources.base collector gnews_extra_027 failed: 
+10:28:34 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:34 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:35 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:35 WARNING tgfarm.s1_sources.base collector gnews_extra_002 failed: 
+10:28:36 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:36 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/status header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/report header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/runs header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/trends header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/posts header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/channels header=True query=False cookie=True
+10:28:37 INFO    tgfarm.api             401 /api/sources header=True query=False cookie=True
+10:28:37 WARNING tgfarm.s1_sources.base collector gnews_extra_009 failed: 
+10:28:39 WARNING tgfarm.s1_sources.base collector gnews_extra_096 failed: 
+10:28:41 WARNING tgfarm.s1_sources.base collector gnews_extra_035 failed: 
+10:28:43 WARNING tgfarm.s1_sources.base collector gnews_extra_044 failed: 
+10:28:45 WARNING tgfarm.s1_sources.base collector gnews_extra_020 failed: 
+10:28:47 WARNING tgfarm.s1_sources.base collector gnews_extra_032 failed: 
+10:28:49 WARNING tgfarm.s1_sources.base collector gnews_extra_090 failed: 
+10:28:51 WARNING tgfarm.s1_sources.base collector gnews_extra_076 failed: 
+10:28:53 WARNING tgfarm.s1_sources.base collector gnews_extra_017 failed: 
+10:28:55 WARNING tgfarm.s1_sources.base collector gnews_extra_075 failed: 
+10:28:57 WARNING tgfarm.s1_sources.base collector gnews_extra_011 failed: 
+10:28:59 WARNING tgfarm.s1_sources.base collector gnews_extra_045 failed: 
+10:29:01 WARNING tgfarm.s1_sources.base collector gnews_extra_064 failed: 
+10:29:03 WARNING tgfarm.s1_sources.base collector gnews_extra_065 failed: 
+10:29:05 WARNING tgfarm.s1_sources.base collector gnews_extra_063 failed: 
+10:29:08 WARNING tgfarm.s1_sources.base collector gnews_extra_088 failed: 
+10:29:09 WARNING tgfarm.s1_sources.base collector gnews_extra_033 failed: 
+10:29:11 WARNING tgfarm.s1_sources.base collector gnews_extra_047 failed: 
+10:29:14 WARNING tgfarm.s1_sources.base collector gnews_extra_010 failed: 
+10:29:16 WARNING tgfarm.s1_sources.base collector gnews_extra_015 failed: 
+10:29:18 WARNING tgfarm.s1_sources.base collector gnews_extra_057 failed: 
+10:29:20 WARNING tgfarm.s1_sources.base collector gnews_extra_028 failed: 
+10:29:22 WARNING tgfarm.s1_sources.base collector gnews_extra_087 failed: 
+10:29:24 WARNING tgfarm.s1_sources.base collector gnews_extra_008 failed: 
+10:29:26 WARNING tgfarm.s1_sources.base collector gnews_extra_073 failed: 
+10:29:28 WARNING tgfarm.s1_sources.base collector gnews_extra_074 failed: 
+10:29:30 WARNING tgfarm.s1_sources.base collector gnews_extra_081 failed: 
+10:29:32 WARNING tgfarm.s1_sources.base collector gnews_extra_078 failed: 
+10:29:34 WARNING tgfarm.s1_sources.base collector gnews_extra_014 failed: 
+10:29:36 WARNING tgfarm.s1_sources.base collector gnews_extra_026 failed: 
+10:29:38 WARNING tgfarm.s1_sources.base collector gnews_extra_054 failed: 
+10:29:40 WARNING tgfarm.s1_sources.base collector gnews_extra_059 failed: 
+10:29:42 WARNING tgfarm.s1_sources.base collector gnews_extra_006 failed: 
+10:29:44 WARNING tgfarm.s1_sources.base collector gnews_extra_040 failed: 
+10:29:46 WARNING tgfarm.s1_sources.base collector gnews_extra_039 failed: 
+10:29:48 WARNING tgfarm.s1_sources.base collector gnews_extra_089 failed: 
+10:29:50 WARNING tgfarm.s1_sources.base collector gnews_extra_051 failed: 
+10:29:52 WARNING tgfarm.s1_sources.base collector gnews_extra_060 failed: 
+10:29:54 WARNING tgfarm.s1_sources.base collector gnews_extra_004 failed: 
+10:29:56 WARNING tgfarm.s1_sources.base collector gnews_extra_058 failed: 
+10:29:58 WARNING tgfarm.s1_sources.base collector gnews_extra_022 failed: 
+10:30:00 WARNING tgfarm.s1_sources.base collector gnews_extra_095 failed: 
+10:30:02 WARNING tgfarm.s1_sources.base collector gnews_extra_062 failed: 
+10:30:04 WARNING tgfarm.s1_sources.base collector gnews_extra_055 failed: 
+10:30:06 WARNING tgfarm.s1_sources.base collector gnews_extra_056 failed: 
+10:30:08 WARNING tgfarm.s1_sources.base collector gnews_extra_043 failed: 
+10:30:10 WARNING tgfarm.s1_sources.base collector gnews_extra_093 failed: 
+10:30:12 WARNING tgfarm.s1_sources.base collector gnews_extra_077 failed: 
+10:30:14 WARNING tgfarm.s1_sources.base collector gnews_extra_024 failed: 
+10:30:16 WARNING tgfarm.s1_sources.base collector gnews_extra_021 failed: 
+10:30:18 WARNING tgfarm.s1_sources.base collector gnews_extra_085 failed: 
+10:30:20 WARNING tgfarm.s1_sources.base collector gnews_extra_080 failed: 
+10:30:22 WARNING tgfarm.s1_sources.base collector gnews_extra_048 failed: 
+10:30:24 WARNING tgfarm.s1_sources.base collector gnews_extra_053 failed: 
+10:30:26 WARNING tgfarm.s1_sources.base collector gnews_extra_067 failed: 
+10:30:28 WARNING tgfarm.s1_sources.base collector gnews_extra_041 failed: 
+10:30:28 INFO    tgfarm.s1_sources      persisted 42 new items (index now 3813 vectors)
+10:30:29 INFO    tgfarm.core.run        stage s1_collect: 874 -> 42 in 244808ms
+10:30:29 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 244810ms
+10:30:30 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 6 in 1315ms
+10:30:34 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 38 in 4205ms
+10:30:35 INFO    tgfarm.core.run        stage s2_score: 0 -> 347 in 537ms
+10:30:35 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 6100ms
+10:30:35 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 7ms
+10:30:35 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:30:35 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 591de5b0e62c
+10:30:35 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 8ms
+10:30:35 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 5ms
+10:30:35 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:30:35 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 41e564eb6f11
+10:30:35 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 6ms
+10:30:35 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:30:35 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:30:35 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 95a5203034f1
+10:30:35 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 5ms
+10:30:35 INFO    tgfarm.core.run        stage s3_route: 1 -> 1 in 4ms
+10:30:35 WARNING tgfarm.llm.client      llm json failed (None), using offline fallback
+10:30:35 WARNING tgfarm.s4_generation   generation failed for zen_misc_ru: offline composer has no ru source for 4f3e89dcd5eb
+10:30:35 INFO    tgfarm.core.run        stage s4_generate: 1 -> 0 in 6ms
+10:30:35 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 86ms
+10:30:35 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+10:30:35 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+10:30:35 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+10:30:35 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 2ms
+10:30:35 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 5ms
+10:30:35 INFO    tgfarm.core.run        stage s9_crosspost: 15 -> 0 in 121ms
+10:30:35 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=36 failed=0
+10:30:35 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 123ms
+10:30:35 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 8 in 15ms
+10:30:35 INFO    tgfarm.s8_analytics    s8: 8 channel-days written, angles measured: ['news'], dzen: skipped
+10:30:35 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 16ms
+10:30:35 INFO    tgfarm.pipeline        cycle f4b7162779 finished in 251165ms errors=0

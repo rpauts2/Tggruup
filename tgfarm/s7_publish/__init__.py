@@ -1,0 +1,869 @@
+"""S7 — scheduling and publishing.
+
+Telegram publishing uses the Bot API only. An MTProto userbot is not needed for
+posting, is rate-limited far harder, and is the single fastest way to get an
+account banned — so the farm never uses one. Dzen is a primary platform: its
+articles are published through the web editor in a logged-in Chrome profile,
+not crossposted from Telegram and not through a public API.
+
+Slots are sampled from the measured hour/day distribution in config/slots.yaml
+rather than spread evenly, so the fleet lands on the hours the platform is busy.
+A per-hour fleet ceiling stops all channels firing in the same minute, which is
+the clearest tell of an automated network.
+"""
+
+from __future__ import annotations
+
+import random
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from sqlalchemy import select, update
+
+from tgfarm.config import get_config
+from tgfarm.core.errors import PublishError
+from tgfarm.core.logging import get_logger
+from tgfarm.core.ratelimit import RATE
+from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.settings import get_settings
+from tgfarm.core.text import truncate
+from tgfarm.db.models import Channel as ChannelRow
+from tgfarm.db.models import Post as PostRow
+from tgfarm.db.session import session_scope
+
+log = get_logger(__name__)
+
+TELEGRAM_TEXT_LIMIT = 4096
+DZEN_TEXT_LIMIT = 10_000
+# VK wall posts are capped around 16k characters; keep a safety margin.
+VK_TEXT_LIMIT = 15_000
+CAPTION_LIMIT = 1024
+MIN_SCHEDULE_LEAD_MIN = 8
+PLATFORM_TEXT_LIMITS = {
+    "telegram": TELEGRAM_TEXT_LIMIT,
+    "dzen": DZEN_TEXT_LIMIT,
+    "vk": VK_TEXT_LIMIT,
+}
+# A post left in `publishing` longer than this was interrupted (crash,
+# timeout, kill). It goes back to the queue instead of blocking forever.
+STUCK_PUBLISHING_MIN = 15
+
+
+# ------------------------------------------------------------------ scheduling
+def plan_slot(
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+    channel_id: str | None = None,
+) -> datetime:
+    """Sample the next publish time from the measured distribution.
+
+    Walks forward day by day until it finds an hour/day pair with non-zero
+    weight, then applies jitter. Weights are used as relative probabilities, so
+    the scale of the numbers in slots.yaml does not matter.
+    """
+    rng = rng or random.Random()
+    schedule = get_config().schedule
+    now = now or datetime.now(UTC)
+
+    hours = schedule.hours()
+    weights = [schedule.hour_probability(h) for h in hours]
+    if channel_id:
+        try:
+            from tgfarm.s12_learning import best_hours
+            learned = set(best_hours(channel_id) or [])
+        except Exception:
+            learned = set()
+        if learned:
+            weights = [
+                (w if w <= 0 else w * (2.0 if h in learned else 1.0))
+                for h, w in zip(hours, weights)
+            ]
+    if not hours or sum(weights) <= 0:
+        return (now + timedelta(hours=2)).replace(second=0, microsecond=0)
+
+    day_weights = [schedule.day_probability((now + timedelta(days=d)).weekday()) for d in range(9)]
+
+    for offset in range(9):
+        day = now + timedelta(days=offset)
+        if day_weights[offset] <= 0:
+            continue
+        hour = rng.choices(hours, weights=weights, k=1)[0]
+        jitter = rng.randint(schedule.jitter_min, schedule.jitter_max)
+        # jitter must not push the slot out of the chosen hour, or the tail
+        # spills into hours the distribution explicitly excludes
+        minute = rng.randint(0, max(0, 59 - jitter)) + jitter
+        candidate = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now + timedelta(minutes=MIN_SCHEDULE_LEAD_MIN):
+            continue
+        return candidate
+
+    # Same distribution, tomorrow — never fall back to an arbitrary hour, which
+    # would drop the post into the dead zone outside every configured window.
+    hour = rng.choices(hours, weights=weights, k=1)[0]
+    jitter = rng.randint(schedule.jitter_min, schedule.jitter_max)
+    minute = rng.randint(0, max(0, 59 - jitter)) + jitter
+    return (now + timedelta(days=1)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes; every comparison here is UTC."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _last_slot_for(session, channel_id: str) -> datetime | None:
+    """The latest time this channel already owns, published or queued."""
+    value = session.execute(
+        select(PostRow.scheduled_at)
+        .where(
+            PostRow.channel_id == channel_id,
+            PostRow.status.in_(("scheduled", "publishing", "published")),
+        )
+        .order_by(PostRow.scheduled_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return _as_utc(value)
+
+
+def _maybe_prime_slot(slot: datetime, rng: random.Random) -> datetime:
+    """Send a share of VK posts into the feed's prime hours.
+
+    Interval spacing wins consistency; prime-hour snapping tests reach. The
+    split is random per post, so variants compare the strategies honestly.
+    """
+    settings = get_settings()
+    hours = [int(h) for h in (settings.vk_prime_hours or "").split(",") if h.strip().isdigit()]
+    if not hours or rng.random() >= max(0.0, min(1.0, settings.vk_prime_share)):
+        return slot
+    target = min((h for h in hours), key=lambda h: (slot.hour - h) % 24)
+    candidate = slot.replace(hour=target, minute=rng.randint(0, 59), second=0, microsecond=0)
+    if candidate <= slot:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _inside_active_hours(slot: datetime, active_hours) -> datetime:
+    """Push a slot to the next allowed window. `null` means 24/7."""
+    if not active_hours:
+        return slot
+    try:
+        start, end = int(active_hours[0]), int(active_hours[1])
+    except (TypeError, ValueError, IndexError):
+        return slot
+    if start <= slot.hour < end:
+        return slot
+    target = slot if slot.hour < start else slot + timedelta(days=1)
+    return target.replace(hour=start, minute=0, second=0, microsecond=0)
+
+
+def _interval_slot(
+    now: datetime,
+    last: datetime | None,
+    cadence: dict,
+    rng: random.Random,
+    posts_per_day: int = 0,
+) -> datetime:
+    """Next slot = last one + a random gap inside the allowed window.
+
+    Continuous mode: the gap *is* the schedule. `posts_per_day` widens it so
+    the channel spreads its quota over 24 hours instead of burning it in the
+    first two hours: VK floods at ~50 wall posts a day, Dzen at one post per
+    ten minutes. Together the two ceilings land on a post every 5-10 minutes.
+    """
+    gap_min = max(30, int(cadence.get("min_gap_s", 300) or 300))
+    gap_max = max(gap_min, int(cadence.get("max_gap_s", 620) or gap_min))
+    if posts_per_day > 0:
+        average = 86_400 / posts_per_day
+        gap_min = max(gap_min, int(average * 0.9))
+        gap_max = max(gap_min + 1, int(average * 1.15))
+    gap = rng.randint(gap_min, gap_max)
+    base = now if last is None or last < now else last
+    return _inside_active_hours(base + timedelta(seconds=gap), cadence.get("active_hours"))
+
+
+def schedule_ready_posts(limit: int = 200) -> int:
+    """Assign a slot to every quality-passed post that has none.
+
+    Two modes come from config/slots.yaml: `interval` holds a 5-10 minute gap
+    between posts of one channel, `weights` samples the peak-hour table.
+    """
+    config = get_config()
+    settings = get_settings()
+    now = datetime.now(UTC)
+    scheduled = 0
+    if settings.approval_required:
+        # Human-in-the-loop mode: posts stay `gated` until approved from the
+        # panel. The pipeline keeps generating; only the automatic hand to the
+        # platform is held back.
+        with session_scope() as session:
+            waiting = len(
+                session.execute(
+                    select(PostRow.public_id).where(PostRow.status == "gated")
+                ).scalars().all()
+            )
+        log.info("s7: approval mode — %d posts wait for a human", waiting)
+        return 0
+    cadence = config.schedule.cadence or {}
+    interval_mode = str(cadence.get("mode") or "weights").lower() == "interval"
+    rng = random.Random()
+
+    with session_scope() as session:
+        posts = session.execute(
+            select(PostRow).where(
+                PostRow.status == "gated",
+                PostRow.scheduled_at.is_(None),
+            ).order_by(PostRow.created_at.asc()).limit(limit)
+        ).scalars().all()
+
+        per_hour: dict[datetime, int] = {}
+        capacity = max(1, schedule_capacity())
+        cursor: dict[str, datetime] = {}
+
+        for post in posts:
+            persona = config.persona(post.channel_id)
+            if persona is None or not persona.enabled:
+                continue
+
+            today_count = _posts_today(session, post.channel_id, now)
+            # Dzen is governed only by the publish-time gap (see publish_due);
+            # keep the per-day cap for the other platforms.
+            if getattr(persona, "platform", "telegram") != "dzen" and today_count >= persona.posts_per_day:
+                continue
+
+            channel = session.get(ChannelRow, post.channel_id)
+            platform = ((channel.platform if channel else None) or "telegram").lower()
+
+            if interval_mode:
+                last = cursor.get(post.channel_id) or _last_slot_for(session, post.channel_id)
+                slot = _interval_slot(now, last, cadence, rng, persona.posts_per_day)
+                if platform == "vk":
+                    slot = _maybe_prime_slot(slot, rng)
+                cursor[post.channel_id] = slot
+            else:
+                slot = plan_slot(now, channel_id=post.channel_id)
+                for _ in range(8):
+                    bucket = slot.replace(minute=0, second=0, microsecond=0)
+                    if per_hour.get(bucket, 0) < capacity:
+                        break
+                    slot = plan_slot(slot + timedelta(minutes=61), channel_id=post.channel_id)
+                per_hour[bucket] = per_hour.get(bucket, 0) + 1
+
+            if platform == "dzen":
+                # The Dzen editor is a browser, not an API: posts queue up and
+                # publish_due drains them one per DZEN_MIN_GAP_S.
+                post.scheduled_at = now
+            else:
+                post.scheduled_at = slot
+            post.status = "scheduled"
+            scheduled += 1
+
+    log.info("s7: scheduled %d posts (mode=%s)", scheduled, "interval" if interval_mode else "weights")
+    return scheduled
+
+
+def schedule_capacity() -> int:
+    return max(1, get_config().schedule.fleet_posts_per_hour)
+
+
+def _posts_today(session, channel_id: str, now: datetime) -> int:
+    midnight = datetime.combine(now.date(), datetime.min.time()).replace(tzinfo=UTC)
+    rows = session.execute(
+        select(PostRow).where(
+            PostRow.channel_id == channel_id,
+            PostRow.status.in_(("scheduled", "publishing", "published")),
+            PostRow.created_at >= midnight,
+        )
+    ).scalars().all()
+    return len(rows)
+
+
+# ------------------------------------------------------------------- assembly
+def assemble_text(post: PostRow, platform: str = "telegram") -> str:
+    """Re-render the stored fields into the final message for a platform.
+
+    Post body was capped at the gate; the sources block and hashtags are added
+    here so their length does not distort the quality measurement. Dzen carries
+    the hook as its article title, so the body copy must not repeat it.
+    """
+    parts = [] if platform == "dzen" else [post.hook.strip()]
+    parts.append(post.body.strip())
+    if post.sources:
+        lines = ["Источники:"]
+        for source in post.sources[:3]:
+            lines.append(f"— {source.get('title', '').strip()}")
+            lines.append(f"  {source.get('url', '').strip()}")
+        parts.append("\n".join(lines))
+    if post.cta:
+        parts.append(post.cta.strip())
+    if post.hashtags:
+        parts.append(" ".join(f"#{str(h).lstrip('#')}" for h in post.hashtags[:6]))
+    limit = PLATFORM_TEXT_LIMITS.get(platform, TELEGRAM_TEXT_LIMIT)
+    return truncate("\n\n".join(p for p in parts if p), limit)
+
+
+# ------------------------------------------------------------------ publishing
+class TelegramPublisher:
+    def __init__(self) -> None:
+        self._bot = None
+        self._settings = get_settings()
+
+    async def _ensure_bot(self):
+        if self._bot is not None:
+            return self._bot
+        if not self._settings.telegram_bot_token:
+            raise PublishError("TELEGRAM_BOT_TOKEN not set")
+        from aiogram import Bot
+
+        self._bot = Bot(token=self._settings.telegram_bot_token)
+        return self._bot
+
+    async def send_video(self, chat_id: int, text: str, video_path: str) -> int:
+        """Video first, caption on the message, remainder as a follow-up.
+
+        Bot API caps uploads at 50 MB and captions at 1024 chars, so the text is
+        split rather than silently truncated.
+        """
+        from aiogram.types import FSInputFile
+
+        await RATE.bot_api.take()
+        bot = await self._ensure_bot()
+        path = Path(video_path)
+        size_mb = path.stat().st_size / 1e6 if path.exists() else 0.0
+        if size_mb > 50:
+            raise PublishError(f"video {size_mb:.1f} MB exceeds the Bot API 50 MB limit")
+
+        video = FSInputFile(str(path), filename=path.name)
+        message = await bot.send_video(
+            chat_id=chat_id,
+            video=video,
+            caption=truncate(text, CAPTION_LIMIT),
+            supports_streaming=True,
+        )
+        if len(text) > CAPTION_LIMIT:
+            await bot.send_message(chat_id=chat_id, text=text[CAPTION_LIMIT:])
+        await bot.session.close()
+        return message.message_id
+
+    async def send(self, chat_id: int, text: str, media_path: str | None) -> int:
+        from aiogram.types import FSInputFile
+
+        await RATE.bot_api.take()
+        bot = await self._ensure_bot()
+
+        if media_path and Path(media_path).exists():
+            suffix = Path(media_path).suffix.lower()
+            if suffix in {".mp4", ".m4v", ".webm", ".mov", ".mkv"}:
+                return await self.send_video(chat_id, text, media_path)
+
+            photo = FSInputFile(media_path, filename=Path(media_path).name)
+            caption = truncate(text, CAPTION_LIMIT)
+            message = await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+            if len(text) > CAPTION_LIMIT:
+                await bot.send_message(chat_id=chat_id, text=text[CAPTION_LIMIT:])
+        else:
+            message = await bot.send_message(chat_id=chat_id, text=text)
+
+        await bot.session.close()
+        return message.message_id
+
+    async def health(self) -> dict:
+        settings = get_settings()
+        if not settings.telegram_bot_token:
+            return {"configured": False}
+        try:
+            bot = await self._ensure_bot()
+            me = await bot.get_me()
+            return {
+                "configured": True,
+                "username": me.username,
+                "can_post": not bool(me.can_join_groups is False and settings.channel_ids),
+                "channels": settings.channel_ids,
+            }
+        except Exception as exc:  # noqa: BLE001 - health must not raise
+            return {"configured": True, "error": str(exc)[:200]}
+
+
+PUBLISHER = TelegramPublisher()
+
+
+def _llm_recently_working(minutes: int = 90) -> bool:
+    """Did any of the recent drafts come from an online model?
+
+    Provider health flags park for an hour after a single 402/403, which used
+    to stall Dzen for an hour even though generation had recovered. The
+    provenance of actual drafts cannot lie: offline fallbacks stamp themselves.
+    """
+    from sqlalchemy import select
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow.generation_provider)
+            .where(PostRow.created_at >= cutoff)
+            .order_by(PostRow.created_at.desc())
+            .limit(5)
+        ).scalars().all()
+    if not rows:
+        return True  # nothing generated yet: do not block on a guess
+    return any(provider != "offline" for provider in rows)
+
+
+def _primary_vk_image(post_id: int) -> str | None:
+    """Cover on disk for the VK post; videos stay Telegram-only for now."""
+    from tgfarm.db.models import Media as MediaRow
+
+    with session_scope() as session:
+        row = session.execute(
+            select(MediaRow)
+            .where(MediaRow.post_id == post_id, MediaRow.is_primary.is_(True))
+            .order_by((MediaRow.kind == "video"), MediaRow.id)
+        ).scalars().first()
+        if row and row.path and Path(row.path).exists():
+            return row.path
+    return None
+
+
+def _vk_has_own_channel() -> bool:
+    """True when a VK persona publishes its own posts.
+
+    The Dzen->VK mirror exists for a farm that only has a Dzen channel. With a
+    dedicated VK channel it would double-post every story, so the mirror is
+    skipped instead of guessing.
+    """
+    return any(p.platform == "vk" and p.enabled for p in get_config().personas)
+
+
+async def _publish_vk(post_id: int, text: str) -> dict:
+    """Publish one post to the VK community wall via the official API."""
+    from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
+    from tgfarm.s9_growth.adapters import VkAdapter, log_result
+
+    with session_scope() as session:
+        post = session.get(PostRow, post_id)
+        if post is None:
+            raise PublishError("post disappeared")
+        public_id = post.public_id
+        title = (post.hook or "").strip()
+
+    settings = get_settings()
+    if not settings.live:
+        result = CrosspostResult(platform="vk", status="dry_run", remote_id=f"dry-vk-{post_id}")
+        log_result(public_id, result)
+        log.info("[dry-run] -> vk | %s", truncate(title, 90))
+        return {"ok": True, "message_id": None, "remote_id": result.remote_id}
+
+    adapter = VkAdapter()
+    if not adapter.configured():
+        raise PublishError("VK_ACCESS_TOKEN / VK_GROUP_ID not set")
+
+    # `text` is already assembled by assemble_text(post, "vk"): hook, body,
+    # sources and hashtags. Re-building a payload from the post would duplicate
+    # the sources block.
+    image_path = await to_thread(_primary_vk_image, post_id)
+    payload = CrosspostPayload(
+        platform="vk",
+        title=title,
+        text=text,
+        meta={"image_path": image_path} if image_path else {},
+    )
+    result = await adapter.publish(payload)
+    await to_thread(log_result, public_id, result)
+    if result.status != "posted":
+        raise PublishError(f"vk: {result.error or result.status}")
+    log.info("vk published: %s", result.url or result.remote_id)
+    return {"ok": True, "message_id": None, "remote_id": result.remote_id}
+
+
+async def _publish_dzen(
+    post_id: int,
+    text: str,
+    cover_path: str | None = None,
+    inline_image: str | None = None,
+    inline_caption: str | None = None,
+    inline_images: list[tuple[str, str]] | None = None,
+) -> dict:
+    """Publish one article through the Dzen web editor.
+
+    Dzen has no public publishing API, so this is browser automation in the
+    operator's logged-in profile, not an HTTP adapter.
+    """
+    from tgfarm.core.schemas import CrosspostResult
+    from tgfarm.dzen_web import DzenWebPublisher
+    from tgfarm.s9_growth.adapters import log_result
+
+    with session_scope() as session:
+        post = session.get(PostRow, post_id)
+        if post is None:
+            raise PublishError("post disappeared")
+        public_id = post.public_id
+        title = (post.hook or "").strip()
+
+    settings = get_settings()
+    if not settings.live:
+        result = CrosspostResult(
+            platform="dzen",
+            status="dry_run",
+            remote_id=f"dry-{post_id}",
+        )
+        log_result(public_id, result)
+        log.info(
+            "[dry-run] -> dzen | %s | inline: %s",
+            truncate(title, 90),
+            inline_images if inline_images is not None else (inline_image or "none"),
+        )
+        return {"ok": True, "message_id": None, "remote_id": result.remote_id}
+
+    if inline_images is None:
+        inline_images = [(inline_image, inline_caption)] if inline_image else []
+    inline_images = [
+        (str(path), caption)
+        for path, caption in (inline_images or [])
+        if path
+    ]
+
+    # Every Dzen publication must carry at least one image (lead photo or cover).
+    if not (inline_images or cover_path):
+        raise PublishError("dzen: publication without image is forbidden")
+
+    published = await DzenWebPublisher().publish(
+        title, text, cover_path, inline_images=inline_images,
+        inline_image=inline_images[0][0] if inline_images else None,
+        inline_caption=inline_images[0][1] if inline_images else None,
+    )
+    result = CrosspostResult(
+        platform="dzen",
+        status="posted",
+        remote_id=published.remote_id,
+        url=published.url,
+    )
+    log_result(public_id, result)
+    log.info("dzen published: %s", published.url or published.remote_id)
+
+    # Mirror a Dzen post to VK only when VK has no channel of its own.
+    if _vk_has_own_channel():
+        return {"ok": True, "message_id": None, "remote_id": result.remote_id}
+
+    try:
+        from tgfarm.core.schemas import CrosspostResult as _CR
+        from tgfarm.s9_growth import _load_post
+        from tgfarm.s9_growth.adapters import VkAdapter, build_payload
+        from tgfarm.s9_growth.adapters import log_result as _log_result
+
+        vk_adapter = VkAdapter()
+        if vk_adapter.configured():
+            post_obj = await to_thread(_load_post, post_id)
+            if post_obj is not None:
+                payload = build_payload(post_obj)
+                payload.platform = "vk"
+                if settings.live:
+                    vk_result = await vk_adapter.publish(payload)
+                else:
+                    vk_result = _CR(platform="vk", status="dry_run", remote_id=f"dry-vk-{post_id}")
+                await to_thread(_log_result, public_id, vk_result)
+                log.info("vk mirror from dzen: %s", vk_result.status)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("vk mirror from dzen failed: %s", exc)
+
+    return {"ok": True, "message_id": None, "remote_id": result.remote_id}
+
+
+def _claim_post(post_id: int) -> bool:
+    """Take a post out of the queue atomically.
+
+    The cycle and the 5-minute publish tick overlap on purpose, so two
+    coroutines can see the same `scheduled` row. A conditional UPDATE is the
+    lock: only one of them moves the row to `publishing`, the other skips it.
+    """
+    with session_scope() as session:
+        result = session.execute(
+            update(PostRow)
+            .where(PostRow.id == post_id, PostRow.status == "scheduled")
+            .values(
+                status="publishing",
+                attempts=PostRow.attempts + 1,
+                # the claim timestamp is when publishing *starts*: the stuck
+                # detector measures from here, not from queue time, or a slow
+                # browser publish gets murdered mid-flight
+                scheduled_at=datetime.now(UTC),
+            )
+        )
+        return result.rowcount == 1
+
+
+def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
+    """Return posts orphaned in `publishing` to the queue.
+
+    A killed process leaves a row in `publishing` forever: it is invisible to
+    due_posts and no error is ever reported. Anything older than the window is
+    not in flight any more.
+    """
+    cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
+    with session_scope() as session:
+        result = session.execute(
+            update(PostRow)
+            .where(PostRow.status == "publishing", PostRow.scheduled_at <= cutoff)
+            .values(
+                status="scheduled",
+                scheduled_at=datetime.now(UTC),
+                publish_error=f"requeued after {minutes} min in publishing",
+            )
+        )
+        return result.rowcount or 0
+
+
+async def _publish_one(
+    post_id: int,
+    target: int | str,
+    text: str,
+    media: str | None,
+    platform: str = "telegram",
+    inline_media: tuple[str, str] | None = None,
+) -> dict:
+    with session_scope() as session:
+        post = session.get(PostRow, post_id)
+        if post is None:
+            return {"ok": False, "error": "post disappeared"}
+        if post.status == "published":
+            return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
+    if not _claim_post(post_id):
+        return {"ok": True, "skipped": True, "reason": "already claimed"}
+
+    settings = get_settings()
+    message_id = None
+    try:
+        if platform == "dzen":
+            inline_images = inline_media
+            if isinstance(inline_media, tuple):
+                inline_images = [inline_media] if inline_media else None
+            outcome = await _publish_dzen(
+                post_id,
+                text,
+                media,
+                inline_images=inline_images,
+            )
+            message_id = outcome.get("message_id")
+        elif platform == "vk":
+            outcome = await _publish_vk(post_id, text)
+            message_id = outcome.get("message_id")
+        elif settings.live and settings.telegram_bot_token:
+            message_id = await PUBLISHER.send(int(target), text, media)
+        else:
+            log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
+    except Exception as exc:  # noqa: BLE001 - retry later
+        retry_min = 5
+        if platform == "dzen":
+            from tgfarm.dzen_web import DzenCaptcha, DzenNotLoggedIn
+
+            if isinstance(exc, (DzenNotLoggedIn, DzenCaptcha)):
+                retry_min = 60
+        error_text = str(exc)
+        # Transport failures (DNS down, timeouts) back off exponentially: a
+        # network outage must not hammer the API every five minutes for hours.
+        transport = any(
+            marker in error_text
+            for marker in ("getaddrinfo", "timed out", "Network is unreachable", "connection reset")
+        )
+        with session_scope() as session:
+            post = session.get(PostRow, post_id)
+            if post:
+                if transport:
+                    retry_min = min(360, 10 * 2 ** min(max(1, post.attempts) - 1, 5))
+                post.status = "scheduled"
+                post.publish_error = error_text[:400]
+                post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
+        log.warning(
+            "publish failed for %s (%s): %s (retry in %s min)",
+            post_id, platform, exc, retry_min,
+        )
+        return {"ok": False, "error": error_text}
+
+    with session_scope() as session:
+        post = session.get(PostRow, post_id)
+        if post:
+            post.status = "published"
+            post.published_at = datetime.now(UTC)
+            post.tg_message_id = message_id
+            if platform == "telegram":
+                post.tg_chat_id = int(target)
+            post.publish_error = None
+
+    return {"ok": True, "message_id": message_id, "post_id": post_id}
+
+
+def due_posts(limit: int = 20) -> list[tuple[int, str, int | str, str]]:
+    now = datetime.now(UTC)
+    out: list[tuple[int, str, int | str, str]] = []
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow)
+            .where(PostRow.status == "scheduled", PostRow.scheduled_at <= now)
+            .order_by(PostRow.scheduled_at.asc())
+            .limit(limit)
+        ).scalars().all()
+        for row in rows:
+            channel = session.get(ChannelRow, row.channel_id)
+            platform = ((channel.platform if channel else None) or "telegram").lower()
+            if platform == "dzen":
+                target: int | str = channel.id if channel else "dzen"
+                out.append((row.id, assemble_text(row, platform), target, platform))
+                continue
+
+            if platform == "vk":
+                out.append((row.id, assemble_text(row, "vk"), "vk", platform))
+                continue
+
+            chat_id = channel.tg_chat_id if channel else None
+            if chat_id is None:
+                settings = get_settings()
+                chat_id = settings.channel_ids[0] if settings.channel_ids else -1
+            out.append((row.id, assemble_text(row), int(chat_id), platform))
+    return out
+
+
+def _media_for(post_ids: list[int]) -> dict[int, str]:
+    """Primary media per post. Video wins over cover art when both exist — a post
+    with footage should not open with a still frame."""
+    from tgfarm.db.models import Media as MediaRow
+
+    if not post_ids:
+        return {}
+    with session_scope() as session:
+        rows = session.execute(
+            select(MediaRow).where(
+                MediaRow.post_id.in_(post_ids), MediaRow.is_primary.is_(True)
+            )
+        ).scalars().all()
+        chosen: dict[int, str] = {}
+        for row in rows:
+            if row.kind == "video":
+                chosen[row.post_id] = row.path
+            elif row.post_id not in chosen:
+                chosen[row.post_id] = row.path
+        return chosen
+
+
+def _inline_media_for(post_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
+    """Lead photos stored for inline Dzen use, independent of the primary asset."""
+    from tgfarm.db.models import Media as MediaRow
+
+    if not post_ids:
+        return {}
+    with session_scope() as session:
+        rows = session.execute(
+            select(MediaRow).where(
+                MediaRow.post_id.in_(post_ids), MediaRow.kind == "article_image"
+            )
+        ).scalars().all()
+        chosen: dict[int, list[tuple[str, str]]] = {}
+        for row in rows:
+            if row.path and Path(row.path).exists():
+                chosen.setdefault(row.post_id, []).append(
+                    (row.path, row.caption or "")
+                )
+        return chosen
+
+
+def _last_dzen_publish_time() -> datetime | None:
+    with session_scope() as session:
+        value = session.execute(
+            select(PostRow.published_at)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(ChannelRow.platform == "dzen", PostRow.status == "published")
+            .order_by(PostRow.published_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    if value is not None and getattr(value, "tzinfo", None) is None:
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
+async def publish_due(limit: int = 1000) -> dict[str, int]:
+    get_settings()
+    with StageTimer("s7_publish") as timer:
+        requeued = await to_thread(_requeue_stuck)
+        if requeued:
+            log.warning("s7: requeued %d posts stuck in publishing", requeued)
+        pending = await to_thread(due_posts, limit)
+        if not pending:
+            timer.items_out = 0
+            return {"published": 0, "failed": 0}
+
+        post_ids = [p[0] for p in pending]
+        media = await to_thread(_media_for, post_ids)
+        inline = await to_thread(_inline_media_for, post_ids)
+        sent = failed = 0
+        errors: list[str] = []
+        last_dzen = getattr(publish_due, "_last_dzen", None)
+        db_last = await to_thread(_last_dzen_publish_time)
+        if db_last is not None and (last_dzen is None or db_last > last_dzen):
+            last_dzen = db_last
+        publish_due._last_dzen = last_dzen
+        dzen_gap_s = max(0, get_settings().dzen_min_gap_s)
+        settings_now = get_settings()
+        skipped_llm = 0
+        for post_id, text, target, platform in pending:
+            if platform == "dzen":
+                now_dt = datetime.now(UTC)
+                if last_dzen is not None and (now_dt - last_dzen).total_seconds() < dzen_gap_s:
+                    continue
+                if settings_now.dzen_requires_llm and not await to_thread(
+                _llm_recently_working
+            ):
+                    # Template text on Dzen is the fastest route to demotion:
+                    # the post waits while the last drafts are still coming
+                    # from an online model. A health-flag cache lies in both
+                    # directions — the actual output is the honest signal.
+                    skipped_llm += 1
+                    continue
+            result = await _publish_one(
+                post_id,
+                target,
+                text,
+                media.get(post_id),
+                platform,
+                inline.get(post_id),
+            )
+            if result.get("ok"):
+                sent += 1
+                if platform == "dzen":
+                    last_dzen = datetime.now(UTC)
+                    publish_due._last_dzen = last_dzen
+            else:
+                failed += 1
+                if result.get("error"):
+                    errors.append(str(result.get("error")))
+
+        timer.items_in = len(pending)
+        timer.items_out = sent
+        return {
+            "published": sent,
+            "failed": failed,
+            "errors": errors,
+            **({"skipped_llm": skipped_llm} if skipped_llm else {}),
+        }
+
+
+async def run() -> dict[str, int]:
+    scheduled = await to_thread(schedule_ready_posts)
+    published = await publish_due()
+    return {"scheduled": scheduled, **published}
+
+
+def unpublish(posts_public_ids: list[str]) -> int:
+    """Admin action: pull a post back to `scheduled` (never deletes remotely)."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow).where(PostRow.public_id.in_(posts_public_ids))
+        ).scalars().all()
+        for row in rows:
+            row.status = "scheduled"
+            row.scheduled_at = datetime.now(UTC)
+        return len(rows)
+
+
+def new_run_id() -> str:
+    return uuid.uuid4().hex[:10]

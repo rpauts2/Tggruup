@@ -1,0 +1,67 @@
+# =============================================================================
+# Publishing cadence, derived from measured Telegram distribution data
+# (1 090 471 posts / week, list.tg + TGScope census 2026).
+#
+# Hour weights are share-of-daily-posts converted to local time (MSK = UTC+3).
+# The scheduler samples slots proportional to these weights instead of using a
+# flat spread, so the farm lands on the same hours the whole platform is busy.
+# =============================================================================
+
+timezone: Europe/Moscow
+
+# share of all Telegram posts published in each local hour (normalised later)
+hour_weights:
+  "6":  0.10   # 09 MSK — morning peak
+  "7":  0.18   # 10
+  "8":  0.26   # 11
+  "9":  0.30   # 12
+  "10": 0.33   # 13
+  "11": 0.35   # 14
+  "12": 0.40   # 15
+  "13": 0.48   # 16
+  "14": 0.62   # 17  ← global peak hour
+  "15": 0.80   # 18  ← absolute maximum
+  "16": 0.58   # 19
+  "17": 0.36   # 20
+  "18": 0.24   # 21
+  "19": 0.12   # 22
+  "20": 0.05   # 23
+  "21": 0.03
+  "22": 0.02
+  # 23:00–05:00 local = dead zone, never scheduled
+
+# share of weekly posts by weekday
+day_weights:
+  mon: 0.157
+  tue: 0.176
+  wed: 0.168
+  thu: 0.171
+  fri: 0.169
+  sat: 0.142
+  sun: 0.136
+
+jitter:
+  # minutes of random offset around the nominal slot — spreads the fleet so the
+  # channels never look synchronised
+  min: 8
+  max: 40
+
+# frequency floor per channel size band (median posts/day measured in the wild)
+cadence:
+  under_1k: 1
+  one_to_10k: 2
+  ten_to_100k: 3
+  over_100k: 3
+
+# how many posts go out across the whole fleet within one hour — a soft ceiling
+# that keeps the fleet from looking co-ordinated
+fleet_posts_per_hour: 6
+
+# crosspost behaviour
+crosspost:
+  enabled: true
+  # fraction of posts that go to external platforms
+  sample_rate: 0.85
+  platforms: [max, vk, x]
+  # stagger the external copy by this many minutes after the TG post
+  delay_min: 25

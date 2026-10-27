@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tgfarm — панель управления фермой</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌾</text></svg>">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>tgfarm</h1>
+      <p id="brand-sub">автономная ферма каналов</p>
+    </div>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
+    <button class="tab" data-view="trends" role="tab">Тренды</button>
+    <button class="tab" data-view="posts" role="tab">Посты</button>
+    <button class="tab" data-view="channels" role="tab">Каналы</button>
+    <button class="tab" data-view="sources" role="tab">Источники</button>
+    <button class="tab" data-view="runs" role="tab">Прогоны</button>
+  </nav>
+
+  <div class="topbar-right">
+    <span class="pill" id="mode-pill">—</span>
+    <span class="pill pill-quiet" id="clock">—</span>
+    <span class="pill" id="farm-pill">Ферма: —</span>
+    <button class="btn btn-primary" id="run-cycle">
+      <span class="spinner" aria-hidden="true"></span><span>Запустить цикл</span>
+    </button>
+  </div>
+</header>
+
+<main>
+  <!-- ============================================================ OVERVIEW -->
+  <section class="view is-active" data-view="overview">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Эффективность</h2>
+          <span class="card-sub">последние <b id="report-days">7</b> дней</span>
+        </header>
+        <div id="report-chart" class="chart"></div>
+        <div id="report-breakdown" class="kv"></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Конвейер</h2>
+          <span class="card-sub">последние прогоны</span>
+        </header>
+        <div id="pipeline-visual" class="pipeline"></div>
+      </article>
+    </div>
+
+    <div class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Горячие темы</h2>
+          <button class="btn btn-ghost btn-sm" data-goto="trends">Все</button>
+        </header>
+        <div id="overview-trends" class="list"></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2 id="overview-queue-title">Ближайшие публикации</h2>
+          <button class="btn btn-ghost btn-sm" data-goto="posts">Все</button>
+        </header>
+        <div id="overview-queue" class="list"></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============================================================== TRENDS -->
+  <section class="view" data-view="trends">
+    <article class="card">
+      <header class="card-head">
+        <h2>Тренды</h2>
+        <span class="card-sub">кластеры с heat выше порога</span>
+      </header>
+      <div id="trends-list" class="list list-rich"></div>
+    </article>
+  </section>
+
+  <!-- =============================================================== POSTS -->
+  <section class="view" data-view="posts">
+    <div class="toolbar">
+      <div class="segmented" id="post-filters">
+        <button class="is-active" data-status="">все</button>
+        <button data-status="gated">прошли</button>
+        <button data-status="scheduled">в очереди</button>
+        <button data-status="published">опубликованы</button>
+        <button data-status="rejected">отклонены</button>
+      </div>
+    </div>
+    <div id="posts-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================ CHANNELS -->
+  <section class="view" data-view="channels">
+    <div id="channels-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================= SOURCES -->
+  <section class="view" data-view="sources">
+    <article class="card">
+      <header class="card-head">
+        <h2>Источники</h2>
+        <span class="card-sub">здоровье сборщиков</span>
+      </header>
+      <div id="sources-list" class="list"></div>
+    </article>
+  </section>
+
+  <!-- ================================================================= RUNS -->
+  <section class="view" data-view="runs">
+    <article class="card">
+      <header class="card-head">
+        <h2>Прогоны конвейера</h2>
+        <span class="card-sub">журнал стадий</span>
+      </header>
+      <div id="runs-list" class="list"></div>
+    </article>
+  </section>
+</main>
+
+<div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-inner" id="drawer-inner"></div>
+</aside>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

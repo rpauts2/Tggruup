@@ -1,0 +1,231 @@
+# =============================================================================
+# Channel personas. One entry = one publishing channel (Telegram or Dzen).
+# Consumed by: S3 router (voice), S4 generation, S5 quality gates,
+#              S6 visual renderer (palette), S7 scheduler (cadence).
+# =============================================================================
+
+defaults: &defaults
+  platform: telegram
+  catch_all: false
+  language: ru
+  timezone: Europe/Moscow
+  posts_per_day: 3
+  enabled: false
+  min_chars: 150
+  max_chars: 600
+  emoji_policy: max_1
+  cta_policy: never          # never | sometimes | always
+  always_cite_sources: true
+  max_sources: 3
+  angle_weights:
+    news: 0.35
+    analysis: 0.25
+    why_it_matters: 0.15
+    checklist: 0.10
+    comparison: 0.08
+    history: 0.07
+
+channels:
+  # ---------------------------------------------------------------- 1. AI / TECH
+  - <<: *defaults
+    id: ai_tech_ru
+    title: "AI & Tech — разбор без хайпа"
+    niche: tech
+    language: ru
+    posts_per_day: 3
+    audience: "разработчики, продакт-менеджеры, техлидеры, 25-45"
+    tone: [factual, no_hype, specific, neutral]
+    style_notes:
+      - "Первое предложение — конкретный факт или противоречие, не вопрос-кликбейт."
+      - "Никаких 'революция', 'взрыв', 'уникальный', '-game changer'."
+      - "Если есть цифра — приводить с единицами измерения и источником."
+    banned_words: [революция, взрывной, уникальный, прорыв, game changer, must have,
+                   жмите, срочно, только сегодня, угадайте, 100%, гарантированно]
+    hashtags: [AI, Технологии, Разработка]
+    palette: {bg: "#0B1020", fg: "#E8ECF8", accent: "#4C8DFF", muted: "#6B7699"}
+    cta: null
+
+  # ------------------------------------------------------- 2. BUSINESS / MONEY
+  - <<: *defaults
+    id: business_ru
+    title: "Бизнес и деньги — практика"
+    niche: business
+    posts_per_day: 3
+    audience: "предприниматели, финансисты, руководители, 30-55"
+    tone: [practical, numbers, sober]
+    style_notes:
+      - "Каждый пост — вывод, который можно применить завтра."
+      - "Любая цифра сопровождается периодом и источником."
+    banned_words: [гарантированно, пассивный доход, легкие деньги, 100%, крипто,
+                   казино, брокер рекомендует]
+    hashtags: [Бизнес, Финансы, Экономика]
+    palette: {bg: "#101410", fg: "#EAF3EA", accent: "#3FBF6F", muted: "#6C806F"}
+    cta: null
+
+  # --------------------------------------------------------- 3. CRYPTO ANALYSIS
+  - <<: *defaults
+    id: crypto_analysis_ru
+    title: "Крипто: аналитика без сигналов"
+    niche: crypto
+    posts_per_day: 4
+    max_chars: 700
+    audience: "крипто-аналитики, трейдеры, инвесторы, 25-45"
+    tone: [analytical, cautious, numbers]
+    style_notes:
+      - "Только разбор данных. Никогда не дать торговых сигналов и обещаний доходности."
+      - "Обязательный дисклеймер раз в N постов."
+    banned_words: [икс, x100, пампика, moon, ламба, влей, сильно вырастет,
+                   гарантированно, никогда не потеряешь]
+    hashtags: [Крипто, Аналитика, Рынки]
+    palette: {bg: "#14100A", fg: "#F5EFE2", accent: "#F5A524", muted: "#8A7E68"}
+    disclaimer: "Не является инвестиционной рекомендацией."
+    cta: null
+
+  # ---------------------------------------------------- 4. NEURO / SOFTWARE DIR
+  - <<: *defaults
+    id: neuro_saas_ru
+    title: "Нейросети и софт — что попробовать"
+    niche: software
+    posts_per_day: 3
+    audience: "предприниматели, дизайнеры, контент-мейкеры, 22-40"
+    tone: [practical, friendly, concrete]
+    style_notes:
+      - "Формат поста: что это, кому полезно, ограничения, цена."
+      - "Никаких обещаний 'заменит всех'."
+    banned_words: [революция, убьёт всех, must have, панацея, магия]
+    hashtags: [Нейросети, Софт, Инструменты]
+    palette: {bg: "#0F0F1A", fg: "#EFEAF8", accent: "#9B5CF6", muted: "#756A92"}
+    cta: null
+
+  # ------------------------------------------------------------- 5. SCIENCE
+  - <<: *defaults
+    id: science_ru
+    title: "Наука — коротко и по делу"
+    niche: science
+    posts_per_day: 2
+    min_chars: 350
+    max_chars: 1100
+    audience: "образованные читатели, преподаватели, исследователи, 30-60"
+    tone: [explaining, precise, no_sensationalism]
+    style_notes:
+      - "Обязательно: что показало исследование, какой метод, какие ограничения."
+      - "Запрещено переносить выводы на человека без оговорки."
+    banned_words: [ученые доказали, шок, сенсация, прорыв, перевернет медицину, чудо]
+    hashtags: [Наука, Исследования]
+    palette: {bg: "#0A1220", fg: "#E6EEF7", accent: "#38BDF8", muted: "#6B7C93"}
+    cta: null
+
+  # -------------------------------------------------------------- 6. HEALTH
+  - <<: *defaults
+    id: health_evidence_ru
+    title: "Здоровье: только доказательства"
+    niche: health
+    posts_per_day: 2
+    min_chars: 300
+    max_chars: 800
+    audience: "люди, следящие за здоровьем, 30-60"
+    tone: [careful, evidence_only]
+    style_notes:
+      - "Только пересказ опубликованных исследований и официальных рекомендаций."
+      - "НИКОГДА не давать индивидуальных назначений, дозировок, диагнозов."
+      - "Каждый пост обязан содержать оговорку о необходимости консультации врача."
+    banned_words: [вылечит, избавит, гарантированно поможет, без побочек, безопасно,
+                   принимайте, дозировка, диагноз, лечит, заменяет лечение]
+    hashtags: [Здоровье, ДоказательнаяМедицина]
+    palette: {bg: "#F7F9F8", fg: "#12211A", accent: "#10B981", muted: "#6B7F75"}
+    disclaimer: "Материал носит справочный характер. Обратитесь к врачу."
+    cta: null
+
+  # ------------------------------------------------------------- 7. LOCAL CITY
+  - <<: *defaults
+    id: city_local_ru
+    title: "<ГОРОД> — что важно сегодня"
+    niche: local
+    posts_per_day: 5
+    max_chars: 500
+    audience: "жители города, 25-55"
+    tone: [local, factual, practical]
+    style_notes:
+      - "Только то, что влияет на жизнь жителей: пробки, отключения, события, открытия."
+      - "Приоритет — срочность и польза. Общие новости страны — только если бьют по городу."
+    banned_words: [срочно, шок, не поверите, смотрите все, репост]
+    hashtags: ["Город"]
+    palette: {bg: "#1A1206", fg: "#F6EEE0", accent: "#F97316", muted: "#8F7C63"}
+    city: ""            # set me -> fills {{CITY}} in sources.yaml
+    cta: null
+
+  # ------------------------------------------------------------ 8. UZBEKISTAN
+  - <<: *defaults
+    id: tech_uz
+    title: "Texnologiya — yangiliklar"
+    niche: tech
+    language: uz
+    timezone: Asia/Tashkent
+    posts_per_day: 3
+    audience: "O'zbekiston IT jamoyati, 20-45"
+    tone: [factual, neutral, short]
+    style_notes:
+      - "O'zbek tilida, oddiy tilda. Ruscha terminlar qisqartirilgan holda."
+    banned_words: [revolyutsiya, portlash, 100%, kafolat]
+    hashtags: [Texnologiya, IT, Yangiliklar]
+    palette: {bg: "#07131F", fg: "#E6F2FB", accent: "#22C55E", muted: "#6C8399"}
+    cta: null
+
+  # --------------------------------------------------- 9. LONG-FORM DEEP DIVE
+  # The only channel whose length budget reaches the `article` format. Every
+  # other persona caps below 1200 characters, so S10 demotes their clusters to
+  # `news`/`analysis` instead of failing the length gate on a long draft.
+  - <<: *defaults
+    id: tech_deep_ru
+    title: "Разборы: что стоит за новостью"
+    niche: tech
+    posts_per_day: 1
+    min_chars: 800
+    max_chars: 2500
+    audience: "инженеры, аналитики, руководители, 30-55"
+    tone: [analytical, structured, no_hype]
+    style_notes:
+      - "Пять частей: лид, что произошло, почему это важно, что дальше, источники."
+      - "Каждое утверждение со ссылкой. Ни одного факта без источника."
+      - "Не пересказывать статью целиком: задача — объяснить смысл."
+    banned_words: [революция, прорыв, шок, невероятно, все уже знают, must have,
+                   переворот, взрывной рост]
+    hashtags: [Разборы, Технологии]
+    palette: {bg: "#0B1020", fg: "#E8EEF9", accent: "#7C5CFF", muted: "#6F7C99"}
+    cta: null
+
+  # ---------------------------------------------------------- 10. DZEN DIGEST
+  # The catch-all channel: every cluster is routed here, regardless of niche.
+  # Dzen is a primary publishing platform, not a crosspost target, so its posts
+  # are generated directly by S4 instead of being copied from Telegram.
+  - <<: *defaults
+    id: zen_misc_ru
+    title: "Всякая всячина"
+    niche: general
+    platform: dzen
+    catch_all: true
+    enabled: true
+    posts_per_day: 16
+    min_chars: 1000
+    max_chars: 3000
+    audience: "читатели Дзена, которым интересно всё понемногу, 25-60"
+    tone: [conversational, curious, factual, professional, light_humor]
+    style_notes:
+      - "Бери только действительно интересные и полезные темы: технологии, деньги, наука, город, здоровье."
+      - "Статья должна быть профессиональной, информативной и структурированной: заголовок-факт, 4-6 абзацев по 2-4 предложения, вывод с источниками."
+      - "Добавляй контекст и объясняй, почему это важно читателю; не пересказывай источник дословно."
+      - "Допустим лёгкий уместный юмор и живая интонация, но без кликбейта, шока и рекламных превосходных степеней."
+      - "Каждая цифра с единицами измерения и источником; никаких выдуманных фактов."
+      - "Заголовок — конкретный, без кликбейта и обещаний."
+    banned_words: [шок, сенсация, не поверите, только сегодня, гарантированно, 100%]
+    hashtags: [Дзен, Обзор]
+    angle_weights:
+        news: 0.25
+        analysis: 0.20
+        why_it_matters: 0.15
+        checklist: 0.10
+        comparison: 0.10
+        history: 0.05
+        listicle: 0.15
+    palette: {bg: "#101014", fg: "#F2F2F5", accent: "#FFCC00", muted: "#77777F"}
+    cta: null

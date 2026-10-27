@@ -1,0 +1,31 @@
+05:25:49 INFO    tgfarm.db.bootstrap    schema ready: 13 tables
+05:25:49 INFO    tgfarm.config          config loaded: 10 channels, 251 sources, 17 slot hours
+05:25:49 INFO    tgfarm.db.bootstrap    channels seeded: 10
+05:25:50 INFO    tgfarm.db.bootstrap    sources seeded: 251
+05:25:50 INFO    tgfarm.s1_sources      s1: no source due yet
+05:25:50 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 4ms
+05:25:50 INFO    tgfarm.core.run        stage s1_collect: 0 -> 0 in 5ms
+05:25:51 INFO    tgfarm.core.run        stage s2_dedup: 0 -> 0 in 821ms
+05:25:52 INFO    tgfarm.core.run        stage s2_cluster: 0 -> 0 in 980ms
+05:25:52 INFO    tgfarm.core.run        stage s2_score: 0 -> 326 in 363ms
+05:25:52 INFO    tgfarm.core.run        stage s2_trends: 0 -> 0 in 2252ms
+05:25:52 INFO    tgfarm.core.run        stage s3_route: 1 -> 0 in 44ms
+05:25:52 INFO    tgfarm.core.run        stage s3_route: 1 -> 0 in 60ms
+05:25:52 INFO    tgfarm.core.run        stage s4_generate: 0 -> 0 in 127ms
+05:25:52 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+05:25:52 INFO    tgfarm.core.run        stage s5_quality: 0 -> 0 in 1ms
+05:25:52 INFO    tgfarm.s7_publish      s7: scheduled 0 posts
+05:25:56 INFO    tgfarm.dzen_web        dzen: публикация как post (467 симв.)
+05:27:12 INFO    tgfarm.s7_publish      dzen published: None
+05:27:12 INFO    tgfarm.s7_publish      vk mirror from dzen: failed
+05:27:12 INFO    tgfarm.core.run        stage s7_publish: 112 -> 1 in 79689ms
+05:27:12 INFO    tgfarm.core.run        stage s7_publish: 0 -> 0 in 79691ms
+05:27:12 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 1ms
+05:27:12 INFO    tgfarm.s9_growth       s9: crosspost posted=0 skipped=0 failed=0
+05:27:12 INFO    tgfarm.core.run        stage s9_crosspost: 0 -> 0 in 2ms
+05:27:12 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 9 in 13ms
+05:27:12 INFO    tgfarm.s8_analytics    s8: 9 channel-days written, angles measured: ['news'], dzen: {'skipped': True, 'reason': 'interval', 'age_min': 27.0}
+05:27:12 INFO    tgfarm.core.run        stage s8_analytics: 0 -> 0 in 13ms
+05:27:12 INFO    tgfarm.s12_learning    s12: 0 lessons updated across 1 channels
+05:27:12 INFO    tgfarm.core.run        stage s12_learning: 0 -> 0 in 47ms
+05:27:12 INFO    tgfarm.pipeline        cycle 044f70887d finished in 82170ms errors=0

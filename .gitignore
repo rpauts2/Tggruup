@@ -1,0 +1,50 @@
+# --- secrets -----------------------------------------------------------------
+.env
+*.session
+*.session-journal
+
+# --- runtime state -----------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+data/
+backup/
+*.log
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- editors / os ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- playwright --------------------------------------------------------------
+.playwright-mcp/
+
+# --- ad-hoc artefacts --------------------------------------------------------
+*.png
+!/tgfarm/**/templates/*.png
+/data/media/
+
+# --- agent tool configs ----------------------------------------------
+.serena/
+
+# --- internal work artifacts (audit reports, diagnostics) ---------------------
+review/
+.zwork/
+*.specstory
+farm_serve*.log

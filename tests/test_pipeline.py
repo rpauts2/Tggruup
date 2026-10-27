@@ -1,0 +1,642 @@
+"""Generation, routing, scheduling, crossposting and the safe-growth guard."""
+
+from __future__ import annotations
+
+import random
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from tgfarm.config import Persona
+from tgfarm.core.schemas import ItemScored, RawItem
+from tgfarm.s3_router import _stems, plan_cluster, sameness
+from tgfarm.s4_generation import _lexically_supported, _normalise_number, _to_scored, normalise
+from tgfarm.s7_publish import plan_slot
+from tgfarm.s9_growth import FORBIDDEN_GROWTH_PRIMITIVES, UnsafeGrowthPrimitive, assert_safe_growth
+
+
+def scored(title: str, text: str = "", url: str = "", niche="tech", weight=0.6) -> ItemScored:
+    return ItemScored(
+        source_id="s",
+        external_id="e",
+        url=url or f"https://example.invalid/{abs(hash(title))}",
+        title=title,
+        text=text,
+        niche_hint=[niche],
+        source_weight=weight,
+    )
+
+
+# --------------------------------------------------------------- number grounding
+@pytest.mark.parametrize(
+    ("claim", "expected"),
+    [
+        ("Модель дешевле на 60%.", True),
+        ("Комиссия упала с 4 до 0.02.", True),
+        ("Прибыль выросла на 999%.", False),
+        ("Стоимость 1 200 долларов.", True),
+    ],
+)
+def test_lexical_grounding(claim, expected):
+    item = scored(
+        "Ethereum перешёл на L2",
+        "Комиссия упала с 4 до 0,02 доллара. Модель дешевле на 60 процентов. "
+        "Стоимость внедрения 1 200 долларов.",
+    )
+    assert _lexically_supported(claim, item) is expected
+
+
+def test_qualitative_claims_always_pass():
+    """No numbers means no corroboration problem — the tone critic covers those."""
+    item = scored("Заголовок", "Текст без чисел вообще.")
+    assert _lexically_supported("Это просто мнение.", item)
+
+
+def test_number_normalisation_is_symmetric():
+    assert _normalise_number("40%") == "40"
+    assert _normalise_number("0,02") == "0.02"
+    assert _normalise_number("1 200") == "1200"
+
+
+# ------------------------------------------------------------------- stems
+def test_stems_match_inflected_russian():
+    """Exact set intersection scores ~0 on real Russian; prefix matching does not."""
+    tokens = {"ставку", "экспортные", "контракты"}
+    assert _stems(tokens, {"ставк", "экспорт", "контракт"}) == 3
+
+
+def test_stems_ignore_short_tokens():
+    assert _stems({"идёт", "в"}, {"ид"}) == 0
+
+
+# ---------------------------------------------------------------- sameness
+def test_sameness_detects_near_duplicate():
+    from tgfarm.core.text import content_tokens
+
+    history = {
+        "recent_tokens": [set(content_tokens("регулятор обновил требования к отчётности компаний"))],
+        "recent_embeds": [],
+    }
+    score = sameness("Регулятор обновил требования к отчётности компаний сегодня", history)
+    assert score > 0.7
+
+
+def test_sameness_low_for_different_text():
+    from tgfarm.core.text import content_tokens
+
+    history = {
+        "recent_tokens": [set(content_tokens("регулятор обновил требования к отчётности компаний"))],
+        "recent_embeds": [],
+    }
+    score = sameness("Ethereum перешёл на L2 и снизил комиссию для пользователей", history)
+    assert score < 0.5
+
+
+# ------------------------------------------------------------- normalise
+def test_normalise_never_invents_sources():
+    persona = Persona(id="x", title="T", niche="tech", max_sources=3)
+    items = [
+        scored("Первый заголовок", url="https://example.invalid/a"),
+        scored("Второй заголовок", url="https://example.invalid/b"),
+    ]
+    result = normalise(
+        {
+            "hook": "X.",
+            "body": "Y",
+            "sources": [{"title": "fake", "url": "https://evil.invalid/z"}],
+        },
+        persona,
+        "news",
+        items,
+    )
+    allowed = {"https://example.invalid/a", "https://example.invalid/b"}
+    assert result.sources
+    assert all(s["url"] in allowed for s in result.sources)
+
+
+def test_normalise_appends_mandatory_disclaimer():
+    persona = Persona(
+        id="x", title="T", niche="health", max_sources=2, disclaimer="Обратитесь к врачу."
+    )
+    result = normalise(
+        {"hook": "X.", "body": "Y"}, persona, "news", [scored("Заголовок источника")]
+    )
+    assert "Обратитесь к врачу." in result.body
+
+
+def test_normalise_respects_cta_policy():
+    never = Persona(id="x", title="T", niche="tech", cta_policy="never", cta="Подпишись")
+    result = normalise(
+        {"hook": "X.", "body": "Y", "cta": "Подпишись"},
+        never,
+        "news",
+        [scored("Заголовок источника")],
+    )
+    assert result.cta is None
+
+    always = Persona(id="x", title="T", niche="tech", cta_policy="always", cta="Подпишись")
+    result = normalise(
+        {"hook": "X.", "body": "Y"}, always, "news", [scored("Заголовок источника")]
+    )
+    assert result.cta == "Подпишись"
+
+
+def test_normalise_accepts_non_russian_language():
+    persona = Persona(id="x", title="T", niche="tech", language="uz")
+    result = normalise({"hook": "X.", "body": "Y"}, persona, "news", [scored("Заголовок источника")])
+    assert result.language == "uz"
+
+
+def test_to_scored_wraps_raw_items():
+    raw = RawItem(
+        source_id="s", external_id="e", url="https://x.invalid/1", title="Заголовок", text="b"
+    )
+    converted = _to_scored([raw])
+    assert isinstance(converted[0], ItemScored)
+    assert converted[0].title == "Заголовок"
+
+
+def test_to_scored_passes_through_scored():
+    item = scored("Заголовок")
+    assert _to_scored([item])[0] is item
+
+
+# ---------------------------------------------------------------- scheduling
+def test_plan_slot_uses_configured_hours(cfg):
+    allowed = set(cfg.schedule.hours())
+    rng = random.Random(7)
+    for _ in range(40):
+        assert plan_slot(rng=rng).hour in allowed
+
+
+def test_plan_slot_favours_the_peak_hours(cfg):
+    """Weighted sampling must actually skew toward 17:00-18:00 local.
+
+    `now` is pinned: without it the function samples relative to the real clock,
+    so hours earlier than the current time are skipped for today and the same
+    seed yields a different distribution depending on when the suite runs.
+    """
+    rng = random.Random(11)
+    now = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    hours = [plan_slot(now=now, rng=rng).hour for _ in range(400)]
+    peak = cfg.schedule.peak_hours()
+    assert sum(1 for h in hours if h in peak) / len(hours) > 0.35
+    dead = sum(1 for h in hours if cfg.schedule.hour_probability(h) == 0.0)
+    assert dead == 0
+
+
+def test_plan_slot_respects_minimum_lead():
+    slot = plan_slot(rng=random.Random(1))
+    assert slot > datetime.now(UTC) + timedelta(minutes=7)
+
+
+def test_plan_slot_never_lands_in_dead_hours(cfg):
+    rng = random.Random(99)
+    for _ in range(80):
+        slot = plan_slot(rng=rng)
+        assert cfg.schedule.hour_probability(slot.hour) > 0
+
+
+# ---------------------------------------------------------------- growth guard
+def test_forbidden_growth_primitives_are_rejected():
+    for primitive in FORBIDDEN_GROWTH_PRIMITIVES:
+        with pytest.raises(UnsafeGrowthPrimitive):
+            assert_safe_growth(primitive)
+
+
+def test_safe_primitives_pass():
+    assert_safe_growth("crosspost")
+
+
+def test_forbidden_list_covers_the_usual_spam_suite():
+    assert "mass_invite" in FORBIDDEN_GROWTH_PRIMITIVES
+    assert "unsolicited_dm" in FORBIDDEN_GROWTH_PRIMITIVES
+    assert "buy_subscribers" in FORBIDDEN_GROWTH_PRIMITIVES
+
+
+# ---------------------------------------------------------------- adapters
+def test_crosspost_adapters_self_disable_without_credentials():
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    for name, adapter in ADAPTERS.items():
+        assert adapter.configured() is False, f"{name} should be disabled with no creds"
+
+
+@pytest.mark.asyncio
+async def test_crosspost_adapter_returns_skipped():
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    payload = CrosspostPayload(platform="vk", title="t", text="b")
+    result = await ADAPTERS["vk"].publish(payload)
+    assert result.status == "skipped"
+
+
+# ---------------------------------------------------------------- routing
+@pytest.mark.asyncio
+async def test_plan_cluster_respects_daily_quota():
+    from tgfarm.db.models import Channel, Cluster
+    from tgfarm.db.models import Post as PostRow
+    from tgfarm.db.models import RawItem as RawItemRow
+    from tgfarm.db.session import session_scope
+    from tgfarm.db.vector import pack
+    from tgfarm.llm.embedding import get_embedder
+
+    vec = pack(get_embedder().embed("OpenAI выпустила GPT-5.5"))
+    with session_scope() as session:
+        channel = session.get(Channel, "ai_tech_ru")
+        if channel is None:
+            session.add(Channel(id="ai_tech_ru", title="AI", niche="tech"))
+        for i in range(10):
+            session.add(
+                PostRow(
+                    public_id=f"quota-{i}",
+                    channel_id="ai_tech_ru",
+                    hook="h",
+                    body="b",
+                    status="scheduled",
+                )
+            )
+        cluster = Cluster(public_id="cl-quota", label="Тест", niche="tech", heat=0.9, status="ready")
+        session.add(cluster)
+        session.flush()
+        session.add(
+            RawItemRow(
+                source_id="techcrunch_ai",
+                external_id="q1",
+                url="https://example.invalid/q1",
+                title="OpenAI выпустила GPT-5.5",
+                text="Модель выполняет 40 процентов задач инженеров.",
+                niche_hint=["tech"],
+                source_weight=0.7,
+                embedding=vec,
+                cluster_id=cluster.id,
+            )
+        )
+
+    plans = await plan_cluster("cl-quota")
+    assert all(p.channel_id != "ai_tech_ru" for p in plans), "quota-exhausted channel must not be planned"
+
+
+def test_schedule_uses_configured_weights(cfg):
+    hours = cfg.schedule.hours()
+    assert 15 in hours and 17 in hours
+    assert all(6 <= h <= 22 for h in hours)
+    assert cfg.schedule.hour_probability(15) > cfg.schedule.hour_probability(4)
+
+
+def test_persona_angle_sampling_respects_weights():
+    from tgfarm.config import Persona
+
+    persona = Persona(
+        id="sampling_probe",
+        title="Probe",
+        niche="tech",
+        angle_weights={"news": 0.7, "history": 0.05, "analysis": 0.25},
+    )
+    rng = random.Random(3)
+    samples = [persona.sample_angle(rng) for _ in range(400)]
+    assert samples.count("news") > samples.count("history")
+
+
+def test_two_channel_mode_is_dzen_plus_vk(cfg):
+    """Сейчас ферма работает ровно на двух каналах «обо всём»."""
+    active = cfg.enabled_personas
+    assert [p.id for p in active] == ["zen_misc_ru", "vk_misc_ru"]
+    assert {p.platform for p in active} == {"dzen", "vk"}
+    assert all(p.catch_all for p in active)
+    # Нишевые персоны не удалены, а лежат рядом в архиве — вернуть их можно
+    # копированием файла, без восстановления из истории.
+    from tgfarm.core.settings import config_dir
+
+    assert (config_dir() / "personas.archive.yaml").exists()
+
+
+# ------------------------------------------------------------------- dzen
+@pytest.mark.asyncio
+async def test_catch_all_channel_receives_every_cluster():
+    from tgfarm.db.models import Cluster
+    from tgfarm.db.models import RawItem as RawItemRow
+    from tgfarm.db.session import session_scope
+    from tgfarm.db.vector import pack
+    from tgfarm.llm.embedding import get_embedder
+
+    vec = pack(get_embedder().embed("Марсоход нашёл следы воды"))
+    with session_scope() as session:
+        cluster = Cluster(
+            public_id="cl-zen", label="Марсоход нашёл следы воды", niche="science", heat=0.9,
+            status="ready",
+        )
+        session.add(cluster)
+        session.flush()
+        session.add(
+            RawItemRow(
+                source_id="science_daily",
+                external_id="zen-1",
+                url="https://example.invalid/zen-1",
+                title="Марсоход нашёл следы воды",
+                text="Находка требует дополнительных измерений.",
+                niche_hint=["science"],
+                source_weight=0.7,
+                embedding=vec,
+                cluster_id=cluster.id,
+            )
+        )
+
+    plans = await plan_cluster("cl-zen")
+    assert any(
+        p.channel_id == "zen_misc_ru" and p.reason == "catch_all" for p in plans
+    ), "the catch-all Dzen persona must receive clusters outside the niche classifier"
+
+
+def test_dzen_length_limit_is_not_telegram_limit():
+    from tgfarm.core.schemas import DraftPost
+    from tgfarm.s5_quality import gate_length
+
+    draft = DraftPost(hook="Заголовок", body="я" * 5000, sources=[])
+    telegram = Persona(
+        id="tg", title="T", niche="tech", min_chars=1, max_chars=20_000
+    )
+    dzen = Persona(
+        id="dz", title="Z", niche="general", platform="dzen", min_chars=1, max_chars=20_000
+    )
+    assert gate_length(draft, telegram).passed is False
+    assert gate_length(draft, dzen).passed is True
+
+
+def test_dzen_typing_chunks_preserve_every_character():
+    from tgfarm.dzen_web import chunk_text
+
+    text = "Первый абзац.\n\nВторой абзац с цифрами 19% и ссылкой."
+    chunks = chunk_text(text, random.Random(7))
+    assert len(chunks) > 1
+    assert "".join(chunks) == text
+
+
+def test_dzen_publication_url_is_not_the_editor():
+    from tgfarm.dzen_web import publication_url
+
+    assert publication_url("https://dzen.ru/a/Zabc123") == "https://dzen.ru/a/Zabc123"
+    assert publication_url("https://dzen.ru/media/id/1/story-2") == (
+        "https://dzen.ru/media/id/1/story-2"
+    )
+    assert publication_url("https://dzen.ru/profile/editor/42") is None
+
+
+def test_dzen_body_does_not_repeat_the_title():
+    from types import SimpleNamespace
+
+    from tgfarm.s7_publish import assemble_text
+
+    post = SimpleNamespace(hook="Заголовок", body="Тело", sources=[], cta=None, hashtags=[])
+    assert assemble_text(post, "dzen") == "Тело"
+    assert assemble_text(post, "telegram").startswith("Заголовок")
+
+
+def test_due_posts_preserves_dzen_platform():
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import due_posts
+
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    with session_scope() as session:
+        session.merge(Channel(id="tg_due", title="TG", niche="tech", platform="telegram"))
+        session.merge(Channel(id="dz_due", title="DZ", niche="general", platform="dzen"))
+        session.add(
+            Post(
+                public_id="due-tg",
+                channel_id="tg_due",
+                hook="TG",
+                body="Telegram body",
+                status="scheduled",
+                scheduled_at=now,
+            )
+        )
+        session.add(
+            Post(
+                public_id="due-dz",
+                channel_id="dz_due",
+                hook="DZ",
+                body="Dzen body",
+                status="scheduled",
+                scheduled_at=now,
+            )
+        )
+
+    pending = due_posts(limit=20)
+    tg = next(row for row in pending if row[3] == "telegram" and "Telegram body" in row[1])
+    dz = next(row for row in pending if row[3] == "dzen" and "Dzen body" in row[1])
+    assert tg[2] != "dz_due"
+    assert dz[2] == "dz_due"
+
+
+@pytest.mark.asyncio
+async def test_dzen_dry_run_marks_published_and_logs_remote():
+    from sqlalchemy import select
+
+    from tgfarm.db.models import CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import _publish_one
+
+    with session_scope() as session:
+        post = Post(
+            public_id="dzen-publish",
+            channel_id="zen_misc_ru",
+            hook="Заголовок",
+            body="Тело статьи для Дзена.",
+            status="scheduled",
+            scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+
+    result = await _publish_one(post_id, "zen_misc_ru", "Тело статьи для Дзена.", None, "dzen")
+    assert result["ok"] is True
+
+    with session_scope() as session:
+        post = session.get(Post, post_id)
+        assert post is not None and post.status == "published"
+        log_row = session.execute(
+            select(CrosspostLog).where(CrosspostLog.post_public_id == "dzen-publish")
+        ).scalar_one()
+        assert log_row.platform == "dzen"
+        assert log_row.status == "dry_run"
+        assert log_row.remote_id
+
+
+@pytest.mark.asyncio
+async def test_dzen_publish_passes_inline_photo_and_caption(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import _publish_dzen
+
+    with session_scope() as session:
+        post = Post(
+            public_id="dzen-inline-live",
+            channel_id="zen_misc_ru",
+            hook="Заголовок",
+            body="Тело.",
+            status="scheduled",
+            scheduled_at=datetime.now(UTC),
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+
+    captured = {}
+
+    async def fake_publish(
+        self,
+        title,
+        body,
+        cover_path=None,
+        inline_image=None,
+        inline_caption=None,
+        inline_images=None,
+    ):
+        captured.update(
+            title=title,
+            body=body,
+            cover_path=cover_path,
+            inline_image=inline_image,
+            inline_caption=inline_caption,
+            inline_images=inline_images,
+        )
+        return SimpleNamespace(remote_id="r1", url="https://dzen.ru/a/test")
+
+    monkeypatch.setattr("tgfarm.dzen_web.DzenWebPublisher.publish", fake_publish)
+    monkeypatch.setattr(
+        "tgfarm.s7_publish.get_settings", lambda: SimpleNamespace(live=True)
+    )
+
+    result = await _publish_dzen(
+        post_id,
+        "Первый.\n\nВторой.",
+        "cover.jpg",
+        "lead.jpg",
+        "Фото: example.invalid",
+    )
+
+    assert result["ok"] is True
+    assert captured == {
+        "title": "Заголовок",
+        "body": "Первый.\n\nВторой.",
+        "cover_path": "cover.jpg",
+        "inline_image": "lead.jpg",
+        "inline_caption": "Фото: example.invalid",
+        "inline_images": [("lead.jpg", "Фото: example.invalid")],
+    }
+
+
+def test_inline_media_is_chosen_separately_from_the_primary_cover(tmp_path):
+    from tgfarm.db.models import Media, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import _inline_media_for, _media_for
+
+    cover = tmp_path / "cover.jpg"
+    lead = tmp_path / "lead.jpg"
+    cover.write_bytes(b"cover")
+    lead.write_bytes(b"lead")
+
+    with session_scope() as session:
+        post = Post(
+            public_id="dzen-inline",
+            channel_id="zen_misc_ru",
+            hook="Заголовок",
+            body="Тело.",
+            status="scheduled",
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+        session.add_all(
+            [
+                Media(
+                    post_id=post_id,
+                    kind="template",
+                    path=str(cover),
+                    is_primary=True,
+                ),
+                Media(
+                    post_id=post_id,
+                    kind="article_image",
+                    path=str(lead),
+                    caption="Фото: example.invalid",
+                    is_primary=False,
+                ),
+            ]
+        )
+
+    assert _media_for([post_id]) == {post_id: str(cover)}
+    assert _inline_media_for([post_id]) == {
+        post_id: [(str(lead), "Фото: example.invalid")]
+    }
+
+
+def test_missing_inline_media_does_not_suppress_the_cover(tmp_path):
+    from tgfarm.db.models import Media, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import _inline_media_for
+
+    with session_scope() as session:
+        post = Post(
+            public_id="dzen-inline-missing",
+            channel_id="zen_misc_ru",
+            hook="Заголовок",
+            body="Тело.",
+            status="scheduled",
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+        session.add(
+            Media(
+                post_id=post_id,
+                kind="article_image",
+                path=str(tmp_path / "gone.jpg"),
+                is_primary=False,
+            )
+        )
+
+    assert _inline_media_for([post_id]) == {}
+
+
+def test_s9_only_crossposts_telegram_posts():
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth import _pending_crossposts
+
+    now = datetime.now(UTC)
+    with session_scope() as session:
+        session.merge(Channel(id="tg_cross", title="TG", niche="tech", platform="telegram"))
+        session.merge(Channel(id="dz_cross", title="DZ", niche="general", platform="dzen"))
+        session.add(
+            Post(
+                public_id="cross-tg",
+                channel_id="tg_cross",
+                hook="TG",
+                body="body",
+                status="published",
+                published_at=now,
+            )
+        )
+        session.add(
+            Post(
+                public_id="cross-dz",
+                channel_id="dz_cross",
+                hook="DZ",
+                body="body",
+                status="published",
+                published_at=now,
+            )
+        )
+
+    found = {public_id for _, public_id in _pending_crossposts(1.0)}
+    assert "cross-tg" in found
+    assert "cross-dz" not in found
+
+
+

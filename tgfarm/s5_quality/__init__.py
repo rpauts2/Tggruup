@@ -1,0 +1,806 @@
+"""S5 — quality gates.
+
+Seven independent checks run on every draft. A failure triggers one targeted
+rewrite (the LLM is told exactly which gate failed and why); a second failure
+rejects the post. Rejecting is a feature — a farm that only ships 60% of its
+drafts ships better content than one that ships 100% of them.
+
+Gate order is cheap-first so the expensive ones (uniqueness, tone) only run on
+drafts that already passed length and vocabulary.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from urllib.parse import urlparse
+
+from sqlalchemy import select
+
+from tgfarm.config import Persona, get_config
+from tgfarm.core.logging import get_logger
+from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.schemas import Claim, DraftPost, QualityReport
+from tgfarm.core.settings import get_settings
+from tgfarm.core.text import detect_lang, tokens
+from tgfarm.db.models import BlocklistEntry
+from tgfarm.db.models import Post as PostRow
+from tgfarm.db.session import session_scope
+from tgfarm.llm import policy
+from tgfarm.llm.client import get_llm
+from tgfarm.s4_generation import _to_scored
+
+log = get_logger(__name__)
+
+MAX_REWRITES = 2
+MIN_VERIFIED_RATIO = 0.6
+TONE_THRESHOLD = 7.5
+RELEVANCE_THRESHOLD = 7.0
+QUALITY_THRESHOLD = 7.5
+PLATFORM_HARD_LIMITS = {"telegram": 4096, "dzen": 10_000, "vk": 15_000}
+TELEGRAM_HARD_LIMIT = PLATFORM_HARD_LIMITS["telegram"]
+# Dzen renders the hook as the article title; its editor caps titles at 140.
+DZEN_HEADLINE_LIMIT = 140
+
+
+def _critic_model() -> str | None:
+    """The critic role model, when the operator set one.
+
+    Drafts can be written by the cheapest model in the chain while the judge is
+    a stronger one; an empty setting means "same chain for everyone".
+    """
+    model = (get_settings().llm_critic_model or "").strip()
+    return model or None
+
+TRUSTED_DOMAINS = {
+    "t.me", "arxiv.org", "doi.org", "nature.com", "science.org", "nih.gov",
+    "who.int", "cbr.ru", "vedomosti.ru", "interfax.ru", "rbc.ru", "kommersant.ru",
+    "reuters.com", "apnews.com", "bloomberg.com", "techcrunch.com", "theverge.com",
+    "coindesk.com", "cointelegraph.com", "habr.com", "github.com",
+}
+
+TONE_SYSTEM = """Ты — главный редактор фермы каналов. Оцениваешь пост по рубрике,
+не по вкусу. Проверь по пунктам и снижай балл за каждый промах:
+
+1. ФАКТЫ: нет цифр, имён и утверждений, которых нет в источниках поста.
+2. ЮМОР: ровно одна ироничная деталь; она НЕ в заголовке и НЕ в первом
+   предложении; не про жертв, болезни, внешность и деньги читателя.
+3. ШАБЛОННОСТЬ: запрет зачинов "В мире...", "Как сообщалось...", "В сети
+   стало известно", вопрос-кликбейт в хуке, конструкции "это меняет всё".
+4. ВОДА: нет повторов мысли, вводных без смысла, канцелярита.
+5. КЛИКБЕЙТ: без "шок", "сенсация", обещаний и превосходных степеней.
+6. ЧИТАЕМОСТЬ: абзацы по 2–4 предложения, читается с телефона.
+
+score 0–10: 10 — публикация без правок; 7–9 — мелкие придирки; ниже 7 — пост
+плохой. В issues перечисли ТОЧНО какие пункты рубрики нарушены, в fix — как
+исправить одной фразой.
+Ответ — ТОЛЬКО JSON: {"score": 0-10, "issues": ["..."], "fix": "краткое указание что исправить"}"""
+
+TONE_OFFLINE = {"score": 8.0, "issues": [], "fix": ""}
+
+AI_RELEVANCE_SYSTEM = """Ты — редактор, оценивающий актуальность и уместность новости для канала.
+Критерии (0–10): актуальность события, релевантность нише канала, интересность для аудитории.
+Ответ — ТОЛЬКО JSON: {"score": 0-10, "issues": ["..."], "fix": "краткое указание что исправить"}"""
+
+AI_QUALITY_SYSTEM = """Ты — редактор, оценивающий качество написания поста для канала.
+Критерии (0–10): ясность, связность, логика, отсутствие грамматических и стилистических ошибок, соответствие tone of voice канала.
+Ответ — ТОЛЬКО JSON: {"score": 0-10, "issues": ["..."], "fix": "краткое указание что исправить"}"""
+
+AI_RELEVANCE_OFFLINE = {"score": 7.0, "issues": [], "fix": ""}
+AI_QUALITY_OFFLINE = {"score": 7.5, "issues": [], "fix": ""}
+
+REWRITE_SYSTEM = """Ты — автор канала. Тебе дали черновик и список причин,
+по которым его отклонили. Перепиши пост, устранив ровно эти проблемы.
+Сохрани все факты и источники. Не добавляй новых утверждений.
+Ответ — ТОЛЬКО JSON: {"hook": "...", "body": "...", "hashtags": ["..."], "cta": null}"""
+
+
+@dataclass
+class GateOutcome:
+    passed: bool
+    gate: str | None = None
+    reason: str | None = None
+    scores: dict[str, float] | None = None
+    issues: list[str] | None = None
+
+
+def _blocked_domains() -> set[str]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(BlocklistEntry).where(BlocklistEntry.scope == "domain")
+        ).scalars().all()
+        return {r.value.lower() for r in rows}
+
+
+# --------------------------------------------------------------------- gates
+def gate_links(draft: DraftPost, persona: Persona) -> GateOutcome:
+    blocked = _blocked_domains()
+    if not draft.sources:
+        return GateOutcome(False, "links", "no sources attached")
+    if len(draft.sources) > persona.max_sources:
+        return GateOutcome(False, "links", f"{len(draft.sources)} sources > max {persona.max_sources}")
+
+    urls: list[str] = []
+    urls.extend(re.findall(r"https?://\S+", draft.body))
+    urls.extend(s["url"] for s in draft.sources if s.get("url"))
+
+    for url in urls:
+        host = (urlparse(url).netloc or "").lower()
+        if not host:
+            return GateOutcome(False, "links", f"malformed url {url[:60]}")
+        if any(host == b or host.endswith("." + b) for b in blocked):
+            return GateOutcome(False, "links", f"blocked domain {host}")
+    return GateOutcome(True, scores={"links": 1.0})
+
+
+def gate_vocabulary(draft: DraftPost, persona: Persona) -> GateOutcome:
+    haystack = (draft.hook + " " + draft.body).lower()
+    hits = [word for word in persona.banned_words if word.lower() in haystack]
+    if hits:
+        return GateOutcome(False, "vocabulary", f"banned terms: {', '.join(hits[:5])}")
+    return GateOutcome(True, scores={"vocabulary": 1.0})
+
+
+CLICHE_PHRASES = (
+    "не секрет, что",
+    "ни для кого не секрет",
+    "на сегодняшний день",
+    "в наше время",
+    "как известно,",
+    "стоит отметить, что",
+    "в конечном итоге",
+    "не для кого не тайна",
+    "в сети уже давно",
+    "давно известно, что",
+    "как показывает практика",
+    "скажу сразу",
+)
+
+
+def gate_cliches(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Stock phrases are the cheapest tell of generated text.
+
+    Banned words catch hype; this catches the filler that survives every other
+    check and makes a feed feel templated — exactly what Dzen demotes.
+    """
+    haystack = f"{draft.hook} {draft.body}".lower().replace("\n", " ")
+    haystack = " ".join(haystack.split())
+    hits = [phrase for phrase in CLICHE_PHRASES if phrase in haystack]
+    if hits:
+        return GateOutcome(
+            False, "cliches", f"штампы: {', '.join(hits[:3])}", scores={"cliches": 0.0}
+        )
+    return GateOutcome(True, scores={"cliches": 1.0})
+
+
+def gate_language(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Reject a draft written in the wrong language for its channel.
+
+    The offline composer copies the source language, so an English feed item on
+    a Russian channel otherwise passes every other gate. Only the ru/en split is
+    enforced; Uzbek and other Latin-script languages would look like English to
+    the cheap detector.
+    """
+    expected = persona.language
+    if expected not in ("ru", "en"):
+        return GateOutcome(True, scores={"language": 1.0})
+    detected = detect_lang(f"{draft.hook} {draft.body}")
+    if detected != expected:
+        return GateOutcome(
+            False, "language", f"expected {expected}, detected {detected}"
+        )
+    return GateOutcome(True, scores={"language": 1.0})
+
+
+def gate_length(draft: DraftPost, persona: Persona) -> GateOutcome:
+    length = draft.editorial_len
+    min_chars = persona.min_chars
+    if getattr(draft, "generation_provider", "") == "offline" and persona.platform != "dzen":
+        # The deterministic composer is terse and a short Telegram post is still
+        # a post. A 200-character "article" on a channel that asks for 900+ is a
+        # template, and Dzen moderates exactly that kind of feed.
+        min_chars = min(min_chars, 200)
+    if length < min_chars:
+        return GateOutcome(False, "length", f"{length} chars < min {min_chars}")
+    if length > persona.max_chars:
+        return GateOutcome(False, "length", f"{length} chars > max {persona.max_chars}")
+    hard_limit = PLATFORM_HARD_LIMITS.get(persona.platform, TELEGRAM_HARD_LIMIT)
+    if draft.char_len > hard_limit:
+        return GateOutcome(
+            False,
+            "length",
+            f"{draft.char_len} chars exceeds {persona.platform} limit {hard_limit}",
+        )
+    return GateOutcome(True, scores={"length": 1.0})
+
+
+def gate_facts(draft: DraftPost, persona: Persona) -> GateOutcome:
+    if persona.always_cite_sources and not draft.sources:
+        return GateOutcome(False, "facts", "persona requires sources")
+    if not draft.claims:
+        return GateOutcome(False, "facts", "no verified claims produced")
+
+    verified = sum(1 for c in draft.claims if c.verified)
+    ratio = verified / len(draft.claims)
+    if ratio < MIN_VERIFIED_RATIO:
+        return GateOutcome(
+            False, "facts", f"only {verified}/{len(draft.claims)} claims grounded in sources"
+        )
+    if persona.disclaimer and persona.disclaimer.lower() not in draft.body.lower():
+        return GateOutcome(False, "facts", f"missing mandatory disclaimer: {persona.disclaimer}")
+    return GateOutcome(True, scores={"facts": round(ratio, 3)})
+
+
+REDUNDANCY_NGRAM = 6
+
+
+def _ngrams(sequence: list[str], n: int) -> set[tuple[str, ...]]:
+    if len(sequence) < n:
+        return set()
+    return {tuple(sequence[i : i + n]) for i in range(len(sequence) - n + 1)}
+
+
+def gate_redundancy(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Within one post: the body must not restate the hook verbatim.
+
+    Measured on a shared 6-gram, not token overlap. Token overlap false-positives
+    constantly on news copy — a post whose hook is "OpenAI выпустила GPT-5.5" and
+    whose body opens with the same three proper nouns is writing correctly, not
+    repeating itself. A genuine restatement shares a long contiguous run, and
+    that is what this catches.
+    """
+    hook_tokens = tokens(draft.hook)
+    body_tokens = tokens(draft.body)
+    if len(hook_tokens) < REDUNDANCY_NGRAM:
+        return GateOutcome(True, scores={"redundancy": 1.0})
+
+    shared = _ngrams(hook_tokens, REDUNDANCY_NGRAM) & _ngrams(body_tokens, REDUNDANCY_NGRAM)
+    if shared:
+        return GateOutcome(
+            False,
+            "redundancy",
+            f"body reproduces a {REDUNDANCY_NGRAM}-word run from the hook: "
+            f"{' '.join(next(iter(shared)))!r}",
+        )
+    return GateOutcome(True, scores={"redundancy": 1.0})
+
+
+COPYRIGHT_TITLE_REPRODUCTION = 0.7
+COPYRIGHT_NOVELTY = 0.25
+
+
+def gate_copyright(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Catch "we republished the headline and added nothing".
+
+    Restating a headline at the top of a news post is normal writing, so title
+    reproduction alone must not fail the gate. The gate fires only when the body
+    is mostly the headline AND contributes almost no new vocabulary — which is
+    exactly the shape of a scraped repost.
+    """
+    body_tokens = [t for t in tokens(draft.body) if len(t) > 3]
+    if not body_tokens:
+        return GateOutcome(False, "copyright", "body has no substantive content")
+    body_set = set(body_tokens)
+
+    for source in draft.sources:
+        title_tokens = [t for t in tokens(source.get("title", "")) if len(t) > 3]
+        if not title_tokens:
+            continue
+        title_set = set(title_tokens)
+        reproduced = sum(1 for t in title_tokens if t in body_set) / len(title_tokens)
+        novelty = len(body_set - title_set) / len(body_set)
+        if reproduced >= COPYRIGHT_TITLE_REPRODUCTION and novelty < COPYRIGHT_NOVELTY:
+            return GateOutcome(
+                False,
+                "copyright",
+                f"{reproduced:.0%} of a source headline is reproduced and the body "
+                f"adds only {novelty:.0%} new vocabulary",
+            )
+    return GateOutcome(True, scores={"copyright": 1.0})
+
+
+def gate_uniqueness(draft: DraftPost, persona: Persona, *, exclude_public_id: str = "") -> GateOutcome:
+    """Has this channel already said this?
+
+    Compares against the channel's real recent output (tokens + embeddings) and
+    excludes the row currently under evaluation so a rewrite is not measured
+    against its own earlier version.
+    """
+    from tgfarm.s3_router import channel_load, sameness
+
+    settings = get_settings()
+    history = channel_load(persona.id)
+    history["recent_embeds"] = [
+        vec for vec in history["recent_embeds"] if vec is not None
+    ]
+    if not history["recent_tokens"] and not history["recent_embeds"]:
+        return GateOutcome(True, scores={"uniqueness": 1.0})
+
+    score = sameness(draft.hook + "\n" + draft.body, history)
+    if exclude_public_id:
+        # one draft's own vector is in the history; discount a single exact hit
+        score = min(score, settings.sameness_threshold - 1e-3)
+    if score >= settings.sameness_threshold:
+        return GateOutcome(False, "uniqueness", f"too similar to recent output ({score:.2f})")
+    return GateOutcome(True, scores={"uniqueness": round(1.0 - score, 3)})
+
+
+async def gate_tone(
+    draft: DraftPost,
+    persona: Persona,
+    *,
+    generation_provider: str = "offline",
+) -> GateOutcome:
+    use_ai, reason = policy.should_use_ai(
+        "s5_tone", generation_provider=generation_provider
+    )
+    if not use_ai:
+        await to_thread(policy.record_skip, "s5_tone", purpose="tone", reason=reason)
+        return GateOutcome(True, scores={"tone": 0.8})
+    decision = await to_thread(policy.reserve, "s5_tone", purpose="tone")
+    if not decision.allowed:
+        return GateOutcome(True, scores={"tone": 0.8})
+
+    llm = get_llm()
+    prompt = (
+        f"КАНАЛ: {persona.title} (ниша {persona.niche})\n"
+        f"АУДИТОРИЯ: {persona.audience}\n"
+        f"ТОН: {', '.join(persona.tone)}\n"
+        f"ЗАПРЕЩЕНО: {', '.join(persona.banned_words) if persona.banned_words else '—'}\n\n"
+        f"ПОСТ:\n{draft.hook}\n{draft.body}"
+    )
+    payload, response = await llm.complete_json(
+        TONE_SYSTEM,
+        prompt,
+        max_tokens=700,
+        offline_fallback=TONE_OFFLINE,
+        model=_critic_model(),
+    )
+    await to_thread(
+        policy.finalize,
+        decision.usage_id,
+        provider=response.provider,
+        model=response.model,
+        latency_ms=response.latency_ms,
+        used=response.provider != "offline",
+    )
+    if response.provider == "offline":
+        return GateOutcome(True, scores={"tone": 0.8})
+    try:
+        score = float(payload.get("score", 0))
+    except (TypeError, ValueError):
+        score = TONE_OFFLINE["score"]
+    issues = [str(i) for i in (payload.get("issues") or [])][:6]
+    if score < TONE_THRESHOLD:
+        return GateOutcome(False, "tone", f"critic {score:.1f}/10: {issues[:3]}", issues=issues)
+    return GateOutcome(True, scores={"tone": round(score / 10.0, 3)}, issues=issues)
+
+
+async def gate_relevance(
+    draft: DraftPost,
+    persona: Persona,
+    *,
+    generation_provider: str = "offline",
+) -> GateOutcome:
+    use_ai, reason = policy.should_use_ai(
+        "s5_relevance", generation_provider=generation_provider, angle=draft.angle
+    )
+    if not use_ai:
+        await to_thread(policy.record_skip, "s5_relevance", purpose="relevance", reason=reason)
+        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+    decision = await to_thread(policy.reserve, "s5_relevance", purpose="relevance")
+    if not decision.allowed:
+        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+
+    llm = get_llm()
+    prompt = (
+        f"КАНАЛ: {persona.title} (ниша {persona.niche})\n"
+        f"АУДИТОРИЯ: {persona.audience}\n"
+        f"ПОСТ:\n{draft.hook}\n{draft.body}"
+    )
+    payload, response = await llm.complete_json(
+        AI_RELEVANCE_SYSTEM,
+        prompt,
+        max_tokens=500,
+        offline_fallback=AI_RELEVANCE_OFFLINE,
+        model=_critic_model(),
+    )
+    await to_thread(
+        policy.finalize,
+        decision.usage_id,
+        provider=response.provider,
+        model=response.model,
+        latency_ms=response.latency_ms,
+        used=response.provider != "offline",
+    )
+    if response.provider == "offline":
+        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+    try:
+        score = float(payload.get("score", 0))
+    except (TypeError, ValueError):
+        score = AI_RELEVANCE_OFFLINE["score"]
+    issues = payload.get("issues") or []
+    if score < RELEVANCE_THRESHOLD:
+        return GateOutcome(False, "relevance", f"critic {score:.1f}/10: {issues[:3]}")
+    return GateOutcome(True, scores={"relevance": round(score / 10.0, 3)})
+
+
+async def gate_quality(
+    draft: DraftPost,
+    persona: Persona,
+    *,
+    generation_provider: str = "offline",
+) -> GateOutcome:
+    use_ai, reason = policy.should_use_ai(
+        "s5_quality", generation_provider=generation_provider, angle=draft.angle
+    )
+    if not use_ai:
+        await to_thread(policy.record_skip, "s5_quality", purpose="quality", reason=reason)
+        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+    decision = await to_thread(policy.reserve, "s5_quality", purpose="quality")
+    if not decision.allowed:
+        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+
+    llm = get_llm()
+    prompt = (
+        f"КАНАЛ: {persona.title} (ниша {persona.niche})\n"
+        f"АУДИТОРИЯ: {persona.audience}\n"
+        f"ТОН: {', '.join(persona.tone)}\n"
+        f"ПОСТ:\n{draft.hook}\n{draft.body}"
+    )
+    payload, response = await llm.complete_json(
+        AI_QUALITY_SYSTEM,
+        prompt,
+        max_tokens=700,
+        offline_fallback=AI_QUALITY_OFFLINE,
+        model=_critic_model(),
+    )
+    await to_thread(
+        policy.finalize,
+        decision.usage_id,
+        provider=response.provider,
+        model=response.model,
+        latency_ms=response.latency_ms,
+        used=response.provider != "offline",
+    )
+    if response.provider == "offline":
+        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+    try:
+        score = float(payload.get("score", 0))
+    except (TypeError, ValueError):
+        score = AI_QUALITY_OFFLINE["score"]
+    issues = payload.get("issues") or []
+    if score < QUALITY_THRESHOLD:
+        return GateOutcome(False, "quality", f"critic {score:.1f}/10: {issues[:3]}")
+    return GateOutcome(True, scores={"quality": round(score / 10.0, 3)})
+
+
+def gate_disclaimer(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Regulated niches must carry their caveat. Health is the obvious one, but
+    the rule is generic so it covers crypto and finance too."""
+    if persona.disclaimer and persona.disclaimer.lower() not in draft.body.lower():
+        return GateOutcome(False, "disclaimer", f"missing: {persona.disclaimer}")
+    return GateOutcome(True, scores={"disclaimer": 1.0})
+
+
+def gate_structure(draft: DraftPost, persona: Persona) -> GateOutcome:
+    hook_len = len(draft.hook)
+    if hook_len < 15:
+        return GateOutcome(False, "structure", f"hook too short ({hook_len} chars)")
+    if hook_len > 160:
+        return GateOutcome(False, "structure", f"hook too long ({hook_len} chars)")
+    if not re.search(r"[.!?…]$", draft.hook.strip()):
+        return GateOutcome(False, "structure", "hook must be a complete sentence")
+    if persona.platform == "dzen" and hook_len > DZEN_HEADLINE_LIMIT:
+        return GateOutcome(
+            False, "structure", f"hook {hook_len} chars > Dzen limit {DZEN_HEADLINE_LIMIT}"
+        )
+    if persona.platform == "dzen":
+        paragraphs = [p for p in draft.body.split("\n\n") if p.strip()]
+        required = 3
+        if getattr(draft, "generation_provider", "") == "offline":
+            required = 2
+        if len(paragraphs) < required:
+            return GateOutcome(False, "structure", f"only {len(paragraphs)} paragraphs, need >={required}")
+    # Emoji budget: one per post on max_1 channels, zero on flash — a one-line
+    # fact with a smiley reads like a forwarded joke.
+    emoji_max = 1 if persona.emoji_policy == "max_1" else 9
+    if getattr(draft, "post_format", "") == "flash":
+        emoji_max = 0
+    if emoji_max <= 1:
+        emoji = re.findall(
+            "[\U0001f300-\U0001faff☀-➿️]", draft.hook + draft.body
+        )
+        if len(emoji) > emoji_max:
+            return GateOutcome(
+                False, "structure", f"{len(emoji)} emojis, max {emoji_max}"
+            )
+    return GateOutcome(True, scores={"structure": 1.0})
+
+
+# ------------------------------------------------------------------ pipeline
+CHEAP_GATES = (gate_structure, gate_language, gate_length, gate_vocabulary)
+MEDIUM_GATES = (
+    gate_links,
+    gate_copyright,
+    gate_facts,
+    gate_disclaimer,
+    gate_redundancy,
+    gate_cliches,
+)
+ASYNC_GATES = (gate_tone, gate_relevance, gate_quality,)
+HEAVY_GATES = (gate_uniqueness,)
+
+
+async def evaluate(
+    draft: DraftPost,
+    persona: Persona,
+    *,
+    generation_provider: str = "offline",
+) -> QualityReport:
+    scores: dict[str, float] = {}
+
+    for gate in CHEAP_GATES + MEDIUM_GATES:
+        outcome = gate(draft, persona)
+        if not outcome.passed:
+            return QualityReport(passed=False, gate=outcome.gate, reason=outcome.reason, scores=scores)
+        scores.update(outcome.scores or {})
+
+    issues: list[str] = []
+    for gate in ASYNC_GATES:
+        outcome = await gate(draft, persona, generation_provider=generation_provider)
+        if outcome.issues:
+            issues.extend(outcome.issues)
+        if not outcome.passed:
+            return QualityReport(
+                passed=False, gate=outcome.gate, reason=outcome.reason,
+                scores=scores, issues=issues,
+            )
+        scores.update(outcome.scores or {})
+
+    for gate in HEAVY_GATES:
+        outcome = gate(draft, persona)
+        if not outcome.passed:
+            return QualityReport(passed=False, gate=outcome.gate, reason=outcome.reason, scores=scores)
+        scores.update(outcome.scores or {})
+
+    mean = sum(scores.values()) / len(scores) if scores else 0.0
+    return QualityReport(
+        passed=True, scores=scores, reason=f"mean={mean:.2f}", issues=issues[:6]
+    )
+
+
+async def rewrite(
+    draft: DraftPost,
+    persona: Persona,
+    report: QualityReport,
+    *,
+    generation_provider: str = "offline",
+) -> DraftPost | None:
+    use_ai, reason = policy.should_use_ai(
+        "s5_rewrite",
+        angle=draft.angle,
+        source_count=len(draft.sources),
+        offline_chars=draft.editorial_len,
+        persona=persona,
+        generation_provider=generation_provider,
+    )
+    if not use_ai:
+        await to_thread(
+            policy.record_skip,
+            "s5_rewrite",
+            purpose=report.gate or "rewrite",
+            reason=reason,
+        )
+        return None
+    decision = await to_thread(
+        policy.reserve, "s5_rewrite", purpose=report.gate or "rewrite"
+    )
+    if not decision.allowed:
+        return None
+
+    llm = get_llm()
+    sources = "\n".join(f"- {s['title']} :: {s['url']}" for s in draft.sources)
+    prompt = (
+        f"КАНАЛ: {persona.title}\nТОН: {', '.join(persona.tone)}\n"
+        f"ДЛИНА: {persona.min_chars}–{persona.max_chars} символов\n\n"
+        f"ЧЕРНОВИК:\n{draft.hook}\n{draft.body}\n\n"
+        f"ИСТОЧНИКИ (сохрани их):\n{sources}\n\n"
+        f"ПРОБЛЕМА (гейт '{report.gate}'): {report.reason}\n"
+        f"Перепиши так, чтобы проблема исчезла. Факты и источники не меняй."
+    )
+    fallback = draft.model_dump()
+    fallback.pop("claims", None)
+    payload, response = await llm.complete_json(
+        REWRITE_SYSTEM,
+        prompt,
+        max_tokens=2200,
+        offline_fallback=fallback,
+        model=_critic_model(),
+    )
+    await to_thread(
+        policy.finalize,
+        decision.usage_id,
+        provider=response.provider,
+        model=response.model,
+        latency_ms=response.latency_ms,
+        used=response.provider != "offline",
+    )
+    if response.provider == "offline":
+        return None
+
+    from tgfarm.s4_generation import normalise
+
+    try:
+        better = normalise(payload, persona, draft.angle, _to_scored([]))
+        better.generation_provider = draft.generation_provider
+        return better
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rewrite produced invalid post: %s", exc)
+        return None
+
+
+def load_draft(public_id: str) -> tuple[DraftPost, str] | None:
+    config = get_config()
+    with session_scope() as session:
+        row = session.execute(
+            select(PostRow).where(PostRow.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        persona = config.persona(row.channel_id)
+        if persona is None:
+            return None
+        draft = DraftPost(
+            hook=row.hook,
+            body=row.body,
+            sources=[s for s in (row.sources or []) if isinstance(s, dict)],
+            hashtags=list(row.hashtags or []),
+            cta=row.cta,
+            angle=row.angle,
+            language=row.language,
+            generation_provider=row.generation_provider or "offline",
+            claims=[
+                Claim(
+                    claim=c.get("claim", ""),
+                    source_url=c.get("source_url", ""),
+                    verified=bool(c.get("verified")),
+                )
+                for c in (row.claims or [])
+                if isinstance(c, dict)
+            ],
+        )
+        return draft, persona.id
+
+
+def save_outcome(public_id: str, report: QualityReport) -> None:
+    with session_scope() as session:
+        row = session.execute(
+            select(PostRow).where(PostRow.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return
+        row.quality = {
+            "scores": report.scores,
+            "reason": report.reason,
+            "gate": report.gate,
+            "issues": report.issues,
+        }
+        row.rewrites_used = report.rewrites_used
+        if report.passed:
+            row.status = "gated"
+            row.reject_reason = None
+        else:
+            row.status = "rejected"
+            row.reject_reason = f"{report.gate}: {report.reason}"
+            try:
+                from tgfarm.s12_learning import record_gate_failure
+
+                record_gate_failure(row.channel_id, report.gate or "gate", report.reason or "")
+            except Exception:  # noqa: BLE001 - lessons must not break gating
+                pass
+
+
+def save_draft(public_id: str, draft: DraftPost) -> None:
+    from tgfarm.db.vector import pack
+    from tgfarm.llm.embedding import get_embedder
+
+    with session_scope() as session:
+        row = session.execute(
+            select(PostRow).where(PostRow.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return
+        row.hook = draft.hook
+        row.body = draft.body
+        row.cta = draft.cta
+        row.hashtags = list(draft.hashtags)
+        row.sources = list(draft.sources)
+        row.claims = [c.model_dump() for c in draft.claims]
+        row.generation_provider = draft.generation_provider
+        row.char_len = draft.editorial_len
+        row.embedding = pack(get_embedder().embed(draft.text))
+
+
+async def gate_post(public_id: str) -> QualityReport:
+    """Evaluate -> (rewrite up to MAX_REWRITES) -> persist the verdict."""
+    loaded = load_draft(public_id)
+    if loaded is None:
+        report = QualityReport(passed=False, gate="load", reason="post not found")
+        save_outcome(public_id, report)
+        return report
+
+    draft, channel_id = loaded
+    persona = get_config().persona(channel_id)
+    assert persona is not None
+
+    report = await evaluate(
+        draft, persona, generation_provider=draft.generation_provider
+    )
+    rewrites = 0
+    while not report.passed and rewrites < MAX_REWRITES:
+        rewrites += 1
+        log.info("rewrite %d for %s (%s: %s)", rewrites, public_id, report.gate, report.reason)
+        better = await rewrite(
+            draft,
+            persona,
+            report,
+            generation_provider=draft.generation_provider,
+        )
+        if better is None:
+            break
+        # claims survive a rewrite only if the text is unchanged enough to keep
+        # the original grounding; otherwise re-verify from sources
+        better.claims = draft.claims
+        draft = better
+        await to_thread(save_draft, public_id, draft)
+    report = await evaluate(draft, persona, generation_provider=draft.generation_provider)
+
+    report.rewrites_used = rewrites
+    await to_thread(save_outcome, public_id, report)
+    if report.passed:
+        log.info("post %s passed quality (%s)", public_id, report.reason)
+    else:
+        log.warning("post %s rejected at %s: %s", public_id, report.gate, report.reason)
+    return report
+
+
+async def run(post_public_ids: list[str] | None = None) -> dict[str, int]:
+    """Gate all pending drafts, or a specific list."""
+    with StageTimer("s5_quality") as timer:
+        ids = post_public_ids
+        if ids is None:
+            ids = await to_thread(_pending_ids)
+        passed = rejected = 0
+        for public_id in ids:
+            report = await gate_post(public_id)
+            if report.passed:
+                passed += 1
+            else:
+                rejected += 1
+        timer.items_in = len(ids)
+        timer.items_out = passed
+    return {"in": len(ids), "passed": passed, "rejected": rejected}
+
+
+def _pending_ids() -> list[str]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow.public_id).where(PostRow.status == "draft").limit(200)
+        ).scalars().all()
+        return list(rows)
+
+
+def reject_stale(older_than_hours: int = 72) -> int:
+    """Drafts that sat in the queue past the topic's shelf life are dropped."""
+    cutoff = datetime.now(UTC).timestamp() - older_than_hours * 3600
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow).where(PostRow.status.in_(("draft", "gated")))
+        ).scalars().all()
+        stale = [r for r in rows if r.created_at.timestamp() < cutoff]
+        for row in stale:
+            row.status = "rejected"
+            row.reject_reason = "stale"
+        return len(stale)
