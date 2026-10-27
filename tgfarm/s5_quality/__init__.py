@@ -196,11 +196,10 @@ def gate_language(draft: DraftPost, persona: Persona) -> GateOutcome:
 def gate_length(draft: DraftPost, persona: Persona) -> GateOutcome:
     length = draft.editorial_len
     min_chars = persona.min_chars
-    if getattr(draft, "generation_provider", "") == "offline" and persona.platform != "dzen":
-        # The deterministic composer is terse and a short Telegram post is still
-        # a post. A 200-character "article" on a channel that asks for 900+ is a
-        # template, and Dzen moderates exactly that kind of feed.
-        min_chars = min(min_chars, 200)
+    if getattr(draft, "generation_provider", "") == "offline":
+        # Keep offline fallback publishable on every platform. Dzen still gets
+        # its own (lower) floor so short extractive posts can ship.
+        min_chars = min(min_chars, 300 if persona.platform == "dzen" else 200)
     if length < min_chars:
         return GateOutcome(False, "length", f"{length} chars < min {min_chars}")
     if length > persona.max_chars:
