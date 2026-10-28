@@ -37,6 +37,7 @@ from tgfarm.db.models import (
     PipelineRun,
     Post,
     PostStat,
+    RedditMetricSnapshot,
     RawItem,
     Source,
 )
