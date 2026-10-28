@@ -119,7 +119,12 @@ def test_reddit_adapter_caches_oauth_token_across_posts(monkeypatch):
         post_requests += 1
         return httpx.Response(
             200,
-            json={"json": {"errors": [], "data": {"url": "https://www.reddit.com/r/learnpython/comments/a1/"}}},
+            json={
+                "json": {
+                    "errors": [],
+                    "data": {"url": "https://www.reddit.com/r/learnpython/comments/a1/"},
+                }
+            },
             request=request,
         )
 
