@@ -8,6 +8,7 @@
   const state = {
     view: "overview",
     postFilter: "",
+    crosspostFilter: "all",
     data: {},
     refreshTimer: null,
     inFlight: false,
@@ -1477,8 +1478,23 @@
       const bTime = Math.max(...b[1].map((row) => row.at ? new Date(row.at).getTime() : 0));
       return bTime - aTime;
     });
+    const matchesFilter = (rows) => {
+      const statuses = rows.map((row) => String(row.status || "unknown"));
+      if (state.crosspostFilter === "attention") {
+        return statuses.some((status) => ["unknown", "permanent", "permanent_failure", "failed"].includes(status));
+      }
+      if (state.crosspostFilter === "published") return statuses.includes("posted");
+      if (state.crosspostFilter === "errors") {
+        return statuses.some((status) => ["unknown", "permanent", "permanent_failure", "failed"].includes(status));
+      }
+      if (state.crosspostFilter === "pending") {
+        return statuses.some((status) => ["publishing", "retry_authorized"].includes(status));
+      }
+      return true;
+    };
+    const visibleCards = cards.filter(([, rows]) => matchesFilter(rows));
 
-    container.innerHTML = cards.slice(0, 12).map(([post, rows]) => {
+    container.innerHTML = visibleCards.slice(0, 12).map(([post, rows]) => {
       const latestAt = rows.reduce((best, row) => {
         const time = row.at ? new Date(row.at).getTime() : 0;
         return time > best ? time : best;
@@ -1531,7 +1547,7 @@
           </div>
           <div class="item-side"><span class="tag ${overallClass}">${esc(overall)}</span></div>
         </div>`;
-    }).join("") || `<div class="empty">Кросспостов пока нет</div>`;
+    }).join("") || `<div class="empty">${visibleCards.length ? "Нет материалов для выбранного фильтра" : (state.crosspostFilter === "all" ? "Кросспостов пока нет" : "Нет материалов для выбранного фильтра")}</div>`;
 
     $(".js-crosspost-reconcile", container) && $$(".js-crosspost-reconcile", container).forEach((button) => {
       button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
@@ -2078,6 +2094,11 @@
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
+
+  $("#crosspost-filter")?.addEventListener("change", (event) => {
+    state.crosspostFilter = event.target.value || "all";
+    renderCrossposts((state.data.crossposts && state.data.crossposts.crossposts) || []);
+  });
 
   $$("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
