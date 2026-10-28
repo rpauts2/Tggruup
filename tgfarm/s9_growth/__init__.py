@@ -12,6 +12,8 @@ no realistic upside — see RUNBOOK for the measured comparison.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import random
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -67,6 +69,32 @@ def assert_safe_growth(primitive: str) -> None:
 
 
 # ---------------------------------------------------------------- crossposting
+def _crosspost_sampled(public_id: str, sample_rate: float, rng: random.Random | None = None) -> bool:
+    """Stable per-post sampling for production, injectable RNG for deterministic tests.
+
+    Random re-sampling on every scheduler tick eventually selects almost every
+    post, even with a configured sample rate below 1. A hash bucket makes the
+    decision stable across restarts and cycles while still allowing sample_rate
+    to expand or shrink the eligible cohort.
+    """
+    try:
+        rate = float(sample_rate)
+    except (TypeError, ValueError):
+        rate = 0.0
+    if not math.isfinite(rate):
+        rate = 0.0
+    rate = min(1.0, max(0.0, rate))
+    if rate <= 0.0:
+        return False
+    if rate >= 1.0:
+        return True
+    if rng is not None:
+        return rng.random() < rate
+    digest = hashlib.sha256(public_id.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], byteorder="big") / (2**64)
+    return bucket < rate
+
+
 def _pending_crossposts(
     sample_rate: float,
     window_minutes: int = 720,
@@ -77,7 +105,7 @@ def _pending_crossposts(
     Dzen is a primary surface with its own generated posts, so copying Telegram
     posts there would duplicate the same story under a second byline.
     """
-    rng = rng or random.Random()
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     with session_scope() as session:
         rows = session.execute(
@@ -93,7 +121,7 @@ def _pending_crossposts(
         return [
             (row.id, row.public_id)
             for row in rows
-            if row.public_id is not None and rng.random() < sample_rate
+            if row.public_id is not None and _crosspost_sampled(row.public_id, sample_rate, rng)
         ]
 
 
