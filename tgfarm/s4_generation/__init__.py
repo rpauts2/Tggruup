@@ -397,13 +397,15 @@ async def generate(
         # The archive guides novelty, never factual grounding; S4 verification still
         # binds every factual claim to today's source block.
         try:
-            from tgfarm.s4_generation.memory import build_prompt_memory
+            from tgfarm.s4_generation.topic_memory import build_topic_context
 
-            archive_memory = await to_thread(build_prompt_memory, items, plan.channel_id)
-            if archive_memory:
-                prompt = f"{prompt}\\n\\n{archive_memory}"
+            topic_memory = await to_thread(
+                build_topic_context, items, plan.channel_id
+            )
+            if topic_memory:
+                prompt = f"{prompt}\n\n{topic_memory}"
         except Exception as exc:  # noqa: BLE001 - memory must never stall generation
-            log.warning("archive memory lookup failed: %s", exc)
+            log.warning("topic memory lookup failed: %s", exc)
 
         payload, response = await llm.complete_json(
             _DRAFT_SYSTEM,
