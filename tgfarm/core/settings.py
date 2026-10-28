@@ -381,12 +381,14 @@ class Settings(BaseSettings):
     vk_prime_share: float = Field(default=0.3, alias="VK_PRIME_SHARE")
     # Silence is ambiguous: a daily "everything is fine" heartbeat removes it.
     alert_heartbeat_hours: int = Field(default=24, alias="ALERT_HEARTBEAT_HOURS")
-    # Weekly automatic backup destination; empty means ROOT/backup (same as the
+    # Daily automatic backup destination; empty means ROOT/backup (same as the
     # Makefile). Old files beyond keep_backups are pruned.
     backup_dir: str = Field(default="", alias="BACKUP_DIR")
     # Optional mirror on a separate disk or mounted network share. Empty disables it.
     backup_mirror_dir: str = Field(default="", alias="BACKUP_MIRROR_DIR")
     keep_backups: int = Field(default=8, alias="KEEP_BACKUPS")
+    # Warn when no successful verified snapshot exists within this window.
+    backup_max_age_hours: int = Field(default=36, alias="BACKUP_MAX_AGE_HOURS")
     # Cluster and data hygiene: forming clusters age out, old raw rows leave.
     stale_cluster_hours: int = Field(default=72, alias="STALE_CLUSTER_HOURS")
     retention_raw_days: int = Field(default=90, alias="RETENTION_RAW_DAYS")
