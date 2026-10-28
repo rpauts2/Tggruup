@@ -48,6 +48,14 @@ def test_api_query_token_is_removed_without_losing_other_parameters() -> None:
     assert b"second-secret" not in cleaned
 
 
+def test_api_query_token_is_removed_when_key_is_url_encoded() -> None:
+    from tgfarm.core.apiauth import strip_token_from_query
+
+    cleaned = strip_token_from_query(b"%74oken=secret-value&limit=20")
+    assert cleaned == b"limit=20"
+    assert b"secret-value" not in cleaned
+
+
 def test_api_query_without_token_is_preserved_verbatim() -> None:
     from tgfarm.core.apiauth import strip_token_from_query
 
