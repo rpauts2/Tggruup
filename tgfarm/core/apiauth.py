@@ -89,7 +89,7 @@ def strip_token_from_query(raw_query: bytes) -> bytes:
     authorization; leaving it in the ASGI scope risks leaking it into server
     access logs and downstream exception reports.
     """
-    if not raw_query or b"token=" not in raw_query.lower():
+    if not raw_query:
         return raw_query
     try:
         pairs = parse_qsl(
@@ -101,6 +101,8 @@ def strip_token_from_query(raw_query: bytes) -> bytes:
         # An excessive/malformed query must not preserve a possible credential.
         return b""
     filtered = [(key, value) for key, value in pairs if key.lower() != "token"]
+    if len(filtered) == len(pairs):
+        return raw_query
     return urlencode(filtered, doseq=True).encode("ascii")
 
 
