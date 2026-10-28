@@ -988,7 +988,7 @@ def _crossposts_export(limit: int = 300) -> dict:
                     "platform": r.platform,
                     "status": r.status,
                     "remote_id": r.remote_id,
-                    "url": r.url,
+                    "url": redact_sensitive_text(r.url, limit=500) if r.url else None,
                     "attempt": r.attempt,
                     "retry_after_at": getattr(r, "retry_after_at", None).isoformat() if getattr(r, "retry_after_at", None) else None,
                     "at": r.created_at.isoformat() if r.created_at else None,
