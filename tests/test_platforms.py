@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -21,8 +20,9 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["youtube"]["supported"] is False
     assert entries["tiktok"]["supported"] is False
     assert catalog["summary"]["total"] >= 20
-    assert "token" not in str(catalog).lower() or "нужны" in str(catalog).lower()
-    assert all("api_key" not in item for item in entries.values())
+    # The public catalog may name environment variables, but never returns their values.
+    assert all("access_token" not in item and "api_key" not in item for item in entries.values())
+    assert all("secret" not in item for item in entries.values())
 
 
 def test_disabling_a_supported_network_persists_and_fails_closed(tmp_path, monkeypatch):
@@ -37,7 +37,6 @@ def test_disabling_a_supported_network_persists_and_fails_closed(tmp_path, monke
     assert item["status"] == "paused"
     assert platforms.is_platform_enabled("vk") is False
 
-    platforms._state_path = lambda: path
     assert platforms.is_platform_enabled("vk") is False
     raw = path.read_text(encoding="utf-8")
     assert "vk: false" in raw
