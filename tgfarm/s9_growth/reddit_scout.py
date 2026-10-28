@@ -190,6 +190,107 @@ def _risk_flags(about: dict[str, Any], rules: list[dict[str, str]], requirements
     return list(dict.fromkeys(flags))
 
 
+
+async def inspect_community(subreddit: str) -> dict[str, Any]:
+    """Fetch the current community description, visible rules and submit requirements."""
+    subreddit = (subreddit or "").strip()
+    subreddit = subreddit[2:] if subreddit.lower().startswith("r/") else subreddit
+    if not re.fullmatch(r"[A-Za-z0-9_]{2,21}", subreddit):
+        raise RedditScoutError("Укажи корректное имя subreddit без лишних символов.")
+    adapter = _adapter()
+    _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
+    token = await adapter._access_token()
+
+    import httpx
+
+    headers = {"User-Agent": user_agent, "Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
+        about = _extract_data(await _get_json(client, f"/r/{subreddit}/about"))
+        if not about:
+            raise RedditScoutError(f"Не удалось получить описание r/{subreddit}. Проверь название и доступ.")
+        rules = _rule_objects(await _get_json(client, f"/r/{subreddit}/about/rules"))
+        requirements = await _get_json(client, f"/api/v1/{subreddit}/post_requirements")
+
+    return {
+        "name": subreddit,
+        "about": about,
+        "rules": rules,
+        "requirements": requirements,
+        "risk_flags": _risk_flags(about, rules, requirements),
+    }
+
+
+def validate_submission(title: str, body: str, community: dict[str, Any]) -> list[str]:
+    """Validate machine-readable Reddit constraints before a human-confirmed submit."""
+    problems: list[str] = []
+    about = community.get("about") or {}
+    requirements = community.get("requirements") or {}
+    subreddit = str(community.get("name") or "this subreddit")
+
+    if about.get("over18"):
+        problems.append("Сообщество 18+ исключено из публикации в этом workflow.")
+    if about.get("subreddit_type") in {"private", "restricted"} or about.get("restrict_posting"):
+        problems.append("Сообщество закрытое/ограниченное; публикация заблокирована до отдельной ручной проверки.")
+    submission_type = str(about.get("submission_type") or "any")
+    if submission_type == "link":
+        problems.append("Сообщество разрешает только link-посты; текущий редактор подготовил текстовый пост.")
+    if requirements.get("is_flair_required"):
+        problems.append("В subreddit обязателен flair. Выбор flair пока не реализован, поэтому отправка заблокирована.")
+
+    title = (title or "").strip()
+    body = (body or "").strip()
+    min_title = requirements.get("title_text_min_length")
+    max_title = requirements.get("title_text_max_length")
+    min_body = requirements.get("body_text_min_length")
+    max_body = requirements.get("body_text_max_length")
+    if isinstance(min_title, int) and len(title) < min_title:
+        problems.append(f"Заголовок короче минимума subreddit: {min_title} символов.")
+    if isinstance(max_title, int) and len(title) > max_title:
+        problems.append(f"Заголовок превышает лимит subreddit: {max_title} символов.")
+    if isinstance(min_body, int) and len(body) < min_body:
+        problems.append(f"Текст короче минимума subreddit: {min_body} символов.")
+    if isinstance(max_body, int) and len(body) > max_body:
+        problems.append(f"Текст превышает лимит subreddit: {max_body} символов.")
+
+    lower_title, lower_body = title.lower(), body.lower()
+    for word in requirements.get("title_blacklisted_strings") or []:
+        if str(word).lower() in lower_title:
+            problems.append(f"Заголовок содержит запрещённый subreddit термин: {str(word)[:80]}.")
+            break
+    required_titles = [str(item) for item in requirements.get("title_required_strings") or [] if str(item)]
+    if required_titles and not any(word.lower() in lower_title for word in required_titles):
+        problems.append("Заголовок должен содержать хотя бы один обязательный термин subreddit.")
+    for word in requirements.get("body_blacklisted_strings") or []:
+        if str(word).lower() in lower_body:
+            problems.append(f"Текст содержит запрещённый subreddit термин: {str(word)[:80]}.")
+            break
+    if requirements.get("body_restriction_policy") == "notAllowed" and body:
+        problems.append("Subreddit запрещает текстовое тело поста.")
+    if requirements.get("body_restriction_policy") == "required" and not body:
+        problems.append("Subreddit требует текстовое тело поста.")
+
+    urls = re.findall(r"https?://[^\s)\]>]+", f"{title}\n{body}")
+    domains = []
+    from urllib.parse import urlparse
+    for url in urls:
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        if host:
+            domains.append(host)
+    whitelist = [str(item).lower().lstrip(".") for item in requirements.get("domain_whitelist") or []]
+    blacklist = [str(item).lower().lstrip(".") for item in requirements.get("domain_blacklist") or []]
+    if whitelist:
+        for host in domains:
+            if not any(host == allowed or host.endswith("." + allowed) for allowed in whitelist):
+                problems.append("В тексте есть ссылка на домен вне whitelist subreddit.")
+                break
+    for host in domains:
+        if any(host == denied or host.endswith("." + denied) for denied in blacklist):
+            problems.append(f"Ссылка на домен {host} запрещена требованиями subreddit.")
+            break
+
+    return list(dict.fromkeys(problems))
+
+
 def _candidate_score(
     candidate: dict[str, Any],
     *,
@@ -381,19 +482,11 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
     if post["status"] != "published":
         raise RedditScoutError("Подготовить Reddit-версию можно только для уже опубликованного поста TgFarm.")
 
-    adapter = _adapter()
-    _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
-    token = await adapter._access_token()
-
-    import httpx
-
-    headers = {"User-Agent": user_agent, "Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
-        about = _extract_data(await _get_json(client, f"/r/{subreddit}/about"))
-        if not about:
-            raise RedditScoutError(f"Не удалось получить описание r/{subreddit}. Проверь название и доступ.")
-        rules = _rule_objects(await _get_json(client, f"/r/{subreddit}/about/rules"))
-        requirements = await _get_json(client, f"/api/v1/{subreddit}/post_requirements")
+    community_info = await inspect_community(subreddit)
+    about = community_info["about"]
+    rules = community_info["rules"]
+    requirements = community_info["requirements"]
+    subreddit = community_info["name"]
     if about.get("over18"):
         raise RedditScoutError("Сообщество 18+ исключено из автоматической рекомендации.")
     if about.get("subreddit_type") == "private":
@@ -553,4 +646,10 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["RedditScoutError", "search_communities", "tailor_post"]
+__all__ = [
+    "RedditScoutError",
+    "inspect_community",
+    "search_communities",
+    "tailor_post",
+    "validate_submission",
+]
