@@ -836,6 +836,32 @@ def _crossposts(limit: int) -> list[dict]:
         ]
 
 
+def _crossposts_export(limit: int = 300) -> dict:
+    """Export delivery diagnostics without raw error text or credentials."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(CrosspostLog).order_by(CrosspostLog.id.desc()).limit(limit)
+        ).scalars().all()
+        return {
+            "schema_version": 1,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "redactions": ["raw error text omitted", "credentials and browser sessions are never exported"],
+            "crossposts": [
+                {
+                    "post": r.post_public_id,
+                    "platform": r.platform,
+                    "status": r.status,
+                    "remote_id": r.remote_id,
+                    "url": r.url,
+                    "attempt": r.attempt,
+                    "at": r.created_at.isoformat() if r.created_at else None,
+                    "has_error": bool(r.error),
+                }
+                for r in rows
+            ],
+        }
+
+
 def _report(days: int) -> dict:
     from tgfarm import s8_analytics
     from tgfarm.s8_analytics.dzen_web import metrics_status
@@ -1955,6 +1981,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/crossposts")
     async def crossposts(limit: int = Query(50, ge=1, le=300)) -> dict:
         return {"crossposts": await io(_crossposts, limit)}
+
+    @app.get("/api/crossposts/export")
+    async def export_crossposts(limit: int = Query(300, ge=1, le=300)) -> dict:
+        return await io(_crossposts_export, limit)
 
     @app.post("/api/crossposts/{post_public_id}/{platform}/reconcile")
     async def reconcile_crosspost(
