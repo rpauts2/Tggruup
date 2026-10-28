@@ -11,6 +11,7 @@ import asyncio
 import json
 
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 
 
 def _directory_has_entries(path) -> bool:
@@ -38,7 +39,7 @@ def run_doctor() -> dict:
         init_db()
         check("database", True, settings.database_url.split("://")[0])
     except Exception as exc:  # noqa: BLE001 - a broken database is a report, not a crash
-        check("database", False, str(exc)[:200])
+        check("database", False, redact_sensitive_text(exc, limit=200))
 
     config = get_config()
     check(
