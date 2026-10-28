@@ -95,6 +95,19 @@ def test_portfolio_holds_decisions_until_fourteen_days_of_observations():
         )
         for i in range(10)
     ]
+    metrics.extend(
+        SimpleNamespace(
+            post_public_id=f"baseline-{i}",
+            channel_id="a",
+            angle="digest",
+            hook_style="fact",
+            quality=0.2,
+            views=200,
+            impressions=0,
+            published_at=now - timedelta(days=1.5 + i * 0.5),
+        )
+        for i in range(10)
+    )
 
     report = build_portfolio_report(metrics, now=now)
     channel = report["channels"][0]
@@ -126,6 +139,19 @@ def test_portfolio_explains_recommendation_and_confidence_semantics_after_two_we
         )
         for i in range(10)
     ]
+    metrics.extend(
+        SimpleNamespace(
+            post_public_id=f"baseline-older-{i}",
+            channel_id="a",
+            angle="digest",
+            hook_style="fact",
+            quality=0.2,
+            views=200,
+            impressions=0,
+            published_at=now - timedelta(days=1 + (15 * i / 9)),
+        )
+        for i in range(10)
+    )
 
     report = build_portfolio_report(metrics, now=now)
     channel = report["channels"][0]
