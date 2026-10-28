@@ -693,6 +693,9 @@ async def _publish_one(
 
     if not is_platform_enabled(platform):
         return {"ok": True, "skipped": True, "reason": "platform_disabled"}
+    if platform not in {"telegram", "dzen", "vk"}:
+        # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
+        return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
@@ -795,6 +798,9 @@ def due_posts(
             if not is_platform_enabled(platform):
                 # Pause delivery without changing the queued post's state.
                 # Re-enabling the platform makes the same queued post eligible again.
+                continue
+            if platform not in {"telegram", "dzen", "vk"}:
+                # Crosspost-only services must never be sent to the Telegram API.
                 continue
             if platform == "dzen":
                 target: int | str = channel.id if channel else "dzen"

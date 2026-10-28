@@ -7,10 +7,10 @@ enabled:
   vk: true
   max: true
   x: true
+  reddit: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
-  - reddit
   - youtube
   - tiktok
   - instagram

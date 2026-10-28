@@ -21,11 +21,11 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit"} <= {
         key for key, item in entries.items() if item["supported"]
     }
-    assert entries["reddit"]["supported"] is False
-    assert entries["reddit"]["planned"] is True
+    assert entries["reddit"]["supported"] is True
+    assert entries["reddit"]["planned"] is False
     assert entries["youtube"]["supported"] is False
     assert entries["tiktok"]["supported"] is False
     assert catalog["summary"]["total"] >= 20
@@ -56,21 +56,21 @@ def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monk
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
-        platforms.set_platform_enabled("reddit", True)
-    assert platforms.is_platform_enabled("reddit") is False
+        platforms.set_platform_enabled("youtube", True)
+    assert platforms.is_platform_enabled("youtube") is False
 
 
 def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("reddit", True)
+    item = platforms.set_platform_planned("youtube", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("reddit", False)
+    item = platforms.set_platform_planned("youtube", False)
     assert item["planned"] is False
-    assert platforms.is_platform_enabled("reddit") is False
+    assert platforms.is_platform_enabled("youtube") is False
 
 
 def test_disabled_crosspost_network_never_reaches_the_post_loader(monkeypatch, tmp_path):
@@ -96,8 +96,9 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 5
-    assert any(item["id"] == "reddit" for item in payload["platforms"])
+    assert payload["summary"]["supported"] == 6
+    entries = {item["id"]: item for item in payload["platforms"]}
+    assert entries["reddit"]["supported"] is True
 
 
 def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tmp_path):
@@ -106,7 +107,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/reddit",
+        "/api/platforms/youtube",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )
@@ -180,3 +181,43 @@ def test_paused_primary_platform_stays_queued_and_returns_when_reenabled(monkeyp
 
     platforms.set_platform_enabled("dzen", True)
     assert any(row[0] == queued.id for row in due_posts(limit=1000))
+
+
+def test_crosspost_only_reddit_is_never_misrouted_to_telegram(monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from tgfarm import platforms
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import due_posts
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    channel_id = "reddit_primary_" + uuid4().hex[:10]
+    post_id = "reddit_queued_" + uuid4().hex[:10]
+    with session_scope() as session:
+        session.add(
+            Channel(
+                id=channel_id,
+                title="Reddit safety test",
+                niche="general",
+                platform="reddit",
+            )
+        )
+        session.add(
+            Post(
+                public_id=post_id,
+                channel_id=channel_id,
+                hook="Reddit-only post",
+                body="This must not be sent through Telegram.",
+                status="scheduled",
+                scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+
+    platforms.set_platform_enabled("reddit", True)
+    assert all(row[0] != post_id for row in due_posts(limit=1000))
+
+    with session_scope() as session:
+        queued = session.query(Post).filter_by(public_id=post_id).one()
+        assert queued.status == "scheduled"
