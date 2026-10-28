@@ -19,7 +19,7 @@
 | ВКонтакте | Основные посты и кросспост | VK_ACCESS_TOKEN, VK_GROUP_ID |
 | Дзен | Основные статьи через браузерный профиль | Авторизованный профиль браузера Дзена |
 | MAX | Кросспост | MAX_ACCESS_TOKEN, MAX_CHANNEL_ID |
-| X | Кросспост | X_BEARER_TOKEN, X_USER_ID; права токена нужно проверить отдельно |
+| X | Кросспост | OAuth 2.0 + PKCE, Client ID/Secret, user token with tweet.write and offline.access |
 | Reddit | Кросспост в один выбранный subreddit | Reddit OAuth client ID/secret, постоянный refresh token, subreddit и User-Agent |
 | Mastodon | Кросспост текстовых статусов | OAuth 2.0 + PKCE, пользовательский токен на выбранном HTTPS-инстансе |
 
