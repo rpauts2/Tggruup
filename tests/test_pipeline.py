@@ -545,6 +545,64 @@ def test_forbidden_list_covers_the_usual_spam_suite():
 
 
 # ---------------------------------------------------------------- adapters
+def test_vk_crosspost_payload_attaches_existing_primary_cover_and_skips_video(tmp_path):
+    import uuid
+
+    from tgfarm.db.models import Channel, Media, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import build_payload, primary_image_path
+
+    channel_id = "vk_cover_" + uuid.uuid4().hex[:8]
+    public_id = "vk_cover_post_" + uuid.uuid4().hex[:8]
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"placeholder image bytes")
+
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="VK cover test", niche="tech", platform="telegram"))
+        post = Post(
+            public_id=public_id,
+            channel_id=channel_id,
+            hook="Test title",
+            body="Test body",
+            status="published",
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+        session.add_all(
+            [
+                Media(
+                    post_id=post_id,
+                    kind="template",
+                    path=str(cover),
+                    is_primary=True,
+                ),
+                Media(
+                    post_id=post_id,
+                    kind="video",
+                    path=str(tmp_path / "video.mp4"),
+                    is_primary=True,
+                ),
+                Media(
+                    post_id=post_id,
+                    kind="article_image",
+                    path=str(tmp_path / "article-original.jpg"),
+                    is_primary=True,
+                ),
+            ]
+        )
+
+    image_path = primary_image_path(post_id)
+    assert image_path == str(cover)
+
+    with session_scope() as session:
+        post = session.query(Post).filter_by(public_id=public_id).one()
+        payload = build_payload(post, image_path=image_path)
+
+    assert payload.meta["image_path"] == str(cover)
+    assert payload.meta["post_public_id"] == public_id
+
+
 def test_crosspost_adapters_self_disable_without_credentials():
     from tgfarm.s9_growth.adapters import ADAPTERS
 

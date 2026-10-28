@@ -31,6 +31,7 @@ from tgfarm.s9_growth.adapters import (
     already_done,
     build_payload,
     log_result,
+    primary_image_path,
 )
 
 log = get_logger(__name__)
@@ -103,6 +104,11 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
     if post is None:
         return []
 
+    image_path = (
+        await to_thread(primary_image_path, post_pk)
+        if "vk" in platforms
+        else None
+    )
     results: list[CrosspostResult] = []
     for name in platforms:
         adapter = ADAPTERS.get(name)
@@ -116,7 +122,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if await to_thread(already_done, post.public_id, name):
             continue
 
-        payload = build_payload(post)
+        payload = build_payload(post, image_path=image_path if name == "vk" else None)
         payload.platform = name
         if settings.live:
             result = await adapter.publish(payload)

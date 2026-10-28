@@ -255,19 +255,46 @@ ADAPTERS: dict[str, Adapter] = {
 }
 
 
-def build_payload(post) -> CrosspostPayload:
+def primary_image_path(post_id: int) -> str | None:
+    """Find an existing farm-generated primary image suitable for a VK wall post."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Media as MediaRow
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        paths = session.execute(
+            select(MediaRow.path)
+            .where(
+                MediaRow.post_id == post_id,
+                MediaRow.is_primary.is_(True),
+                MediaRow.kind.notin_(("video", "article_image")),
+            )
+            .order_by(MediaRow.id.desc())
+        ).scalars().all()
+
+    for raw_path in paths:
+        if raw_path and Path(raw_path).is_file():
+            return str(Path(raw_path))
+    return None
+
+
+def build_payload(post, *, image_path: str | None = None) -> CrosspostPayload:
     """Translate a published post into a per-platform payload."""
     body = post.body.strip()
     link = _first_source_url(post.sources or [])
     if link:
         body = f"{body}\n\nПодробнее: {link}"
     tags = " ".join(f"#{h}" for h in (post.hashtags or [])[:5])
+    meta = {"cta": post.cta, "post_public_id": post.public_id}
+    if image_path:
+        meta["image_path"] = image_path
     return CrosspostPayload(
         platform="",
         title=post.hook.strip(),
         text=f"{body}\n\n{tags}".strip() if tags else body,
         link=link,
-        meta={"cta": post.cta, "post_public_id": post.public_id},
+        meta=meta,
     )
 
 
