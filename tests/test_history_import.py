@@ -179,3 +179,76 @@ def test_import_rejects_unknown_channel():
     )
     with pytest.raises(ValueError, match="не найден"):
         import_history([row], channel_id="no_such_channel_" + uuid4().hex[:8])
+
+
+
+def test_fetch_telegram_history_uses_read_only_session_and_returns_oldest_first(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgfarm import tguser
+    from tgfarm.history_import import fetch_telegram_history
+
+    old = SimpleNamespace(
+        id=10,
+        message="Самый ранний пост",
+        date=datetime(2023, 1, 1, tzinfo=UTC),
+    )
+    newest = SimpleNamespace(
+        id=20,
+        message="Следующий пост",
+        date=datetime(2023, 1, 2, tzinfo=UTC),
+    )
+    channel = SimpleNamespace(id=777, title="Мой канал", username="my_public_channel")
+
+    class FakeClient:
+        entered = False
+        exited = False
+        requested = None
+
+        async def __aenter__(self):
+            self.entered = True
+            return self
+
+        async def __aexit__(self, *_args):
+            self.exited = True
+            return False
+
+        async def get_entity(self, chat):
+            assert chat == 777
+            return channel
+
+        def iter_messages(self, entity, *, limit, reverse):
+            self.requested = (entity, limit, reverse)
+
+            async def _messages():
+                yield old
+                yield newest
+
+            return _messages()
+
+    fake = FakeClient()
+
+    async def fake_connect(read_only=True):
+        assert read_only is True
+        return fake
+
+    monkeypatch.setattr(tguser, "connect", fake_connect)
+    rows = asyncio.run(fetch_telegram_history("777", limit=123))
+
+    assert fake.entered and fake.exited
+    assert fake.requested == (channel, 123, True)
+    assert [row.external_id for row in rows] == ["10", "20"]
+    assert rows[0].source_channel == "Мой канал"
+    assert rows[0].url == "https://t.me/my_public_channel/10"
+    assert rows[1].published_at == datetime(2023, 1, 2, tzinfo=UTC)
+
+
+def test_fetch_telegram_history_rejects_unbounded_limit():
+    import asyncio
+    import pytest
+
+    from tgfarm.history_import import fetch_telegram_history
+
+    with pytest.raises(ValueError, match="от 1 до 5000"):
+        asyncio.run(fetch_telegram_history("channel", limit=5001))
