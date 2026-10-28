@@ -1059,7 +1059,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         query: str = Query(..., min_length=2, max_length=500),
         channel_id: str | None = None,
         days: int = Query(30, ge=1, le=180),
-        archive_limit: int = Query(60, ge=1, le=100),
+        archive_limit: int = Query(300, ge=1, le=300),
     ) -> dict:
         """Build a topic dossier from historical posts and recently collected sources."""
         from tgfarm.s4_generation.topic_memory import build_topic_dossier
