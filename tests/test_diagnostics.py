@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from tgfarm.diagnostics import _directory_has_entries
 
 
