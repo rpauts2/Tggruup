@@ -287,6 +287,12 @@ class Settings(BaseSettings):
     dzen_stats_timeout_s: int = Field(default=60, alias="DZEN_STATS_TIMEOUT_S")
     x_bearer_token: str = Field(default="", alias="X_BEARER_TOKEN")
     x_user_id: str = Field(default="", alias="X_USER_ID")
+    # Reddit uses OAuth refresh tokens. Account passwords must never be stored.
+    reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
+    reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
+    reddit_refresh_token: str = Field(default="", alias="REDDIT_REFRESH_TOKEN")
+    reddit_subreddit: str = Field(default="", alias="REDDIT_SUBREDDIT")
+    reddit_user_agent: str = Field(default="", alias="REDDIT_USER_AGENT")
 
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
