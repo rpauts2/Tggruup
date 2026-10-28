@@ -324,11 +324,11 @@ class XAdapter:
         import httpx
 
         try:
-            from tgfarm.x_oauth import get_valid_x_access_token
+            from tgfarm.x_oauth import XOAuthTemporaryError, get_valid_x_access_token
 
             token = await get_valid_x_access_token()
         except Exception as exc:  # noqa: BLE001 - refresh is separate from posting
-            status = "failed" if isinstance(exc, httpx.RequestError) else "permanent"
+            status = "failed" if isinstance(exc, XOAuthTemporaryError) else "permanent"
             log.warning("x OAuth refresh %s (%s)", status, type(exc).__name__)
             return CrosspostResult(
                 platform=self.platform, status=status,
