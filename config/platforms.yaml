@@ -8,6 +8,7 @@ enabled:
   max: true
   x: true
   reddit: false
+  bluesky: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
