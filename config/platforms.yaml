@@ -12,12 +12,12 @@ enabled:
   mastodon: false
   threads: false
   linkedin: false
+  instagram: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
   - youtube
   - tiktok
-  - instagram
   - odnoklassniki
   - rutube
   - pinterest
