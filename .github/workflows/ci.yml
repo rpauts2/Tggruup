@@ -34,6 +34,9 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q tgfarm tests
 
+      - name: Check dashboard JavaScript syntax
+        run: node --check tgfarm/ui/app.js
+
       - name: Run test suite
         env:
           TGFARM_MODE: off
