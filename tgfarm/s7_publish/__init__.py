@@ -575,9 +575,9 @@ async def _publish_dzen(
 def _claim_post(post_id: int) -> bool:
     """Take a post out of the queue atomically.
 
-    The cycle and the 5-minute publish tick overlap on purpose, so two
-    coroutines can see the same `scheduled` row. A conditional UPDATE is the
-    lock: only one of them moves the row to `publishing`, the other skips it.
+    The in-process publisher serializes batches, but this database claim is
+    still required as a final guard against a second process or direct caller.
+    Only one worker can move a given `scheduled` row to `publishing`.
     """
     with session_scope() as session:
         result = session.execute(
