@@ -59,5 +59,6 @@ def test_crosspost_diagnostics_export_omits_raw_errors_and_secrets(monkeypatch):
 
     ui_rows = api._crossposts(10)
     assert "super-secret-token" not in repr(ui_rows)
-    assert "Bearer [REDACTED]" in ui_rows[0]["error"]
+    assert "Authorization" in ui_rows[0]["error"]
+    assert "REDACTED" in ui_rows[0]["error"]
     assert "access_token=[REDACTED]" in ui_rows[0]["url"]
