@@ -117,9 +117,9 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "threads", "name": "Threads", "symbol": "@", "color": "#D8D8E0",
         "category": "Мировые", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["text", "visual"],
-        "description": "Текстовые заметки и обсуждения в экосистеме Meta.",
-        "requirements": "Meta app, OAuth и разрешения Threads API.",
+        "mode": "built_in", "roles": ["text", "crosspost"],
+        "description": "Нативные текстовые публикации через Threads API с отдельным OAuth и автообновлением токена.",
+        "requirements": "Meta App с Threads API, THREADS_APP_ID/SECRET и scopes threads_basic, threads_content_publish.",
         "docs_url": "https://developers.facebook.com/docs/threads/",
     },
     {
@@ -310,6 +310,14 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "X_TOKEN_EXPIRES_AT", "attribute": "x_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия токена."},
         {"key": "X_USER_ID", "attribute": "x_user_id", "label": "User ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого аккаунта."},
     ],
+    "threads": [
+        {"key": "THREADS_APP_ID", "attribute": "threads_app_id", "label": "Threads App ID", "secret": False, "placeholder": "Meta App ID", "help": "Идентификатор Meta-приложения с добавленным продуктом Threads API."},
+        {"key": "THREADS_APP_SECRET", "attribute": "threads_app_secret", "label": "Threads App Secret", "secret": True, "placeholder": "Meta App Secret", "help": "Секрет приложения. Хранится локально и не показывается повторно."},
+        {"key": "THREADS_ACCESS_TOKEN", "attribute": "threads_access_token", "label": "Access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний OAuth-токен."},
+        {"key": "THREADS_TOKEN_EXPIRES_AT", "attribute": "threads_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия токена."},
+        {"key": "THREADS_USER_ID", "attribute": "threads_user_id", "label": "User ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
+        {"key": "THREADS_USERNAME", "attribute": "threads_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
     "reddit": [
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
         {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
@@ -446,7 +454,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x"}:
+    elif platform_id in {"mastodon", "x", "threads"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -470,7 +478,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "dzen" else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
-            "Для X сохрани Client ID/Secret, затем нажми «Подключить через OAuth»; для других API-площадок после сохранения нажми «Проверить доступ». Проверка API не заменяет тест публикации." if platform_id == "x" else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации."
+            ("Для X или Threads сначала сохрани App ID/Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
+            if platform_id in {"x", "threads"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
     }
 
@@ -659,6 +668,10 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.bluesky_handle and settings.bluesky_app_password:
             return True, "Handle и app password заданы; проверь сессию и write-доступ."
         return False, "Нужны BLUESKY_HANDLE и BLUESKY_APP_PASSWORD."
+    if platform_id == "threads":
+        if settings.threads_access_token and settings.threads_user_id:
+            return True, "Threads OAuth найден; профиль и срок действия проверяются перед публикацией."
+        return False, "Нужно сохранить Threads App ID/Secret и подключить аккаунт через OAuth."
     if platform_id == "mastodon":
         if settings.mastodon_instance and settings.mastodon_access_token:
             return True, "Mastodon OAuth-токен сохранён; повторно проверь срок доступа и scope."
