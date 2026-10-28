@@ -1083,7 +1083,7 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
                 status=result.status,
                 remote_id=result.remote_id,
                 url=result.url,
-                error=result.error,
+                error=redact_sensitive_text(result.error, limit=300) if result.error else None,
                 attempt=attempt,
             )
         )
