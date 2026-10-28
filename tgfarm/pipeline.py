@@ -209,6 +209,43 @@ def _publication_liveness_alert(
     }
 
 
+def _backup_freshness_alert(
+    last_successful_backup_at: datetime | None,
+    current: datetime,
+    max_age_hours: int,
+) -> dict | None:
+    """Warn when no verified backup exists or the last one is too old."""
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    threshold_hours = max(1, int(max_age_hours))
+    if last_successful_backup_at is None:
+        return {
+            "level": "warning",
+            "code": "backup_missing",
+            "message": (
+                "Нет ни одной успешной проверенной резервной копии. "
+                "TgFarm создаёт резервную копию автоматически раз в сутки; "
+                "проверь доступность папки BACKUP_DIR."
+            ),
+        }
+
+    stamp = (
+        last_successful_backup_at.replace(tzinfo=UTC)
+        if last_successful_backup_at.tzinfo is None
+        else last_successful_backup_at.astimezone(UTC)
+    )
+    age_hours = max(0.0, (current - stamp).total_seconds() / 3600)
+    if age_hours < threshold_hours:
+        return None
+    return {
+        "level": "error",
+        "code": "backup_stale",
+        "message": (
+            f"Последняя успешная резервная копия была {age_hours:.1f} ч назад "
+            f"(порог {threshold_hours} ч). Проверь расписание, диск и BACKUP_DIR."
+        ),
+    }
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -305,6 +342,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).first()
+        last_successful_backup_at = session.execute(
+            select(PipelineRun.created_at)
+            .where(PipelineRun.stage == "backup", PipelineRun.status == "ok")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -460,6 +503,13 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "message": message,
             }
         )
+    backup_freshness = _backup_freshness_alert(
+        last_successful_backup_at,
+        current,
+        getattr(settings, "backup_max_age_hours", 36),
+    )
+    if backup_freshness:
+        alerts.append(backup_freshness)
     return alerts
 
 
@@ -1157,6 +1207,52 @@ async def _branding_tick() -> dict | None:
         return None
 
 
+async def _startup_backup_check() -> dict | None:
+    """Create a verified snapshot on startup when none is fresh or the last attempt failed."""
+    settings = get_settings()
+    try:
+        with session_scope() as session:
+            last_successful = session.execute(
+                select(PipelineRun.created_at)
+                .where(PipelineRun.stage == "backup", PipelineRun.status == "ok")
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            last_attempt = session.execute(
+                select(PipelineRun.status)
+                .where(PipelineRun.stage == "backup")
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+        stale = _backup_freshness_alert(
+            last_successful,
+            datetime.now(UTC),
+            getattr(settings, "backup_max_age_hours", 36),
+        )
+        if stale is None and last_attempt != "error":
+            log.info("startup backup check: a recent verified snapshot exists")
+            return None
+
+        reason = stale["code"] if stale else "the last backup attempt failed"
+        log.warning("startup backup check: creating a snapshot (%s)", reason)
+        report = await backup_job()
+        if report.get("verified"):
+            log.info("startup backup check: verified snapshot created")
+        else:
+            log.error(
+                "startup backup check: snapshot still needs attention (%s)",
+                redact_sensitive_text(report.get("reason") or "verification failed", limit=180),
+            )
+        return report
+    except Exception as exc:  # noqa: BLE001 - recovery must not prevent the scheduler from starting
+        log.error(
+            "startup backup check failed: %s",
+            redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=200),
+        )
+        return None
+
+
 # ------------------------------------------------------------------- scheduler
 def _build_scheduler():
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1219,9 +1315,9 @@ def _build_scheduler():
 
     scheduler.add_job(
         backup_job,
-        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=settings.tz),
-        id="weekly-backup",
-        name="weekly sqlite backup",
+        CronTrigger(hour=4, minute=0, timezone=settings.tz),
+        id="daily-backup",
+        name="daily verified sqlite backup",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
@@ -1254,6 +1350,18 @@ def _build_scheduler():
         name="brand cover rotation",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # The weekly/daily cron is not enough for a new install or a machine that
+    # was powered off during the scheduled time. Check freshness once at boot.
+    scheduler.add_job(
+        _startup_backup_check,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-backup-check",
+        name="ensure a recent backup on startup",
+        max_instances=1,
         misfire_grace_time=3600,
     )
     return scheduler
