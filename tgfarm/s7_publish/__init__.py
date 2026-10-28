@@ -689,6 +689,10 @@ async def _publish_one(
             return {"ok": False, "error": "post disappeared"}
         if post.status == "published":
             return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
+    from tgfarm.platforms import is_platform_enabled
+
+    if not is_platform_enabled(platform):
+        return {"ok": True, "skipped": True, "reason": "platform_disabled"}
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
