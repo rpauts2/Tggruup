@@ -480,13 +480,13 @@ async def verify(
             reason=reason,
             cluster_public_id="",
         )
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     decision = await to_thread(
         policy.reserve, "s4_verify", purpose="verify"
     )
     if not decision.allowed:
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     payload, response = await llm.complete_json(
         _VERIFY_SYSTEM, prompt, max_tokens=1600, offline_fallback=fallback
@@ -503,7 +503,7 @@ async def verify(
     claims: list[Claim] = []
     raw_claims = payload.get("claims")
     if not isinstance(raw_claims, list):
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     for entry in raw_claims[:8]:
         if not isinstance(entry, dict):
@@ -516,7 +516,11 @@ async def verify(
         url = url if url in allowed else items[0].url
         verified = bool(entry.get("verified")) and _lexically_supported(claim_text, allowed[url])
         claims.append(Claim(claim=claim_text, source_url=url, verified=verified))
-    return claims
+
+    # Independently audit every numeric sentence, even when the model omitted
+    # it from its claim list. This also runs in offline/budget-limited mode.
+    claims.extend(_numeric_audit_claims(draft, items))
+    return _dedupe_claims(claims)
 
 
 # A number followed by an optional unit. Deliberately strict about the decimal
@@ -551,8 +555,8 @@ def _lexically_supported(claim: str, item) -> bool:
     """Cheap corroboration: every number in the claim must appear in the source.
 
     Catches the dominant hallucination class (invented figures) without any API
-    call. A claim with no numbers passes — it is qualitative and gets caught by
-    the tone critic instead.
+    call. A claim with no checkable numbers passes; qualitative claims still need
+    the LLM fact-checker and editorial gates.
     """
     haystack = _normalise_haystack(f"{item.title} {item.text}")
     for token in _NUMBER_RE.findall(claim or ""):
@@ -560,6 +564,84 @@ def _lexically_supported(claim: str, item) -> bool:
         if len(digits) >= 2 and digits not in haystack:
             return False
     return True
+
+
+def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
+    """Return sentences containing meaningful numeric assertions.
+
+    Splitting only at punctuation followed by whitespace avoids splitting decimal
+    numbers such as 0.02. Very short numbers are ignored by the same grounding
+    rule used elsewhere, so list labels like "1." do not become false alarms.
+    """
+    text = f"{draft.hook}\n{draft.body}"
+    candidates = re.split(r"(?<=[.!?…])\\s+|\\n+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in candidates:
+        sentence = " ".join(sentence.split()).strip()
+        if not sentence:
+            continue
+        checkable = [
+            _normalise_number(token)
+            for token in _NUMBER_RE.findall(sentence)
+            if len(_normalise_number(token)) >= 2
+        ]
+        key = sentence.casefold()
+        if checkable and key not in seen:
+            seen.add(key)
+            out.append(sentence)
+    return out
+
+
+def _numeric_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Ground all numeric sentences against sources independently of the LLM."""
+    if not items:
+        return []
+    audits: list[Claim] = []
+    for sentence in _numeric_claim_sentences(draft):
+        source = next((item for item in items if _lexically_supported(sentence, item)), None)
+        audits.append(
+            Claim(
+                claim=sentence[:400],
+                source_url=(source or items[0]).url,
+                verified=source is not None,
+                note="numeric_audit",
+            )
+        )
+    return audits
+
+
+def _fallback_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Deterministic claim set for offline mode and exhausted AI budget."""
+    if not items:
+        return []
+    base = Claim(
+        claim=draft.hook[:200],
+        source_url=items[0].url,
+        verified=_lexically_supported(draft.hook, items[0]),
+    )
+    return _dedupe_claims([base, *_numeric_audit_claims(draft, items)])
+
+
+def _dedupe_claims(claims: list[Claim]) -> list[Claim]:
+    """Deduplicate claims without letting a permissive duplicate mask a failure."""
+    out: list[Claim] = []
+    positions: dict[str, int] = {}
+    for claim in claims:
+        key = " ".join(claim.claim.casefold().split())
+        if not key:
+            continue
+        if key not in positions:
+            positions[key] = len(out)
+            out.append(claim)
+            continue
+        index = positions[key]
+        existing = out[index]
+        if not claim.verified and existing.verified:
+            out[index] = claim
+        elif claim.note == "numeric_audit" and existing.note != "numeric_audit":
+            out[index] = claim
+    return out
 
 
 def _channel_history_vectors(channel_id: str, limit: int = 60) -> list:
