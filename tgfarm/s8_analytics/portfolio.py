@@ -17,6 +17,7 @@ MIN_GROUP_SAMPLES = 3
 MIN_VIEWS = 30
 MIN_IMPRESSIONS = 100
 DEFAULT_MIN_AGE_HOURS = 24
+MIN_OBSERVATION_DAYS = 14
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -104,6 +105,24 @@ def build_portfolio_report(
     channel_reports = []
     for channel_id, items in by_channel.items():
         baseline = sum(_quality(getattr(item, "quality", 0.0)) for item in items) / len(items)
+        observation_times = [
+            published
+            for item in items
+            if (published := _utc(getattr(item, "published_at", None))) is not None
+        ]
+        observation_span_days = (
+            max(0.0, (max(observation_times) - min(observation_times)).total_seconds() / 86400)
+            if observation_times else 0.0
+        )
+        recommendations_ready = observation_span_days >= MIN_OBSERVATION_DAYS
+        readiness_reason = (
+            "Достаточный период наблюдений для предварительных рекомендаций."
+            if recommendations_ready
+            else (
+                f"Рано менять стратегию: наблюдения охватывают "
+                f"{observation_span_days:.1f} из {MIN_OBSERVATION_DAYS} требуемых дней."
+            )
+        )
         dimensions = {
             "angle": lambda item: str(getattr(item, "angle", "") or "unknown"),
             "hook_style": lambda item: str(getattr(item, "hook_style", "") or ""),
@@ -120,6 +139,35 @@ def build_portfolio_report(
                 if len(scores) < MIN_GROUP_SAMPLES:
                     continue
                 estimate = estimate_group(scores, baseline)
+                proposed_decision = estimate["decision"]
+                if not recommendations_ready:
+                    estimate["proposed_decision"] = proposed_decision
+                    estimate["decision"] = "hold"
+                    estimate["actionable"] = False
+                    estimate["reason"] = readiness_reason
+                else:
+                    estimate["actionable"] = proposed_decision in {"promote", "reduce", "test"}
+                    lift_pct = estimate["lift"] * 100
+                    if proposed_decision == "promote":
+                        estimate["reason"] = (
+                            f"Скорректированное качество выше базы на {lift_pct:.1f} п.п.; "
+                            f"выборка {estimate['sample_size']} постов."
+                        )
+                    elif proposed_decision == "reduce":
+                        estimate["reason"] = (
+                            f"Скорректированное качество ниже базы на {abs(lift_pct):.1f} п.п.; "
+                            f"выборка {estimate['sample_size']} постов."
+                        )
+                    elif proposed_decision == "test":
+                        estimate["reason"] = (
+                            f"Есть предварительный отрыв {lift_pct:+.1f} п.п., "
+                            f"но выборки недостаточно для сильного вывода."
+                        )
+                    else:
+                        estimate["reason"] = (
+                            f"Отрыв {lift_pct:+.1f} п.п. пока меньше порога принятия решения."
+                        )
+                estimate["confidence_kind"] = "shrinkage_weight_not_probability"
                 estimate.update({"dimension": dimension, "key": key})
                 recommendations.append(estimate)
 
@@ -132,6 +180,10 @@ def build_portfolio_report(
             "title": channel_titles.get(channel_id, channel_id),
             "measured_posts": len(items),
             "baseline_quality": round(baseline, 4),
+            "observation_span_days": round(observation_span_days, 1),
+            "minimum_observation_days": MIN_OBSERVATION_DAYS,
+            "recommendations_ready": recommendations_ready,
+            "readiness_reason": readiness_reason,
             "recommendations": recommendations[:12],
         })
 
@@ -141,6 +193,8 @@ def build_portfolio_report(
         "min_age_hours": min_age,
         "min_group_samples": MIN_GROUP_SAMPLES,
         "prior_strength": int(PRIOR_STRENGTH),
+        "minimum_observation_days": MIN_OBSERVATION_DAYS,
+        "confidence_definition": "sample_size / (sample_size + prior_strength), a shrinkage weight rather than a probability",
         "measured_posts": len(mature),
         "immature_posts": immature,
         "unmeasured_posts": unmeasured,
