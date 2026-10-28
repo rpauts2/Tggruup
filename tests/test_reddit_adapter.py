@@ -10,6 +10,9 @@ from tgfarm.core.schemas import CrosspostPayload
 from tgfarm.s9_growth import adapters
 
 
+ORIGINAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
 def _reddit_settings(subreddit: str = "learnpython") -> SimpleNamespace:
     return SimpleNamespace(
         reddit_client_id="test-client-id",
@@ -21,10 +24,8 @@ def _reddit_settings(subreddit: str = "learnpython") -> SimpleNamespace:
 
 
 def _mock_httpx(monkeypatch, handler):
-    original_client = httpx.AsyncClient
-
     def client_factory(*args, **kwargs):
-        return original_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+        return ORIGINAL_ASYNC_CLIENT(*args, transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", client_factory)
 
