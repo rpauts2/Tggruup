@@ -42,7 +42,7 @@ def test_parse_telegram_desktop_export_keeps_text_entities_and_ignores_service_m
     assert rows[0].platform == "telegram"
     assert rows[0].source_channel == "Архив канала"
     assert rows[0].external_id == "41"
-    assert rows[0].text == "Исторический постс продолжением"
+    assert rows[0].text == "Исторический пост с продолжением"
     assert rows[0].published_at == datetime(2024, 1, 2, 12, 30, tzinfo=UTC)
 
 
@@ -125,7 +125,8 @@ def test_import_is_preview_only_by_default_then_idempotent_when_applied():
         assert post.generation_provider == "history_import"
         assert post.quality["imported_history"] is True
         assert post.sources[0]["url"] == "https://example.com/post-001"
-        assert post.published_at == datetime(2024, 4, 15, 11, tzinfo=UTC)
+        assert post.published_at is not None
+        assert post.published_at.replace(tzinfo=UTC) == datetime(2024, 4, 15, 11, tzinfo=UTC)
 
     repeated = import_history(rows, channel_id=channel_id, apply=True)
     assert repeated["imported"] == 0
