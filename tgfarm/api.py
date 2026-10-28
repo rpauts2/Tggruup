@@ -803,7 +803,10 @@ def _channels() -> list[dict]:
 def _reject(public_ids: list[str], reason: str) -> int:
     with session_scope() as session:
         rows = session.execute(
-            select(Post).where(Post.public_id.in_(public_ids))
+            select(Post).where(
+                Post.public_id.in_(public_ids),
+                Post.status != "publish_unknown",
+            )
         ).scalars().all()
         for row in rows:
             row.status = "rejected"
