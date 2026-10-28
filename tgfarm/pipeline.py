@@ -821,7 +821,6 @@ def _build_scheduler():
         name="publish tick",
         max_instances=1,
         coalesce=True,
-        kwargs={"collect": False},
     )
 
     scheduler.add_job(
