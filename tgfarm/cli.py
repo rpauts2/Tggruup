@@ -469,6 +469,19 @@ def cmd_history_import(args) -> int:
     return 0
 
 
+def cmd_history_import_telegram(args) -> int:
+    """Import bounded history through the existing read-only Telegram session."""
+    from tgfarm.history_import import fetch_telegram_history, import_history
+
+    _bootstrap()
+    records = asyncio.run(fetch_telegram_history(args.chat, limit=args.limit))
+    report = import_history(records, channel_id=args.channel, apply=args.apply)
+    report["telegram_chat"] = args.chat
+    report["requested_limit"] = args.limit
+    _print(report)
+    return 0
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tgfarm", description=__doc__,
@@ -612,6 +625,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="write deduplicated archive rows; without this flag only previews",
     )
     p_history.set_defaults(func=cmd_history_import)
+
+    p_tg_history = sub.add_parser(
+        "history-import-telegram",
+        help="preview/import Telegram history using the configured read-only user session",
+    )
+    p_tg_history.add_argument("chat", help="Telegram username, t.me link, or chat ID")
+    p_tg_history.add_argument("--channel", required=True, help="existing TgFarm channel id")
+    p_tg_history.add_argument(
+        "--limit", type=int, default=1000, help="messages from the oldest part of history (1..5000)"
+    )
+    p_tg_history.add_argument(
+        "--apply",
+        action="store_true",
+        help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_tg_history.set_defaults(func=cmd_history_import_telegram)
 
     return parser
 
