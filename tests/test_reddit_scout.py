@@ -7,7 +7,6 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from tgfarm import platforms
 from tgfarm.s9_growth import adapters
 from tgfarm.s9_growth import reddit_scout as scout
 
@@ -252,11 +251,10 @@ def test_tailor_uses_safe_fallback_when_ai_policy_blocks_online_call(monkeypatch
             "channel_id": "test-channel",
         },
     )
-    monkeypatch.setattr(
-        scout,
-        "inspect_community",
-        lambda subreddit: _community_result(subreddit),
-    )
+    async def fake_inspect(subreddit):
+        return _community_result(subreddit)
+
+    monkeypatch.setattr(scout, "inspect_community", fake_inspect)
     monkeypatch.setattr(
         scout.policy,
         "should_use_ai",
@@ -356,3 +354,20 @@ def test_reddit_publish_is_blocked_in_dry_mode(client, monkeypatch):
     )
     assert response.status_code == 409
     assert "TGFARM_MODE" in response.json()["detail"]
+
+
+
+def test_dashboard_exposes_reddit_scout_and_human_review_controls(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    headers = {HEADER: ensure_token()}
+    page = client.get("/", headers=headers)
+    script = client.get("/ui/app.js", headers=headers)
+    assert page.status_code == 200
+    assert 'id="reddit-scout-form"' in page.text
+    assert 'id="reddit-tailor-panel"' in page.text
+    assert 'id="reddit-publish-button"' in page.text
+    assert script.status_code == 200
+    assert "submitRedditScout" in script.text
+    assert "tailorRedditCandidate" in script.text
+    assert "publishRedditDraft" in script.text
