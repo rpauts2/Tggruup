@@ -377,7 +377,8 @@
     const labels = {
       posted: "опубликован",
       skipped: "пропущен",
-      failed: "ошибка",
+      failed: "ошибка, будет повтор",
+      permanent_failure: "ошибка настройки/API",
       unknown: "нужна сверка",
       publishing: "отправляется",
       retry_authorized: "повтор разрешён",
@@ -385,7 +386,8 @@
     };
     const statusClass = {
       posted: "tag-ok",
-      failed: "tag-err",
+      failed: "tag-warn",
+      permanent_failure: "tag-err",
       unknown: "tag-err",
       publishing: "tag-warn",
       retry_authorized: "tag-acc",
