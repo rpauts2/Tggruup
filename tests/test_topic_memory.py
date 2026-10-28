@@ -229,3 +229,56 @@ def test_topic_dossier_handles_short_or_empty_queries_without_scanning_archive()
     assert empty["status"] == "query_too_short"
     assert empty["timeline"] == []
     assert empty["brief"] == ""
+
+
+
+def test_undated_history_import_does_not_masquerade_as_recent_publication():
+    from tgfarm.s4_generation.topic_memory import build_topic_dossier
+
+    now = datetime(2026, 10, 28, 12, tzinfo=UTC)
+    channel_id = "topic_undated_" + uuid4().hex[:10]
+    public_id = "hist_" + uuid4().hex[:20]
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="Imported archive", niche="science"))
+        session.add(Post(
+            public_id=public_id,
+            channel_id=channel_id,
+            hook="Kestrelion historical chronology",
+            body="An imported old Kestrelion reactor post without an original publication date.",
+            status="published",
+            published_at=None,
+            created_at=now,
+            sources=[{
+                "title": "Imported Telegram post",
+                "platform": "telegram",
+                "imported_history": True,
+            }],
+            claims=[],
+            quality={"imported_history": True},
+            generation_provider="history_import",
+        ))
+
+    source = SimpleNamespace(
+        source_id="kestrelion_new_source",
+        external_id="kestrelion-unknown-date-" + uuid4().hex[:8],
+        title="Kestrelion historical chronology: a current update",
+        text="A newly available update about Kestrelion reactor testing.",
+        url="https://current.example.test/kestrelion-unknown-date",
+        published_at=now - timedelta(hours=1),
+        fetched_at=now - timedelta(minutes=30),
+    )
+    dossier = build_topic_dossier(
+        "Kestrelion historical chronology",
+        channel_id=channel_id,
+        current_items=[source],
+        now=now,
+    )
+
+    assert dossier["history_count"] == 1
+    assert dossier["timeline"][0]["id"] == public_id
+    assert dossier["timeline"][0]["date"] is None
+    assert dossier["timeline"][0]["date_unknown"] is True
+    assert dossier["updates_found"] == 0
+    assert dossier["current_sources"][0]["chronology_uncertain"] is True
+    assert not any(idea["kind"] == "update" for idea in dossier["continuation_ideas"])
+    assert "дата неизвестна" in dossier["brief"]
