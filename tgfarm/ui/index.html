@@ -246,6 +246,57 @@
       <span class="platform-footer-icon">i</span>
       <p id="platform-note">Проверка ключей показывает только наличие настроек. Реальную авторизацию и публикацию нужно подтверждать отдельным тестом на каждой площадке.</p>
     </div>
+
+    <article class="card reddit-studio">
+      <div class="reddit-studio-head">
+        <div>
+          <div class="reddit-kicker">COMMUNITY SCOUT · REDDIT</div>
+          <h2>Найти своё сообщество</h2>
+          <p>Поиск subreddit по теме, сверка доступных правил и подготовка отдельного текста под выбранное сообщество. Поиск ничего не публикует.</p>
+        </div>
+        <div class="reddit-studio-mark" aria-hidden="true">r/</div>
+      </div>
+      <form id="reddit-scout-form" class="reddit-scout-form">
+        <label>
+          <span>Тема или ниша</span>
+          <input id="reddit-scout-query" type="text" maxlength="120" placeholder="Например: local AI, Python automation, indie games" required>
+        </label>
+        <label>
+          <span>ID существующего поста (уже опубликован в TgFarm)</span>
+          <input id="reddit-post-id" type="text" maxlength="120" placeholder="public_id, можно пропустить для поиска">
+        </label>
+        <button type="submit" id="reddit-scout-submit" class="btn btn-primary">
+          <span aria-hidden="true">⌕</span> Найти сообщества
+        </button>
+      </form>
+      <div id="reddit-scout-status" class="reddit-status" role="status" aria-live="polite">Для поиска нужны настройки Reddit OAuth с правом чтения. Live-публикация здесь не запускается автоматически.</div>
+      <div id="reddit-scout-results" class="reddit-scout-results"></div>
+      <section id="reddit-tailor-panel" class="reddit-tailor-panel" hidden>
+        <div class="reddit-tailor-heading">
+          <div>
+            <div class="reddit-kicker">DRAFT WORKSHOP</div>
+            <h3 id="reddit-tailor-title">Версия для сообщества</h3>
+            <p id="reddit-tailor-subtitle"></p>
+          </div>
+          <span class="reddit-review-badge">Нужна проверка</span>
+        </div>
+        <div id="reddit-tailor-notes" class="reddit-tailor-notes"></div>
+        <div id="reddit-tailor-rules" class="reddit-tailor-rules"></div>
+        <label class="reddit-draft-field">
+          <span>Заголовок Reddit</span>
+          <input id="reddit-draft-title" type="text" maxlength="300" autocomplete="off">
+        </label>
+        <label class="reddit-draft-field">
+          <span>Текст поста</span>
+          <textarea id="reddit-draft-body" rows="9" maxlength="40000"></textarea>
+        </label>
+        <div class="reddit-publish-row">
+          <p>Отправка возможна только в live-режиме, при включённом Reddit и после подтверждения. Сначала прочитай правила и проверь текст.</p>
+          <button type="button" id="reddit-publish-button" class="btn btn-primary" disabled>Опубликовать после проверки</button>
+        </div>
+        <div id="reddit-publish-result" class="reddit-publish-result" role="status" aria-live="polite"></div>
+      </section>
+    </article>
   </section>
 
   <!-- ============================================================= SOURCES -->
