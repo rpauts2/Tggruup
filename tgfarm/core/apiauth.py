@@ -23,6 +23,7 @@ import os
 import secrets
 import stat
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
@@ -81,6 +82,28 @@ def rotate_token() -> str:
     return ensure_token()
 
 
+def strip_token_from_query(raw_query: bytes) -> bytes:
+    """Remove credentials from a query string before it reaches access logs.
+
+    The token is read by the auth middleware first. Routes do not need it after
+    authorization; leaving it in the ASGI scope risks leaking it into server
+    access logs and downstream exception reports.
+    """
+    if not raw_query or b"token=" not in raw_query.lower():
+        return raw_query
+    try:
+        pairs = parse_qsl(
+            raw_query.decode("utf-8", errors="replace"),
+            keep_blank_values=True,
+            max_num_fields=1024,
+        )
+    except ValueError:
+        # An excessive/malformed query must not preserve a possible credential.
+        return b""
+    filtered = [(key, value) for key, value in pairs if key.lower() != "token"]
+    return urlencode(filtered, doseq=True).encode("ascii")
+
+
 def presented_token(
     header_value: str | None,
     query_value: str | None = None,
@@ -132,5 +155,6 @@ __all__ = [
     "is_public_path",
     "read_token_from_environment",
     "rotate_token",
+    "strip_token_from_query",
     "token_path",
 ]
