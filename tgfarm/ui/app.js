@@ -20,6 +20,9 @@
     platformFilter: "all",
     platformCategory: "Все",
     platformBusy: new Set(),
+    redditCandidates: [],
+    redditPreview: null,
+    redditBusy: false,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -712,6 +715,275 @@
     }).join("");
   }
 
+
+  function redditNode(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    return element;
+  }
+
+  function renderRedditCandidates(items) {
+    const container = $("#reddit-scout-results");
+    if (!container) return;
+    container.replaceChildren();
+    if (!items.length) {
+      container.appendChild(redditNode("div", "reddit-empty",
+        "Пока нет кандидатов. Измени формулировку темы или проверь доступ Reddit API."));
+      return;
+    }
+    items.forEach((item) => {
+      const article = redditNode("article", "reddit-community-card");
+      const head = redditNode("div", "reddit-community-top");
+      head.appendChild(redditNode("div", "reddit-community-mark", "r/"));
+      const nameBlock = redditNode("div", "reddit-community-name");
+      nameBlock.appendChild(redditNode("h4", "", item.display_name || item.name));
+      nameBlock.appendChild(redditNode("p", "", item.title || ""));
+      head.appendChild(nameBlock);
+      const score = redditNode("div", "reddit-score");
+      score.appendChild(redditNode("strong", "", item.score));
+      score.appendChild(redditNode("span", "", "совпадение"));
+      head.appendChild(score);
+      article.appendChild(head);
+
+      const track = redditNode("div", "reddit-score-track");
+      const fill = redditNode("i", "");
+      fill.style.width = Math.max(0, Math.min(100, Number(item.score) || 0)) + "%";
+      track.appendChild(fill);
+      article.appendChild(track);
+
+      const meta = redditNode("div", "reddit-community-meta");
+      meta.appendChild(redditNode("span", "", item.subscribers ? n(item.subscribers) + " подписчиков" : "аудитория не указана"));
+      if (item.active_user_count) meta.appendChild(redditNode("span", "", n(item.active_user_count) + " активных"));
+      meta.appendChild(redditNode("span", "", (item.submission_type || "any") + "-формат"));
+      article.appendChild(meta);
+      article.appendChild(redditNode("p", "reddit-community-description", item.description || "Описание не указано."));
+
+      const reasons = redditNode("div", "reddit-reasons");
+      (item.reasons || []).slice(0, 4).forEach((reason) => reasons.appendChild(redditNode("span", "", reason)));
+      article.appendChild(reasons);
+
+      const risks = (item.risk_flags || []).slice(0, 5);
+      if (risks.length) {
+        const riskList = redditNode("div", "reddit-risk-list");
+        risks.forEach((risk) => {
+          const line = redditNode("p", "");
+          line.appendChild(redditNode("span", "", "!"));
+          line.appendChild(document.createTextNode(risk));
+          riskList.appendChild(line);
+        });
+        article.appendChild(riskList);
+      } else {
+        article.appendChild(redditNode("p", "reddit-clear-note",
+          "Явных технических ограничений в ответе API не обнаружено. Это не подтверждает, что пост разрешён правилами."));
+      }
+
+      const details = redditNode("details", "reddit-rules-details");
+      const summary = redditNode("summary", "", "Проверить правила (" + ((item.rules || []).length) + ")");
+      details.appendChild(summary);
+      const list = redditNode("ul", "");
+      const rules = (item.rules || []).slice(0, 4);
+      if (rules.length) {
+        rules.forEach((rule) => {
+          const li = redditNode("li", "");
+          li.appendChild(redditNode("strong", "", rule.title || "Правило"));
+          li.appendChild(redditNode("span", "", rule.description || rule.violation_reason || ""));
+          list.appendChild(li);
+        });
+      } else {
+        list.appendChild(redditNode("li", "", "API не вернул список правил. Открой страницу сообщества и проверь их вручную."));
+      }
+      details.appendChild(list);
+      article.appendChild(details);
+
+      const actions = redditNode("div", "reddit-community-actions");
+      const url = safeExternalUrl(item.url);
+      if (url) {
+        const link = redditNode("a", "", "Открыть сообщество ↗");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        actions.appendChild(link);
+      }
+      const button = redditNode("button", "btn btn-primary btn-sm", "Подготовить свою версию");
+      button.type = "button";
+      button.dataset.redditTailor = item.name || item.display_name;
+      actions.appendChild(button);
+      article.appendChild(actions);
+      container.appendChild(article);
+    });
+  }
+
+  async function submitRedditScout() {
+    if (state.redditBusy) return;
+    const query = ($("#reddit-scout-query")?.value || "").trim();
+    const postId = ($("#reddit-post-id")?.value || "").trim();
+    const button = $("#reddit-scout-submit");
+    const status = $("#reddit-scout-status");
+    if (query.length < 2) {
+      toast("Введи тему поиска, например Python или local AI.", "err");
+      return;
+    }
+    state.redditBusy = true;
+    state.redditPreview = null;
+    $("#reddit-tailor-panel").hidden = true;
+    $("#reddit-publish-result").textContent = "";
+    button.disabled = true;
+    button.classList.add("is-busy");
+    status.textContent = "Ищу сообщества, читаю описания и правила через Reddit API…";
+    try {
+      const result = await post("/api/reddit/scout", {
+        query,
+        post_public_id: postId || null,
+        limit: 6,
+      });
+      state.redditCandidates = result.candidates || [];
+      renderRedditCandidates(state.redditCandidates);
+      status.textContent = "Найдено кандидатов: " + n(result.returned) + ". Оценка учитывает совпадение темы, исходного поста и активность; перед отправкой всё равно проверь правила вручную.";
+      if (!state.redditCandidates.length) toast("Reddit не вернул подходящих сообществ.", "err");
+    } catch (error) {
+      state.redditCandidates = [];
+      renderRedditCandidates([]);
+      status.textContent = "Поиск не выполнен: " + error.message;
+      toast("Не удалось найти сообщества: " + error.message, "err");
+    } finally {
+      state.redditBusy = false;
+      button.disabled = false;
+      button.classList.remove("is-busy");
+    }
+  }
+
+  async function tailorRedditCandidate(subreddit) {
+    const postId = ($("#reddit-post-id")?.value || "").trim();
+    if (!postId) {
+      toast("Укажи ID уже опубликованного поста TgFarm, чтобы подготовить адаптацию.", "err");
+      $("#reddit-post-id")?.focus();
+      return;
+    }
+    if (state.redditBusy) return;
+    state.redditBusy = true;
+    state.redditPreview = null;
+    const panel = $("#reddit-tailor-panel");
+    panel.hidden = false;
+    $("#reddit-tailor-title").textContent = "Готовлю редакторскую версию…";
+    $("#reddit-tailor-subtitle").textContent = "r/" + subreddit;
+    $("#reddit-tailor-notes").replaceChildren(redditNode("p", "", "Читаю актуальные правила и требования сообщества, затем подготавливаю текст без новых фактов."));
+    $("#reddit-tailor-rules").replaceChildren();
+    $("#reddit-publish-button").disabled = true;
+    $("#reddit-publish-result").textContent = "";
+    try {
+      const result = await post("/api/reddit/tailor", { post_public_id: postId, subreddit });
+      state.redditPreview = result;
+      $("#reddit-tailor-title").textContent = "Версия для r/" + result.subreddit;
+      const subtitle = $("#reddit-tailor-subtitle");
+      subtitle.replaceChildren(document.createTextNode((result.community?.title || result.subreddit) + " · " + n(result.community?.subscribers) + " подписчиков "));
+      const communityUrl = safeExternalUrl(result.community?.url);
+      if (communityUrl) {
+        const link = redditNode("a", "", "страница сообщества ↗");
+        link.href = communityUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        subtitle.appendChild(link);
+      }
+      $("#reddit-draft-title").value = result.draft?.title || "";
+      $("#reddit-draft-body").value = result.draft?.body || "";
+
+      const notesBox = $("#reddit-tailor-notes");
+      notesBox.replaceChildren();
+      const modeLabel = result.adaptation?.mode === "ai"
+        ? "AI-адаптация (" + result.adaptation.provider + ")"
+        : "Безопасный extractive-черновик, нужна ручная редактура";
+      ["Режим: " + modeLabel, ...(result.notes || [])].forEach((note) => {
+        const line = redditNode("p", "");
+        line.appendChild(redditNode("span", "", "i"));
+        line.appendChild(document.createTextNode(note));
+        notesBox.appendChild(line);
+      });
+
+      const rulesBox = $("#reddit-tailor-rules");
+      rulesBox.replaceChildren(redditNode("h4", "", "Правила из Reddit API"));
+      const rules = result.rules || [];
+      if (rules.length) {
+        const list = redditNode("ul", "");
+        rules.forEach((rule) => {
+          const li = redditNode("li", "");
+          li.appendChild(redditNode("strong", "", rule.title || "Правило"));
+          li.appendChild(redditNode("span", "", rule.description || rule.violation_reason || "Описание не предоставлено."));
+          list.appendChild(li);
+        });
+        rulesBox.appendChild(list);
+      } else {
+        rulesBox.appendChild(redditNode("p", "", "Список правил не вернулся из API. Открой сообщество и проверь правила вручную перед публикацией."));
+      }
+      $("#reddit-publish-button").disabled = false;
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      $("#reddit-tailor-title").textContent = "Не удалось подготовить версию";
+      $("#reddit-tailor-notes").replaceChildren(redditNode("p", "", error.message));
+      toast("Адаптация не выполнена: " + error.message, "err");
+    } finally {
+      state.redditBusy = false;
+    }
+  }
+
+  async function publishRedditDraft() {
+    const preview = state.redditPreview;
+    if (!preview || state.redditBusy) return;
+    const title = ($("#reddit-draft-title")?.value || "").trim();
+    const body = ($("#reddit-draft-body")?.value || "").trim();
+    if (!title || !body) {
+      toast("Заголовок и текст Reddit-поста не должны быть пустыми.", "err");
+      return;
+    }
+    const proceed = confirm(
+      "Последняя проверка перед публикацией в r/" + preview.subreddit + ".\\n\\n"
+      + "Я прочитал правила сообщества, проверил заголовок/текст/источники и подтверждаю отправку одного поста. Продолжить?"
+    );
+    if (!proceed) return;
+    const button = $("#reddit-publish-button");
+    const resultBox = $("#reddit-publish-result");
+    state.redditBusy = true;
+    button.disabled = true;
+    button.classList.add("is-busy");
+    resultBox.textContent = "Проверяю ограничения и отправляю один подтверждённый пост…";
+    try {
+      const result = await post("/api/reddit/publish", {
+        post_public_id: preview.post_public_id,
+        subreddit: preview.subreddit,
+        title,
+        body,
+        confirm: true,
+      });
+      const submission = result.result || {};
+      resultBox.replaceChildren();
+      const statusLine = redditNode("p", submission.status === "posted" ? "reddit-result-ok" : "reddit-result-warn",
+        (submission.status || "unknown") + ": " + (submission.error || "Ответ Reddit обработан."));
+      resultBox.appendChild(statusLine);
+      const url = safeExternalUrl(submission.url);
+      if (url) {
+        const link = redditNode("a", "", "Открыть опубликованный пост ↗");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        resultBox.appendChild(link);
+      }
+      if (submission.status === "posted") {
+        toast("Пост опубликован в r/" + preview.subreddit + ".", "ok");
+      } else if (submission.status === "unknown") {
+        toast("Reddit вернул неопределённый результат. Проверь сообщество вручную, не повторяй отправку.", "err");
+      } else {
+        toast("Reddit не подтвердил публикацию: " + (submission.error || submission.status), "err");
+      }
+    } catch (error) {
+      resultBox.textContent = "Публикация не выполнена: " + error.message;
+      toast("Reddit не принял запрос: " + error.message, "err");
+    } finally {
+      state.redditBusy = false;
+      button.disabled = false;
+      button.classList.remove("is-busy");
+    }
+  }
+
   async function updatePlatformSwitch(platformId, enabled) {
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
@@ -1230,8 +1502,12 @@
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(String(res.status));
-    return res.json();
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = payload.detail;
+      throw new Error(typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : String(res.status)));
+    }
+    return payload;
   }
 
   async function put(url, body) {
@@ -1389,6 +1665,16 @@
       $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
+
+  $("#reddit-scout-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitRedditScout();
+  });
+  $("#reddit-scout-results")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-reddit-tailor]");
+    if (button) await tailorRedditCandidate(button.dataset.redditTailor);
+  });
+  $("#reddit-publish-button")?.addEventListener("click", publishRedditDraft);
 
   $("#platform-search")?.addEventListener("input", (event) => {
     state.platformQuery = event.target.value || "";
