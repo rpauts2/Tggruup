@@ -478,14 +478,56 @@ def cmd_dzen_login(args) -> int:
     return 0
 
 
+def _prepare_history_import(args) -> tuple[bool, dict | None]:
+    """Require a verified SQLite backup before any write to imported history."""
+    if not getattr(args, "apply", False):
+        return True, None
+
+    if getattr(args, "skip_preimport_backup", False):
+        return True, {
+            "verified": False,
+            "skipped": True,
+            "reason": "operator explicitly skipped the automatic backup; verify an external backup",
+        }
+
+    from tgfarm import pipeline
+
+    backup = asyncio.run(pipeline.backup_job())
+    if not backup.get("verified"):
+        return False, backup
+    return True, backup
+
+
+def cmd_backup(_args) -> int:
+    """Create and verify a SQLite backup now."""
+    from tgfarm import pipeline
+
+    _bootstrap()
+    report = asyncio.run(pipeline.backup_job())
+    _print(report)
+    return 0 if report.get("verified") else 2
+
+
 def cmd_history_import(args) -> int:
     """Import a local platform export into the archive, without publishing."""
     from tgfarm.history_import import import_history, load_history_export
 
     _bootstrap()
+    ready, backup = _prepare_history_import(args)
+    if not ready:
+        _print({
+            "ok": False,
+            "error": "История не импортирована: не удалось подтвердить резервную копию.",
+            "pre_import_backup": backup,
+            "hint": "Для внешнего backup вручную проверьте копию БД и только затем используйте --skip-preimport-backup.",
+        })
+        return 2
+
     records = load_history_export(args.input, platform=args.platform)
     report = import_history(records, channel_id=args.channel, apply=args.apply)
     report["source_file"] = str(args.input)
+    if backup is not None:
+        report["pre_import_backup"] = backup
     _print(report)
     return 0
 
@@ -495,10 +537,22 @@ def cmd_history_import_telegram(args) -> int:
     from tgfarm.history_import import fetch_telegram_history, import_history
 
     _bootstrap()
+    ready, backup = _prepare_history_import(args)
+    if not ready:
+        _print({
+            "ok": False,
+            "error": "История не импортирована: не удалось подтвердить резервную копию.",
+            "pre_import_backup": backup,
+            "hint": "Для внешнего backup вручную проверьте копию БД и только затем используйте --skip-preimport-backup.",
+        })
+        return 2
+
     records = asyncio.run(fetch_telegram_history(args.chat, limit=args.limit))
     report = import_history(records, channel_id=args.channel, apply=args.apply)
     report["telegram_chat"] = args.chat
     report["requested_limit"] = args.limit
+    if backup is not None:
+        report["pre_import_backup"] = backup
     _print(report)
     return 0
 
@@ -610,6 +664,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.set_defaults(func=cmd_audit)
 
     sub.add_parser("doctor", help="diagnose configuration").set_defaults(func=cmd_doctor)
+    sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
 
     p_demo = sub.add_parser("demo", help="offline end-to-end demo with synthetic data")
     p_demo.add_argument("--cycles", type=int, default=1)
@@ -645,6 +700,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write deduplicated archive rows; without this flag only previews",
     )
+    p_history.add_argument(
+        "--skip-preimport-backup",
+        action="store_true",
+        help="skip the automatic backup only when an external database backup is verified",
+    )
     p_history.set_defaults(func=cmd_history_import)
 
     p_tg_history = sub.add_parser(
@@ -660,6 +720,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_tg_history.add_argument(
+        "--skip-preimport-backup",
+        action="store_true",
+        help="skip the automatic backup only when an external database backup is verified",
     )
     p_tg_history.set_defaults(func=cmd_history_import_telegram)
 
