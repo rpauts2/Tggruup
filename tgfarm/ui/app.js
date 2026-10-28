@@ -361,6 +361,78 @@
     }).join("") || `<div class="empty">Источники не заданы</div>`;
   }
 
+  function renderCrossposts(entries) {
+    const container = $("#crossposts-list");
+    if (!container) return;
+
+    const latest = [];
+    const seen = new Set();
+    for (const row of entries || []) {
+      const key = `${row.post}\u0000${row.platform}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      latest.push(row);
+    }
+
+    const labels = {
+      posted: "опубликован",
+      skipped: "пропущен",
+      failed: "ошибка",
+      unknown: "нужна сверка",
+      publishing: "отправляется",
+      retry_authorized: "повтор разрешён",
+      dry_run: "тестовый режим",
+    };
+    const statusClass = {
+      posted: "tag-ok",
+      failed: "tag-err",
+      unknown: "tag-err",
+      publishing: "tag-warn",
+      retry_authorized: "tag-acc",
+      dry_run: "tag-acc",
+    };
+
+    container.innerHTML = latest.slice(0, 12).map((row) => {
+      const label = labels[row.status] || row.status;
+      const status = esc(row.status);
+      const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
+      const canReconcile = row.status === "unknown"
+        || (row.status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
+      const url = row.url
+        ? ` · <a href="${esc(row.url)}" target="_blank" rel="noopener">открыть</a>`
+        : "";
+      const error = row.error && row.status !== "posted"
+        ? ` · ${esc(String(row.error).slice(0, 110))}`
+        : "";
+      const actions = canReconcile ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn btn-primary btn-sm js-crosspost-reconcile"
+            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="confirm_posted">Пост уже есть</button>
+          <button class="btn btn-ghost btn-sm js-crosspost-reconcile"
+            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="retry_after_check">Проверил: поста нет</button>
+        </div>` : "";
+      return `
+        <div class="item">
+          <div class="item-main">
+            <div class="item-title">${esc(row.post)} · ${esc(PLATFORM_RU[row.platform] || row.platform)}</div>
+            <div class="item-meta">${esc(dt(row.at))} · попытка ${n(row.attempt || 1)}${url}${error}</div>
+            ${actions}
+          </div>
+          <div class="item-side">
+            <span class="tag ${statusClass[row.status] || ""}">${esc(label)}</span>
+          </div>
+        </div>`;
+    }).join("") || `<div class="empty">Кросспостов пока нет</div>`;
+
+    $(".js-crosspost-reconcile", container).forEach((button) => {
+      button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
+        button.dataset.post,
+        button.dataset.platform,
+        button.dataset.action,
+      ));
+    });
+  }
+
   function renderRuns(runs) {
     const byRun = new Map();
     for (const r of runs) {
@@ -670,11 +742,12 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
+        api("/api/crossposts?limit=100"),
       ]);
 
       const mode = status.mode || "?";
@@ -698,6 +771,7 @@
       renderPosts(posts.posts || []);
       renderChannels(channels.channels || []);
       renderSources(sources.sources || []);
+      renderCrossposts(crossposts.crossposts || []);
       renderRuns(runs.runs || []);
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
@@ -735,6 +809,37 @@
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
   }
+
+  window.tgfarmReconcileCrosspost = async (postId, platform, action) => {
+    if (!postId || !platform) return;
+    const body = { action };
+    if (action === "confirm_posted") {
+      if (!confirm("Подтверждаете, что пост уже появился на целевой площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили целевую площадку и не нашли там этот пост?")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+
+    try {
+      const result = await post(
+        `/api/crossposts/${encodeURIComponent(postId)}/${encodeURIComponent(platform)}/reconcile`,
+        body,
+      );
+      const outcome = (result.outcomes || [])[0];
+      if (outcome && outcome.status === "unknown") {
+        toast("Результат снова не подтверждён. Проверьте целевую площадку вручную.", "err");
+      } else if (action === "confirm_posted") {
+        toast("Кросспост отмечен как опубликованный", "ok");
+      } else {
+        toast("Повтор выполнен: " + ((outcome && outcome.status) || "статус не получен"), "ok");
+      }
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить кросспост: " + (e && e.message ? e.message : e), "err");
+    }
+  };
 
   window.tgfarmReconcile = async (id, action) => {
     if (!id) return;
