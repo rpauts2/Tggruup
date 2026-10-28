@@ -890,7 +890,7 @@ async def _publish_due_once(
         post_ids = [p[0] for p in pending]
         media = await to_thread(_media_for, post_ids)
         inline = await to_thread(_inline_media_for, post_ids)
-        sent = failed = 0
+        sent = failed = skipped = 0
         errors: list[str] = []
         last_dzen = getattr(publish_due, "_last_dzen", None)
         db_last = await to_thread(_last_dzen_publish_time)
@@ -923,6 +923,9 @@ async def _publish_due_once(
                 inline.get(post_id),
             )
             if result.get("ok"):
+                if result.get("skipped"):
+                    skipped += 1
+                    continue
                 sent += 1
                 if platform == "dzen":
                     last_dzen = datetime.now(UTC)
@@ -939,6 +942,7 @@ async def _publish_due_once(
             "failed": failed,
             "errors": errors,
             **({"skipped_llm": skipped_llm} if skipped_llm else {}),
+            **({"skipped": skipped} if skipped else {}),
         }
 
 
