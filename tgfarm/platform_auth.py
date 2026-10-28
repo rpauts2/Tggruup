@@ -154,24 +154,26 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             authorized = True
             detail = "Mastodon OAuth подтверждён; профиль доступен. Текстовая публикация использует API с защитой от повторной отправки."
         elif platform_id == "x":
-            token = str(settings.x_bearer_token or "").strip()
+            from tgfarm.x_oauth import get_valid_x_access_token
+
             user_id = str(settings.x_user_id or "").strip()
-            if not token or not user_id:
-                raise RuntimeError("Введи X_BEARER_TOKEN и X_USER_ID.")
+            if not user_id and not settings.x_refresh_token:
+                raise RuntimeError("Сначала настрой X OAuth-приложение и подключи аккаунт через OAuth.")
+            token = await get_valid_x_access_token()
             async with httpx.AsyncClient(
                 timeout=15.0, headers={"Authorization": f"Bearer {token}"}
             ) as client:
                 payload = await _response_json(
                     client,
-                    f"https://api.x.com/2/users/{quote(user_id, safe='')}",
+                    "https://api.x.com/2/users/me",
                     params={"user.fields": "name,username"},
                 )
             user = payload.get("data") or {}
             if not user.get("id"):
-                raise RuntimeError("X API не подтвердил профиль. Проверь User ID и права токена.")
-            account = "@" + str(user.get("username") or user.get("name") or user_id)
+                raise RuntimeError("X OAuth не подтвердил профиль. Повтори авторизацию.")
+            account = "@" + str(user.get("username") or user_id or user.get("id"))
             authorized = True
-            detail = "X API подтвердил Bearer token и доступ к профилю. Наличие права создавать посты проверяется отдельно."
+            detail = "X подтвердил пользовательский OAuth-токен и профиль; публикация использует права tweet.write."
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 
