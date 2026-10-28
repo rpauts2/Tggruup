@@ -272,6 +272,58 @@ def test_qualitative_claims_always_pass():
     assert _lexically_supported("Это просто мнение.", item)
 
 
+def test_numeric_audit_covers_body_sentences_and_detects_unsupported_values():
+    from tgfarm.core.schemas import DraftPost
+    from tgfarm.s4_generation import _fallback_claims, _numeric_audit_claims
+
+    item = scored(
+        "Компания привлекла 12 млн рублей",
+        "Компания получила 12 млн рублей инвестиций в развитие.",
+        url="https://example.invalid/funding",
+    )
+    draft = DraftPost(
+        hook="Компания привлекла инвестиции.",
+        body="Компания получила 12 млн рублей. Выручка выросла до 99 млн рублей.",
+        sources=[{"title": item.title, "url": item.url}],
+    )
+
+    audit = _numeric_audit_claims(draft, [item])
+    assert len(audit) == 2
+    assert audit[0].verified is True
+    assert audit[1].verified is False
+    assert all(claim.note == "numeric_audit" for claim in audit)
+
+    fallback = _fallback_claims(draft, [item])
+    assert any(claim.note == "numeric_audit" and not claim.verified for claim in fallback)
+
+
+def test_unverified_numeric_audit_cannot_be_diluted_by_other_verified_claims():
+    from tgfarm.core.schemas import Claim, DraftPost
+    from tgfarm.s5_quality import gate_facts
+
+    source_url = "https://example.invalid/report"
+    draft = DraftPost(
+        hook="Компания продолжает работу.",
+        body="Отчёт опубликован сегодня.",
+        sources=[{"title": "Отчёт", "url": source_url}],
+        claims=[
+            Claim(claim="Факт один", source_url=source_url, verified=True),
+            Claim(claim="Факт два", source_url=source_url, verified=True),
+            Claim(
+                claim="Выручка выросла до 99 млн.",
+                source_url=source_url,
+                verified=False,
+                note="numeric_audit",
+            ),
+        ],
+    )
+
+    outcome = gate_facts(draft, Persona(id="x", title="X", niche="tech"))
+    assert outcome.passed is False
+    assert outcome.gate == "facts"
+    assert "numeric claim" in (outcome.reason or "")
+
+
 def test_number_normalisation_is_symmetric():
     assert _normalise_number("40%") == "40"
     assert _normalise_number("0,02") == "0.02"
