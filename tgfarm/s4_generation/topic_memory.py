@@ -358,12 +358,19 @@ def build_topic_dossier(
                 "source_url": current_sources[0].get("url"),
             },
         ])
-    elif not historical_posts:
+    elif not historical_posts and current_sources:
         continuation_ideas.append({
             "kind": "first_coverage",
             "title": "Первое освещение темы",
-            "reason": "В архиве не найдено достаточно близких опубликованных материалов.",
-            "source_url": current_sources[0].get("url") if current_sources else None,
+            "reason": "В архиве не найдено достаточно близких опубликованных материалов. Используй текущие источники и укажи их ограничения.",
+            "source_url": current_sources[0].get("url"),
+        })
+    elif not historical_posts and not current_sources:
+        continuation_ideas.append({
+            "kind": "collect_sources",
+            "title": "Сначала найти свежие источники",
+            "reason": "В архиве нет подходящей публикации, и в выбранном окне не найдено достаточно текущих материалов для ответственного черновика.",
+            "source_url": None,
         })
     else:
         continuation_ideas.append({
