@@ -171,14 +171,6 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "docs_url": "https://discord.com/developers/docs/resources/webhook",
     },
     {
-        "id": "bluesky", "name": "Bluesky", "symbol": "BS", "color": "#1185FE",
-        "category": "Мировые", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["text"],
-        "description": "Короткие посты и карточки ссылок через AT Protocol.",
-        "requirements": "Авторизация приложения и проверка лимитов/медиа-правил.",
-        "docs_url": "https://docs.bsky.app/docs/starter-templates/post",
-    },
-    {
         "id": "mastodon", "name": "Mastodon", "symbol": "M", "color": "#6364FF",
         "category": "Федеративные", "market": "Мировые", "priority": "P3",
         "mode": "planned", "roles": ["text"],
