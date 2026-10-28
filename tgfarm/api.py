@@ -12,7 +12,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -59,6 +59,11 @@ class PublishRequest(BaseModel):
 class RejectRequest(BaseModel):
     post_public_ids: list[str]
     reason: str = "manual"
+
+
+class PublishReconcileRequest(BaseModel):
+    action: Literal["confirm_published", "retry_after_check"]
+    confirm_not_published: bool = False
 
 
 class PolishRequest(BaseModel):
@@ -806,6 +811,48 @@ def _reject(public_ids: list[str], reason: str) -> int:
         return len(rows)
 
 
+def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(Post.public_id).where(
+                Post.public_id.in_(public_ids),
+                Post.status == "publish_unknown",
+            )
+        ).scalars().all()
+        return list(rows)
+
+
+def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
+    """Resolve a publish whose remote outcome could not be confirmed.
+
+    Retrying is only enabled after the operator has checked the destination.
+    This is intentionally not an automatic retry policy.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(Post).where(Post.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "error": "not_found"}
+        if row.status != "publish_unknown":
+            return {"ok": False, "error": "not_unknown", "status": row.status}
+
+        if action == "confirm_published":
+            row.status = "published"
+            row.published_at = datetime.now(UTC)
+            row.publish_error = None
+            detail = "operator confirmed post exists on destination"
+        elif action == "retry_after_check":
+            row.status = "scheduled"
+            row.scheduled_at = datetime.now(UTC)
+            row.publish_error = "manual retry approved after operator checked destination"
+            detail = "operator checked destination and authorised retry"
+        else:
+            return {"ok": False, "error": "invalid_action"}
+
+        return {"ok": True, "status": row.status, "detail": detail}
+
+
 def _config_payload() -> dict:
     cfg = get_config()
     return {
@@ -1057,14 +1104,49 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         if not request.post_public_ids:
             raise HTTPException(400, "empty post list")
+        unknown_ids = await io(_unknown_publish_ids, request.post_public_ids)
+        if unknown_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "publish_outcome_unknown",
+                    "post_public_ids": unknown_ids,
+                    "message": "Проверьте площадку и разрешите повтор через reconcile.",
+                },
+            )
         updated = await io(s7_publish.unpublish, request.post_public_ids)
-        published = await s7_publish.publish_due(limit=len(request.post_public_ids))
+        published = await s7_publish.publish_due(
+            limit=len(request.post_public_ids),
+            post_public_ids=request.post_public_ids,
+        )
         _operator(
             "publish",
             ",".join(request.post_public_ids)[:64],
-            f"published={published.get('published')} failed={published.get('failed')}",
+            f"rescheduled={updated} published={published.get('published')} failed={published.get('failed')}",
         )
         return {"rescheduled": updated, **published}
+
+    @app.post("/api/posts/{post_public_id}/reconcile")
+    async def reconcile_publish(
+        post_public_id: str, request: PublishReconcileRequest
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили площадку и поста там нет.",
+            )
+        result = await io(_reconcile_publish_outcome, post_public_id, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "not_unknown":
+            raise HTTPException(
+                409,
+                detail=f"Пост не ожидает сверки (текущий статус: {result.get('status')})",
+            )
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        _operator("publish-reconcile", post_public_id, result["detail"])
+        return result
 
     @app.post("/api/posts/reject")
     async def reject(request: RejectRequest) -> dict:
