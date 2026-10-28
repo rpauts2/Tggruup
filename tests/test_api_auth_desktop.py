@@ -194,3 +194,13 @@ def test_desktop_module_imports_without_a_display():
 
     assert hasattr(desktop, "DesktopApp")
     assert "webview" not in {name for name in dir(desktop) if name == "webview"}
+
+
+def test_admin_api_rejects_untrusted_host_even_with_valid_token(client):
+    response = client.get(
+        "/api/status",
+        headers={"Host": "attacker.example", apiauth.HEADER: ensure_token()},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "untrusted host"
+
