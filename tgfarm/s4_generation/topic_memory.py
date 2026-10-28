@@ -25,6 +25,38 @@ MAX_CURRENT_CANDIDATES = 600
 MAX_CURRENT_RESULTS = 16
 MAX_CLAIM_REVIEW = 40
 
+# Length alone does not make a word a useful topic anchor. Common editorial and
+# connective terms often appear in unrelated coverage and must not satisfy the
+# distinctive-name/entity requirement.
+_LOW_INFORMATION_TOPIC_ANCHORS = frozenset(
+    """
+    training information technology development different important according
+    following possible currently researchers companies company production
+    generation applications application performance measurement measurements
+    compared comparison analysis additional significant features operations
+    research scientists discussed reported includes including available
+    national international general systems process results method methods
+    services community official working increasing activity activities
+    update updates latest future public private individual individuals
+    various several previous continue continued created becomes became
+    becoming published publication publications
+    информация технологии технологии развитие различные различный различных
+    важный важные важно согласно следующие следующий возможно возможные
+    исследование исследования исследователь исследователи компания компании
+    компаний производство производственный производственные приложение
+    приложения производительность показатели измерения сравнение анализ
+    дополнительный дополнительные значительный значительные функции процессы
+    исследования результаты результатах опубликовано публикации публикация
+    доступный доступные доступность используется использовать использование
+    пользователей пользователь сообщения сообщение последние последний
+    новая новые нового новый нового материала материалы материалы
+    несколько различных информации означает означает являются является
+    возможность возможности результате результатов например примерно
+    известно известно сегодня недавно обновление обновления
+    """
+    .split()
+)
+
 
 def _as_utc(value) -> datetime | None:
     if value is None:
@@ -89,7 +121,10 @@ def _topic_score(query_terms: list[str], text: str) -> float:
         term for term in terms
         if term in tokens or (len(term) >= 5 and term[:5] in prefixes)
     }
-    anchors = [term for term in terms if len(term) >= 8]
+    anchors = [
+        term for term in terms
+        if len(term) >= 8 and term not in _LOW_INFORMATION_TOPIC_ANCHORS
+    ]
     anchor_prefixes = {
         token[:7] for token in tokens if len(token) >= 7
     }
