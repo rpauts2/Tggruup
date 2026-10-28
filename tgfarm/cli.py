@@ -337,8 +337,6 @@ def cmd_render(args) -> int:
 
 
 def cmd_publish(args) -> int:
-    from datetime import timedelta
-
     from sqlalchemy import select
 
     from tgfarm import s7_publish
@@ -346,7 +344,6 @@ def cmd_publish(args) -> int:
     from tgfarm.db.session import session_scope
 
     _bootstrap()
-    now = datetime.now(UTC)
     with session_scope() as session:
         post = session.execute(
             select(Post).where(Post.public_id == args.post_id)
@@ -362,8 +359,13 @@ def cmd_publish(args) -> int:
                 "allowed_statuses": ["scheduled", "gated"],
             })
             return 2
-        post.status = "scheduled"
-        post.scheduled_at = now - timedelta(seconds=1)
+
+    # Use the publisher's conditional UPDATE; never overwrite a worker that
+    # claimed this post between the status check and the forced publish.
+    rescheduled = s7_publish.unpublish([args.post_id])
+    if not rescheduled:
+        _print({"error": "state changed; reload the queue and try again", "post_id": args.post_id})
+        return 2
 
     result = asyncio.run(
         s7_publish.publish_due(limit=1, post_public_ids=[args.post_id])
