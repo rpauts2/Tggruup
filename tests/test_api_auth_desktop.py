@@ -70,6 +70,7 @@ def test_authorisation_can_be_disabled_for_trusted_environments(monkeypatch):
         ("/ui/app.js", True),
         ("/api/status", False),
         ("/api/posts", False),
+        ("/api/memory/topic", False),
     ],
 )
 def test_public_paths(path, public):
@@ -89,6 +90,11 @@ def test_api_rejects_a_missing_token(client):
 
 def test_api_rejects_a_wrong_token(client):
     assert client.get("/api/status", headers={apiauth.HEADER: "nope"}).status_code == 401
+
+
+def test_topic_dossier_api_requires_authentication(client):
+    response = client.get("/api/memory/topic?query=Kestrelion%20reactor")
+    assert response.status_code == 401
 
 
 def test_api_accepts_the_real_token(client):
