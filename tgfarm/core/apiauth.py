@@ -39,6 +39,7 @@ TOKEN_BYTES = 32
 PUBLIC_PATHS = (
     "/health", "/favicon.ico", "/ui/",
     "/api/platforms/mastodon/auth/callback",
+    "/api/platforms/x/auth/callback",
 )
 PUBLIC_PREFIXES = ("/ui/",)
 

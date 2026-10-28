@@ -30,6 +30,10 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert {field["key"] for field in entries["bluesky"]["auth"]["fields"]} == {
         "BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"
     }
+    assert entries["x"]["auth"]["method"] == "oauth"
+    assert {field["key"] for field in entries["x"]["auth"]["fields"]} == {
+        "X_OAUTH_CLIENT_ID", "X_OAUTH_CLIENT_SECRET"
+    }
     assert entries["mastodon"]["supported"] is True
     assert entries["mastodon"]["auth"]["method"] == "oauth"
     assert entries["mastodon"]["roles"] == ["crosspost"]

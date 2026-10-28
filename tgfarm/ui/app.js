@@ -705,7 +705,10 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authCheck = supported && ["credentials", "oauth"].includes(auth.method)
+      const authConfig = supported && item.id === "x" && auth.method === "oauth"
+        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="x" ${busy ? "disabled" : ""}>Настроить приложение</button>`
+        : "";
+      const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
         ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
              data-platform-auth-check="${esc(item.id)}" ${busy ? "disabled" : ""}>Проверить</button>`
         : "";
@@ -739,7 +742,7 @@
               <span class="platform-auth-dot" aria-hidden="true"></span>
               <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p></div>
             </div>
-            <div class="platform-auth-actions">${authSetup}${authCheck}</div>
+            <div class="platform-auth-actions">${authConfig}${authSetup}${authCheck}</div>
           </div>
           <div class="platform-requirements"><span>ТРЕБУЕТСЯ</span><p>${esc(item.requirements || "Информация уточняется.")}</p></div>
           <div class="platform-card-footer">
@@ -765,7 +768,7 @@
     state.authSaving = false;
   }
 
-  async function openPlatformAuthorization(platformId) {
+  async function openPlatformAuthorization(platformId, forceCredentials = false) {
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item) return;
     const auth = item.auth || {};
@@ -773,7 +776,7 @@
       window.tgfarmDzenLogin();
       return;
     }
-    if (auth.method === "oauth" && platformId === "mastodon") {
+    if (auth.method === "oauth" && platformId === "mastodon" && !forceCredentials) {
       const instance = window.prompt(
         "Укажи адрес Mastodon-сервера (например mastodon.social). Откроется официальное окно согласия на чтение профиля и публикацию постов.",
         auth.instance_url || "https://mastodon.social",
@@ -789,7 +792,34 @@
       }
       return;
     }
-    if (auth.method !== "credentials") {
+    if (auth.method === "oauth" && platformId === "x" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани ключи X Developer Portal.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/x/auth/callback";
+      const proceed = window.confirm(
+        "Перед продолжением добавь этот Callback URI в X Developer Portal → User authentication settings:\n\n"
+        + callbackUri
+        + "\\n\\nРазрешения приложения должны включать tweet.read, users.read, tweet.write и offline.access. Продолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/x/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Адрес callback отличается от текущего адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("X вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать X OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+    if (auth.method !== "credentials" && !forceCredentials) {
       const url = safeExternalUrl(auth.connect_url);
       if (url) window.open(url, "_blank", "noopener,noreferrer");
       toast(
@@ -804,8 +834,9 @@
     state.authPlatformId = platformId;
     const dialog = $("#platform-auth-dialog");
     $("#platform-auth-title").textContent = item.name + " · подключение";
-    $("#platform-auth-description").textContent =
-      "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
+    $("#platform-auth-description").textContent = platformId === "x"
+      ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
+      : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
     const fields = $("#platform-auth-fields");
     fields.replaceChildren();
     (auth.fields || []).forEach((field) => {
@@ -829,8 +860,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = "Сохранить и проверить";
-    $("#platform-auth-check").hidden = false;
+    save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = platformId === "x";
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
@@ -902,6 +933,12 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
+      if (platformId === "x") {
+        closePlatformAuthDialog();
+        toast("OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.", "ok");
+        await refresh();
+        return;
+      }
       setPlatformAuthMessage("Ключи сохранены локально. Проверяю доступ через API…");
       await checkPlatformAuthorization(platformId);
     } catch (error) {
@@ -910,7 +947,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = "Сохранить и проверить";
+      save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
@@ -1980,6 +2017,11 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const authConfig = event.target.closest("[data-platform-auth-config]");
+    if (authConfig) {
+      await openPlatformAuthorization(authConfig.dataset.platformAuthConfig, true);
+      return;
+    }
     const authSetup = event.target.closest("[data-platform-auth]");
     if (authSetup) {
       await openPlatformAuthorization(authSetup.dataset.platformAuth);

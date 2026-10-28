@@ -1115,23 +1115,30 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.middleware("http")
     async def redact_mastodon_oauth_callback(request: Request, call_next):
         """Capture OAuth credentials, then strip the query before access logging."""
-        if request.url.path == "/api/platforms/mastodon/auth/callback":
+        callback_scopes = {
+            "/api/platforms/mastodon/auth/callback": "tgfarm_mastodon_oauth_params",
+            "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
+        }
+        callback_scope = callback_scopes.get(request.url.path)
+        if callback_scope:
             from urllib.parse import parse_qs
 
             raw_query = request.scope.get("query_string", b"")
             if isinstance(raw_query, bytes):
                 raw_query = raw_query.decode("utf-8", errors="replace")
-            parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
-            request.scope["tgfarm_mastodon_oauth_params"] = {
+            # Strip first: even an overlong/malformed callback query must not reach access logs.
+            request.scope["query_string"] = b""
+            try:
+                parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
+            except ValueError:
+                parsed = {}
+            request.scope[callback_scope] = {
                 key: values[0]
                 for key, values in parsed.items()
                 if key in {"code", "state", "error"} and values
             }
-            # Mastodon specifically warns that authorization codes must not be
-            # written to request logs. Routes read the values captured above.
-            request.scope["query_string"] = b""
         response = await call_next(request)
-        if request.url.path == "/api/platforms/mastodon/auth/callback":
+        if request.url.path in {"/api/platforms/mastodon/auth/callback", "/api/platforms/x/auth/callback"}:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1493,6 +1500,101 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
                 "<h1>Не удалось подключить Mastodon</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/x/auth/start")
+    async def x_oauth_start(request: Request) -> dict:
+        from tgfarm.x_oauth import begin_x_oauth
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/x/auth/callback"
+        try:
+            return await begin_x_oauth(
+                settings.x_oauth_client_id,
+                settings.x_oauth_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/platforms/x/auth/callback")
+    async def x_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.x_oauth import cancel_x_oauth, complete_x_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_x_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_x_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение X не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_x_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "x",
+                {
+                    "X_OAUTH_CLIENT_ID": credentials["client_id"],
+                    "X_OAUTH_CLIENT_SECRET": credentials["client_secret"],
+                    "X_ACCESS_TOKEN": credentials["access_token"],
+                    "X_REFRESH_TOKEN": credentials["refresh_token"],
+                    "X_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "X_USER_ID": credentials["user_id"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "x",
+                True,
+                account=credentials["account"],
+                detail="X OAuth подтверждён; профиль и права пользователя проверены.",
+            )
+            _operator("platform-auth-check", "x", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>X подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>OAuth-токены сохранены локально и будут обновляться автоматически. Публикация остаётся выключенной, пока ты не включишь X в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_x_oauth(state_value)
+            log.warning("X OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(str(exc)[:240])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить X</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_x_oauth(state_value)
+            log.warning("X OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить X</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)

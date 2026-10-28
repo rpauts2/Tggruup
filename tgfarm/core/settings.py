@@ -294,6 +294,11 @@ class Settings(BaseSettings):
     dzen_stats_timeout_s: int = Field(default=60, alias="DZEN_STATS_TIMEOUT_S")
     x_bearer_token: str = Field(default="", alias="X_BEARER_TOKEN")
     x_user_id: str = Field(default="", alias="X_USER_ID")
+    x_oauth_client_id: str = Field(default="", alias="X_OAUTH_CLIENT_ID")
+    x_oauth_client_secret: str = Field(default="", alias="X_OAUTH_CLIENT_SECRET")
+    x_access_token: str = Field(default="", alias="X_ACCESS_TOKEN")
+    x_refresh_token: str = Field(default="", alias="X_REFRESH_TOKEN")
+    x_token_expires_at: int = Field(default=0, alias="X_TOKEN_EXPIRES_AT")
     # Reddit uses OAuth refresh tokens. Account passwords must never be stored.
     reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
     reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
