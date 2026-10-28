@@ -354,10 +354,20 @@ def cmd_publish(args) -> int:
         if post is None:
             _print({"error": "not found"})
             return 1
+        if post.status not in {"scheduled", "gated"}:
+            _print({
+                "error": "not publishable now",
+                "post_id": args.post_id,
+                "status": post.status,
+                "allowed_statuses": ["scheduled", "gated"],
+            })
+            return 2
         post.status = "scheduled"
         post.scheduled_at = now - timedelta(seconds=1)
 
-    result = asyncio.run(s7_publish.publish_due(limit=1))
+    result = asyncio.run(
+        s7_publish.publish_due(limit=1, post_public_ids=[args.post_id])
+    )
     _print(result)
     return 0 if result.get("failed", 0) == 0 else 1
 
