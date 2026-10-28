@@ -227,7 +227,7 @@ class MaxAdapter:
             status = crosspost_error_status(exc)
             log.warning("max crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
             return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300),
-                retry_after_seconds=crosspost_retry_after_seconds(exc), retry_after_seconds=crosspost_retry_after_seconds(exc))
+                retry_after_seconds=crosspost_retry_after_seconds(exc))
 
 
 # ----------------------------------------------------------------------- VK
@@ -352,7 +352,7 @@ class VkAdapter:
             status = crosspost_error_status(exc)
             log.warning("vk crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
             return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300),
-                retry_after_seconds=crosspost_retry_after_seconds(exc), retry_after_seconds=crosspost_retry_after_seconds(exc))
+                retry_after_seconds=crosspost_retry_after_seconds(exc))
 
 
 # ------------------------------------------------------------------------- X
