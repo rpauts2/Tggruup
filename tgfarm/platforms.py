@@ -355,13 +355,13 @@ def _credential_fingerprint(platform_id: str) -> str:
 
 
 def record_auth_check(
-    platform_id: str, authorized: bool, *, account: str = "", detail: str = ""
+    platform_id: str, authorized: bool | None, *, account: str = "", detail: str = ""
 ) -> dict[str, Any]:
     """Persist only a redacted connection result, never credentials or tokens."""
     platform_id = str(platform_id).lower()
     checks = _read_auth_checks()
     checks[platform_id] = {
-        "authorized": bool(authorized),
+        "authorized": authorized,
         "account": str(account or "")[:160],
         "detail": str(detail or "")[:400],
         "checked_at": datetime.now(UTC).isoformat(),
@@ -416,6 +416,9 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
     elif valid_check and check.get("authorized") is False:
         status = "failed"
         status_label = "Проверка доступа не пройдена"
+    elif valid_check and check.get("authorized") is None:
+        status = "unverified"
+        status_label = "Не удалось проверить сеть"
     elif configured:
         status = "unverified"
         status_label = "Данные сохранены, нужна проверка"
