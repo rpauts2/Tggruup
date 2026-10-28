@@ -474,22 +474,27 @@ def save_platform_credentials(platform_id: str, values: dict[str, str]) -> dict[
     from tgfarm.core.settings import ROOT, reset_settings_cache
     env_path = ROOT / ".env"
     existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    pending = dict(updates)
+    def dotenv_quote(value: str) -> str:
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    found: set[str] = set()
     output: list[str] = []
     for line in existing:
         match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
         key = match.group(1) if match else ""
-        if key in pending:
-            output.append(f"{key}='{pending.pop(key).replace(chr(92), chr(92)*2).replace(chr(39), chr(92)+chr(39))}'")
+        if key in updates:
+            if key not in found:
+                output.append(f"{key}={dotenv_quote(updates[key])}")
+                found.add(key)
+            # Drop duplicate definitions so an old secret cannot override the
+            # new value later in the same .env file.
         else:
             output.append(line)
-    if pending:
+    missing = {key: value for key, value in updates.items() if key not in found}
+    if missing:
         if output and output[-1].strip():
             output.append("")
-        output.extend(
-            f"{key}='{value.replace(chr(92), chr(92)*2).replace(chr(39), chr(92)+chr(39))}'"
-            for key, value in pending.items()
-        )
+        output.extend(f"{key}={dotenv_quote(value)}" for key, value in missing.items())
     env_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=".tgfarm-env-", dir=str(env_path.parent))
     try:
