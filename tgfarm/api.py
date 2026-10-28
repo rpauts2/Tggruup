@@ -80,6 +80,9 @@ class PlatformPlanRequest(BaseModel):
     planned: bool
 
 
+class PlatformCredentialsRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+
 class RedditScoutRequest(BaseModel):
     query: str = Field(min_length=2, max_length=120)
     post_public_id: str | None = Field(default=None, max_length=120)
@@ -1327,6 +1330,43 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         return {"ok": True, "platform": item}
 
 
+    @app.put("/api/platforms/{platform_id}/credentials")
+    async def save_platform_credentials(
+        platform_id: str, request: PlatformCredentialsRequest
+    ) -> dict:
+        from tgfarm.platforms import save_platform_credentials as save_credentials
+
+        try:
+            item = await io(save_credentials, platform_id, request.values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _operator(
+            "platform-auth-save",
+            platform_id,
+            "saved keys: " + ", ".join(sorted(request.values.keys()))[:200],
+        )
+        return {"ok": True, "auth": item}
+
+    @app.post("/api/platforms/{platform_id}/auth/check")
+    async def check_platform_credentials(platform_id: str) -> dict:
+        from tgfarm.platforms import CATALOG
+        from tgfarm.platform_auth import check_platform_auth
+
+        if not any(item["id"] == platform_id.lower() for item in CATALOG):
+            raise HTTPException(status_code=404, detail="Неизвестная площадка.")
+        if not any(item["id"] == platform_id.lower() and item["mode"] == "built_in" for item in CATALOG):
+            raise HTTPException(
+                status_code=409,
+                detail="Площадка ещё не подключена к публикационному адаптеру. Вход на её сайт не означает интеграцию с TgFarm.",
+            )
+        result = await check_platform_auth(platform_id)
+        _operator(
+            "platform-auth-check",
+            platform_id,
+            "authorized" if result["authorized"] else "check failed",
+        )
+        return result
+
     @app.post("/api/reddit/scout")
     async def reddit_scout(request: RedditScoutRequest) -> dict:
         from tgfarm.s9_growth.reddit_scout import RedditScoutError, search_communities
@@ -1630,9 +1670,19 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             publisher = DzenWebPublisher(headless=False)
             try:
                 result = asyncio.run(publisher.login(timeout_s=timeout))
+                from tgfarm.platforms import record_auth_check
+
+                record_auth_check(
+                    "dzen", True,
+                    account=str(result.get("publisher_name") or result.get("account") or ""),
+                    detail="Сессия сохранена через браузерный вход.",
+                )
                 _operator("dzen-login", "dzen", "сессия обновлена из панели")
-                return {"ok": True, **result}
+                return {"ok": True, "authorized": True, **result}
             except DzenNotLoggedIn as exc:
+                from tgfarm.platforms import record_auth_check
+
+                record_auth_check("dzen", False, detail=str(exc)[:200])
                 return {"ok": False, "authorized": False, "error": str(exc)[:200]}
 
         return await io(_run)
