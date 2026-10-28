@@ -284,3 +284,43 @@ async def test_backup_job_reports_mirror_failure_but_keeps_verified_local_snapsh
     assert Path(result["backup"]).is_file()
     with sqlite3.connect(result["backup"]) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_backup_job_records_mirror_failure_for_watchdog_alerts(tmp_path, monkeypatch):
+    from tgfarm import pipeline
+
+    source = tmp_path / "farm.db"
+    backup_dir = tmp_path / "backups"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO sample(value) VALUES ('kept locally')")
+
+    recorded = []
+    monkeypatch.setattr(pipeline, "get_engine_url", lambda: f"sqlite:///{source.as_posix()}")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            backup_dir=str(backup_dir),
+            backup_mirror_dir=str(backup_dir),
+            keep_backups=3,
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_record",
+        lambda *args, **kwargs: recorded.append((args, kwargs)),
+    )
+
+    report = await pipeline.backup_job()
+
+    assert report["verified"] is False
+    assert report["local_verified"] is True
+    assert report["mirror"]["verified"] is False
+    assert len(recorded) == 1
+    args, kwargs = recorded[0]
+    assert args[1:3] == ("backup", "error")
+    assert kwargs["meta"]["local_verified"] is True
+    assert kwargs["meta"]["mirror_configured"] is True
+
