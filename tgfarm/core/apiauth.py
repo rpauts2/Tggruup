@@ -36,7 +36,10 @@ TOKEN_BYTES = 32
 
 # Endpoints that stay reachable without a token: the dashboard shell itself, its
 # static assets, and a liveness probe for process supervisors.
-PUBLIC_PATHS = ("/health", "/favicon.ico", "/ui/")
+PUBLIC_PATHS = (
+    "/health", "/favicon.ico", "/ui/",
+    "/api/platforms/mastodon/auth/callback",
+)
 PUBLIC_PREFIXES = ("/ui/",)
 
 
