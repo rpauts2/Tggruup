@@ -605,6 +605,97 @@ def test_crosspost_ambiguous_error_classifier(error, expected):
     assert ambiguous_crosspost_error(error) is expected
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (400, "permanent_failure"),
+        (401, "permanent_failure"),
+        (408, "unknown"),
+        (425, "unknown"),
+        (429, "failed"),
+        (500, "unknown"),
+    ],
+)
+def test_crosspost_error_status_separates_retryable_permanent_and_ambiguous(status_code, expected):
+    from types import SimpleNamespace
+
+    from tgfarm.s9_growth.adapters import crosspost_error_status
+
+    error = RuntimeError(f"HTTP {status_code}")
+    error.response = SimpleNamespace(status_code=status_code)
+    assert crosspost_error_status(error) == expected
+
+
+def test_crosspost_retry_schedule_is_bounded():
+    from tgfarm.s9_growth.adapters import (
+        MAX_AUTOMATIC_CROSSPOST_ATTEMPTS,
+        crosspost_retry_delay_min,
+    )
+
+    assert [crosspost_retry_delay_min(i) for i in range(1, 6)] == [2, 10, 30, 120, None]
+    assert MAX_AUTOMATIC_CROSSPOST_ATTEMPTS == 5
+    assert crosspost_retry_delay_min(0) is None
+    assert crosspost_retry_delay_min("not-an-attempt") is None
+
+
+def test_crosspost_retry_waits_for_cooldown_and_stops_at_attempt_limit():
+    import uuid
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import begin_crosspost
+
+    public_id = "crosspost_backoff_" + uuid.uuid4().hex[:8]
+    with session_scope() as session:
+        session.add(
+            CrosspostLog(
+                post_public_id=public_id,
+                platform="vk",
+                status="failed",
+                attempt=1,
+                created_at=datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+
+    assert begin_crosspost(public_id, "vk") is None
+
+    with session_scope() as session:
+        row = session.execute(
+            select(CrosspostLog)
+            .where(CrosspostLog.post_public_id == public_id)
+            .order_by(CrosspostLog.id.desc())
+        ).scalar_one()
+        row.created_at = datetime.now(UTC) - timedelta(minutes=3)
+
+    assert begin_crosspost(public_id, "vk") == 2
+
+
+def test_crosspost_permanent_failure_requires_operator_intervention():
+    import uuid
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import already_done, begin_crosspost
+
+    public_id = "crosspost_permanent_" + uuid.uuid4().hex[:8]
+    with session_scope() as session:
+        session.add(
+            CrosspostLog(
+                post_public_id=public_id,
+                platform="vk",
+                status="permanent_failure",
+                attempt=3,
+                error="invalid access token",
+            )
+        )
+
+    assert already_done(public_id, "vk") is True
+    assert begin_crosspost(public_id, "vk") is None
+
+
 def test_crosspost_begin_claim_blocks_unknown_and_publishing_states():
     import uuid
 
