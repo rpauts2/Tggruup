@@ -18,7 +18,7 @@ import random
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
@@ -99,30 +99,62 @@ def _pending_crossposts(
     sample_rate: float,
     window_minutes: int = 720,
     rng: random.Random | None = None,
+    platforms: list[str] | None = None,
 ) -> list[tuple[int, str]]:
-    """Recently published Telegram posts that have not gone out to a platform.
+    """Return stable sampled fresh posts plus durable retries of older deliveries.
 
-    Dzen is a primary surface with its own generated posts, so copying Telegram
-    posts there would duplicate the same story under a second byline.
+    Fresh items are sampled once by public ID. Once a post has entered the
+    crosspost journal, retryable states remain discoverable after a long outage
+    instead of falling out of the recent-publication window forever.
     """
     cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+    target_platforms = list(platforms if platforms is not None else ADAPTERS.keys())
+    retryable_public_ids = None
+    if target_platforms:
+        from tgfarm.db.models import CrosspostLog
+
+        latest_crosspost_ids = (
+            select(func.max(CrosspostLog.id).label("latest_id"))
+            .where(CrosspostLog.platform.in_(target_platforms))
+            .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+            .subquery()
+        )
+        retryable_public_ids = (
+            select(CrosspostLog.post_public_id)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(CrosspostLog.status.in_(("failed", "retry_authorized", "skipped", "dry_run")))
+        )
+
     with session_scope() as session:
+        where_retry = (
+            PostRow.public_id.in_(retryable_public_ids)
+            if retryable_public_ids is not None
+            else False
+        )
         rows = session.execute(
             select(PostRow)
             .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
             .where(
                 PostRow.status == "published",
-                PostRow.published_at >= cutoff,
+                or_(PostRow.published_at >= cutoff, where_retry),
                 or_(ChannelRow.platform.is_(None), ChannelRow.platform == "telegram"),
                 ChannelRow.enabled.is_(True),
             )
             .order_by(PostRow.published_at.asc(), PostRow.id.asc())
         ).scalars().all()
-        return [
-            (row.id, row.public_id)
-            for row in rows
-            if row.public_id is not None and _crosspost_sampled(row.public_id, sample_rate, rng)
-        ]
+
+        candidates: list[tuple[int, str]] = []
+        for row in rows:
+            if row.public_id is None or row.published_at is None:
+                continue
+            published_at = ensure_utc(row.published_at)
+            # A persisted retry/skip/dry-run is already inside the sampled cohort;
+            # do not silently drop it if sample_rate changes or the farm was down.
+            if published_at < cutoff:
+                candidates.append((row.id, row.public_id))
+            elif _crosspost_sampled(row.public_id, sample_rate, rng):
+                candidates.append((row.id, row.public_id))
+        return candidates
 
 
 def _load_post(post_pk: int) -> PostRow | None:
@@ -212,7 +244,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
     delay_min = int(cfg.get("delay_min", 25))
 
     with StageTimer("s9_crosspost") as timer:
-        candidates = await to_thread(_pending_crossposts, sample_rate)
+        candidates = await to_thread(_pending_crossposts, sample_rate, 720, None, platforms)
         # only cross-post posts old enough to have settled in the feed
         cutoff = datetime.now(UTC) - timedelta(minutes=delay_min)
         due: list[tuple[int, list[str]]] = []

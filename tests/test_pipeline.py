@@ -1748,3 +1748,41 @@ def test_crosspost_skip_and_dry_run_states_do_not_starve_live_queue(monkeypatch)
     assert already_done(skip_id, "bluesky") is True
     monkeypatch.setattr(adapter, "configured", lambda: True)
     assert already_done(skip_id, "bluesky") is False
+
+
+def test_pending_crossposts_recovers_old_retryable_items_after_long_outage():
+    import uuid
+
+    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth import _pending_crossposts
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "old_retry_channel_" + suffix
+    retry_public_id = "old_retry_" + suffix
+    never_selected_id = "old_never_selected_" + suffix
+    now = datetime.now(UTC)
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id, title="old retry test", niche="tech",
+            platform="telegram", enabled=True,
+        ))
+        session.flush()
+        session.add_all([
+            Post(
+                public_id=retry_public_id, channel_id=channel_id, hook="Retry me",
+                body="body", status="published", published_at=now - timedelta(days=2),
+            ),
+            Post(
+                public_id=never_selected_id, channel_id=channel_id, hook="Do not select",
+                body="body", status="published", published_at=now - timedelta(days=2),
+            ),
+            CrosspostLog(
+                post_public_id=retry_public_id, platform="vk", status="failed",
+                attempt=1, error="temporary outage",
+            ),
+        ])
+
+    found = {public_id for _, public_id in _pending_crossposts(0.0, 60, None, ["vk"])}
+    assert retry_public_id in found
+    assert never_selected_id not in found
