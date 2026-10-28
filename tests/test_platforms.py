@@ -254,8 +254,8 @@ def test_save_platform_credentials_keeps_existing_values_and_removes_duplicate_k
 
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "VK_ACCESS_TOKEN='old-token'\\nOTHER_SETTING=keep-me\\n"
-        "VK_ACCESS_TOKEN='stale-duplicate'\\n",
+        "VK_ACCESS_TOKEN='old-token'\nOTHER_SETTING=keep-me\n"
+        "VK_ACCESS_TOKEN='stale-duplicate'\n",
         encoding="utf-8",
     )
     auth_path = tmp_path / "platform_auth_checks.json"
