@@ -105,6 +105,38 @@ def test_topic_dossier_flags_numeric_difference_as_possible_not_proven_change():
     assert checked["current_sources"] == ["https://current.example.test/kestrelion-update"]
 
 
+def test_topic_dossier_reads_recent_source_items_from_database():
+    from tgfarm.db.models import RawItem
+    from tgfarm.s4_generation.topic_memory import build_topic_dossier
+
+    now = datetime(2026, 10, 28, 12, tzinfo=UTC)
+    channel_id, _public_id = _seed_history(now=now)
+    fetched = now - timedelta(hours=3)
+    with session_scope() as session:
+        session.add(RawItem(
+            source_id="kestrelion_live_source",
+            external_id="db-current-" + uuid4().hex[:8],
+            url="https://db-current.example.test/kestrelion",
+            title="Kestrelion thermal reactor update",
+            text=(
+                "Kestrelion thermal reactor now requires 4 modules and 120 watts "
+                "in a recent cooling test. Engineers described a new coolant control procedure."
+            ),
+            lang="en",
+            published_at=fetched,
+            fetched_at=fetched,
+        ))
+
+    dossier = build_topic_dossier(
+        "Kestrelion thermal reactor cooling",
+        preferred_channel_id=channel_id,
+        now=now,
+    )
+    assert dossier["current_source_count"] >= 1
+    assert any("db-current.example.test/kestrelion" in (row.get("url") or "") for row in dossier["current_sources"])
+    assert dossier["updates_found"] >= 1
+
+
 def test_topic_dossier_does_not_claim_fresh_confirmation_when_no_current_items_exist():
     from tgfarm.s4_generation.topic_memory import build_topic_dossier
 
