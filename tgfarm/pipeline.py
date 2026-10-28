@@ -503,6 +503,8 @@ async def backup_job() -> dict:
         else Path(__file__).resolve().parent.parent / "backup"
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
+    keep = max(1, int(settings.keep_backups))
+    mirror_config = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
 
     # Microseconds prevent two manual backups in the same minute from
     # silently overwriting one another. A unique temporary file also makes a
@@ -530,18 +532,57 @@ async def backup_job() -> dict:
         os.replace(temp, dest)
 
         backups = sorted(dest_dir.glob("tgfarm-*.db"), key=lambda path: path.name)
-        keep = max(1, int(settings.keep_backups))
         for old in backups[: max(0, len(backups) - keep)]:
             old.unlink(missing_ok=True)
         kept = len(list(dest_dir.glob("tgfarm-*.db")))
         size_bytes = dest.stat().st_size
-        log.info("verified backup written: %s (%s kept)", dest.name, kept)
+        mirror_report = {"configured": bool(mirror_config), "verified": None, "backup": None}
+        if mirror_config:
+            from tgfarm.db.backup_mirror import mirror_verified_backup
+
+            try:
+                mirror_report = mirror_verified_backup(
+                    dest,
+                    mirror_config,
+                    keep=keep,
+                    local_backup_dir=dest_dir,
+                )
+            except Exception as mirror_exc:  # noqa: BLE001 - local snapshot remains valid
+                from tgfarm.core.security import redact_sensitive_text
+
+                mirror_report = {
+                    "configured": True,
+                    "verified": False,
+                    "backup": None,
+                    "reason": redact_sensitive_text(mirror_exc, limit=240),
+                }
+            if not mirror_report.get("verified"):
+                reason = str(mirror_report.get("reason") or "mirror verification failed")
+                log.error(
+                    "backup mirror failed; local snapshot verified at %s: %s",
+                    dest.name,
+                    reason,
+                )
+                return {
+                    "backup": str(dest),
+                    "verified": False,
+                    "local_verified": True,
+                    "integrity_check": "ok",
+                    "size_bytes": size_bytes,
+                    "kept": kept,
+                    "mirror": mirror_report,
+                    "reason": "local snapshot verified, but configured backup mirror failed",
+                }
+
+        log.info("verified backup written: %s (%s kept; mirror=%s)", dest.name, kept, mirror_report.get("verified"))
         return {
             "backup": str(dest),
             "verified": True,
+            "local_verified": True,
             "integrity_check": "ok",
             "size_bytes": size_bytes,
             "kept": kept,
+            "mirror": mirror_report,
         }
     except Exception:
         # Close handles before unlinking the temporary file; Windows refuses

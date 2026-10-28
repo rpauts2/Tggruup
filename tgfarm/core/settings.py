@@ -384,6 +384,8 @@ class Settings(BaseSettings):
     # Weekly automatic backup destination; empty means ROOT/backup (same as the
     # Makefile). Old files beyond keep_backups are pruned.
     backup_dir: str = Field(default="", alias="BACKUP_DIR")
+    # Optional mirror on a separate disk or mounted network share. Empty disables it.
+    backup_mirror_dir: str = Field(default="", alias="BACKUP_MIRROR_DIR")
     keep_backups: int = Field(default=8, alias="KEEP_BACKUPS")
     # Cluster and data hygiene: forming clusters age out, old raw rows leave.
     stale_cluster_hours: int = Field(default=72, alias="STALE_CLUSTER_HOURS")

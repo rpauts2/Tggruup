@@ -160,3 +160,126 @@ def test_verify_sqlite_backup_restore_rejects_corrupt_or_missing_files(tmp_path)
     assert missing["verified"] is False
     assert missing["reason"] == "backup file not found"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["corrupt.db"]
+
+
+def test_backup_mirror_copies_and_verifies_without_touching_source(tmp_path):
+    import hashlib
+
+    from tgfarm.db.backup_mirror import mirror_verified_backup
+
+    local_dir = tmp_path / "local"
+    mirror_dir = tmp_path / "mounted-backup"
+    local_dir.mkdir()
+    source = local_dir / "tgfarm-2026-10-28-120000-000001.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO sample(value) VALUES ('keep me')")
+    source_bytes = source.read_bytes()
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+
+    result = mirror_verified_backup(source, mirror_dir, keep=2, local_backup_dir=local_dir)
+
+    mirrored = mirror_dir / source.name
+    assert result["verified"] is True
+    assert result["integrity_check"] == "ok"
+    assert result["sha256"] == source_hash
+    assert result["size_bytes"] == len(source_bytes)
+    assert mirrored.read_bytes() == source_bytes
+    assert source.read_bytes() == source_bytes
+    assert not list(mirror_dir.glob("*.tmp"))
+    with sqlite3.connect(mirrored) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "keep me"
+
+
+def test_backup_mirror_refuses_same_directory_corrupt_copy_and_preserves_old_backup(tmp_path):
+    from tgfarm.db.backup_mirror import mirror_verified_backup
+
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    source = local_dir / "tgfarm-2026-10-28-120000-000001.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (value TEXT)")
+        connection.execute("INSERT INTO sample VALUES ('ok')")
+
+    same_directory = mirror_verified_backup(source, local_dir, local_backup_dir=local_dir)
+    assert same_directory["verified"] is False
+
+    mirror_dir = tmp_path / "mirror"
+    mirror_dir.mkdir()
+    existing = mirror_dir / source.name
+    existing.write_bytes(b"not the same snapshot")
+    corrupt_target = mirror_verified_backup(source, mirror_dir, local_backup_dir=local_dir)
+    assert corrupt_target["verified"] is False
+    assert existing.read_bytes() == b"not the same snapshot"
+    assert not list(mirror_dir.glob("*.tmp"))
+
+    corrupt_source = tmp_path / "corrupt.db"
+    corrupt_source.write_bytes(b"not sqlite")
+    corrupt_result = mirror_verified_backup(corrupt_source, tmp_path / "other-mirror")
+    assert corrupt_result["verified"] is False
+    assert not (tmp_path / "other-mirror").exists()
+
+
+@pytest.mark.asyncio
+async def test_backup_job_verifies_local_and_mirror_snapshots(tmp_path, monkeypatch):
+    from tgfarm import pipeline
+
+    source = tmp_path / "farm.db"
+    local_dir = tmp_path / "local-backups"
+    mirror_dir = tmp_path / "mirror-backups"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO sample(value) VALUES ('same data')")
+
+    monkeypatch.setattr(pipeline, "get_engine_url", lambda: f"sqlite:///{source.as_posix()}")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            backup_dir=str(local_dir),
+            backup_mirror_dir=str(mirror_dir),
+            keep_backups=3,
+        ),
+    )
+
+    result = await pipeline.backup_job()
+
+    assert result["verified"] is True
+    assert result["local_verified"] is True
+    assert result["mirror"]["configured"] is True
+    assert result["mirror"]["verified"] is True
+    assert Path(result["backup"]).is_file()
+    assert Path(result["mirror"]["backup"]).is_file()
+    assert Path(result["backup"]).read_bytes() == Path(result["mirror"]["backup"]).read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_backup_job_reports_mirror_failure_but_keeps_verified_local_snapshot(tmp_path, monkeypatch):
+    from tgfarm import pipeline
+
+    source = tmp_path / "farm.db"
+    local_dir = tmp_path / "local-backups"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO sample(value) VALUES ('preserve local')")
+
+    monkeypatch.setattr(pipeline, "get_engine_url", lambda: f"sqlite:///{source.as_posix()}")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            backup_dir=str(local_dir),
+            backup_mirror_dir=str(local_dir),
+            keep_backups=3,
+        ),
+    )
+
+    result = await pipeline.backup_job()
+
+    assert result["verified"] is False
+    assert result["local_verified"] is True
+    assert result["mirror"]["verified"] is False
+    assert Path(result["backup"]).is_file()
+    with sqlite3.connect(result["backup"]) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
