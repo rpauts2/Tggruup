@@ -375,6 +375,7 @@ def test_dashboard_exposes_reddit_scout_and_human_review_controls(client):
 
 def test_reddit_publish_rechecks_global_switch_after_rule_fetch(client, monkeypatch):
     import tgfarm.api as api_module
+    from tgfarm import platforms
     from tgfarm.core.apiauth import HEADER, ensure_token
 
     settings = SimpleNamespace(live=True)
