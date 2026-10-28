@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from argparse import Namespace
 
 from tgfarm.cli import _prepare_history_import
