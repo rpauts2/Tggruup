@@ -1134,3 +1134,15 @@ main {
   .reddit-metrics-head { flex-direction: column; }
   .reddit-metrics-head .btn { align-self: flex-start; }
 }
+
+/* Unified delivery history: one material, one card, one row per platform. */
+.delivery-platforms { display: grid; gap: 8px; margin-top: 10px; }
+.delivery-platform { padding: 8px 10px; border: 1px solid var(--line, rgba(255,255,255,.08)); border-radius: 10px; min-width: 0; }
+.delivery-platform .item-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.delivery-platform .item-meta a { color: var(--accent, #8aa8ff); text-decoration: none; }
+.delivery-platform .item-meta a:hover { text-decoration: underline; }
+.delivery-card .item-side { flex-shrink: 0; }
+@media (max-width: 700px) {
+  .delivery-card { flex-direction: column; }
+  .delivery-card .item-side { align-self: flex-start; }
+}
