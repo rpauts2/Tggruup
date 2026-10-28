@@ -125,6 +125,11 @@ def test_verify_sqlite_backup_restore_round_trip(tmp_path):
         )
         connection.execute("INSERT INTO parent(name) VALUES ('farm')")
         connection.execute("INSERT INTO child(parent_id) VALUES (1)")
+        connection.execute("CREATE INDEX ix_parent_name ON parent(name)")
+        connection.execute("CREATE VIEW child_parent_names AS "
+                           "SELECT child.id, parent.name FROM child JOIN parent ON parent.id = child.parent_id")
+        connection.execute("CREATE TRIGGER child_insert_guard AFTER INSERT ON child "
+                           "BEGIN UPDATE parent SET name = name WHERE id = NEW.parent_id; END")
 
     result = verify_sqlite_backup_restore(backup)
 
@@ -134,6 +139,8 @@ def test_verify_sqlite_backup_restore_round_trip(tmp_path):
     assert result["restored_integrity_check"] == "ok"
     assert result["tables_match"] is True
     assert result["row_counts_match"] is True
+    assert result["schema_match"] is True
+    assert result["schema_object_count"] >= 5
     assert result["foreign_key_violations"] == 0
     assert backup.is_file()
     with sqlite3.connect(backup) as connection:
