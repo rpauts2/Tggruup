@@ -39,6 +39,26 @@ def _as_utc(value) -> datetime | None:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def _is_undated_history_import(post: dict) -> bool:
+    """Imported posts without an original date must not inherit import time as chronology."""
+    if post.get("published_at"):
+        return False
+    sources = post.get("sources") or []
+    return any(
+        isinstance(source, dict) and source.get("imported_history")
+        for source in sources
+    )
+
+
+def _archive_date(post: dict):
+    """Return the original publication date, avoiding created_at fallback for undated imports."""
+    if post.get("published_at"):
+        return post.get("published_at")
+    if _is_undated_history_import(post):
+        return None
+    return post.get("created_at")
+
+
 def _iso(value) -> str | None:
     parsed = _as_utc(value)
     return parsed.isoformat(timespec="seconds") if parsed else None
@@ -190,7 +210,7 @@ def _claim_review(claim: str, sources: list[dict]) -> tuple[str, str, float, lis
 def _claim_history(posts: list[dict], current_sources: list[dict], limit: int = MAX_CLAIM_REVIEW) -> list[dict]:
     seen: set[str] = set()
     review = []
-    for post in sorted(posts, key=lambda row: row.get("published_at") or row.get("created_at") or "", reverse=True):
+    for post in sorted(posts, key=lambda row: _archive_date(row) or "", reverse=True):
         for claim in post.get("claims") or []:
             if not isinstance(claim, dict):
                 continue
@@ -218,7 +238,7 @@ def _claim_history(posts: list[dict], current_sources: list[dict], limit: int = 
 
 
 def _latest_time(posts: list[dict]) -> datetime | None:
-    values = [_as_utc(post.get("published_at") or post.get("created_at")) for post in posts]
+    values = [_as_utc(_archive_date(post)) for post in posts]
     return max((value for value in values if value is not None), default=None)
 
 
@@ -299,10 +319,9 @@ def build_topic_dossier(
         row for row in archive.get("results", [])
         if row.get("score", 0.0) >= 0.08
     ]
-    historical_posts.sort(
-        key=lambda row: row.get("published_at") or row.get("created_at") or ""
-    )
+    historical_posts.sort(key=lambda row: _archive_date(row) or "")
     latest_post_time = _latest_time(historical_posts)
+    chronology_uncertain = any(_is_undated_history_import(post) for post in historical_posts)
 
     if current_items is None:
         current_sources = _find_current_sources(
@@ -314,8 +333,11 @@ def build_topic_dossier(
     for source in current_sources:
         source_time = _as_utc(source.get("date"))
         source["is_new_since_last_post"] = bool(
-            source_time and (latest_post_time is None or source_time > latest_post_time)
+            source_time
+            and not chronology_uncertain
+            and (not historical_posts or latest_post_time is None or source_time > latest_post_time)
         )
+        source["chronology_uncertain"] = chronology_uncertain
 
     new_sources = [source for source in current_sources if source["is_new_since_last_post"]]
     angles = Counter(str(row.get("angle") or "unknown") for row in historical_posts)
@@ -384,7 +406,8 @@ def build_topic_dossier(
     for post in historical_posts:
         timeline.append({
             "id": post["id"],
-            "date": post.get("published_at") or post.get("created_at"),
+            "date": _archive_date(post),
+            "date_unknown": _archive_date(post) is None,
             "published_at": post.get("published_at"),
             "created_at": post.get("created_at"),
             "channel_id": post["channel_id"],
@@ -409,7 +432,7 @@ def build_topic_dossier(
         brief_lines.append("ХРОНОЛОГИЯ:")
         for post in timeline[-8:]:
             brief_lines.append(
-                f"- {post.get('date')}: [{post['channel_title']}] {post['hook']} "
+                f"- {post.get('date') or 'дата неизвестна'}: [{post['channel_title']}] {post['hook']} "
                 f"(угол={post['angle']}, формат={post['post_format']})"
             )
     if new_sources:
