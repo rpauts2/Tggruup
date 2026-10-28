@@ -689,6 +689,10 @@ async def _publish_one(
             return {"ok": False, "error": "post disappeared"}
         if post.status == "published":
             return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
+    from tgfarm.platforms import is_platform_enabled
+
+    if not is_platform_enabled(platform):
+        return {"ok": True, "skipped": True, "reason": "platform_disabled"}
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
@@ -774,6 +778,8 @@ def due_posts(
         return []
     now = datetime.now(UTC)
     out: list[tuple[int, str, int | str, str]] = []
+    from tgfarm.platforms import is_platform_enabled
+
     with session_scope() as session:
         stmt = (
             select(PostRow)
@@ -786,6 +792,10 @@ def due_posts(
         for row in rows:
             channel = session.get(ChannelRow, row.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
+            if not is_platform_enabled(platform):
+                # Pause delivery without changing the queued post's state.
+                # Re-enabling the platform makes the same queued post eligible again.
+                continue
             if platform == "dzen":
                 target: int | str = channel.id if channel else "dzen"
                 out.append((row.id, assemble_text(row, platform), target, platform))
@@ -880,7 +890,7 @@ async def _publish_due_once(
         post_ids = [p[0] for p in pending]
         media = await to_thread(_media_for, post_ids)
         inline = await to_thread(_inline_media_for, post_ids)
-        sent = failed = 0
+        sent = failed = skipped = 0
         errors: list[str] = []
         last_dzen = getattr(publish_due, "_last_dzen", None)
         db_last = await to_thread(_last_dzen_publish_time)
@@ -913,6 +923,9 @@ async def _publish_due_once(
                 inline.get(post_id),
             )
             if result.get("ok"):
+                if result.get("skipped"):
+                    skipped += 1
+                    continue
                 sent += 1
                 if platform == "dzen":
                     last_dzen = datetime.now(UTC)
@@ -929,6 +942,7 @@ async def _publish_due_once(
             "failed": failed,
             "errors": errors,
             **({"skipped_llm": skipped_llm} if skipped_llm else {}),
+            **({"skipped": skipped} if skipped else {}),
         }
 
 

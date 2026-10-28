@@ -100,6 +100,17 @@ def _load_post(post_pk: int) -> PostRow | None:
 
 
 async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostResult]:
+    from tgfarm.platforms import is_platform_enabled
+
+    # Defense in depth: neither a manual retry nor a future caller may bypass
+    # the global switch from the UI.
+    platforms = [
+        name for name in platforms
+        if name in ADAPTERS and is_platform_enabled(name)
+    ]
+    if not platforms:
+        return []
+
     settings = get_settings()
     post = await to_thread(_load_post, post_pk)
     if post is None:
@@ -158,7 +169,9 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
     if not cfg.get("enabled", True):
         return {"posted": 0, "skipped": 0}
 
-    platforms = [p for p in (cfg.get("platforms") or ["vk", "x"]) if p != "dzen"]
+    from tgfarm.platforms import enabled_crosspost_platforms
+
+    platforms = enabled_crosspost_platforms()
     sample_rate = float(cfg.get("sample_rate", 0.8))
     delay_min = int(cfg.get("delay_min", 25))
 

@@ -15,6 +15,11 @@
     memoryQuery: "",
     topicQuery: "",
     topicDossier: null,
+    platformData: null,
+    platformQuery: "",
+    platformFilter: "all",
+    platformCategory: "Все",
+    platformBusy: new Set(),
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -577,6 +582,183 @@
     }).join("") || `<div class="empty">Каналы не сконфигурированы</div>`;
   }
 
+  const PLATFORM_PRIORITY_ORDER = { core: 0, P1: 1, P2: 2, P3: 3 };
+  const PLATFORM_STATUS_CLASS = {
+    configured: "ok",
+    needs_setup: "warn",
+    paused: "muted",
+    planned: "plan",
+    not_implemented: "muted",
+  };
+
+  function renderPlatforms(payload) {
+    state.platformData = payload || { platforms: [], summary: {} };
+    const summary = state.platformData.summary || {};
+    const items = state.platformData.platforms || [];
+    const stats = [
+      { label: "Включено", value: n(summary.enabled), hint: "управляется переключателями" },
+      { label: "Настройки найдены", value: n(summary.configured), hint: "наличие ключей / профиля" },
+      { label: "В плане", value: n(summary.planned), hint: "следующие интеграции" },
+      { label: "Нужна настройка", value: n(summary.needs_setup), hint: "включены, но не готовы" },
+    ];
+    $("#platform-summary").innerHTML = stats.map((item) => `
+      <div class="platform-summary-card">
+        <span>${esc(item.label)}</span><strong>${esc(item.value)}</strong><small>${esc(item.hint)}</small>
+      </div>`).join("");
+    $("#platform-catalog-count").textContent = `${n(items.length)} площадок · ${n(summary.supported)} с рабочим адаптером`;
+    const navCount = $("#platforms-nav-count");
+    if (navCount) navCount.textContent = n(summary.enabled);
+    const note = $("#platform-note");
+    if (note) note.textContent = state.platformData.note || "Для будущих интеграций нужен отдельный проверенный адаптер.";
+    renderPlatformCategories(items);
+    renderPlatformCards();
+  }
+
+  function renderPlatformCategories(items) {
+    const categories = ["Все", ...new Set(items.map((item) => item.category).filter(Boolean))];
+    if (!categories.includes(state.platformCategory)) state.platformCategory = "Все";
+    const container = $("#platform-categories");
+    if (!container) return;
+    container.innerHTML = categories.map((category) => `
+      <button type="button" class="platform-category ${state.platformCategory === category ? "is-active" : ""}"
+        data-platform-category="${esc(category)}">${esc(category)}</button>`).join("");
+  }
+
+  function renderPlatformCards() {
+    const container = $("#platforms-grid");
+    if (!container) return;
+    const all = (state.platformData && state.platformData.platforms) || [];
+    const query = (state.platformQuery || "").trim().toLocaleLowerCase("ru-RU");
+    const visible = all.filter((item) => {
+      const haystack = [
+        item.name, item.id, item.category, item.market, item.description,
+        item.requirements, item.roles_label, item.status_label,
+      ].join(" ").toLocaleLowerCase("ru-RU");
+      if (query && !haystack.includes(query)) return false;
+      if (state.platformCategory !== "Все" && item.category !== state.platformCategory) return false;
+      if (state.platformFilter === "enabled" && !(item.supported && item.enabled)) return false;
+      if (state.platformFilter === "setup" && !(item.supported && item.enabled && !item.configured)) return false;
+      if (state.platformFilter === "planned" && !item.planned) return false;
+      return true;
+    }).sort((a, b) => {
+      const group = (p) => p.supported ? (p.enabled ? 0 : 1) : (p.planned ? 2 : 3);
+      return group(a) - group(b)
+        || (PLATFORM_PRIORITY_ORDER[a.priority] ?? 9) - (PLATFORM_PRIORITY_ORDER[b.priority] ?? 9)
+        || a.name.localeCompare(b.name, "ru");
+    });
+
+    if (!visible.length) {
+      container.innerHTML = `<div class="card platform-empty">
+        <div class="platform-empty-mark">⌕</div>
+        <h3>Ничего не найдено</h3>
+        <p>Измени запрос или выбранный фильтр.</p>
+        <button class="btn btn-ghost btn-sm" data-platform-reset>Сбросить фильтры</button>
+      </div>`;
+      return;
+    }
+
+    container.innerHTML = visible.map((item) => {
+      const supported = Boolean(item.supported);
+      const busy = state.platformBusy.has(item.id);
+      const statusClass = PLATFORM_STATUS_CLASS[item.status] || "muted";
+      const priority = item.priority === "core" ? "Встроено"
+        : item.priority === "P1" ? "Приоритет 1"
+        : item.priority === "P2" ? "Приоритет 2" : "Приоритет 3";
+      const switchMarkup = supported
+        ? `<button type="button" class="platform-switch ${item.enabled ? "is-on" : ""} ${busy ? "is-busy" : ""}"
+             data-platform-toggle="${esc(item.id)}" role="switch" aria-checked="${item.enabled ? "true" : "false"}"
+             aria-label="${item.enabled ? "Отключить" : "Включить"} ${esc(item.name)}" ${busy ? "disabled" : ""}>
+             <span class="platform-switch-track"><span></span></span>
+             <span class="platform-switch-label">${item.enabled ? "ВКЛ" : "ВЫКЛ"}</span>
+           </button>`
+        : `<span class="platform-no-adapter"><span></span> Нет адаптера</span>`;
+      const footerAction = supported
+        ? `<a class="platform-doc-link" href="${esc(item.docs_url || "#")}" target="_blank" rel="noopener noreferrer">Документация <span aria-hidden="true">↗</span></a>`
+        : `<button type="button" class="btn ${item.planned ? "btn-plan-added" : "btn-ghost"} btn-sm"
+             data-platform-plan="${esc(item.id)}" ${busy ? "disabled" : ""}>
+             ${item.planned ? "✓ В плане" : "+ В план"}
+           </button>`;
+      const readyHint = supported
+        ? (item.configured ? item.connection_detail : item.connection_detail)
+        : (item.planned ? "Выбрана для следующей волны интеграций." : "Можно добавить в список следующих интеграций.");
+      return `
+        <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}"
+          style="--platform-color:${esc(item.color || "#7890b2")}">
+          <div class="platform-card-head">
+            <div class="platform-brand-mark">${esc(item.symbol || item.name.slice(0, 2))}</div>
+            <div class="platform-card-title">
+              <h3>${esc(item.name)}</h3>
+              <div class="platform-card-meta">${esc(item.category)} <span>·</span> ${esc(item.market)}</div>
+            </div>
+            <div class="platform-card-action">${switchMarkup}</div>
+          </div>
+          <p class="platform-description">${esc(item.description)}</p>
+          <div class="platform-badge-row">
+            <span class="platform-status status-${statusClass}"><i></i>${esc(item.status_label || "Статус неизвестен")}</span>
+            <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
+          </div>
+          <div class="platform-connection">
+            <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>
+            <div><strong>${supported ? (item.configured ? "Настройки найдены" : "Нужна настройка") : "Пока не подключена"}</strong>
+              <p>${esc(readyHint)}</p>
+            </div>
+          </div>
+          <div class="platform-requirements"><span>ТРЕБУЕТСЯ</span><p>${esc(item.requirements || "Информация уточняется.")}</p></div>
+          <div class="platform-card-footer">
+            <span class="platform-role">${esc(item.roles_label || "")}</span>
+            ${footerAction}
+          </div>
+        </article>`;
+    }).join("");
+  }
+
+  async function updatePlatformSwitch(platformId, enabled) {
+    const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
+    if (!item || state.platformBusy.has(platformId)) return;
+    if (enabled && !item.configured) {
+      const proceed = confirm(
+        `${item.name} будет включена в настройках, но пока не настроена.\n\n`
+        + `${item.connection_detail}\n\nПродолжить? Публикация не начнётся без нужных учётных данных.`
+      );
+      if (!proceed) return;
+    } else if (!enabled) {
+      const proceed = confirm(
+        `Отключить ${item.name}?\n\nНовые отправки на эту площадку остановятся. Уже опубликованные посты не изменятся, а очередь сохранится.`
+      );
+      if (!proceed) return;
+    }
+    state.platformBusy.add(platformId);
+    renderPlatformCards();
+    try {
+      const result = await put(`/api/platforms/${encodeURIComponent(platformId)}`, { enabled });
+      toast(`${item.name}: ${enabled ? "включена" : "поставлена на паузу"}`, "ok");
+      const payload = await api("/api/platforms");
+      renderPlatforms(payload);
+    } catch (error) {
+      toast(`Не удалось изменить ${item.name}: ${error.message}`, "err");
+    } finally {
+      state.platformBusy.delete(platformId);
+      renderPlatformCards();
+    }
+  }
+
+  async function updatePlatformPlan(platformId) {
+    const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
+    if (!item || state.platformBusy.has(platformId)) return;
+    state.platformBusy.add(platformId);
+    renderPlatformCards();
+    try {
+      await put(`/api/platforms/${encodeURIComponent(platformId)}/plan`, { planned: !item.planned });
+      toast(item.planned ? `${item.name} убрана из плана` : `${item.name} добавлена в план интеграций`, "ok");
+      renderPlatforms(await api("/api/platforms"));
+    } catch (error) {
+      toast(`Не удалось обновить план: ${error.message}`, "err");
+    } finally {
+      state.platformBusy.delete(platformId);
+      renderPlatformCards();
+    }
+  }
+
   function renderSources(sources) {
     $("#sources-list").innerHTML = sources.map((s) => {
       const cooling = Boolean(s.cooldown_active);
@@ -979,13 +1161,14 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory, platforms] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
         api("/api/crossposts?limit=100"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
+        api("/api/platforms"),
       ]);
 
       const mode = status.mode || "?";
@@ -1013,6 +1196,7 @@
       renderRuns(runs.runs || []);
       renderMemory(memory || {});
       renderTopicDossier(state.topicDossier);
+      renderPlatforms(platforms || {});
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -1048,6 +1232,20 @@
     });
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
+  }
+
+  async function put(url, body) {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = payload.detail;
+      throw new Error(typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : String(res.status)));
+    }
+    return payload;
   }
 
   window.tgfarmReconcileCrosspost = async (postId, platform, action) => {
@@ -1192,6 +1390,49 @@
       refresh();
     }));
 
+  $("#platform-search")?.addEventListener("input", (event) => {
+    state.platformQuery = event.target.value || "";
+    renderPlatformCards();
+  });
+  $("#platform-filters")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-platform-filter]");
+    if (!button) return;
+    state.platformFilter = button.dataset.platformFilter || "all";
+    $("#platform-filters [data-platform-filter]").forEach((item) =>
+      item.classList.toggle("is-active", item === button));
+    renderPlatformCards();
+  });
+  $("#platform-categories")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-platform-category]");
+    if (!button) return;
+    state.platformCategory = button.dataset.platformCategory || "Все";
+    renderPlatformCategories(state.platformData?.platforms || []);
+    renderPlatformCards();
+  });
+  $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const toggle = event.target.closest("[data-platform-toggle]");
+    if (toggle) {
+      const item = (state.platformData?.platforms || []).find((entry) => entry.id === toggle.dataset.platformToggle);
+      if (item) await updatePlatformSwitch(item.id, !item.enabled);
+      return;
+    }
+    const plan = event.target.closest("[data-platform-plan]");
+    if (plan) {
+      await updatePlatformPlan(plan.dataset.platformPlan);
+      return;
+    }
+    if (event.target.closest("[data-platform-reset]")) {
+      state.platformQuery = "";
+      state.platformFilter = "all";
+      state.platformCategory = "Все";
+      $("#platform-search").value = "";
+      $("#platform-filters [data-platform-filter]").forEach((item) =>
+        item.classList.toggle("is-active", item.dataset.platformFilter === "all"));
+      renderPlatformCategories(state.platformData?.platforms || []);
+      renderPlatformCards();
+    }
+  });
+
   $("#memory-search-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     submitMemorySearch();
@@ -1228,6 +1469,11 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") $("#drawer").hidden = true;
+    if (e.key === "/" && state.view === "platforms" && !e.ctrlKey && !e.metaKey
+      && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
+      e.preventDefault();
+      $("#platform-search")?.focus();
+    }
   });
 
   $("#clock").textContent = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });

@@ -71,6 +71,14 @@ class CrosspostReconcileRequest(BaseModel):
     confirm_not_published: bool = False
 
 
+class PlatformToggleRequest(BaseModel):
+    enabled: bool
+
+
+class PlatformPlanRequest(BaseModel):
+    planned: bool
+
+
 class PolishRequest(BaseModel):
     """One-direction rewrite of an existing draft from the panel."""
 
@@ -914,17 +922,33 @@ def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
 
 
 def _blocked_publish_now_ids(public_ids: list[str]) -> list[dict]:
-    """Only gate-passed or already-scheduled posts may be forced out now."""
+    """Reject forced publishing if a post is ineligible or its platform is paused."""
+    from tgfarm.platforms import is_platform_enabled
+
     with session_scope() as session:
         rows = session.execute(
-            select(Post.public_id, Post.status).where(Post.public_id.in_(public_ids))
+            select(Post.public_id, Post.status, Channel.platform)
+            .outerjoin(Channel, Post.channel_id == Channel.id)
+            .where(Post.public_id.in_(public_ids))
         ).all()
-        status_by_id = {public_id: status for public_id, status in rows}
-    return [
-        {"id": public_id, "status": status_by_id.get(public_id, "not_found")}
-        for public_id in public_ids
-        if status_by_id.get(public_id) not in {"scheduled", "gated"}
-    ]
+        details = {
+            public_id: (status, (platform or "telegram").lower())
+            for public_id, status, platform in rows
+        }
+
+    blocked: list[dict] = []
+    for public_id in public_ids:
+        status, platform = details.get(public_id, ("not_found", ""))
+        if status not in {"scheduled", "gated"}:
+            blocked.append({"id": public_id, "status": status})
+        elif not is_platform_enabled(platform):
+            blocked.append({
+                "id": public_id,
+                "status": status,
+                "reason": "platform_disabled",
+                "platform": platform,
+            })
+    return blocked
 
 
 def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
@@ -1242,6 +1266,44 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def channels() -> dict:
         return {"channels": await io(_channels)}
 
+    @app.get("/api/platforms")
+    async def platforms() -> dict:
+        from tgfarm.platforms import get_platform_catalog
+
+        return await io(get_platform_catalog)
+
+    @app.put("/api/platforms/{platform_id}")
+    async def toggle_platform(platform_id: str, request: PlatformToggleRequest) -> dict:
+        from tgfarm.platforms import set_platform_enabled
+
+        try:
+            item = await io(set_platform_enabled, platform_id, request.enabled)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        _operator(
+            "platform-toggle",
+            platform_id,
+            "enabled" if request.enabled else "disabled",
+        )
+        return {"ok": True, "platform": item}
+
+    @app.put("/api/platforms/{platform_id}/plan")
+    async def plan_platform(platform_id: str, request: PlatformPlanRequest) -> dict:
+        from tgfarm.platforms import set_platform_planned
+
+        try:
+            item = await io(set_platform_planned, platform_id, request.planned)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        _operator(
+            "platform-plan",
+            platform_id,
+            "planned" if request.planned else "removed from plan",
+        )
+        return {"ok": True, "platform": item}
+
     @app.get("/api/runs")
     async def runs(limit: int = Query(30, ge=1, le=200)) -> dict:
         return {"runs": await io(_runs, limit)}
@@ -1261,6 +1323,14 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 400,
                 "Для повтора нужно подтвердить, что вы проверили целевую площадку и поста там нет.",
             )
+        if request.action == "retry_after_check":
+            from tgfarm.platforms import is_platform_enabled
+
+            if not is_platform_enabled(platform):
+                raise HTTPException(
+                    409,
+                    "Эта площадка выключена. Сначала включи её в разделе «Площадки», затем разрешай повтор.",
+                )
         result = await io(_reconcile_crosspost_outcome, post_public_id, platform, request.action)
         if result.get("error") == "not_found":
             raise HTTPException(404, "post not found")
