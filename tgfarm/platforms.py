@@ -642,6 +642,10 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.max_access_token and settings.max_channel_id:
             return True, "Данные MAX заданы; реальную публикацию нужно проверить."
         return False, "Нужны MAX_ACCESS_TOKEN и MAX_CHANNEL_ID."
+    if platform_id == "bluesky":
+        if settings.bluesky_handle and settings.bluesky_app_password:
+            return True, "Handle и app password заданы; проверь сессию и write-доступ."
+        return False, "Нужны BLUESKY_HANDLE и BLUESKY_APP_PASSWORD."
     if platform_id == "x":
         if settings.x_bearer_token and settings.x_user_id:
             return True, "Данные X заданы; права токена и лимиты API требуют проверки."
