@@ -10,7 +10,6 @@ post: only the current source block can ground new facts.
 from __future__ import annotations
 
 import json
-import math
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Iterable
@@ -31,6 +30,8 @@ FTS_TRIGGER_UPDATE = "tgfarm_post_memory_au"
 FTS_TRIGGER_DELETE = "tgfarm_post_memory_ad"
 MAX_QUERY_TERMS = 16
 MAX_CANDIDATES = 300
+_READY_ENGINES: set[tuple[str, int]] = set()
+_FAILED_ENGINES: set[tuple[str, int]] = set()
 
 
 def _published_count(session) -> int:
@@ -49,6 +50,11 @@ def ensure_archive_index(*, force: bool = False) -> bool:
     """
     engine = get_engine()
     if engine.dialect.name != "sqlite":
+        return False
+    engine_key = (str(engine.url), id(engine))
+    if not force and engine_key in _READY_ENGINES:
+        return True
+    if not force and engine_key in _FAILED_ENGINES:
         return False
 
     try:
@@ -134,8 +140,11 @@ def ensure_archive_index(*, force: bool = False) -> bool:
                     FROM posts
                     """
                 )
+        _READY_ENGINES.add(engine_key)
+        _FAILED_ENGINES.discard(engine_key)
         return True
     except Exception as exc:  # noqa: BLE001 - the DB query fallback is still useful
+        _FAILED_ENGINES.add(engine_key)
         log.warning("FTS5 archive index unavailable; using database fallback: %s", exc)
         return False
 
