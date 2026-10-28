@@ -1112,7 +1112,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     # --------------------------------------------------------------- actions
     @app.post("/api/cycle")
     async def run_cycle(collect: bool = True, max_clusters: int = 8) -> dict:
-        result = await pipeline.run_cycle(collect=collect, max_clusters=max_clusters)
+        result = await pipeline._guarded_cycle(
+            collect=collect,
+            max_clusters=max(1, min(max_clusters, pipeline.MAX_CLUSTERS_PER_CYCLE)),
+        )
+        if result is None:
+            health = pipeline.cycle_health()
+            if health.get("state") == "running":
+                raise HTTPException(409, "Полный цикл уже выполняется; повторный запуск пропущен.")
+            raise HTTPException(503, "Цикл не завершился успешно. Проверьте состояние и журнал фермы.")
         return result.as_dict()
 
     @app.post("/api/posts/publish")
