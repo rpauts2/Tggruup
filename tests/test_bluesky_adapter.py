@@ -104,4 +104,4 @@ async def test_bluesky_adapter_enforces_combined_post_length(monkeypatch):
     _, post_kwargs = FakeClient.calls[1]
     posted_text = post_kwargs["json"]["record"]["text"]
     assert len(posted_text) <= 300
-    assert posted_text.startswith("T" * 120)
+    assert posted_text.startswith(("T" * 119) + "…")
