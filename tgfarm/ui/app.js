@@ -12,6 +12,7 @@
     refreshTimer: null,
     inFlight: false,
     bestHour: null,
+    memoryQuery: "",
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -190,6 +191,64 @@
         </div>
       </div>`;
     }).join("");
+  }
+
+  function renderMemory(data) {
+    const root = $("#memory-results");
+    if (!root) return;
+    const index = data.index || {};
+    const meta = $("#memory-meta");
+    if (meta) {
+      const stateText = index.available ? "FTS5 индекс активен" : "резервный поиск";
+      meta.textContent = `${n(index.published_posts)} опубликованных постов · ${stateText}`;
+    }
+    const count = $("#memory-count");
+    if (count) {
+      count.textContent = data.query
+        ? `Найдено: ${n(data.total)} · показано ${n(data.returned)}`
+        : `Архив · ${n(data.total)} публикаций`;
+    }
+    const results = data.results || [];
+    if (!results.length) {
+      root.innerHTML = `<div class="empty">${data.query ? "Ничего не найдено. Попробуй имя, термин или ключевой факт из старой публикации." : "В архиве пока нет опубликованных постов, сохранённых TgFarm."}</div>`;
+      return;
+    }
+    root.innerHTML = results.map((row) => `
+      <div class="memory-result" data-memory-post="${esc(row.id)}" role="button" tabindex="0" title="Открыть полную публикацию">
+        <div class="memory-result-head">
+          <div>
+            <div class="item-title">${esc(row.hook || "(без заголовка)")}</div>
+            <div class="item-meta">${esc(row.channel_title || row.channel_id)} · ${esc(dt(row.published_at || row.created_at))} · ${esc(FORMAT_RU[row.post_format] || row.post_format || "пост")}</div>
+          </div>
+          <span class="tag">${row.score ? `совпадение ${pct(row.score)}` : "в архиве"}</span>
+        </div>
+        <div class="memory-excerpt">${esc(row.excerpt || (row.body || "").slice(0, 320))}</div>
+        <div class="item-meta memory-provenance">${n((row.claims || []).length)} утверждений · ${n((row.sources || []).length)} источников ${row.angle ? "· угол: " + esc(row.angle) : ""}</div>
+      </div>`).join("");
+    $("[data-memory-post]").forEach((el) => {
+      el.addEventListener("click", () => openDrawer(el.dataset.memoryPost));
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDrawer(el.dataset.memoryPost);
+        }
+      });
+    });
+  }
+
+  async function submitMemorySearch() {
+    const field = $("#memory-query");
+    state.memoryQuery = (field?.value || "").trim();
+    switchView("memory");
+    const root = $("#memory-results");
+    if (root) root.innerHTML = `<div class="empty">Ищу по всему архиву…</div>`;
+    try {
+      const data = await api(`/api/memory?limit=20&query=${encodeURIComponent(state.memoryQuery)}`);
+      renderMemory(data);
+    } catch (error) {
+      if (root) root.innerHTML = `<div class="empty">Поиск не удался: ${esc(error.message)}</div>`;
+      toast("Ошибка поиска архива: " + error.message, "err");
+    }
   }
 
   function experimentsBlock(report) {
@@ -710,11 +769,12 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, memory] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
+        api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
       ]);
 
       const mode = status.mode || "?";
@@ -739,6 +799,7 @@
       renderChannels(channels.channels || []);
       renderSources(sources.sources || []);
       renderRuns(runs.runs || []);
+      renderMemory(memory || {});
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -859,12 +920,36 @@
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
-  $$("#post-filters button").forEach((b) =>
+  $("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
       state.postFilter = b.dataset.status;
-      $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
+      $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
+
+  $("#memory-search-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitMemorySearch();
+  });
+  $("#memory-reindex")?.addEventListener("click", async () => {
+    const btn = $("#memory-reindex");
+    btn.disabled = true;
+    try {
+      const result = await post("/api/memory/reindex", {});
+      toast(
+        result.available
+          ? `Архив переиндексирован: ${n(result.indexed_posts)} постов`
+          : "FTS5 недоступен, используется резервный поиск",
+        result.available ? "ok" : "err",
+      );
+      const data = await api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`);
+      renderMemory(data);
+    } catch (error) {
+      toast("Не удалось обновить индекс: " + error.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") $("#drawer").hidden = true;
