@@ -513,6 +513,7 @@ tgfarm telegram sync           сверить каналы из YAML с реал
 tgfarm telegram stats          забрать реальные просмотры и реакции
 tgfarm dzen-login              войти в Дзен и сохранить сессию
 tgfarm dzen-stats              забрать метрики из Дзен Studio
+tgfarm history-import FILE    предпросмотр импорта старой истории (JSON/CSV)
 tgfarm status                  состояние фермы
 tgfarm trends                  горячие кластеры
 tgfarm posts [--status X]      список постов
@@ -524,6 +525,25 @@ tgfarm report [--days 7]       отчёт по эффективности
 tgfarm doctor                  диагностика
 tgfarm demo                    офлайн-прогон на синтетике
 ```
+
+### Импорт старых публикаций в память
+
+Экспорт Telegram Desktop в JSON, ответ VK wall API в JSON или универсальный JSON/CSV
+можно добавить в архив, чтобы поиск и досье тем видели публикации, сделанные до запуска
+TgFarm. Нужен существующий ID канала из `tgfarm channels`.
+
+```bash
+tgfarm history-import export.json --channel my_channel
+# Если предпросмотр корректен, явно подтвердите запись:
+tgfarm history-import export.json --channel my_channel --platform telegram --apply
+```
+
+Без `--apply` команда ничего не записывает. Импорт сохраняет исходную дату и ссылку,
+помечает записи как исторические, пропускает точные дубликаты и **не публикует** их
+повторно. Для CSV ожидаются колонки вроде `platform,external_id,published_at,title,text,url`.
+Для универсального JSON подойдут список объектов или объект с `posts`/`items`, где есть
+поля `text`/`body` и дата. История Дзена зависит от доступного экспорта, поэтому подойдёт
+его CSV или JSON с теми же полями, если такой экспорт был получен отдельно.
 
 ## API
 
