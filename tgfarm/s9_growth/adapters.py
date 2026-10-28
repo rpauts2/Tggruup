@@ -344,6 +344,76 @@ class XAdapter:
 
 
 
+# ------------------------------------------------------------------ Mastodon
+class MastodonAdapter:
+    """Publish a native text status to the configured Mastodon instance."""
+
+    platform = "mastodon"
+    max_title = 500
+    max_body = 500
+
+    def _credentials(self) -> tuple[str, str]:
+        from tgfarm.mastodon_oauth import normalize_instance_url
+
+        settings = get_settings()
+        try:
+            instance = normalize_instance_url(settings.mastodon_instance)
+        except (TypeError, ValueError):
+            instance = ""
+        return instance, str(settings.mastodon_access_token or "").strip()
+
+    def configured(self) -> bool:
+        instance, token = self._credentials()
+        return bool(instance and token)
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        instance, token = self._credentials()
+        if not (instance and token):
+            return CrosspostResult(platform=self.platform, status="skipped")
+        import hashlib
+        import httpx
+
+        body = f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip()
+        body = truncate(body, self.max_body).strip()
+        if not body:
+            return CrosspostResult(
+                platform=self.platform, status="permanent",
+                error="Mastodon status text is empty.",
+            )
+        idempotency_key = hashlib.sha256(f"{instance}\0{body}".encode("utf-8")).hexdigest()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{instance}/api/v1/statuses",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Idempotency-Key": idempotency_key,
+                    },
+                    data={"status": body},
+                )
+                response.raise_for_status()
+                result = response.json()
+            remote_id = str(result.get("id") or "")
+            raw_url = str(result.get("url") or "")
+            url = raw_url if raw_url.startswith("https://") else None
+            if not remote_id and not url:
+                return CrosspostResult(
+                    platform=self.platform, status="unknown",
+                    error="Mastodon accepted a response without a verifiable status ID.",
+                )
+            return CrosspostResult(
+                platform=self.platform, status="posted",
+                remote_id=remote_id or None, url=url,
+            )
+        except Exception as exc:  # noqa: BLE001 - ambiguous writes must not be retried blindly
+            status = crosspost_error_status(exc)
+            log.warning("mastodon crosspost %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status=status,
+                error=f"Mastodon request failed ({type(exc).__name__}).",
+            )
+
+
 # ------------------------------------------------------------------- Bluesky
 class BlueskyAdapter:
     """Publish a short native post through the official AT Protocol API."""
@@ -659,6 +729,7 @@ class RedditAdapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "mastodon": MastodonAdapter(),
     "bluesky": BlueskyAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
