@@ -116,6 +116,54 @@ async def test_guarded_cycle_skips_a_concurrent_full_cycle(monkeypatch):
     assert result.run_id == "cycle-guard-test"
 
 
+@pytest.mark.asyncio
+async def test_watchdog_cancels_stale_cycle_before_catchup(monkeypatch):
+    from tgfarm import pipeline
+
+    class ActiveTask:
+        cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    active = ActiveTask()
+    monkeypatch.setattr(pipeline, "_active_cycle_task", active)
+    monkeypatch.setattr(pipeline, "_cycle_state", "running")
+    monkeypatch.setattr(pipeline, "_cycle_finished_at", None)
+    monkeypatch.setattr(
+        pipeline,
+        "cycle_health",
+        lambda: {"state": "running", "stale": True, "age_s": 9999},
+    )
+    monkeypatch.setattr(pipeline, "collect_alerts", lambda: [])
+
+    async def no_alerts():
+        return 0
+
+    monkeypatch.setattr(pipeline, "deliver_alerts", no_alerts)
+
+    scheduled = []
+    original_create_task = pipeline.asyncio.create_task
+
+    def capture_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(pipeline.asyncio, "create_task", capture_task)
+    try:
+        await pipeline._watchdog()
+    finally:
+        monkeypatch.setattr(pipeline.asyncio, "create_task", original_create_task)
+
+    assert active.cancelled is True
+    assert pipeline._cycle_state == "failed"
+    assert scheduled == [], "catch-up must wait until the cancelled task releases its slot"
+
+
 def test_scheduler_uses_dedicated_publish_tick():
     from tgfarm import pipeline
 
