@@ -109,10 +109,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "instagram", "name": "Instagram", "symbol": "IG", "color": "#E4405F",
         "category": "Мировые", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["visual", "video"],
-        "description": "Reels, изображения и карусели. Нельзя считать обычный личный профиль готовым к API-публикации.",
-        "requirements": "Профессиональный аккаунт Meta, OAuth, права и доступ к Content Publishing API.",
-        "docs_url": "https://developers.facebook.com/docs/instagram-platform/content-publishing/",
+        "mode": "built_in", "roles": ["visual", "crosspost"],
+        "description": "Публикация одиночных изображений в ленту профессионального Instagram-аккаунта через Instagram Login.",
+        "requirements": "Business/Creator аккаунт, Instagram App, scopes instagram_business_basic и instagram_business_content_publish, публичный HTTPS URL для изображения.",
+        "docs_url": "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/content-publishing/",
     },
     {
         "id": "threads", "name": "Threads", "symbol": "@", "color": "#D8D8E0",
@@ -318,6 +318,14 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "THREADS_USER_ID", "attribute": "threads_user_id", "label": "User ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "THREADS_USERNAME", "attribute": "threads_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "instagram": [
+        {"key": "INSTAGRAM_APP_ID", "attribute": "instagram_app_id", "label": "Instagram App ID", "secret": False, "placeholder": "App ID из Meta Developer Portal", "help": "Используй Instagram API with Instagram Login для Professional (Business/Creator) аккаунта."},
+        {"key": "INSTAGRAM_APP_SECRET", "attribute": "instagram_app_secret", "label": "Instagram App Secret", "secret": True, "placeholder": "App Secret из Meta Developer Portal", "help": "Секрет хранится локально и не показывается повторно."},
+        {"key": "INSTAGRAM_ACCESS_TOKEN", "attribute": "instagram_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний долгоживущий токен."},
+        {"key": "INSTAGRAM_TOKEN_EXPIRES_AT", "attribute": "instagram_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "INSTAGRAM_USER_ID", "attribute": "instagram_user_id", "label": "Instagram user ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
+        {"key": "INSTAGRAM_USERNAME", "attribute": "instagram_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
     "linkedin": [
         {"key": "LINKEDIN_CLIENT_ID", "attribute": "linkedin_client_id", "label": "LinkedIn Client ID", "secret": False, "placeholder": "Client ID из Developer Portal", "help": "Приложение должно иметь OpenID Connect и Share on LinkedIn."},
         {"key": "LINKEDIN_CLIENT_SECRET", "attribute": "linkedin_client_secret", "label": "LinkedIn Client Secret", "secret": True, "placeholder": "Client Secret из Developer Portal", "help": "Секрет хранится только в локальном .env."},
@@ -464,7 +472,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "instagram"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -488,8 +496,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "dzen" else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
-            ("Для X, Threads или LinkedIn сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
-            if platform_id in {"x", "threads", "linkedin"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
+            ("Для X, Threads, LinkedIn или Instagram сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
+            if platform_id in {"x", "threads", "linkedin", "instagram"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
     }
 
@@ -692,6 +700,14 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
+    if platform_id == "instagram":
+        if settings.instagram_access_token and settings.instagram_user_id:
+            if settings.public_base_url:
+                return True, "Instagram OAuth сохранён; перед публикацией проверяются токен, профиль и доступность публичного медиа-URL."
+            return True, "Instagram OAuth сохранён; для публикации изображения также нужен TGFARM_PUBLIC_BASE_URL с публичным HTTPS-доменом."
+        if settings.instagram_app_id and settings.instagram_app_secret:
+            return False, "Instagram App настроено; подключи профессиональный аккаунт через OAuth."
+        return False, "Нужны Instagram App ID/Secret и подключение Business/Creator аккаунта через OAuth."
     if platform_id == "linkedin":
         if settings.linkedin_access_token and settings.linkedin_member_id:
             return True, "LinkedIn OAuth сохранён; проверка профиля выполняется через OpenID Connect."
