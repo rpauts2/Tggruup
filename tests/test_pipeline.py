@@ -451,6 +451,62 @@ def test_publish_error_ambiguity_is_conservative(error, expected):
     assert _is_ambiguous_publish_error(error) is expected
 
 
+def test_publish_server_error_is_ambiguous():
+    from types import SimpleNamespace
+
+    from tgfarm.s7_publish import _is_ambiguous_publish_error
+
+    class ServerError(Exception):
+        response = SimpleNamespace(status_code=503)
+
+    assert _is_ambiguous_publish_error(ServerError("503 Service Unavailable"))
+
+
+def test_reconcile_publish_outcomes_require_explicit_unknown_state():
+    from tgfarm.api import _reconcile_publish_outcome
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        session.merge(Channel(id="reconcile_test", title="Reconcile", niche="tech", platform="telegram"))
+        session.add_all(
+            [
+                Post(
+                    public_id="reconcile_confirm",
+                    channel_id="reconcile_test",
+                    hook="Confirm",
+                    body="Body",
+                    status="publish_unknown",
+                    publish_error="read timeout",
+                ),
+                Post(
+                    public_id="reconcile_retry",
+                    channel_id="reconcile_test",
+                    hook="Retry",
+                    body="Body",
+                    status="publish_unknown",
+                    publish_error="read timeout",
+                ),
+            ]
+        )
+
+    confirmed = _reconcile_publish_outcome("reconcile_confirm", "confirm_published")
+    retried = _reconcile_publish_outcome("reconcile_retry", "retry_after_check")
+    already_resolved = _reconcile_publish_outcome("reconcile_retry", "confirm_published")
+
+    assert confirmed == {
+        "ok": True,
+        "status": "published",
+        "detail": "operator confirmed post exists on destination",
+    }
+    assert retried["ok"] is True and retried["status"] == "scheduled"
+    assert already_resolved["ok"] is False and already_resolved["error"] == "not_unknown"
+
+    with session_scope() as session:
+        assert session.query(Post).filter_by(public_id="reconcile_confirm").one().status == "published"
+        assert session.query(Post).filter_by(public_id="reconcile_retry").one().status == "scheduled"
+
+
 @pytest.mark.asyncio
 async def test_dzen_dry_run_marks_published_and_logs_remote():
     from sqlalchemy import select
