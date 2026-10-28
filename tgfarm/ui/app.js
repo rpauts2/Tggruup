@@ -1899,6 +1899,7 @@
       renderPosts(posts.posts || []);
       renderChannels(channels.channels || []);
       renderSources(sources.sources || []);
+      state.data.crossposts = crossposts;
       renderCrossposts(crossposts.crossposts || []);
       renderRuns(runs.runs || []);
       renderMemory(memory || {});
