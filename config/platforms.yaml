@@ -6,7 +6,7 @@ enabled:
   dzen: true
   vk: true
   max: true
-  x: true
+  x: false
   reddit: false
   bluesky: false
   mastodon: false
