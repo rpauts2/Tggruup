@@ -221,11 +221,11 @@
 
   const STATUS_TAG = {
     published: "tag-ok", scheduled: "tag-acc", gated: "tag-ok",
-    rejected: "tag-err", failed: "tag-err", draft: "",
+    publish_unknown: "tag-warn", rejected: "tag-err", failed: "tag-err", draft: "",
   };
   const STATUS_RU = {
     published: "опубликован", scheduled: "в очереди", gated: "прошёл гейты",
-    rejected: "отклонён", failed: "ошибка", draft: "черновик",
+    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка", draft: "черновик",
   };
   const FORMAT_RU = {
     flash: "картинка + коротко", stat: "цифра", news: "новость",
@@ -265,7 +265,7 @@
       ? posts.map(postCard).join("")
       : `<div class="empty">Постов нет</div>`;
 
-    const queue = posts.filter((p) => ["scheduled", "gated"].includes(p.status)).slice(0, 6);
+    const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
     // to the most recent posts so the card always reflects the last real output.
     const title = $("#overview-queue-title");
@@ -275,9 +275,9 @@
       <div class="item" data-post="${esc(p.id)}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
-          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота"}</div>
+          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
         </div>
-        <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(FORMAT_RU[p.post_format] || p.post_format)}</span></div>
+        <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || FORMAT_RU[p.post_format] || p.post_format)}</span></div>
       </div>`).join("");
     } else if (posts.length) {
       title.textContent = "Последние публикации";
