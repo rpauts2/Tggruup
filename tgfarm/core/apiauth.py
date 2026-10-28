@@ -40,6 +40,7 @@ PUBLIC_PATHS = (
     "/health", "/favicon.ico", "/ui/",
     "/api/platforms/mastodon/auth/callback",
     "/api/platforms/x/auth/callback",
+    "/api/platforms/threads/auth/callback",
 )
 PUBLIC_PREFIXES = ("/ui/",)
 
