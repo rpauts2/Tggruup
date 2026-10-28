@@ -473,29 +473,29 @@ async def backup_job() -> dict:
     settings = get_settings()
     db_url = make_url(str(get_engine_url()))
     if db_url.get_backend_name() != "sqlite":
-        return {
+        return record_report({
             "backup": None,
             "verified": False,
             "reason": "non-sqlite database; configure an external database backup",
-        }
+        })
 
     db_path = db_url.database
     if not db_path or db_path == ":memory:":
-        return {
+        return record_report({
             "backup": None,
             "verified": False,
             "reason": "SQLite database has no persistent file to back up",
-        }
+        })
 
     source_path = Path(db_path).expanduser()
     if not source_path.is_absolute():
         source_path = source_path.resolve()
     if not source_path.is_file():
-        return {
+        return record_report({
             "backup": None,
             "verified": False,
             "reason": f"SQLite database file not found: {source_path}",
-        }
+        })
 
     dest_dir = (
         Path(settings.backup_dir).expanduser()
@@ -505,6 +505,29 @@ async def backup_job() -> dict:
     dest_dir.mkdir(parents=True, exist_ok=True)
     keep = max(1, int(settings.keep_backups))
     mirror_config = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
+
+    run_id = f"backup-{uuid.uuid4().hex[:8]}"
+
+    def record_report(report: dict) -> dict:
+        verified = bool(report.get("verified"))
+        local_verified = bool(report.get("local_verified", verified))
+        mirror = report.get("mirror") or {}
+        reason = None if verified else str(
+            report.get("reason") or mirror.get("reason") or "backup verification failed"
+        )
+        _record(
+            run_id,
+            "backup",
+            "ok" if verified else "error",
+            items_out=1 if local_verified else 0,
+            error=reason,
+            meta={
+                "local_verified": local_verified,
+                "mirror_configured": bool(mirror_config),
+                "mirror_verified": mirror.get("verified"),
+            },
+        )
+        return report
 
     # Microseconds prevent two manual backups in the same minute from
     # silently overwriting one another. A unique temporary file also makes a
@@ -563,7 +586,7 @@ async def backup_job() -> dict:
                     dest.name,
                     reason,
                 )
-                return {
+                return record_report({
                     "backup": str(dest),
                     "verified": False,
                     "local_verified": True,
@@ -572,10 +595,10 @@ async def backup_job() -> dict:
                     "kept": kept,
                     "mirror": mirror_report,
                     "reason": "local snapshot verified, but configured backup mirror failed",
-                }
+                })
 
         log.info("verified backup written: %s (%s kept; mirror=%s)", dest.name, kept, mirror_report.get("verified"))
-        return {
+        return record_report({
             "backup": str(dest),
             "verified": True,
             "local_verified": True,
@@ -583,8 +606,15 @@ async def backup_job() -> dict:
             "size_bytes": size_bytes,
             "kept": kept,
             "mirror": mirror_report,
-        }
-    except Exception:
+        })
+    except Exception as exc:
+        _record(
+            run_id,
+            "backup",
+            "error",
+            error=redact_sensitive_text(exc, limit=240),
+            meta={"local_verified": False, "mirror_configured": bool(mirror_config)},
+        )
         # Close handles before unlinking the temporary file; Windows refuses
         # to remove an open SQLite file.
         if dst is not None:
