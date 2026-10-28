@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   cleanup-superseded-branches:
-    if: contains(github.event.head_commit.message, 'Consolidate topic memory and historical publication import')
+    if: contains(github.event.head_commit.message, 'Consolidate topic memory and historical publication import') || contains(github.event.head_commit.message, 'Arm cleanup for merged work branches')
     runs-on: ubuntu-latest
     steps:
       - name: Delete only the explicitly superseded branch refs
@@ -37,6 +37,8 @@ jobs:
             "feat/publish-recovery-autonomy"
             "feat/topic-knowledge-chains"
             "feat/topic-knowledge-chains-clean"
+            "work/complete-six-stages-2026-10"
+            "work/phase5-6-evidence-safety-2026-10"
           )
 
           for branch in "${branches[@]}"; do
