@@ -527,7 +527,7 @@ async def verify(
 # point (`\d+(?:[.,]\d+)*`) so a sentence-ending period is never swallowed into
 # the token — "GPT-5.5." must normalise to "5.5", not "5.5.".
 _NUMBER_RE = re.compile(
-    r"\d+(?:[.,]\d+)*\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$)?",
+    r"\d+(?:(?:[ \u00a0]\d{3})|(?:[.,]\d+))*(?:\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$))?",
     re.I,
 )
 _DIGIT_STRIP = re.compile(r"[^\d]")
@@ -541,8 +541,11 @@ def _normalise_number(token: str) -> str:
     the RU/EU sources write decimal commas ("0,02" -> "0.02").
     """
     cleaned = (token or "").replace(" ", "").replace(" ", "")
-    cleaned = re.sub(r"[^\d.,]", "", cleaned)
-    cleaned = cleaned.rstrip(".,")
+    cleaned = re.sub(r"[^\d.,]", "", cleaned).rstrip(".,")
+    if "," in cleaned and "." not in cleaned:
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", cleaned):
+            return cleaned.replace(",", "")
+        return cleaned.replace(",", ".")
     return cleaned.replace(",", ".")
 
 
@@ -558,10 +561,14 @@ def _lexically_supported(claim: str, item) -> bool:
     call. A claim with no checkable numbers passes; qualitative claims still need
     the LLM fact-checker and editorial gates.
     """
-    haystack = _normalise_haystack(f"{item.title} {item.text}")
+    source_numbers = {
+        _normalise_number(token)
+        for token in _NUMBER_RE.findall(f"{item.title} {item.text}")
+        if _normalise_number(token)
+    }
     for token in _NUMBER_RE.findall(claim or ""):
         digits = _normalise_number(token)
-        if len(digits) >= 2 and digits not in haystack:
+        if len(digits) >= 2 and digits not in source_numbers:
             return False
     return True
 
