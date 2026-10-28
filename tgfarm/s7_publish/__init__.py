@@ -594,12 +594,52 @@ def _claim_post(post_id: int) -> bool:
         return result.rowcount == 1
 
 
-def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
-    """Return posts orphaned in `publishing` to the queue.
+def _is_ambiguous_publish_error(exc: BaseException) -> bool:
+    """Return True when the remote platform may have accepted the post.
 
-    A killed process leaves a row in `publishing` forever: it is invisible to
-    due_posts and no error is ever reported. Anything older than the window is
-    not in flight any more.
+    A timeout/reset after a request was sent is not proof of failure. Retrying
+    such a request blindly can create duplicates. Connection/DNS failures that
+    happen before an HTTP connection is established remain retryable.
+    """
+    kind = type(exc).__name__.lower()
+    message = f"{kind}: {exc}".lower()
+
+    definitely_before_send = (
+        "connecttimeout",
+        "connecterror",
+        "getaddrinfo",
+        "name or service not known",
+        "connection refused",
+        "network is unreachable",
+    )
+    if any(marker in message for marker in definitely_before_send):
+        return False
+
+    ambiguous = (
+        "readtimeout",
+        "writetimeout",
+        "request timeout",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "server disconnected",
+        "remotedisconnected",
+        "remoteprotocolerror",
+        "incomplete read",
+        "unexpected eof",
+        "broken pipe",
+    )
+    return any(marker in message for marker in ambiguous)
+
+
+def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
+    """Move interrupted attempts to manual reconciliation, never auto-retry.
+
+    A process can die after the platform accepted a post but before the local
+    database committed that fact. The old automatic requeue could publish a
+    duplicate. Keep the original attempt timestamp and expose the uncertain
+    outcome so an operator can verify the destination before retrying.
     """
     cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
     with session_scope() as session:
@@ -607,9 +647,8 @@ def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
             update(PostRow)
             .where(PostRow.status == "publishing", PostRow.scheduled_at <= cutoff)
             .values(
-                status="scheduled",
-                scheduled_at=datetime.now(UTC),
-                publish_error=f"requeued after {minutes} min in publishing",
+                status="publish_unknown",
+                publish_error=f"outcome unknown after {minutes} min in publishing; verify platform before retry",
             )
         )
         return result.rowcount or 0
@@ -661,25 +700,36 @@ async def _publish_one(
             if isinstance(exc, (DzenNotLoggedIn, DzenCaptcha)):
                 retry_min = 60
         error_text = str(exc)
-        # Transport failures (DNS down, timeouts) back off exponentially: a
-        # network outage must not hammer the API every five minutes for hours.
+        # Retry failures known to happen before the request reaches the platform.
+        # A timeout/reset after sending may mean the platform already accepted it.
+        ambiguous = _is_ambiguous_publish_error(exc)
         transport = any(
             marker in error_text
-            for marker in ("getaddrinfo", "timed out", "Network is unreachable", "connection reset")
+            for marker in ("getaddrinfo", "Network is unreachable", "connection refused", "ConnectTimeout")
         )
         with session_scope() as session:
             post = session.get(PostRow, post_id)
             if post:
-                if transport:
-                    retry_min = min(360, 10 * 2 ** min(max(1, post.attempts) - 1, 5))
-                post.status = "scheduled"
                 post.publish_error = error_text[:400]
-                post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
-        log.warning(
-            "publish failed for %s (%s): %s (retry in %s min)",
-            post_id, platform, exc, retry_min,
-        )
-        return {"ok": False, "error": error_text}
+                if ambiguous:
+                    post.status = "publish_unknown"
+                    # Keep scheduled_at as the start timestamp for this attempt.
+                else:
+                    if transport:
+                        retry_min = min(360, 10 * 2 ** min(max(1, post.attempts) - 1, 5))
+                    post.status = "scheduled"
+                    post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
+        if ambiguous:
+            log.error(
+                "publish outcome unknown for %s (%s): %s; operator reconciliation required",
+                post_id, platform, exc,
+            )
+        else:
+            log.warning(
+                "publish failed for %s (%s): %s (retry in %s min)",
+                post_id, platform, exc, retry_min,
+            )
+        return {"ok": False, "error": error_text, "outcome_unknown": ambiguous}
 
     with session_scope() as session:
         post = session.get(PostRow, post_id)
