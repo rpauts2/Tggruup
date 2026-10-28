@@ -597,8 +597,6 @@ async def backup_job() -> dict:
                     local_backup_dir=dest_dir,
                 )
             except Exception as mirror_exc:  # noqa: BLE001 - local snapshot remains valid
-                from tgfarm.core.security import redact_sensitive_text
-
                 mirror_report = {
                     "configured": True,
                     "verified": False,
