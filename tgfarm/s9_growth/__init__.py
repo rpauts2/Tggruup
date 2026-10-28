@@ -21,6 +21,7 @@ from sqlalchemy import or_, select
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, ensure_utc, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Channel as ChannelRow
@@ -31,6 +32,7 @@ from tgfarm.s9_growth.adapters import (
     already_done,
     begin_crosspost,
     build_payload,
+    latest_crosspost,
     log_result,
     primary_image_path,
 )
@@ -85,6 +87,7 @@ def _pending_crossposts(
                 PostRow.status == "published",
                 PostRow.published_at >= cutoff,
                 or_(ChannelRow.platform.is_(None), ChannelRow.platform == "telegram"),
+                ChannelRow.enabled.is_(True),
             )
         ).scalars().all()
         return [
@@ -130,8 +133,13 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if await to_thread(already_done, post.public_id, name):
             continue
         if not adapter.configured():
+            # Missing credentials are a durable state, not a new failure event
+            # on every scheduler tick. Keep one skipped row until the adapter
+            # becomes configured; then the normal claim path can resume.
+            previous = await to_thread(latest_crosspost, post.public_id, name)
             results.append(CrosspostResult(platform=name, status="skipped"))
-            await to_thread(log_result, post.public_id, results[-1])
+            if previous is None or previous.status != "skipped":
+                await to_thread(log_result, post.public_id, results[-1])
             continue
 
         attempt = await to_thread(begin_crosspost, post.public_id, name)
@@ -148,7 +156,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 result = CrosspostResult(
                     platform=name,
                     status="unknown" if ambiguous_crosspost_error(exc) else "failed",
-                    error=str(exc)[:300],
+                    error=redact_sensitive_text(exc, limit=300),
                 )
         else:
             result = CrosspostResult(
