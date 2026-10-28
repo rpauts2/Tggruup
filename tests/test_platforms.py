@@ -294,3 +294,57 @@ def test_reddit_metrics_report_api_is_authenticated_and_read_only(client):
     assert payload["ok"] is True
     assert "communities" in payload
     assert "просмотры" in payload["note"].lower() or "показы" in payload["note"].lower()
+
+
+def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network(client, monkeypatch):
+    import tgfarm.platform_auth as auth_module
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    calls = []
+
+    async def fake_check(platform_id):
+        calls.append(platform_id)
+        return {
+            "ok": True,
+            "platform": platform_id,
+            "authorized": True,
+            "account": "@test",
+            "detail": "read-only probe passed",
+            "auth": {"status": "authorized", "fields": []},
+        }
+
+    monkeypatch.setattr(auth_module, "check_platform_auth", fake_check)
+    assert client.post("/api/platforms/vk/auth/check").status_code == 401
+    headers = {HEADER: ensure_token()}
+    success = client.post("/api/platforms/vk/auth/check", headers=headers)
+    assert success.status_code == 200
+    assert success.json()["authorized"] is True
+    blocked = client.post("/api/platforms/youtube/auth/check", headers=headers)
+    assert blocked.status_code == 409
+    assert calls == ["vk"]
+
+
+def test_platform_credentials_api_never_echoes_submitted_secret(client, monkeypatch):
+    from tgfarm import platforms
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    captured = {}
+
+    def fake_save(platform_id, values):
+        captured.update({"platform_id": platform_id, "values": values})
+        return {
+            "method": "credentials",
+            "status": "unverified",
+            "status_label": "Данные сохранены, нужна проверка",
+            "fields": [{"key": "VK_ACCESS_TOKEN", "has_value": True, "secret": True}],
+        }
+
+    monkeypatch.setattr(platforms, "save_platform_credentials", fake_save)
+    response = client.put(
+        "/api/platforms/vk/credentials",
+        json={"values": {"VK_ACCESS_TOKEN": "top-secret"}},
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 200
+    assert captured == {"platform_id": "vk", "values": {"VK_ACCESS_TOKEN": "top-secret"}}
+    assert "top-secret" not in response.text
