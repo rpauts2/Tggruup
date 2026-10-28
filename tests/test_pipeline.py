@@ -1636,3 +1636,50 @@ async def test_crosspost_batches_are_serialized(monkeypatch):
     release.set()
     result = await asyncio.wait_for(first, timeout=2)
     assert result["posted"] == 1
+
+
+def test_crosspost_alert_counts_permanent_and_exhausted_failures_only():
+    import re
+    import uuid
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.pipeline import collect_alerts
+
+    now = datetime.now(UTC)
+
+    def failure_count():
+        entry = next(
+            (alert for alert in collect_alerts(now) if alert["code"] == "crosspost_delivery_failed"),
+            None,
+        )
+        return int(re.search(r"\\d+", entry["message"]).group()) if entry else 0
+
+    before = failure_count()
+    suffix = uuid.uuid4().hex[:8]
+    with session_scope() as session:
+        session.add_all([
+            CrosspostLog(
+                post_public_id="alert-permanent-" + suffix,
+                platform="bluesky",
+                status="permanent",
+                attempt=1,
+                error="invalid credentials",
+            ),
+            CrosspostLog(
+                post_public_id="alert-exhausted-" + suffix,
+                platform="reddit",
+                status="failed",
+                attempt=5,
+                error="retry budget exhausted",
+            ),
+            CrosspostLog(
+                post_public_id="alert-retryable-" + suffix,
+                platform="vk",
+                status="failed",
+                attempt=2,
+                error="temporary rate limit",
+            ),
+        ])
+
+    assert failure_count() - before == 2

@@ -231,6 +231,22 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 )
             )
         ).scalar_one()
+        from tgfarm.s9_growth.adapters import MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+
+        crosspost_failures = session.execute(
+            select(func.count())
+            .select_from(CrosspostLog)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(
+                or_(
+                    CrosspostLog.status == "permanent",
+                    and_(
+                        CrosspostLog.status == "failed",
+                        CrosspostLog.attempt >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS,
+                    ),
+                )
+            )
+        ).scalar_one()
         last_generate = session.execute(
             select(PipelineRun.status, PipelineRun.error)
             .where(PipelineRun.stage == "s4_generate")
@@ -302,6 +318,18 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "message": (
                     f"{crosspost_attention} кросспост(ов) требуют сверки на целевой площадке; "
                     "автоматический повтор остановлен во избежание дублей"
+                ),
+            }
+        )
+
+    if crosspost_failures:
+        alerts.append(
+            {
+                "level": "warning",
+                "code": "crosspost_delivery_failed",
+                "message": (
+                    f"{crosspost_failures} кросспост(ов) требуют исправления подключения "
+                    "или ручного повторного разрешения после проверки целевой площадки"
                 ),
             }
         )
