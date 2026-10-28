@@ -1481,11 +1481,11 @@
     const matchesFilter = (rows) => {
       const statuses = rows.map((row) => String(row.status || "unknown"));
       if (state.crosspostFilter === "attention") {
-        return statuses.some((status) => ["unknown", "permanent", "permanent_failure", "failed"].includes(status));
+        return statuses.includes("unknown");
       }
       if (state.crosspostFilter === "published") return statuses.includes("posted");
       if (state.crosspostFilter === "errors") {
-        return statuses.some((status) => ["unknown", "permanent", "permanent_failure", "failed"].includes(status));
+        return statuses.some((status) => ["failed", "permanent", "permanent_failure"].includes(status));
       }
       if (state.crosspostFilter === "pending") {
         return statuses.some((status) => ["publishing", "retry_authorized"].includes(status));
