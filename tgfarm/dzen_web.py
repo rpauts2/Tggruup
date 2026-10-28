@@ -24,6 +24,7 @@ from pathlib import Path
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 
 log = get_logger(__name__)
 
@@ -259,7 +260,7 @@ class DzenWebPublisher:
                 finally:
                     await context.close()
         except Exception as exc:  # noqa: BLE001 - a probe reports, not raises
-            return {"authorized": None, "busy": False, "error": str(exc)[:180], "checked_at": checked_at}
+            return {"authorized": None, "busy": False, "error": redact_sensitive_text(exc, limit=180), "checked_at": checked_at}
         finally:
             DZEN_BROWSER_LOCK.release()
 
@@ -351,7 +352,7 @@ class DzenWebPublisher:
                         ["clipboard-read", "clipboard-write"], origin="https://dzen.ru"
                     )
                 except Exception as exc:  # noqa: BLE001 - older Chromium builds
-                    log.debug("clipboard permission unavailable: %s", exc)
+                    log.debug("clipboard permission unavailable: %s", redact_sensitive_text(exc, limit=160))
                 await self._goto_editor(page)
                 if not await self._is_logged_in(page):
                     await self._save_debug(page, "dzen-not-logged-in")
@@ -380,7 +381,7 @@ class DzenWebPublisher:
                             )
                         inline_ok = True
                     except Exception as exc:  # noqa: BLE001 - text is still publishable
-                        log.warning("image insert failed (%s); publishing text only", exc)
+                        log.warning("image insert failed (%s); publishing text only", redact_sensitive_text(exc, limit=160))
                         await self._fill_body(page, body)
                 else:
                     await self._fill_body(page, body)
@@ -727,7 +728,7 @@ class DzenWebPublisher:
                 await box.fill(caption[:2000])
                 await self._human.pause(0.3, 0.7)
         except Exception as exc:  # noqa: BLE001 - caption is optional
-            log.debug("image caption failed: %s", exc)
+            log.debug("image caption failed: %s", redact_sensitive_text(exc, limit=160))
 
     async def _paste_image(self, page, image: Path) -> None:
         data = image.read_bytes()
@@ -816,7 +817,7 @@ class DzenWebPublisher:
                 await inputs.first.set_input_files(str(cover))
             await asyncio.sleep(self.rng.uniform(3.0, 5.0))
         except Exception as exc:  # noqa: BLE001 - cover is optional
-            log.warning("обложка не загрузилась (%s); продолжаю без неё", exc)
+            log.warning("обложка не загрузилась (%s); продолжаю без неё", redact_sensitive_text(exc, limit=160))
 
     async def _click_publish(self, page, title: str) -> None:
         button = await self._find_visible(
@@ -951,7 +952,7 @@ class DzenWebPublisher:
             await page.screenshot(path=str(png), full_page=True)
             html.write_text(await page.content(), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 - debug must not mask the error
-            log.debug("не удалось сохранить %s: %s", name, exc)
+            log.debug("не удалось сохранить %s: %s", name, redact_sensitive_text(exc, limit=160))
         return png
 
     @staticmethod
