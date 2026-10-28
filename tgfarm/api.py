@@ -1118,6 +1118,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         callback_scopes = {
             "/api/platforms/mastodon/auth/callback": "tgfarm_mastodon_oauth_params",
             "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
+            "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1138,7 +1139,11 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 if key in {"code", "state", "error"} and values
             }
         response = await call_next(request)
-        if request.url.path in {"/api/platforms/mastodon/auth/callback", "/api/platforms/x/auth/callback"}:
+        if request.url.path in {
+            "/api/platforms/mastodon/auth/callback",
+            "/api/platforms/x/auth/callback",
+            "/api/platforms/threads/auth/callback",
+        }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1595,6 +1600,102 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
                 "<h1>Не удалось подключить X</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/threads/auth/start")
+    async def threads_oauth_start(request: Request) -> dict:
+        from tgfarm.threads_oauth import begin_threads_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/threads/auth/callback"
+        try:
+            return await begin_threads_oauth(
+                settings.threads_app_id,
+                settings.threads_app_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/platforms/threads/auth/callback")
+    async def threads_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.threads_oauth import cancel_threads_oauth, complete_threads_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_threads_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_threads_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение Threads не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_threads_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "threads",
+                {
+                    "THREADS_APP_ID": credentials["client_id"],
+                    "THREADS_APP_SECRET": credentials["client_secret"],
+                    "THREADS_ACCESS_TOKEN": credentials["access_token"],
+                    "THREADS_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "THREADS_USER_ID": credentials["user_id"],
+                    "THREADS_USERNAME": credentials["username"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "threads",
+                True,
+                account=credentials["account"],
+                detail="Threads OAuth подтверждён; долгоживущий токен и профиль сохранены локально.",
+            )
+            _operator("platform-auth-check", "threads", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Threads подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>OAuth-токен сохранён локально и будет обновляться до истечения срока. Публикация остаётся выключенной, пока ты не включишь Threads в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_threads_oauth(state_value)
+            log.warning("Threads OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(str(exc)[:240])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Threads</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_threads_oauth(state_value)
+            log.warning("Threads OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Threads</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
