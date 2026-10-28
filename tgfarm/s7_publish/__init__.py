@@ -744,16 +744,24 @@ async def _publish_one(
     return {"ok": True, "message_id": message_id, "post_id": post_id}
 
 
-def due_posts(limit: int = 20) -> list[tuple[int, str, int | str, str]]:
+def due_posts(
+    limit: int = 20,
+    post_public_ids: list[str] | None = None,
+) -> list[tuple[int, str, int | str, str]]:
+    """Load due posts, optionally restricted to a specific operator selection."""
+    if post_public_ids is not None and not post_public_ids:
+        return []
     now = datetime.now(UTC)
     out: list[tuple[int, str, int | str, str]] = []
     with session_scope() as session:
-        rows = session.execute(
+        stmt = (
             select(PostRow)
             .where(PostRow.status == "scheduled", PostRow.scheduled_at <= now)
             .order_by(PostRow.scheduled_at.asc())
-            .limit(limit)
-        ).scalars().all()
+        )
+        if post_public_ids is not None:
+            stmt = stmt.where(PostRow.public_id.in_(post_public_ids))
+        rows = session.execute(stmt.limit(limit)).scalars().all()
         for row in rows:
             channel = session.get(ChannelRow, row.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
@@ -831,13 +839,19 @@ def _last_dzen_publish_time() -> datetime | None:
     return value
 
 
-async def publish_due(limit: int = 1000) -> dict[str, int]:
+async def publish_due(
+    limit: int = 1000,
+    post_public_ids: list[str] | None = None,
+) -> dict[str, int]:
     get_settings()
     with StageTimer("s7_publish") as timer:
         requeued = await to_thread(_requeue_stuck)
         if requeued:
-            log.warning("s7: requeued %d posts stuck in publishing", requeued)
-        pending = await to_thread(due_posts, limit)
+            log.warning(
+                "s7: moved %d interrupted posts to publish_unknown; reconcile before retry",
+                requeued,
+            )
+        pending = await to_thread(due_posts, limit, post_public_ids)
         if not pending:
             timer.items_out = 0
             return {"published": 0, "failed": 0}
@@ -909,10 +923,15 @@ def unpublish(posts_public_ids: list[str]) -> int:
         rows = session.execute(
             select(PostRow).where(PostRow.public_id.in_(posts_public_ids))
         ).scalars().all()
+        updated = 0
         for row in rows:
+            # An uncertain side effect must never become a blind retry.
+            if row.status == "publish_unknown":
+                continue
             row.status = "scheduled"
             row.scheduled_at = datetime.now(UTC)
-        return len(rows)
+            updated += 1
+        return updated
 
 
 def new_run_id() -> str:
