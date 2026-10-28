@@ -41,6 +41,7 @@ PUBLIC_PATHS = (
     "/api/platforms/mastodon/auth/callback",
     "/api/platforms/x/auth/callback",
     "/api/platforms/threads/auth/callback",
+    "/api/platforms/linkedin/auth/callback",
 )
 PUBLIC_PREFIXES = ("/ui/",)
 
