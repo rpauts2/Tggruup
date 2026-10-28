@@ -538,7 +538,7 @@ tgfarm history-import export.json --channel my_channel
 tgfarm history-import export.json --channel my_channel --platform telegram --apply
 ```
 
-Без `--apply` команда ничего не записывает. Импорт сохраняет исходную дату и ссылку,
+Без `--apply` команда ничего не записывает. Повторный запуск безопасен: импорт отсекает дубликаты по ID и тексту. Импорт сохраняет исходную дату и ссылку,
 помечает записи как исторические, пропускает точные дубликаты и **не публикует** их
 повторно. Для CSV ожидаются колонки вроде `platform,external_id,published_at,title,text,url`.
 Для универсального JSON подойдут список объектов или объект с `posts`/`items`, где есть
