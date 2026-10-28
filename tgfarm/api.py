@@ -931,6 +931,7 @@ def _crosspost_health() -> dict:
         "failed": sum(item["failed"] for item in by_platform.values()),
         "permanent": sum(item["permanent"] for item in by_platform.values()),
         "unknown": sum(item["unknown"] for item in by_platform.values()),
+        "publishing": sum(item["publishing"] for item in by_platform.values()),
         "stuck": sum(item["stuck"] for item in by_platform.values()),
         "retry_authorized": sum(item["retry_authorized"] for item in by_platform.values()),
         "skipped": sum(item["skipped"] for item in by_platform.values()),
@@ -957,8 +958,8 @@ def _crosspost_health() -> dict:
         ),
     }
     overall = (
-        "attention" if totals["needs_attention"]
-        else "working" if totals["retry_authorized"] or totals["stuck"]
+        "attention" if totals["needs_attention"] or totals["stale_claims"]
+        else "working" if totals["publishing"] or totals["failed"] or totals["retry_authorized"]
         else "healthy" if totals["posted"]
         else "not_tested"
     )
