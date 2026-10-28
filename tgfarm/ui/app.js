@@ -1481,7 +1481,7 @@
     for (const row of entries || []) {
       const post = String(row.post || "");
       const platform = String(row.platform || "unknown");
-      const key = `${post}\\u0000${platform}`;
+      const key = `${post}\u0000${platform}`;
       if (!post || seen.has(key)) continue;
       seen.add(key);
       if (!byPost.has(post)) byPost.set(post, []);
@@ -1532,7 +1532,7 @@
         return statuses.some((status) => ["failed", "permanent", "permanent_failure"].includes(status));
       }
       if (state.crosspostFilter === "pending") {
-        return statuses.some((status) => ["publishing", "retry_authorized"].includes(status));
+        return statuses.some((status) => ["publishing", "retry_authorized", "failed"].includes(status));
       }
       return true;
     };
