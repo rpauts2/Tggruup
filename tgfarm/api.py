@@ -826,6 +826,7 @@ def _crossposts(limit: int) -> list[dict]:
                 "post": r.post_public_id,
                 "platform": r.platform,
                 "status": r.status,
+                "remote_id": r.remote_id,
                 "url": r.url,
                 "error": (r.error or "")[:200] or None,
                 "attempt": r.attempt,
