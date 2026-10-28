@@ -360,6 +360,12 @@ async def search_communities(
     adapter = _adapter()
     _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
     token = await adapter._access_token()
+    try:
+        from tgfarm.s9_growth.reddit_metrics import community_learning_signals
+
+        learned_communities = community_learning_signals()
+    except Exception:  # noqa: BLE001 - scout still works if local analytics is unavailable
+        learned_communities = {}
 
     import httpx
 
