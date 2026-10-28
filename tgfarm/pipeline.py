@@ -1297,8 +1297,28 @@ async def _platform_auth_tick() -> dict:
     if not settings.online:
         return {"checked": 0, "authorized": 0, "failed": 0, "indeterminate": 0, "skipped": "mode=off"}
 
-    from tgfarm.platform_auth import check_platform_auth
-    from tgfarm.platforms import get_platform_catalog
+    try:
+        from tgfarm.platform_auth import check_platform_auth
+        from tgfarm.platforms import get_platform_catalog
+
+        catalog = await to_thread(get_platform_catalog)
+    except Exception as exc:  # noqa: BLE001 - auth monitoring must not kill the scheduler
+        error_type = type(exc).__name__
+        log.error("platform auth catalog unavailable (%s)", error_type)
+        await to_thread(
+            _record,
+            run_id,
+            "platform_auth",
+            "error",
+            error=f"platform catalog unavailable ({error_type})",
+        )
+        return {
+            "checked": 0,
+            "authorized": 0,
+            "failed": 0,
+            "indeterminate": 0,
+            "error": "platform_catalog_unavailable",
+        }
 
     # These adapters have a read-only auth probe. Dzen has its own browser
     # warm-up, while non-integrated catalog entries are intentionally ignored.
@@ -1306,7 +1326,6 @@ async def _platform_auth_tick() -> dict:
         "telegram", "vk", "max", "x", "reddit", "bluesky",
         "threads", "linkedin", "mastodon",
     }
-    catalog = await to_thread(get_platform_catalog)
     candidates = [
         row
         for row in catalog.get("platforms", [])
