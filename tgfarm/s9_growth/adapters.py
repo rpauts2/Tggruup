@@ -508,6 +508,24 @@ class RedditAdapter:
 
         try:
             token = await self._access_token()
+        except Exception as exc:  # noqa: BLE001 - no post request has been made yet
+            status = "permanent" if isinstance(exc, RedditAuthError) else crosspost_error_status(exc)
+            # OAuth refresh has no publishing side effect. A timeout here is
+            # retryable, unlike an ambiguous timeout during the submit request.
+            if status == "unknown":
+                status = "failed"
+            log.warning("reddit OAuth refresh %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=(
+                    "Reddit OAuth setup was rejected."
+                    if isinstance(exc, RedditAuthError)
+                    else str(exc)[:300]
+                ),
+            )
+
+        try:
             async with httpx.AsyncClient(
                 timeout=30.0,
                 headers={
@@ -519,16 +537,12 @@ class RedditAdapter:
                 response.raise_for_status()
                 response_body = response.json() or {}
         except Exception as exc:  # noqa: BLE001 - no automatic duplicate on ambiguity
-            if isinstance(exc, RedditAuthError):
-                status = "permanent"
-            else:
-                status = crosspost_error_status(exc)
+            status = crosspost_error_status(exc)
             log.warning("reddit crosspost %s (%s)", status, type(exc).__name__)
             return CrosspostResult(
                 platform=self.platform,
                 status=status,
-                error=("Reddit OAuth setup was rejected." if isinstance(exc, RedditAuthError)
-                       else str(exc)[:300]),
+                error=str(exc)[:300],
             )
 
         result_body = response_body.get("json") if isinstance(response_body, dict) else None
@@ -559,7 +573,11 @@ class RedditAdapter:
         permalink = submitted.get("permalink") or data.get("url")
         if isinstance(permalink, str) and permalink.startswith("/"):
             permalink = f"https://www.reddit.com{permalink}"
-        url = permalink if isinstance(permalink, str) and permalink.startswith(("https://", "http://")) else None
+        url = (
+            permalink
+            if isinstance(permalink, str) and permalink.startswith(("https://", "http://"))
+            else None
+        )
 
         if not remote_id and not url:
             # A success-shaped but unidentifiable response is not proof that
