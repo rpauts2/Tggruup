@@ -927,10 +927,13 @@ def _reconcile_crosspost_outcome(
             .order_by(CrosspostLog.id.desc())
             .limit(1)
         ).scalar_one_or_none()
-        if latest is None or latest.status not in {"unknown", "publishing"}:
+        # Ambiguous outcomes require reconciliation; definite failed/permanent
+        # outcomes may be retried only after an operator fixes the cause and
+        # explicitly confirms that the destination does not already contain the post.
+        if latest is None or latest.status not in {"unknown", "publishing", "failed", "permanent"}:
             return {
                 "ok": False,
-                "error": "not_unknown",
+                "error": "not_reconcilable",
                 "status": latest.status if latest else None,
             }
         if latest.status == "publishing":
@@ -939,6 +942,9 @@ def _reconcile_crosspost_outcome(
                 created = created.replace(tzinfo=UTC)
             if created > datetime.now(UTC) - timedelta(minutes=30):
                 return {"ok": False, "error": "still_in_flight"}
+
+        if action not in {"confirm_posted", "retry_after_check"}:
+            return {"ok": False, "error": "invalid_action"}
 
         attempt = latest.attempt
         if action == "confirm_posted":
@@ -2000,19 +2006,26 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
         if request.action == "retry_after_check":
             from tgfarm.platforms import is_platform_enabled
+            from tgfarm.s9_growth.adapters import ADAPTERS
 
             if not is_platform_enabled(platform):
                 raise HTTPException(
                     409,
                     "Эта площадка выключена. Сначала включи её в разделе «Площадки», затем разрешай повтор.",
                 )
+            adapter = ADAPTERS.get(platform)
+            if adapter is None or not adapter.configured():
+                raise HTTPException(
+                    409,
+                    "Площадка не настроена. Исправь подключение и проверь авторизацию перед повтором.",
+                )
         result = await io(_reconcile_crosspost_outcome, post_public_id, platform, request.action)
         if result.get("error") == "not_found":
             raise HTTPException(404, "post not found")
         if result.get("error") == "still_in_flight":
             raise HTTPException(409, "Публикация ещё может выполняться; повторно проверьте позже.")
-        if result.get("error") == "not_unknown":
-            raise HTTPException(409, detail=f"Кросспост не ожидает сверки (текущий статус: {result.get('status')})")
+        if result.get("error") == "not_reconcilable":
+            raise HTTPException(409, detail=f"Кросспост нельзя сверить из текущего состояния (текущий статус: {result.get('status')})")
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "reconcile failed"))
         if request.action == "retry_after_check":
