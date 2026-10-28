@@ -27,6 +27,7 @@ from tgfarm.core.errors import PublishError
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.db.models import Channel as ChannelRow
@@ -727,13 +728,15 @@ async def _publish_one(
 
             if isinstance(exc, (DzenNotLoggedIn, DzenCaptcha)):
                 retry_min = 60
-        error_text = str(exc)
+        raw_error_text = str(exc)
+        error_text = redact_sensitive_text(raw_error_text, limit=400)
         # Retry failures known to happen before the request reaches the platform.
         # A timeout/reset after sending may mean the platform already accepted it.
         ambiguous = _is_ambiguous_publish_error(exc)
         transport = any(
             marker in error_text
             for marker in ("getaddrinfo", "Network is unreachable", "connection refused", "ConnectTimeout")
+            if marker in raw_error_text
         )
         with session_scope() as session:
             post = session.get(PostRow, post_id)
@@ -750,12 +753,12 @@ async def _publish_one(
         if ambiguous:
             log.error(
                 "publish outcome unknown for %s (%s): %s; operator reconciliation required",
-                post_id, platform, exc,
+                post_id, platform, error_text,
             )
         else:
             log.warning(
                 "publish failed for %s (%s): %s (retry in %s min)",
-                post_id, platform, exc, retry_min,
+                post_id, platform, error_text, retry_min,
             )
         return {"ok": False, "error": error_text, "outcome_unknown": ambiguous}
 
