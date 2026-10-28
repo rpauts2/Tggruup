@@ -106,7 +106,7 @@ async def complete_threads_oauth(state: str, code: str) -> dict[str, str]:
     redirect_uri = str(transaction["redirect_uri"])
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
-            response = await client.post(TOKEN_URL, data={
+            response = await client.post(TOKEN_URL, params={
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "grant_type": "authorization_code",
