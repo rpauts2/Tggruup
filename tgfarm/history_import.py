@@ -32,25 +32,29 @@ class HistoricalPublication:
     url: str
 
 
-def _plain_text(value: Any) -> str:
-    """Flatten Telegram's list-of-entities text without losing visible text."""
+def _flatten_text(value: Any) -> str:
+    """Flatten a Telegram entity while preserving spaces between text chunks."""
     if value is None:
         return ""
     if isinstance(value, str):
-        return value.strip()
+        return value
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, list):
         pieces = []
         for item in value:
             if isinstance(item, dict):
-                pieces.append(_plain_text(item.get("text", item.get("value", ""))))
+                pieces.append(_flatten_text(item.get("text", item.get("value", ""))))
             else:
-                pieces.append(_plain_text(item))
-        return "".join(pieces).strip()
+                pieces.append(_flatten_text(item))
+        return "".join(pieces)
     if isinstance(value, dict):
-        return _plain_text(value.get("text", value.get("content", value.get("value", ""))))
+        return _flatten_text(value.get("text", value.get("content", value.get("value", ""))))
     return ""
+
+
+def _plain_text(value: Any) -> str:
+    return _flatten_text(value).strip()
 
 
 def _first(row: dict[str, Any], *keys: str) -> Any:
