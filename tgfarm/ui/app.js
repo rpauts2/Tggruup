@@ -834,8 +834,9 @@
     state.authPlatformId = platformId;
     const dialog = $("#platform-auth-dialog");
     $("#platform-auth-title").textContent = item.name + " · подключение";
-    $("#platform-auth-description").textContent =
-      "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
+    $("#platform-auth-description").textContent = platformId === "x"
+      ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
+      : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
     const fields = $("#platform-auth-fields");
     fields.replaceChildren();
     (auth.fields || []).forEach((field) => {
@@ -859,8 +860,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = "Сохранить и проверить";
-    $("#platform-auth-check").hidden = false;
+    save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = platformId === "x";
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
@@ -946,7 +947,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = "Сохранить и проверить";
+      save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
