@@ -192,7 +192,6 @@ async def get_valid_threads_access_token() -> str:
 
     settings = get_settings()
     token = str(settings.threads_access_token or "").strip()
-    client_secret = str(settings.threads_app_secret or "").strip()
     try:
         expires_at = int(settings.threads_token_expires_at or 0)
     except (TypeError, ValueError):
@@ -202,7 +201,7 @@ async def get_valid_threads_access_token() -> str:
     # Refresh only when fewer than seven days remain. Meta requires a still-valid long-lived token.
     if not expires_at or expires_at > int(time.time()) + 7 * 86400:
         return token
-    if expires_at <= int(time.time()) or not client_secret:
+    if expires_at <= int(time.time()):
         raise RuntimeError("Срок Threads OAuth-токена истёк. Переподключи Threads.")
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
