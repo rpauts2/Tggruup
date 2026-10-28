@@ -195,6 +195,15 @@ def _sources() -> list[dict]:
                 "failures": r.failures,
                 "last_yield": r.last_yield,
                 "idle_streak": r.idle_streak,
+                "cooldown_until": r.cooldown_until,
+                "cooldown_active": bool(
+                    r.cooldown_until
+                    and (
+                        r.cooldown_until.replace(tzinfo=UTC)
+                        if r.cooldown_until.tzinfo is None
+                        else r.cooldown_until.astimezone(UTC)
+                    ) > datetime.now(UTC)
+                ),
                 "effective_interval_s": effective_interval(r),
                 "last_error": (r.last_error or "")[:200] or None,
             }

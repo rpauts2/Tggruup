@@ -18,6 +18,7 @@ from tgfarm.db.models import Source as SourceRow
 from tgfarm.db.session import session_scope
 from tgfarm.db.vector import get_index, pack
 from tgfarm.llm.embedding import get_embedder
+from tgfarm.s1_sources.base import SourceCollectionResult
 from tgfarm.s1_sources.collectors import FETCHERS, collect_detailed
 
 log = get_logger(__name__)
@@ -114,7 +115,7 @@ def _mark_source(
 
 
 async def _record_source_outcomes(
-    results: list,
+    results: list[SourceCollectionResult],
     counts: dict[str, int],
     *,
     skip_success_ids: set[str] | None = None,

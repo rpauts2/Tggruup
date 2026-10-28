@@ -344,15 +344,17 @@
 
   function renderSources(sources) {
     $("#sources-list").innerHTML = sources.map((s) => {
-      const st = s.failures >= 3 ? "tag-err" : s.last_status === "ok" ? "tag-ok" : "";
+      const cooling = Boolean(s.cooldown_active);
+      const st = cooling ? "tag-warn" : s.failures >= 3 ? "tag-err" : s.last_status === "ok" ? "tag-ok" : "";
+      const status = cooling ? "в карантине" : s.last_status === "cooldown" ? "ожидает повторной проверки" : s.last_status;
       return `
         <div class="item">
           <div class="item-main">
             <div class="item-title">${esc(s.name || s.id)}</div>
-            <div class="item-meta">${esc(s.kind)} · вес ${s.weight} · ${dt(s.last_fetched_at)}${s.last_error ? " · " + esc((s.last_error || "").slice(0, 70)) : ""}</div>
+            <div class="item-meta">${esc(s.kind)} · вес ${s.weight} · ${dt(s.last_fetched_at)}${cooling ? " · пауза до " + dt(s.cooldown_until) : ""}${s.last_error ? " · " + esc((s.last_error || "").slice(0, 70)) : ""}</div>
           </div>
           <div class="item-side">
-            <span class="tag ${st}">${esc(s.last_status)}</span>
+            <span class="tag ${st}">${esc(status)}</span>
             ${s.failures ? `<span class="tag tag-err">${s.failures} ошибок</span>` : ""}
           </div>
         </div>`;
