@@ -608,8 +608,8 @@ def test_crosspost_ambiguous_error_classifier(error, expected):
 @pytest.mark.parametrize(
     ("status_code", "expected"),
     [
-        (400, "permanent_failure"),
-        (401, "permanent_failure"),
+        (400, "permanent"),
+        (401, "permanent"),
         (408, "unknown"),
         (425, "unknown"),
         (429, "failed"),
@@ -686,7 +686,7 @@ def test_crosspost_permanent_failure_requires_operator_intervention():
             CrosspostLog(
                 post_public_id=public_id,
                 platform="vk",
-                status="permanent_failure",
+                status="permanent",
                 attempt=3,
                 error="invalid access token",
             )
