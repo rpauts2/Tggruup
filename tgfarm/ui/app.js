@@ -864,7 +864,9 @@
     $("#platform-auth-title").textContent = item.name + " · подключение";
     $("#platform-auth-description").textContent = platformId === "x"
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
-      : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
+      : platformId === "threads"
+        ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth».
+        : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
     const fields = $("#platform-auth-fields");
     fields.replaceChildren();
     (auth.fields || []).forEach((field) => {
@@ -888,8 +890,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = platformId === "x";
+    save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
@@ -961,9 +963,14 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (platformId === "x") {
+      if (["x", "threads"].includes(platformId)) {
         closePlatformAuthDialog();
-        toast("OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.", "ok");
+        toast(
+          platformId === "x"
+            ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
+            : "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
+          "ok",
+        );
         await refresh();
         return;
       }
