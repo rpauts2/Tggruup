@@ -35,3 +35,28 @@ def test_redact_sensitive_text_removes_common_credentials(value: str, secrets: l
 
 def test_redact_sensitive_text_bounds_output() -> None:
     assert len(redact_sensitive_text("x" * 1000, limit=100)) == 100
+
+
+def test_api_query_token_is_removed_without_losing_other_parameters() -> None:
+    from tgfarm.core.apiauth import strip_token_from_query
+
+    cleaned = strip_token_from_query(
+        b"token=secret-value&limit=20&query=hello+world&token=second-secret"
+    )
+    assert cleaned == b"limit=20&query=hello+world"
+    assert b"secret-value" not in cleaned
+    assert b"second-secret" not in cleaned
+
+
+def test_api_query_without_token_is_preserved_verbatim() -> None:
+    from tgfarm.core.apiauth import strip_token_from_query
+
+    query = b"limit=20&query=hello%20world"
+    assert strip_token_from_query(query) == query
+
+
+def test_malformed_excessive_query_drops_possible_token() -> None:
+    from tgfarm.core.apiauth import strip_token_from_query
+
+    query = b"token=secret&" + b"&".join([b"x=1"] * 1025)
+    assert strip_token_from_query(query) == b""
