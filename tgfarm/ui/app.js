@@ -1481,7 +1481,7 @@
     const matchesFilter = (rows) => {
       const statuses = rows.map((row) => String(row.status || "unknown"));
       if (state.crosspostFilter === "attention") {
-        return statuses.includes("unknown");
+        return statuses.some((status) => ["unknown", "failed", "permanent", "permanent_failure"].includes(status));
       }
       if (state.crosspostFilter === "published") return statuses.includes("posted");
       if (state.crosspostFilter === "errors") {
@@ -1503,7 +1503,8 @@
         const platform = String(row.platform || "unknown");
         const status = String(row.status || "unknown");
         const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
-        const canReconcile = ["unknown", "failed", "permanent", "permanent_failure"].includes(status)
+        const canReconcile = ["unknown", "permanent", "permanent_failure"].includes(status)
+          || (status === "failed" && Number(row.attempt || 1) >= 5)
           || (status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
         const safeUrl = typeof row.url === "string" && row.url.startsWith("https://")
           ? row.url : "";
@@ -1544,7 +1545,7 @@
         : successCount ? "есть результат"
         : allSkipped ? "не настроено"
         : "ожидает доставки";
-      const overallClass = needsAttention ? "tag-warn" : (successCount ? "tag-ok" : "");
+      const overallClass = needsAttention ? "tag-warn" : (activeCount ? "tag-acc" : (successCount ? "tag-ok" : ""));
       return `
         <div class="item delivery-card" style="align-items:flex-start">
           <div class="item-main" style="min-width:0">
