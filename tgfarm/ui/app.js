@@ -227,7 +227,7 @@
         <div class="memory-excerpt">${esc(row.excerpt || (row.body || "").slice(0, 320))}</div>
         <div class="item-meta memory-provenance">${n((row.claims || []).length)} утверждений · ${n((row.sources || []).length)} источников ${row.angle ? "· угол: " + esc(row.angle) : ""}</div>
       </div>`).join("");
-    $("[data-memory-post]").forEach((el) => {
+    $$("[data-memory-post]").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.memoryPost));
       el.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
