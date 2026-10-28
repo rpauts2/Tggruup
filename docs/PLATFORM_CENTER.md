@@ -33,7 +33,7 @@
 - Глобальный переключатель по умолчанию выключен. Сначала проверь, что Reddit разрешил твоему приложению API-доступ, и выполни одну тестовую публикацию в сообщество, где правила действительно допускают такой контент.
 - Адаптер не публикует комментарии, не ставит голоса, не отправляет личные сообщения и не рассылает один пост массово по разным subreddit. Следуй правилам конкретных сообществ и ограничениям Reddit API.
 
-Официальная документация: [Reddit API](https://www.reddit.com/dev/api/) и [правила Data API](https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki).
+Официальная документация: [Reddit API](https://www.reddit.com/dev/api/) и [правила Data API](https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki). Пошаговая настройка: [REDDIT_SETUP.md](REDDIT_SETUP.md).
 
 ## Каталог следующих интеграций
 
