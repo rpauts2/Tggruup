@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -1363,7 +1364,6 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             inspect_community,
             validate_submission,
         )
-        import re
 
         if not request.confirm:
             raise HTTPException(
