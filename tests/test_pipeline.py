@@ -512,6 +512,52 @@ def test_publish_now_rejects_ineligible_statuses():
         assert session.query(Post).filter_by(public_id="force_pub_unknown").one().status == "publish_unknown"
 
 
+def test_cli_publish_is_scoped_and_rejects_published_posts(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import cli, s7_publish
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+
+    channel_id = "cli_publish_guard"
+    with session_scope() as session:
+        session.merge(Channel(id=channel_id, title="CLI guard", niche="tech", platform="telegram"))
+        session.add_all(
+            [
+                Post(
+                    public_id="cli_publish_ready",
+                    channel_id=channel_id,
+                    hook="Ready",
+                    body="Body",
+                    status="scheduled",
+                    scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+                ),
+                Post(
+                    public_id="cli_publish_already_published",
+                    channel_id=channel_id,
+                    hook="Already published",
+                    body="Body",
+                    status="published",
+                    published_at=datetime.now(UTC),
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(cli, "_bootstrap", lambda: None)
+    calls = []
+
+    async def fake_publish_due(limit=1000, post_public_ids=None):
+        calls.append((limit, post_public_ids))
+        return {"published": 1, "failed": 0}
+
+    monkeypatch.setattr(s7_publish, "publish_due", fake_publish_due)
+
+    assert cli.cmd_publish(SimpleNamespace(post_id="cli_publish_already_published")) == 2
+    assert calls == []
+    assert cli.cmd_publish(SimpleNamespace(post_id="cli_publish_ready")) == 0
+    assert calls == [(1, ["cli_publish_ready"])]
+
+
 def test_reconcile_publish_outcomes_require_explicit_unknown_state():
     from tgfarm.api import _reconcile_publish_outcome
     from tgfarm.db.models import Channel, Post
