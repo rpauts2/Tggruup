@@ -1126,6 +1126,12 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             header = request.headers.get(apiauth.HEADER)
             query = request.query_params.get("token")
             cookie = request.cookies.get(apiauth.COOKIE)
+            # Authorize against the original query, then remove its credential
+            # before downstream handlers and ASGI access logging can see it.
+            if query is not None:
+                request.scope["query_string"] = apiauth.strip_token_from_query(
+                    request.scope.get("query_string", b"")
+                )
             if not is_authorised(header, query, cookie):
                 log.info(
                     "401 %s header=%s query=%s cookie=%s",
