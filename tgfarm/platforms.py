@@ -488,7 +488,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "dzen" else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
-            ("Для X или Threads сначала сохрани App ID/Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
+            ("Для X, Threads или LinkedIn сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
             if platform_id in {"x", "threads", "linkedin"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
     }
