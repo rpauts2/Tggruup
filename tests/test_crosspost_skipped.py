@@ -43,7 +43,8 @@ def test_unconfigured_crosspost_does_not_accumulate_skipped_rows(monkeypatch):
     second = asyncio.run(crosspost_post(post_id, ["bluesky"]))
 
     assert first[0].status == "skipped"
-    assert second[0].status == "skipped"
+    # The repeated call is a no-op: don't emit duplicate skipped results or log rows.
+    assert second == []
     with session_scope() as session:
         rows = session.execute(
             select(CrosspostLog).where(
