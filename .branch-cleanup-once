@@ -1,0 +1,13 @@
+This one-time marker authorizes deleting the following superseded branch refs after PR #10 is merged into main:
+- consolidate/mainline-2026-10
+- feat/confidence-aware-learning
+- feat/history-import-main
+- feat/import-historical-publications
+- feat/persistent-content-memory
+- feat/portfolio-intelligence
+- feat/portfolio-intelligence-main
+- feat/publish-recovery-autonomy
+- feat/topic-knowledge-chains
+- feat/topic-knowledge-chains-clean
+
+main is intentionally excluded. The cleanup workflow consumes and removes this marker after successful cleanup.
