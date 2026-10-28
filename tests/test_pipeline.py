@@ -27,6 +27,77 @@ def scored(title: str, text: str = "", url: str = "", niche="tech", weight=0.6) 
     )
 
 
+@pytest.mark.asyncio
+async def test_publish_tick_runs_only_the_publisher(monkeypatch):
+    import asyncio
+
+    from tgfarm import pipeline, s7_publish
+
+    calls = []
+
+    async def fake_publish_run():
+        calls.append("publish")
+        return {"scheduled": 2, "published": 1, "failed": 0}
+
+    async def fail_full_cycle(**kwargs):
+        pytest.fail("the fast publish tick must not run the full content pipeline")
+
+    monkeypatch.setattr(s7_publish, "run", fake_publish_run)
+    monkeypatch.setattr(pipeline, "run_cycle", fail_full_cycle)
+
+    result = await pipeline._publish_tick()
+
+    assert calls == ["publish"]
+    assert result["errors"] == []
+    assert result["stages"]["s7_publish"]["scheduled"] == 2
+    assert result["stages"]["s7_publish"]["published"] == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_cycle_skips_a_concurrent_full_cycle(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgfarm import pipeline
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_cycle(*, collect=True, max_clusters=1000):
+        started.set()
+        await release.wait()
+        return pipeline.CycleResult(run_id="cycle-guard-test")
+
+    monkeypatch.setattr(pipeline, "_active_cycle_task", None)
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(cycle_timeout_min=2),
+    )
+    monkeypatch.setattr(pipeline, "run_cycle", fake_cycle)
+
+    first = asyncio.create_task(pipeline._guarded_cycle())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    second = await pipeline._guarded_cycle()
+    assert second is None
+
+    release.set()
+    result = await asyncio.wait_for(first, timeout=2)
+    assert result is not None
+    assert result.run_id == "cycle-guard-test"
+
+
+def test_scheduler_uses_dedicated_publish_tick():
+    from tgfarm import pipeline
+
+    scheduler = pipeline._build_scheduler()
+    try:
+        assert scheduler.get_job("publish-tick").func is pipeline._guarded_publish_tick
+        assert scheduler.get_job("cycle").func is pipeline._guarded_cycle
+    finally:
+        scheduler.shutdown(wait=False) if scheduler.running else None
+
+
 # --------------------------------------------------------------- number grounding
 @pytest.mark.parametrize(
     ("claim", "expected"),
