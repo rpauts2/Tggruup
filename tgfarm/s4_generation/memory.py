@@ -360,14 +360,16 @@ def search_archive(
             total_matches = int(
                 session.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
             )
+            # Rank one bounded candidate window before slicing. Applying SQL
+            # offset first would page by recency, then re-rank each page locally,
+            # which can repeat or skip results compared with the FTS path.
             rows = session.execute(
                 stmt.order_by(Post.published_at.desc(), Post.created_at.desc())
-                .offset(offset)
-                .limit(max(limit, MAX_CANDIDATES))
+                .limit(MAX_CANDIDATES)
             ).scalars().all()
             ranked_rows = [(row, _match_score(terms, row, preferred_channel_id)) for row in rows]
             ranked_rows.sort(key=lambda pair: pair[1], reverse=True)
-            ranked_rows = ranked_rows[:limit]
+            ranked_rows = ranked_rows[offset : offset + limit]
 
         channel_ids = {row.channel_id for row, _score in ranked_rows}
         titles = {
