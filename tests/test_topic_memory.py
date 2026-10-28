@@ -66,6 +66,7 @@ def test_topic_dossier_connects_published_timeline_to_newer_sources():
 
     dossier = build_topic_dossier(
         "Kestrelion thermal reactor cooling",
+        channel_id=channel_id,
         preferred_channel_id=channel_id,
         current_items=[source],
         now=now,
@@ -90,6 +91,7 @@ def test_topic_dossier_flags_numeric_difference_as_possible_not_proven_change():
     channel_id, _public_id = _seed_history(now=now)
     dossier = build_topic_dossier(
         "Kestrelion thermal reactor cooling",
+        channel_id=channel_id,
         preferred_channel_id=channel_id,
         current_items=[_current_item(now)],
         now=now,
@@ -129,6 +131,7 @@ def test_topic_dossier_reads_recent_source_items_from_database():
 
     dossier = build_topic_dossier(
         "Kestrelion thermal reactor cooling",
+        channel_id=channel_id,
         preferred_channel_id=channel_id,
         now=now,
     )
@@ -144,6 +147,7 @@ def test_topic_dossier_does_not_claim_fresh_confirmation_when_no_current_items_e
     channel_id, _public_id = _seed_history(now=now)
     dossier = build_topic_dossier(
         "Kestrelion thermal reactor cooling",
+        channel_id=channel_id,
         preferred_channel_id=channel_id,
         current_items=[],
         now=now,
