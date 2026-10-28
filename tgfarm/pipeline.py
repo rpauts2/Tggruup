@@ -496,6 +496,32 @@ async def backup_job() -> dict:
     from sqlalchemy.engine import make_url
 
     settings = get_settings()
+
+    mirror_config = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
+
+    run_id = f"backup-{uuid.uuid4().hex[:8]}"
+
+    def record_report(report: dict) -> dict:
+        verified = bool(report.get("verified"))
+        local_verified = bool(report.get("local_verified", verified))
+        mirror = report.get("mirror") or {}
+        reason = None if verified else str(
+            report.get("reason") or mirror.get("reason") or "backup verification failed"
+        )
+        _record(
+            run_id,
+            "backup",
+            "ok" if verified else "error",
+            items_out=1 if local_verified else 0,
+            error=reason,
+            meta={
+                "local_verified": local_verified,
+                "mirror_configured": bool(mirror_config),
+                "mirror_verified": mirror.get("verified"),
+            },
+        )
+        return report
+
     db_url = make_url(str(get_engine_url()))
     if db_url.get_backend_name() != "sqlite":
         return record_report({
@@ -529,31 +555,6 @@ async def backup_job() -> dict:
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
     keep = max(1, int(settings.keep_backups))
-    mirror_config = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
-
-    run_id = f"backup-{uuid.uuid4().hex[:8]}"
-
-    def record_report(report: dict) -> dict:
-        verified = bool(report.get("verified"))
-        local_verified = bool(report.get("local_verified", verified))
-        mirror = report.get("mirror") or {}
-        reason = None if verified else str(
-            report.get("reason") or mirror.get("reason") or "backup verification failed"
-        )
-        _record(
-            run_id,
-            "backup",
-            "ok" if verified else "error",
-            items_out=1 if local_verified else 0,
-            error=reason,
-            meta={
-                "local_verified": local_verified,
-                "mirror_configured": bool(mirror_config),
-                "mirror_verified": mirror.get("verified"),
-            },
-        )
-        return report
-
     # Microseconds prevent two manual backups in the same minute from
     # silently overwriting one another. A unique temporary file also makes a
     # crashed/failed backup invisible to the retention/pruning logic.
