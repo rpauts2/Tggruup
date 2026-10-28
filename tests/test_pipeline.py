@@ -590,6 +590,56 @@ def test_forbidden_list_covers_the_usual_spam_suite():
 
 
 # ---------------------------------------------------------------- adapters
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError("read timed out"), True),
+        (RuntimeError("connection reset by peer"), True),
+        (RuntimeError("DNS getaddrinfo failed"), False),
+        (RuntimeError("connection refused"), False),
+    ],
+)
+def test_crosspost_ambiguous_error_classifier(error, expected):
+    from tgfarm.s9_growth.adapters import ambiguous_crosspost_error
+
+    assert ambiguous_crosspost_error(error) is expected
+
+
+def test_crosspost_begin_claim_blocks_unknown_and_publishing_states():
+    import uuid
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import already_done, begin_crosspost, log_result
+    from tgfarm.core.schemas import CrosspostResult
+
+    public_id = "crosspost_claim_" + uuid.uuid4().hex[:8]
+    attempt = begin_crosspost(public_id, "vk")
+    assert attempt == 1
+    assert already_done(public_id, "vk") is True
+    assert begin_crosspost(public_id, "vk") is None
+
+    log_result(
+        public_id,
+        CrosspostResult(platform="vk", status="unknown", error="read timeout"),
+        attempt,
+    )
+    assert already_done(public_id, "vk") is True
+    assert begin_crosspost(public_id, "vk") is None
+
+    # An explicit operator-authorized retry is the only state allowed to reopen it.
+    with session_scope() as session:
+        session.add(
+            CrosspostLog(
+                post_public_id=public_id,
+                platform="vk",
+                status="retry_authorized",
+                attempt=attempt,
+            )
+        )
+    assert begin_crosspost(public_id, "vk") == 2
+
+
 def test_vk_crosspost_payload_attaches_existing_primary_cover_and_skips_video(tmp_path):
     import uuid
 
@@ -646,6 +696,45 @@ def test_vk_crosspost_payload_attaches_existing_primary_cover_and_skips_video(tm
 
     assert payload.meta["image_path"] == str(cover)
     assert payload.meta["post_public_id"] == public_id
+
+
+def test_crosspost_reconciliation_requires_unknown_state():
+    import uuid
+
+    from tgfarm.api import _reconcile_crosspost_outcome
+    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "crosspost_reconcile_" + suffix
+    public_id = "crosspost_reconcile_post_" + suffix
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="Crosspost reconcile", niche="tech", platform="telegram"))
+        post = Post(
+            public_id=public_id,
+            channel_id=channel_id,
+            hook="Test",
+            body="Body",
+            status="published",
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+        session.add(
+            CrosspostLog(
+                post_public_id=public_id,
+                platform="vk",
+                status="unknown",
+                error="read timeout",
+                attempt=1,
+            )
+        )
+
+    confirmed = _reconcile_crosspost_outcome(public_id, "vk", "confirm_posted")
+    assert confirmed["ok"] is True
+    assert confirmed["status"] == "posted"
+    assert confirmed["post_id"] == post_id
+    assert _reconcile_crosspost_outcome(public_id, "vk", "retry_after_check")["error"] == "not_unknown"
 
 
 def test_crosspost_adapters_self_disable_without_credentials():

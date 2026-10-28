@@ -225,7 +225,7 @@ class CrosspostPayload(Strict):
 
 class CrosspostResult(Strict):
     platform: str
-    status: Literal["posted", "skipped", "failed", "dry_run"]
+    status: Literal["posted", "skipped", "failed", "unknown", "dry_run"]
     remote_id: str | None = None
     url: str | None = None
     error: str | None = None

@@ -19,13 +19,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import Cluster, PipelineRun, Post, RawItem
+from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -211,6 +211,25 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         publish_unknown = session.execute(
             select(func.count()).select_from(Post).where(Post.status == "publish_unknown")
         ).scalar_one()
+        latest_crosspost_ids = (
+            select(func.max(CrosspostLog.id).label("latest_id"))
+            .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+            .subquery()
+        )
+        crosspost_attention = session.execute(
+            select(func.count())
+            .select_from(CrosspostLog)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(
+                or_(
+                    CrosspostLog.status == "unknown",
+                    and_(
+                        CrosspostLog.status == "publishing",
+                        CrosspostLog.created_at <= current - timedelta(minutes=30),
+                    ),
+                )
+            )
+        ).scalar_one()
         last_generate = session.execute(
             select(PipelineRun.status, PipelineRun.error)
             .where(PipelineRun.stage == "s4_generate")
@@ -270,6 +289,17 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "code": "publish_outcome_unknown",
                 "message": (
                     f"{publish_unknown} пост(ов) требуют сверки на площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
+            }
+        )
+    if crosspost_attention:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "crosspost_outcome_unknown",
+                "message": (
+                    f"{crosspost_attention} кросспост(ов) требуют сверки на целевой площадке; "
                     "автоматический повтор остановлен во избежание дублей"
                 ),
             }

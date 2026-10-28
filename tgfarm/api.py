@@ -66,6 +66,11 @@ class PublishReconcileRequest(BaseModel):
     confirm_not_published: bool = False
 
 
+class CrosspostReconcileRequest(BaseModel):
+    action: Literal["confirm_posted", "retry_after_check"]
+    confirm_not_published: bool = False
+
+
 class PolishRequest(BaseModel):
     """One-direction rewrite of an existing draft from the panel."""
 
@@ -823,6 +828,77 @@ def _reject(public_ids: list[str], reason: str) -> int:
         return result.rowcount or 0
 
 
+def _reconcile_crosspost_outcome(
+    post_public_id: str,
+    platform: str,
+    action: str,
+) -> dict:
+    """Resolve a crosspost whose remote outcome could not be confirmed."""
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    if platform not in ADAPTERS:
+        return {"ok": False, "error": "unsupported_platform"}
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == post_public_id)
+        ).scalar_one_or_none()
+        if post is None:
+            return {"ok": False, "error": "not_found"}
+
+        latest = session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest is None or latest.status not in {"unknown", "publishing"}:
+            return {
+                "ok": False,
+                "error": "not_unknown",
+                "status": latest.status if latest else None,
+            }
+        if latest.status == "publishing":
+            created = latest.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created > datetime.now(UTC) - timedelta(minutes=30):
+                return {"ok": False, "error": "still_in_flight"}
+
+        attempt = latest.attempt
+        if action == "confirm_posted":
+            session.add(
+                CrosspostLog(
+                    post_public_id=post_public_id,
+                    platform=platform,
+                    status="posted",
+                    remote_id=latest.remote_id,
+                    url=latest.url,
+                    error="confirmed by operator; destination ID may be unavailable",
+                    attempt=attempt,
+                )
+            )
+            return {"ok": True, "status": "posted", "post_id": post.id, "detail": "operator confirmed destination post"}
+
+        session.add(
+            CrosspostLog(
+                post_public_id=post_public_id,
+                platform=platform,
+                status="retry_authorized",
+                error="operator checked destination and authorized retry",
+                attempt=attempt,
+            )
+        )
+        return {
+            "ok": True,
+            "status": "retry_authorized",
+            "post_id": post.id,
+            "detail": "operator checked destination and authorized retry",
+        }
+
+
 def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
     with session_scope() as session:
         rows = session.execute(
@@ -1117,6 +1193,34 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/crossposts")
     async def crossposts(limit: int = Query(50, ge=1, le=300)) -> dict:
         return {"crossposts": await io(_crossposts, limit)}
+
+    @app.post("/api/crossposts/{post_public_id}/{platform}/reconcile")
+    async def reconcile_crosspost(
+        post_public_id: str,
+        platform: str,
+        request: CrosspostReconcileRequest,
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили целевую площадку и поста там нет.",
+            )
+        result = await io(_reconcile_crosspost_outcome, post_public_id, platform, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "still_in_flight":
+            raise HTTPException(409, "Публикация ещё может выполняться; повторно проверьте позже.")
+        if result.get("error") == "not_unknown":
+            raise HTTPException(409, detail=f"Кросспост не ожидает сверки (текущий статус: {result.get('status')})")
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        if request.action == "retry_after_check":
+            from tgfarm import s9_growth
+
+            outcomes = await s9_growth.crosspost_post(result["post_id"], [platform])
+            result["outcomes"] = [outcome.model_dump() for outcome in outcomes]
+        _operator("crosspost-reconcile", f"{post_public_id}:{platform}", result["detail"])
+        return result
 
     # --------------------------------------------------------------- actions
     @app.post("/api/cycle")

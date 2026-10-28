@@ -29,6 +29,7 @@ from tgfarm.db.session import session_scope
 from tgfarm.s9_growth.adapters import (
     ADAPTERS,
     already_done,
+    begin_crosspost,
     build_payload,
     log_result,
     primary_image_path,
@@ -115,17 +116,29 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if adapter is None:
             log.warning("unknown crosspost platform %s", name)
             continue
+        if await to_thread(already_done, post.public_id, name):
+            continue
         if not adapter.configured():
             results.append(CrosspostResult(platform=name, status="skipped"))
             await to_thread(log_result, post.public_id, results[-1])
             continue
-        if await to_thread(already_done, post.public_id, name):
-            continue
 
+        attempt = await to_thread(begin_crosspost, post.public_id, name)
+        if attempt is None:
+            continue
         payload = build_payload(post, image_path=image_path if name == "vk" else None)
         payload.platform = name
         if settings.live:
-            result = await adapter.publish(payload)
+            try:
+                result = await adapter.publish(payload)
+            except Exception as exc:  # noqa: BLE001 - leave a durable state after adapter faults
+                from tgfarm.s9_growth.adapters import ambiguous_crosspost_error
+
+                result = CrosspostResult(
+                    platform=name,
+                    status="unknown" if ambiguous_crosspost_error(exc) else "failed",
+                    error=str(exc)[:300],
+                )
         else:
             result = CrosspostResult(
                 platform=name,
@@ -133,7 +146,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 remote_id=uuid.uuid4().hex[:8],
             )
             log.info("[dry-run] crosspost %s -> %s", post.public_id, name)
-        await to_thread(log_result, post.public_id, result)
+        await to_thread(log_result, post.public_id, result, attempt)
         results.append(result)
     return results
 
@@ -160,7 +173,7 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
             if post and published_at and published_at <= cutoff:
                 due.append(post_pk)
 
-        posted = skipped = failed = 0
+        posted = skipped = failed = unknown = 0
         for post_pk in due:
             for result in await crosspost_post(post_pk, platforms):
                 if result.status == "posted":
@@ -169,11 +182,25 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
                     skipped += 1
                 elif result.status == "failed":
                     failed += 1
+                elif result.status == "unknown":
+                    unknown += 1
 
         timer.items_in = len(candidates)
         timer.items_out = posted
-    log.info("s9: crosspost posted=%d skipped=%d failed=%d", posted, skipped, failed)
-    return {"posted": posted, "skipped": skipped, "failed": failed, "considered": len(due)}
+    log.info(
+        "s9: crosspost posted=%d skipped=%d failed=%d unknown=%d",
+        posted,
+        skipped,
+        failed,
+        unknown,
+    )
+    return {
+        "posted": posted,
+        "skipped": skipped,
+        "failed": failed,
+        "unknown": unknown,
+        "considered": len(due),
+    }
 
 
 # --------------------------------------------------------------- SEO articles
