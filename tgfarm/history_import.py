@@ -250,6 +250,26 @@ async def fetch_telegram_history(chat: int | str, limit: int = 1000) -> list[His
         chat = chat.strip()
         if not chat:
             raise ValueError("Укажите username, ссылку или ID Telegram-чата.")
+        lower = chat.lower()
+        if "t.me/" in lower or "telegram.me/" in lower:
+            from urllib.parse import unquote, urlparse
+
+            candidate = chat if "://" in chat else f"https://{chat}"
+            parsed = urlparse(candidate)
+            hostname = (parsed.hostname or "").lower()
+            if hostname not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
+                raise ValueError("Для Telegram допустимы только ссылки t.me или telegram.me.")
+            parts = [unquote(part) for part in parsed.path.split("/") if part]
+            if parts and parts[0].lower() == "s":
+                parts = parts[1:]
+            if not parts:
+                raise ValueError("В ссылке Telegram не найден username чата.")
+            if parts[0].lower() in {"c", "joinchat"} or parts[0].startswith("+"):
+                raise ValueError(
+                    "Ссылка закрытого чата не подключает аккаунт автоматически. "
+                    "Укажите доступный аккаунту ID из списка telegram chats."
+                )
+            chat = parts[0]
         if chat.lstrip("-").isdigit():
             chat = int(chat)
     try:
