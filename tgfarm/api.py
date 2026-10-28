@@ -1029,6 +1029,31 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         return await io(portfolio_report, days, min_age_hours)
 
+    @app.get("/api/memory")
+    async def memory(
+        query: str = Query("", max_length=500),
+        channel_id: str | None = None,
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=1000000),
+    ) -> dict:
+        """Search the entire published archive, including claims and source metadata."""
+        from tgfarm.s4_generation.memory import search_archive
+
+        return await io(
+            search_archive,
+            query,
+            channel_id=channel_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/api/memory/reindex")
+    async def memory_reindex() -> dict:
+        """Rebuild the derived full-text index from all posts stored in the database."""
+        from tgfarm.s4_generation.memory import rebuild_archive_index
+
+        return await io(rebuild_archive_index)
+
     @app.get("/api/editorial")
     async def editorial(limit: int = Query(25, ge=1, le=100)) -> dict:
         from tgfarm.editorial import queue
