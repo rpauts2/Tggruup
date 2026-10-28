@@ -71,6 +71,14 @@ class CrosspostReconcileRequest(BaseModel):
     confirm_not_published: bool = False
 
 
+class PlatformToggleRequest(BaseModel):
+    enabled: bool
+
+
+class PlatformPlanRequest(BaseModel):
+    planned: bool
+
+
 class PolishRequest(BaseModel):
     """One-direction rewrite of an existing draft from the panel."""
 
@@ -1241,6 +1249,44 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/channels")
     async def channels() -> dict:
         return {"channels": await io(_channels)}
+
+    @app.get("/api/platforms")
+    async def platforms() -> dict:
+        from tgfarm.platforms import get_platform_catalog
+
+        return await io(get_platform_catalog)
+
+    @app.put("/api/platforms/{platform_id}")
+    async def toggle_platform(platform_id: str, request: PlatformToggleRequest) -> dict:
+        from tgfarm.platforms import set_platform_enabled
+
+        try:
+            item = await io(set_platform_enabled, platform_id, request.enabled)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        _operator(
+            "platform-toggle",
+            platform_id,
+            "enabled" if request.enabled else "disabled",
+        )
+        return {"ok": True, "platform": item}
+
+    @app.put("/api/platforms/{platform_id}/plan")
+    async def plan_platform(platform_id: str, request: PlatformPlanRequest) -> dict:
+        from tgfarm.platforms import set_platform_planned
+
+        try:
+            item = await io(set_platform_planned, platform_id, request.planned)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        _operator(
+            "platform-plan",
+            platform_id,
+            "planned" if request.planned else "removed from plan",
+        )
+        return {"ok": True, "platform": item}
 
     @app.get("/api/runs")
     async def runs(limit: int = Query(30, ge=1, le=200)) -> dict:
