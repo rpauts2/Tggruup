@@ -1786,3 +1786,33 @@ def test_pending_crossposts_recovers_old_retryable_items_after_long_outage():
     found = {public_id for _, public_id in _pending_crossposts(0.0, 60, None, ["vk"])}
     assert retry_public_id in found
     assert never_selected_id not in found
+
+
+def test_first_publication_alert_uses_oldest_waiting_material_and_threshold():
+    from tgfarm.pipeline import _publication_liveness_alert
+
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+    recent = now - timedelta(minutes=20)
+    old = now - timedelta(hours=2)
+
+    assert _publication_liveness_alert(None, recent, 2, now, 1) is None
+    assert _publication_liveness_alert(None, old, 2, now, 1) == {
+        "level": "error",
+        "code": "first_publication_missing",
+        "message": "первая публикация ещё не состоялась 2.0 ч, в очереди 2 материал(ов)",
+    }
+    assert _publication_liveness_alert(None, old, 0, now, 1) is None
+    assert _publication_liveness_alert(None, None, 1, now, 1) is None
+
+
+def test_no_publications_alert_prefers_last_success_after_farm_has_published():
+    from tgfarm.pipeline import _publication_liveness_alert
+
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+    last_published = now - timedelta(hours=8)
+    oldest_waiting = now - timedelta(minutes=20)
+
+    alert = _publication_liveness_alert(last_published, oldest_waiting, 1, now, 6)
+    assert alert is not None
+    assert alert["code"] == "no_publications"
+    assert "последняя публикация 8.0 ч назад" in alert["message"]

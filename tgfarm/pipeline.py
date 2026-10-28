@@ -170,6 +170,45 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
         return None
 
 
+def _publication_liveness_alert(
+    last_published: datetime | None,
+    oldest_waiting: datetime | None,
+    queued_count: int,
+    current: datetime,
+    threshold_hours: int,
+) -> dict | None:
+    """Alert when the queue has been quiet too long, including before first success."""
+    if queued_count <= 0:
+        return None
+
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    baseline = last_published or oldest_waiting
+    if baseline is None:
+        return None
+    baseline = baseline.replace(tzinfo=UTC) if baseline.tzinfo is None else baseline.astimezone(UTC)
+    quiet_hours = (current - baseline).total_seconds() / 3600
+    if quiet_hours < max(1, int(threshold_hours)):
+        return None
+
+    if last_published is None:
+        return {
+            "level": "error",
+            "code": "first_publication_missing",
+            "message": (
+                f"первая публикация ещё не состоялась {quiet_hours:.1f} ч, "
+                f"в очереди {queued_count} материал(ов)"
+            ),
+        }
+    return {
+        "level": "error",
+        "code": "no_publications",
+        "message": (
+            f"последняя публикация {quiet_hours:.1f} ч назад, "
+            f"в очереди {queued_count} материал(ов)"
+        ),
+    }
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -202,6 +241,13 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         scheduled = session.execute(
             select(func.count()).select_from(Post).where(Post.status == "scheduled")
         ).scalar_one()
+        oldest_waiting = _aware(
+            session.execute(
+                select(func.min(func.coalesce(Post.scheduled_at, Post.created_at))).where(
+                    Post.status.in_(("gated", "scheduled"))
+                )
+            ).scalar_one_or_none()
+        )
         stuck = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.status == "publishing",
@@ -278,19 +324,16 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             )
         ).scalar_one()
 
-    if settings.live and last_published is not None:
-        quiet_hours = (current - last_published).total_seconds() / 3600
-        if quiet_hours >= max(1, settings.alert_no_publish_hours) and (gated or scheduled):
-            alerts.append(
-                {
-                    "level": "error",
-                    "code": "no_publications",
-                    "message": (
-                        f"последняя публикация {quiet_hours:.1f} ч назад, "
-                        f"в очереди {gated} gated + {scheduled} scheduled"
-                    ),
-                }
-            )
+    if settings.live:
+        liveness = _publication_liveness_alert(
+            last_published,
+            oldest_waiting,
+            int(gated or 0) + int(scheduled or 0),
+            current,
+            settings.alert_no_publish_hours,
+        )
+        if liveness:
+            alerts.append(liveness)
     if stuck:
         alerts.append(
             {
