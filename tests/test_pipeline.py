@@ -266,6 +266,15 @@ def test_lexical_grounding(claim, expected):
     assert _lexically_supported(claim, item) is expected
 
 
+def test_lexical_grounding_rejects_numeric_substrings():
+    item = scored(
+        "Компания получила 312 млн рублей",
+        "Сумма инвестиций составила 312 млн рублей.",
+    )
+    assert _lexically_supported("Сумма инвестиций составила 312 млн рублей.", item)
+    assert not _lexically_supported("Сумма инвестиций составила 12 млн рублей.", item)
+
+
 def test_qualitative_claims_always_pass():
     """No numbers means no corroboration problem — the tone critic covers those."""
     item = scored("Заголовок", "Текст без чисел вообще.")
