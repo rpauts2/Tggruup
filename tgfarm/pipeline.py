@@ -24,6 +24,7 @@ from sqlalchemy import and_, func, or_, select
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem
 from tgfarm.db.session import session_scope
@@ -136,12 +137,12 @@ def _record(run_id: str, stage: str, status: str, items_in: int = 0, items_out: 
                     items_in=items_in,
                     items_out=items_out,
                     duration_ms=duration_ms,
-                    error=(error or "")[:1000] or None,
+                    error=redact_sensitive_text(error, limit=1000) if error else None,
                     meta=meta or {},
                 )
             )
     except Exception:  # noqa: BLE001 - see docstring
-        log.exception("could not record pipeline run %s/%s", run_id, stage)
+        log.error("could not record pipeline run %s/%s", run_id, stage)
 
 
 async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = None) -> object:
@@ -161,8 +162,8 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
         )
         return value
     except Exception as exc:  # noqa: BLE001 - stage isolation is the point
-        message = f"{type(exc).__name__}: {exc}"
-        log.exception("stage %s failed", name)
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600)
+        log.error("stage %s failed: %s", name, message)
         result.stages[name] = {"ok": False, "error": message}
         result.errors.append(f"{name}: {message}")
         await to_thread(_record, result.run_id, name, "error", 0, 0, timer.duration_ms, message)
@@ -769,13 +770,13 @@ async def _guarded_cycle(
         except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
             _cycle_state = "failed"
             _cycle_finished_at = datetime.now(UTC)
-            log.exception("cycle crashed")
+            log.error("cycle crashed: %s", redact_sensitive_text(exc, limit=300))
             await to_thread(
                 _record,
                 f"guard-{uuid.uuid4().hex[:8]}",
                 "cycle",
                 "error",
-                error=f"{type(exc).__name__}: {exc}",
+                error=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600),
             )
             return None
     finally:
@@ -832,7 +833,7 @@ async def _guarded_publish_tick() -> dict:
         return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": timeout * 1000}
     except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
         message = f"{type(exc).__name__}: {exc}"
-        log.exception("publish tick crashed")
+        log.error("publish tick crashed: %s", redact_sensitive_text(exc, limit=300))
         await to_thread(_record, run_id, "publish_tick", "error", error=message)
         return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": 0}
 
@@ -858,7 +859,7 @@ async def _watchdog() -> None:
         if delivered:
             log.info("watchdog: delivered %d alert(s) to the operator", delivered)
     except Exception as exc:  # noqa: BLE001 - delivery must not kill the watchdog
-        log.debug("alert delivery failed: %s", exc)
+        log.debug("alert delivery failed: %s", redact_sensitive_text(exc, limit=180))
 
     health = cycle_health()
     if health["stale"]:
@@ -929,7 +930,7 @@ async def _top_groups_tick() -> dict | None:
     try:
         return await collect_top_groups()
     except Exception as exc:  # noqa: BLE001 - optional source must not kill the scheduler
-        log.info("top groups tick failed: %s", exc)
+        log.info("top groups tick failed: %s", redact_sensitive_text(exc, limit=180))
         return None
 
 
@@ -951,7 +952,7 @@ async def _dzen_warm_tick() -> dict | None:
             log.warning("dzen warm tick: сессия мертва — нужен «Дзен: войти» в панели")
         return state
     except Exception as exc:  # noqa: BLE001 - warming must not kill the scheduler
-        log.debug("dzen warm tick failed: %s", exc)
+        log.debug("dzen warm tick failed: %s", redact_sensitive_text(exc, limit=180))
         return None
 
 
@@ -961,7 +962,7 @@ async def _branding_tick() -> dict | None:
 
         return await run_branding_tick()
     except Exception as exc:  # noqa: BLE001 - optional branding must not kill scheduler
-        log.info("branding tick failed: %s", exc)
+        log.info("branding tick failed: %s", redact_sensitive_text(exc, limit=180))
         return None
 
 
