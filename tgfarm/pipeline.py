@@ -35,6 +35,7 @@ MAX_CLUSTERS_PER_CYCLE = 1000
 _cycle_started_at: datetime | None = None
 _cycle_finished_at: datetime | None = None
 _cycle_state = "idle"
+_active_cycle_task: asyncio.Task | None = None
 
 
 def cycle_health(now: datetime | None = None) -> dict:
@@ -598,38 +599,111 @@ async def run_cycle(
     return result
 
 
-async def _guarded_cycle(*, collect: bool = True) -> CycleResult | None:
-    """Run one cycle under a hard timeout so a hung stage cannot wedge the farm."""
-    global _cycle_finished_at, _cycle_state
+async def _guarded_cycle(
+    *,
+    collect: bool = True,
+    max_clusters: int = MAX_CLUSTERS_PER_CYCLE,
+) -> CycleResult | None:
+    """Run one full cycle, skipping overlap and bounding its runtime."""
+    global _cycle_finished_at, _cycle_state, _active_cycle_task
+
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        active = _active_cycle_task
+        if active is not None and active is not current_task and not active.done():
+            log.warning("cycle skipped: another full cycle is still active")
+            return None
+        _active_cycle_task = current_task
 
     settings = get_settings()
     timeout = max(60, settings.cycle_timeout_min * 60)
     try:
-        return await asyncio.wait_for(run_cycle(collect=collect), timeout=timeout)
+        try:
+            return await asyncio.wait_for(
+                run_cycle(collect=collect, max_clusters=max_clusters),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            _cycle_state = "timeout"
+            _cycle_finished_at = datetime.now(UTC)
+            log.error("cycle exceeded %ss and was cancelled", timeout)
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "timeout",
+                error=f"cycle exceeded {timeout}s",
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
+            _cycle_state = "failed"
+            _cycle_finished_at = datetime.now(UTC)
+            log.exception("cycle crashed")
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+    finally:
+        if current_task is not None and _active_cycle_task is current_task:
+            _active_cycle_task = None
+
+
+async def _publish_tick() -> dict:
+    """Drain the publication queue without re-running expensive content stages.
+
+    The full cycle collects trends, generates drafts, performs quality checks,
+    and learns from analytics. That work must not run every five minutes just
+    because the scheduler wants to deliver already-prepared posts.
+    """
+    from tgfarm import s7_publish
+
+    run_id = f"pub-{uuid.uuid4().hex[:10]}"
+    result = CycleResult(run_id=run_id)
+    started = time.perf_counter()
+
+    await _stage(result, "s7_publish", s7_publish.run)
+
+    result.duration_ms = int((time.perf_counter() - started) * 1000)
+    status = "ok" if not result.errors else "partial"
+    await to_thread(
+        _record,
+        result.run_id,
+        "publish_tick",
+        status,
+        duration_ms=result.duration_ms,
+        error="; ".join(result.errors) if result.errors else None,
+        meta={"errors": result.errors},
+    )
+    log.info(
+        "publish tick %s finished in %dms errors=%d",
+        result.run_id,
+        result.duration_ms,
+        len(result.errors),
+    )
+    return result.as_dict()
+
+
+async def _guarded_publish_tick() -> dict:
+    """Bound a fast publisher tick independently of the long content cycle."""
+    settings = get_settings()
+    timeout = max(60, settings.dzen_publish_timeout_s + 60)
+    run_id = f"pt-{uuid.uuid4().hex[:8]}"
+    try:
+        return await asyncio.wait_for(_publish_tick(), timeout=timeout)
     except TimeoutError:
-        _cycle_state = "timeout"
-        _cycle_finished_at = datetime.now(UTC)
-        log.error("cycle exceeded %ss and was cancelled", timeout)
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "timeout",
-            error=f"cycle exceeded {timeout}s",
-        )
-        return None
+        message = f"publish tick exceeded {timeout}s"
+        log.error(message)
+        await to_thread(_record, run_id, "publish_tick", "timeout", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": timeout * 1000}
     except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
-        _cycle_state = "failed"
-        _cycle_finished_at = datetime.now(UTC)
-        log.exception("cycle crashed")
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "error",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return None
+        message = f"{type(exc).__name__}: {exc}"
+        log.exception("publish tick crashed")
+        await to_thread(_record, run_id, "publish_tick", "error", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": 0}
 
 
 async def _watchdog() -> None:
@@ -741,7 +815,7 @@ def _build_scheduler():
     )
 
     scheduler.add_job(
-        _guarded_cycle,
+        _guarded_publish_tick,
         IntervalTrigger(minutes=5),
         id="publish-tick",
         name="publish tick",
