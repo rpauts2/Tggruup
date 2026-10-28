@@ -66,10 +66,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "reddit", "name": "Reddit", "symbol": "r/", "color": "#FF4500",
-        "category": "Сообщества", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["crosspost"],
-        "description": "Нативные посты под конкретные сабреддиты. Не просто копировать один текст во все сообщества.",
-        "requirements": "OAuth-приложение, разрешения API и правила каждого subreddit.",
+        "category": "Сообщества", "market": "Мировые", "priority": "core",
+        "mode": "built_in", "roles": ["crosspost"],
+        "description": "Нативные текстовые или ссылочные посты в один выбранный subreddit, с журналом и защитой от дублей.",
+        "requirements": "REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_REFRESH_TOKEN, REDDIT_SUBREDDIT и уникальный User-Agent.",
         "docs_url": "https://www.reddit.com/dev/api/",
     },
     {
@@ -373,6 +373,18 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.x_bearer_token and settings.x_user_id:
             return True, "Данные X заданы; права токена и лимиты API требуют проверки."
         return False, "Нужны X_BEARER_TOKEN и X_USER_ID."
+    if platform_id == "reddit":
+        user_agent = settings.reddit_user_agent.strip()
+        configured = all((
+            settings.reddit_client_id,
+            settings.reddit_client_secret,
+            settings.reddit_refresh_token,
+            settings.reddit_subreddit,
+            user_agent,
+        )) and "/u/YOUR_REDDIT_USERNAME" not in user_agent
+        if configured:
+            return True, "OAuth-настройки найдены; проверь право submit и правила выбранного subreddit live smoke-тестом."
+        return False, "Нужны Reddit OAuth client ID/secret, постоянный refresh token, REDDIT_SUBREDDIT и свой REDDIT_USER_AGENT."
     if platform_id == "dzen":
         try:
             profile = settings.dzen_profile_path()
@@ -445,8 +457,8 @@ def get_platform_catalog() -> dict[str, Any]:
             "market_coverage": len({p["market"] for p in enabled}),
         },
         "note": (
-            "Настройки наличия ключей не являются проверкой авторизации. "
-            "Новый API подключается к реальной публикации только после отдельного адаптера и тестов."
+            "Наличие ключей не является проверкой авторизации. Перед live-запуском проверь OAuth, "
+            "права приложения и правила конкретного сообщества одним контролируемым постом."
         ),
     }
 
