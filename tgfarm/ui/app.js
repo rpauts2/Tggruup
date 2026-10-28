@@ -2101,6 +2101,28 @@
     renderCrossposts((state.data.crossposts && state.data.crossposts.crossposts) || []);
   });
 
+  $("#crosspost-export")?.addEventListener("click", async () => {
+    const button = $("#crosspost-export");
+    if (button) button.disabled = true;
+    try {
+      const report = await api("/api/crossposts/export?limit=300");
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `tgfarm-delivery-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+      toast("Отчёт доставки экспортирован без текста ошибок и секретов", "ok");
+    } catch (error) {
+      toast("Не удалось экспортировать отчёт: " + error.message, "err");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+
   $$("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
       state.postFilter = b.dataset.status;
