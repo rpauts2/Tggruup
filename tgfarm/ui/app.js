@@ -346,7 +346,7 @@
     }
     if (root) root.innerHTML = `<div class="empty">Собираю историю, свежие источники и проверку старых утверждений…</div>`;
     try {
-      const dossier = await api(`/api/memory/topic?days=30&archive_limit=60&query=${encodeURIComponent(state.topicQuery)}`);
+      const dossier = await api(`/api/memory/topic?days=30&archive_limit=300&query=${encodeURIComponent(state.topicQuery)}`);
       state.topicDossier = dossier;
       renderTopicDossier(dossier);
     } catch (error) {
