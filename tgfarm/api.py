@@ -1119,6 +1119,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/mastodon/auth/callback": "tgfarm_mastodon_oauth_params",
             "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
             "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
+            "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1143,6 +1144,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/mastodon/auth/callback",
             "/api/platforms/x/auth/callback",
             "/api/platforms/threads/auth/callback",
+            "/api/platforms/linkedin/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -1696,6 +1698,103 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
                 "<h1>Не удалось подключить Threads</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/linkedin/auth/start")
+    async def linkedin_oauth_start(request: Request) -> dict:
+        from tgfarm.linkedin_oauth import begin_linkedin_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/linkedin/auth/callback"
+        try:
+            return await begin_linkedin_oauth(
+                settings.linkedin_client_id,
+                settings.linkedin_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/platforms/linkedin/auth/callback")
+    async def linkedin_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.linkedin_oauth import cancel_linkedin_oauth, complete_linkedin_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_linkedin_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_linkedin_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение LinkedIn не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_linkedin_oauth(state_value, code)
+            values = {
+                "LINKEDIN_CLIENT_ID": credentials["client_id"],
+                "LINKEDIN_CLIENT_SECRET": credentials["client_secret"],
+                "LINKEDIN_ACCESS_TOKEN": credentials["access_token"],
+                "LINKEDIN_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                "LINKEDIN_MEMBER_ID": credentials["member_id"],
+                "LINKEDIN_MEMBER_NAME": credentials["member_name"],
+                "LINKEDIN_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+            }
+            if credentials.get("refresh_token"):
+                values["LINKEDIN_REFRESH_TOKEN"] = credentials["refresh_token"]
+            await io(save_credentials, "linkedin", values)
+            await io(
+                record_auth_check,
+                "linkedin",
+                True,
+                account=credentials["account"],
+                detail="LinkedIn OAuth подтверждён; профиль OpenID Connect и пользовательский токен сохранены локально.",
+            )
+            _operator("platform-auth-check", "linkedin", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>LinkedIn подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Если LinkedIn не выдал refresh token, повторное подключение потребуется после истечения access token. "
+                "Публикация остаётся выключенной, пока ты не включишь площадку в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_linkedin_oauth(state_value)
+            log.warning("LinkedIn OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(str(exc)[:240])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить LinkedIn</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_linkedin_oauth(state_value)
+            log.warning("LinkedIn OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить LinkedIn</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
