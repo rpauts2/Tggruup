@@ -23,6 +23,7 @@
     <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
+    <button class="tab" data-view="memory" role="tab">Память</button>
     <button class="tab" data-view="channels" role="tab">Каналы</button>
     <button class="tab" data-view="sources" role="tab">Источники</button>
     <button class="tab" data-view="runs" role="tab">Прогоны</button>
@@ -114,6 +115,34 @@
       </div>
     </div>
     <div id="posts-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================= MEMORY -->
+  <section class="view" data-view="memory">
+    <article class="card">
+      <header class="card-head">
+        <h2>Память публикаций</h2>
+        <span class="card-sub" id="memory-meta">Загружаю архив…</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub" style="white-space:normal;line-height:1.6;margin:0 0 12px">
+          Поиск идёт по всему архиву TgFarm: заголовкам, текстам, сохранённым утверждениям и источникам, а не только по последним постам.
+          Ручные публикации, которых нет в базе фермы, здесь пока не отображаются.
+        </p>
+        <form id="memory-search-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Найти в прошлых публикациях</span>
+            <input id="memory-query" type="search" placeholder="Например: Aurora-X, цена, исследование, конкретный факт" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Найти</button>
+          <button class="btn btn-ghost" type="button" id="memory-reindex">Перестроить индекс</button>
+        </form>
+        <div id="memory-count" class="card-sub" style="margin:0 0 8px"></div>
+      </div>
+      <div id="memory-results" class="list">
+        <div class="empty">Загружаю полный архив публикаций…</div>
+      </div>
+    </article>
   </section>
 
   <!-- ============================================================ CHANNELS -->
