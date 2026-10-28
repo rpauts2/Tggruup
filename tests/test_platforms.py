@@ -36,7 +36,8 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     }
     assert entries["mastodon"]["supported"] is True
     assert entries["mastodon"]["auth"]["method"] == "oauth"
-    assert entries["mastodon"]["roles"] == ["crosspost"]    assert entries["threads"]["supported"] is True
+    assert entries["mastodon"]["roles"] == ["crosspost"]
+    assert entries["threads"]["supported"] is True
     assert entries["threads"]["auth"]["method"] == "oauth"
     assert entries["threads"]["roles"] == ["text", "crosspost"]
     assert {field["key"] for field in entries["threads"]["auth"]["fields"]} == {
