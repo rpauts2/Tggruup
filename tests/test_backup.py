@@ -79,3 +79,34 @@ async def test_backup_job_reports_missing_database_instead_of_making_empty_backu
     assert result["verified"] is False
     assert "not found" in result["reason"]
     assert not backup_dir.exists()
+
+@pytest.mark.asyncio
+async def test_failed_backup_keeps_previous_verified_backups_and_removes_temp_files(tmp_path, monkeypatch):
+    from tgfarm import pipeline
+
+    source = tmp_path / "corrupt.db"
+    source.write_bytes(b"not a sqlite database")
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    old_backups = [
+        backup_dir / "tgfarm-2026-10-01-000000-000001.db",
+        backup_dir / "tgfarm-2026-10-02-000000-000001.db",
+    ]
+    for path in old_backups:
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE verified_snapshot (value TEXT)")
+            connection.execute("INSERT INTO verified_snapshot VALUES ('keep')")
+    monkeypatch.setattr(pipeline, "get_engine_url", lambda: f"sqlite:///{source.as_posix()}")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(backup_dir=str(backup_dir), keep_backups=1),
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        await pipeline.backup_job()
+
+    assert all(path.exists() for path in old_backups), "failed copy must not prune verified backups"
+    assert not list(backup_dir.glob("*.tmp"))
+    assert not list(backup_dir.glob(".tgfarm-*.tmp"))
+    assert {path.name for path in backup_dir.glob("tgfarm-*.db")} == {path.name for path in old_backups}
