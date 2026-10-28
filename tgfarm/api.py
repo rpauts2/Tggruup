@@ -26,6 +26,7 @@ from tgfarm.core import apiauth
 from tgfarm.core.apiauth import ensure_token, is_authorised, is_public_path
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.db.bootstrap import ensure_bootstrapped
 from tgfarm.db.models import (
     Channel,
@@ -476,7 +477,7 @@ def _operator(action: str, target: str, detail: str = "") -> None:
                 OperatorLog(action=action, target=target[:64], detail=(detail or "")[:500] or None)
             )
     except Exception as exc:  # noqa: BLE001 - audit must not break the action
-        log.warning("operator log failed: %s", exc)
+        log.warning("operator log failed: %s", redact_sensitive_text(exc, limit=180))
 
 
 def _polish_post(public_id: str, mode: str) -> dict:
@@ -1074,7 +1075,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             count = await io(_warm_index)
             log.info("vector index warmed with %d items", count)
         except Exception as exc:  # noqa: BLE001 - a cold start is survivable
-            log.warning("vector index warmup failed: %s", exc)
+            log.warning("vector index warmup failed: %s", redact_sensitive_text(exc, limit=180))
 
         if not with_scheduler:
             yield
@@ -1381,7 +1382,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             item = await io(set_platform_enabled, platform_id, request.enabled)
         except ValueError as exc:
             status = 404 if "Неизвестная" in str(exc) else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=status, detail=redact_sensitive_text(exc, limit=300)) from exc
         _operator(
             "platform-toggle",
             platform_id,
@@ -1519,7 +1520,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             cancel_mastodon_oauth(state_value)
             # OAuth codes, tokens and exception bodies are never written to logs.
             log.warning("mastodon OAuth callback rejected (%s)", type(exc).__name__)
-            message = html.escape(str(exc)[:240])
+            message = html.escape(redact_sensitive_text(exc, limit=240))
             body = (
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
@@ -1959,7 +1960,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             result = CrosspostResult(
                 platform="reddit",
                 status="unknown" if ambiguous_crosspost_error(exc) else "failed",
-                error=f"{type(exc).__name__}: {str(exc)[:220]}",
+                error=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
             )
         await io(log_result, post["public_id"], result, attempt)
         _operator(
@@ -2160,8 +2161,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             except DzenNotLoggedIn as exc:
                 from tgfarm.platforms import record_auth_check
 
-                record_auth_check("dzen", False, detail=str(exc)[:200])
-                return {"ok": False, "authorized": False, "error": str(exc)[:200]}
+                record_auth_check("dzen", False, detail=redact_sensitive_text(exc, limit=200))
+                return {"ok": False, "authorized": False, "error": redact_sensitive_text(exc, limit=200)}
 
         return await io(_run)
 
