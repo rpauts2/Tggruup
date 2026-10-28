@@ -603,6 +603,11 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
     """
     kind = type(exc).__name__.lower()
     message = f"{kind}: {exc}".lower()
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int) and status_code >= 500:
+        # A server can fail after committing the side effect; don't repeat blindly.
+        return True
 
     definitely_before_send = (
         "connecttimeout",
