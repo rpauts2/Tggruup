@@ -17,7 +17,7 @@ from typing import Any, Literal, TypeVar
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from tgfarm import pipeline
 from tgfarm.config import get_config
@@ -801,17 +801,17 @@ def _channels() -> list[dict]:
 
 
 def _reject(public_ids: list[str], reason: str) -> int:
+    """Reject only drafts/queued posts; never rewrite published or in-flight state."""
     with session_scope() as session:
-        rows = session.execute(
-            select(Post).where(
+        result = session.execute(
+            update(Post)
+            .where(
                 Post.public_id.in_(public_ids),
-                Post.status != "publish_unknown",
+                Post.status.in_(("draft", "gated", "scheduled", "rejected", "failed")),
             )
-        ).scalars().all()
-        for row in rows:
-            row.status = "rejected"
-            row.reject_reason = reason
-        return len(rows)
+            .values(status="rejected", reject_reason=reason)
+        )
+        return result.rowcount or 0
 
 
 def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
