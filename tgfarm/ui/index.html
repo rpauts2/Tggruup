@@ -143,6 +143,26 @@
         <div class="empty">Загружаю полный архив публикаций…</div>
       </div>
     </article>
+
+    <article class="card topic-dossier-card">
+      <header class="card-head">
+        <h2>Досье темы</h2>
+        <span class="card-sub">история → обновления → продолжение</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub topic-intro">Собирает хронологию постов, свежие материалы и старые утверждения, которые стоит перепроверить. Расхождения чисел помечаются как возможные, а не как доказанная ошибка.</p>
+        <form id="topic-dossier-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Тема, продукт, компания или исследование</span>
+            <input id="topic-query" type="search" placeholder="Например: Orion-X, OpenAI, цена подписки" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Собрать досье</button>
+        </form>
+      </div>
+      <div id="topic-dossier-results" class="topic-dossier-results">
+        <div class="empty">Введи тему и нажми «Собрать досье», чтобы соединить старые публикации со свежими источниками.</div>
+      </div>
+    </article>
   </section>
 
   <!-- ============================================================ CHANNELS -->
