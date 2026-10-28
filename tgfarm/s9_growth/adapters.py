@@ -344,6 +344,69 @@ class XAdapter:
 
 
 
+# ------------------------------------------------------------------- Bluesky
+class BlueskyAdapter:
+    """Publish a short native post through the official AT Protocol API."""
+
+    platform = "bluesky"
+    max_title = 300
+    max_body = 300
+
+    def _credentials(self) -> tuple[str, str]:
+        settings = get_settings()
+        return settings.bluesky_handle.strip(), settings.bluesky_app_password.strip()
+
+    def configured(self) -> bool:
+        return all(self._credentials())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        handle, app_password = self._credentials()
+        if not handle or not app_password:
+            return CrosspostResult(platform=self.platform, status="skipped")
+        import httpx
+
+        text_value = _clip(payload, self.max_title, self.max_body)
+        body = f"{text_value.title}\n\n{text_value.text}".strip()
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                session_response = await client.post(
+                    "https://bsky.social/xrpc/com.atproto.server.createSession",
+                    json={"identifier": handle, "password": app_password},
+                )
+                session_response.raise_for_status()
+                session = session_response.json()
+                access_jwt = str(session.get("accessJwt") or "")
+                did = str(session.get("did") or "")
+                if not access_jwt or not did:
+                    raise RuntimeError("Bluesky session response was incomplete.")
+                repo = str(session.get("did") or did)
+                record = {
+                    "$type": "app.bsky.feed.post",
+                    "text": body[:300],
+                    "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                }
+                response = await client.post(
+                    "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+                    headers={"Authorization": f"Bearer {access_jwt}"},
+                    json={"repo": repo, "collection": "app.bsky.feed.post", "record": record},
+                )
+                response.raise_for_status()
+                result = response.json()
+                uri = str(result.get("uri") or "")
+                rkey = uri.rsplit("/", 1)[-1] if uri else ""
+                url = f"https://bsky.app/profile/{handle}/post/{rkey}" if rkey else None
+                return CrosspostResult(
+                    platform=self.platform, status="posted",
+                    remote_id=uri or rkey, url=url,
+                )
+        except Exception as exc:  # noqa: BLE001 - no blind retries after ambiguous write errors
+            status = crosspost_error_status(exc)
+            log.warning("bluesky crosspost %s: %s", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status=status, error=f"Bluesky request failed ({type(exc).__name__})."
+            )
+
+
 # --------------------------------------------------------------------- Reddit
 class RedditAuthError(RuntimeError):
     """OAuth credentials were rejected before a post could be submitted."""
@@ -596,6 +659,7 @@ class RedditAdapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "bluesky": BlueskyAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),

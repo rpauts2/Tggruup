@@ -21,10 +21,15 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
+    assert entries["bluesky"]["supported"] is True
+    assert entries["bluesky"]["auth"]["method"] == "credentials"
+    assert {field["key"] for field in entries["bluesky"]["auth"]["fields"]} == {
+        "BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"
+    }
     assert entries["reddit"]["planned"] is False
     assert entries["youtube"]["supported"] is False
     assert entries["tiktok"]["supported"] is False
@@ -96,7 +101,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 6
+    assert payload["summary"]["supported"] == 7
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
