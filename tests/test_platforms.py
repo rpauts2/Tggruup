@@ -163,7 +163,7 @@ def test_paused_primary_platform_stays_queued_and_returns_when_reenabled(monkeyp
         ))
 
     platforms.set_platform_enabled("dzen", False)
-    assert all(row[0] != post_id for row in due_posts(limit=1000))
+    assert all(row[0] != post_id for row in due_posts(limit=1, post_public_ids=[post_id]))
 
     with session_scope() as session:
         queued = session.query(Post).filter_by(public_id=post_id).one()
