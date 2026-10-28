@@ -194,7 +194,7 @@ def archive_status() -> dict:
 
 
 def _query_terms(query: str, limit: int = MAX_QUERY_TERMS) -> list[str]:
-    counts = Counter(token for token in content_tokens(query or "") if len(token) >= 4)
+    counts = Counter(token for token in content_tokens(query or "") if len(token) >= 3)
     # Longer terms tend to be proper nouns, names, models and technical concepts.
     # Prefix matching in FTS also tolerates common Russian inflections.
     return [
