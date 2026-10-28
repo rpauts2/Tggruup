@@ -68,8 +68,14 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "id": "reddit", "name": "Reddit", "symbol": "r/", "color": "#FF4500",
         "category": "Сообщества", "market": "Мировые", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
-        "description": "Нативные текстовые или ссылочные посты в один выбранный subreddit, с журналом и защитой от дублей.",
-        "requirements": "REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_REFRESH_TOKEN, REDDIT_SUBREDDIT и уникальный User-Agent.",
+        "description": (
+            "Нативные текстовые или ссылочные посты в один subreddit, "
+            "с журналом и защитой от дублей."
+        ),
+        "requirements": (
+            "REDDIT_CLIENT_ID/SECRET, REDDIT_REFRESH_TOKEN, REDDIT_SUBREDDIT "
+            "и уникальный User-Agent."
+        ),
         "docs_url": "https://www.reddit.com/dev/api/",
     },
     {
@@ -383,8 +389,14 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             user_agent,
         )) and "/u/YOUR_REDDIT_USERNAME" not in user_agent
         if configured:
-            return True, "OAuth-настройки найдены; проверь право submit и правила выбранного subreddit live smoke-тестом."
-        return False, "Нужны Reddit OAuth client ID/secret, постоянный refresh token, REDDIT_SUBREDDIT и свой REDDIT_USER_AGENT."
+            return True, (
+                "OAuth-настройки найдены; проверь право submit и правила сообщества "
+                "одним live smoke-тестом."
+            )
+        return False, (
+            "Нужны Reddit OAuth client ID/secret, refresh token, REDDIT_SUBREDDIT "
+            "и свой REDDIT_USER_AGENT."
+        )
     if platform_id == "dzen":
         try:
             profile = settings.dzen_profile_path()
