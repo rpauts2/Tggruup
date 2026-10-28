@@ -343,6 +343,22 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
                 {"kind": m.kind, "path": m.path, "sha": m.sha, "width": m.width, "height": m.height}
                 for m in media
             ],
+            "crossposts": [
+                {
+                    "platform": entry.platform,
+                    "status": entry.status,
+                    "at": entry.created_at,
+                    "attempt": entry.attempt,
+                    "url": entry.url if str(entry.url or "").startswith("https://") else None,
+                    "message": _crosspost_status_message(entry.status),
+                }
+                for entry in session.execute(
+                    select(CrosspostLog)
+                    .where(CrosspostLog.post_public_id == row.public_id)
+                    .order_by(CrosspostLog.id.desc())
+                    .limit(30)
+                ).scalars().all()
+            ],
         }
     return payload
 
