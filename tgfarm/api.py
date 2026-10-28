@@ -837,6 +837,139 @@ def _crossposts(limit: int) -> list[dict]:
         ]
 
 
+def _crosspost_health() -> dict:
+    """Summarize the latest state of every material/platform delivery pair."""
+    from tgfarm.db.models import CrosspostClaim
+    from tgfarm.s9_growth.adapters import MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+
+    now = datetime.now(UTC)
+    stale_before = now - timedelta(minutes=30)
+    latest_ids = (
+        select(func.max(CrosspostLog.id).label("latest_id"))
+        .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+        .subquery()
+    )
+    with session_scope() as session:
+        rows = session.execute(
+            select(CrosspostLog)
+            .join(latest_ids, CrosspostLog.id == latest_ids.c.latest_id)
+            .order_by(CrosspostLog.platform.asc(), CrosspostLog.created_at.desc())
+        ).scalars().all()
+        claims = session.execute(select(CrosspostClaim)).scalars().all()
+
+    by_platform: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = by_platform.setdefault(
+            row.platform,
+            {
+                "platform": row.platform,
+                "targets": 0,
+                "posted": 0,
+                "failed": 0,
+                "permanent": 0,
+                "unknown": 0,
+                "publishing": 0,
+                "stuck": 0,
+                "retry_authorized": 0,
+                "skipped": 0,
+                "dry_run": 0,
+                "last_success_at": None,
+                "oldest_attention_at": None,
+                "state": "not_tested",
+            },
+        )
+        item["targets"] += 1
+        status = str(row.status or "unknown")
+        if status in item:
+            item[status] += 1
+
+        stamp = row.created_at
+        if stamp is not None:
+            stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+        if status == "posted":
+            previous = item["last_success_at"]
+            if previous is None or (stamp and stamp.isoformat() > previous):
+                item["last_success_at"] = stamp.isoformat() if stamp else None
+
+        is_stuck = status == "publishing" and stamp is not None and stamp <= stale_before
+        if is_stuck:
+            item["stuck"] += 1
+        attention = (
+            status in {"unknown", "permanent"}
+            or (status == "failed" and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS)
+            or is_stuck
+        )
+        if attention and stamp is not None:
+            previous_attention = item["oldest_attention_at"]
+            if previous_attention is None or stamp.isoformat() < previous_attention:
+                item["oldest_attention_at"] = stamp.isoformat()
+
+    for item in by_platform.values():
+        exhausted = item["failed"] and any(
+            row.platform == item["platform"]
+            and row.status == "failed"
+            and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+            for row in rows
+        )
+        if item["unknown"] or item["permanent"] or exhausted or item["stuck"]:
+            item["state"] = "attention"
+        elif item["publishing"] or item["retry_authorized"] or item["failed"]:
+            item["state"] = "working"
+        elif item["posted"]:
+            item["state"] = "healthy"
+        elif item["skipped"]:
+            item["state"] = "setup"
+        elif item["dry_run"]:
+            item["state"] = "dry_run"
+        else:
+            item["state"] = "not_tested"
+
+    totals = {
+        "targets": len(rows),
+        "platforms": len(by_platform),
+        "posted": sum(item["posted"] for item in by_platform.values()),
+        "failed": sum(item["failed"] for item in by_platform.values()),
+        "permanent": sum(item["permanent"] for item in by_platform.values()),
+        "unknown": sum(item["unknown"] for item in by_platform.values()),
+        "stuck": sum(item["stuck"] for item in by_platform.values()),
+        "retry_authorized": sum(item["retry_authorized"] for item in by_platform.values()),
+        "skipped": sum(item["skipped"] for item in by_platform.values()),
+        "dry_run": sum(item["dry_run"] for item in by_platform.values()),
+        "claims": len(claims),
+        "stale_claims": sum(
+            1 for claim in claims
+            if claim.claimed_at is not None
+            and (
+                claim.claimed_at.replace(tzinfo=UTC)
+                if claim.claimed_at.tzinfo is None
+                else claim.claimed_at.astimezone(UTC)
+            ) <= stale_before
+        ),
+        "needs_attention": sum(
+            item["unknown"] + item["permanent"] + item["stuck"]
+            + sum(
+                1 for row in rows
+                if row.platform == item["platform"]
+                and row.status == "failed"
+                and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+            )
+            for item in by_platform.values()
+        ),
+    }
+    overall = (
+        "attention" if totals["needs_attention"]
+        else "working" if totals["retry_authorized"] or totals["stuck"]
+        else "healthy" if totals["posted"]
+        else "not_tested"
+    )
+    return {
+        "generated_at": now.isoformat(),
+        "state": overall,
+        "totals": totals,
+        "platforms": sorted(by_platform.values(), key=lambda item: item["platform"]),
+    }
+
+
 def _crossposts_export(limit: int = 300) -> dict:
     """Export delivery diagnostics without raw error text or credentials."""
     with session_scope() as session:
@@ -2007,6 +2140,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/crossposts")
     async def crossposts(limit: int = Query(50, ge=1, le=300)) -> dict:
         return {"crossposts": await io(_crossposts, limit)}
+
+    @app.get("/api/crossposts/health")
+    async def crosspost_health() -> dict:
+        return await io(_crosspost_health)
 
     @app.get("/api/crossposts/export")
     async def export_crossposts(limit: int = Query(300, ge=1, le=300)) -> dict:

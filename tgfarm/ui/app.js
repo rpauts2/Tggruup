@@ -1426,6 +1426,50 @@
     }).join("") || `<div class="empty">Источники не заданы</div>`;
   }
 
+  function renderCrosspostHealth(payload) {
+    const container = $("#crosspost-health");
+    if (!container) return;
+    const data = payload || {};
+    const totals = data.totals || {};
+    const statusLabel = {
+      healthy: "есть успешные доставки",
+      working: "есть активные повторы",
+      attention: "требует внимания",
+      setup: "не настроено",
+      dry_run: "тестовый режим",
+      not_tested: "ещё не проверено",
+    };
+    const cards = [
+      { label: "Адресатов в журнале", value: totals.targets || 0, hint: "материал × площадка" },
+      { label: "Опубликовано", value: totals.posted || 0, hint: "последнее состояние" },
+      { label: "Требует внимания", value: totals.needs_attention || 0, hint: "неопределённые/зависшие/исчерпанные" },
+      { label: "Активные claims", value: totals.claims || 0, hint: `устарело: ${n(totals.stale_claims || 0)}` },
+    ];
+    container.innerHTML = `
+      <div class="delivery-health-head">
+        <span class="tag ${data.state === "attention" ? "tag-warn" : data.state === "healthy" ? "tag-ok" : "tag-acc"}">${esc(statusLabel[data.state] || "состояние неизвестно")}</span>
+        <span class="card-sub">срез ${esc(dt(data.generated_at))}</span>
+      </div>
+      <div class="delivery-health-kpis">${cards.map(card => `
+        <div class="delivery-health-kpi">
+          <span class="delivery-health-label">${esc(card.label)}</span>
+          <strong>${n(card.value)}</strong>
+          <span class="delivery-health-hint">${esc(card.hint)}</span>
+        </div>`).join("")}
+      </div>
+      <div class="delivery-health-platforms">${(data.platforms || []).map(item => {
+        const label = statusLabel[item.state] || item.state;
+        const tone = item.state === "attention" ? "tag-warn"
+          : item.state === "healthy" ? "tag-ok"
+          : item.state === "working" ? "tag-acc" : "";
+        return `<div class="delivery-health-platform">
+          <strong>${esc(PLATFORM_RU[item.platform] || item.platform)}</strong>
+          <span class="tag ${tone}">${esc(label)}</span>
+          <span class="delivery-health-hint">${n(item.posted)} опубликовано · ${n(item.unknown)} сверка · ${n(item.permanent)} постоянно</span>
+        </div>`;
+      }).join("") || `<div class="delivery-health-empty">Пока нет записей о доставке</div>`}</div>`;
+  }
+
   function renderCrossposts(entries) {
     const container = $("#crossposts-list");
     if (!container) return;
@@ -1875,12 +1919,12 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory, platforms, redditMetrics] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
-        api("/api/crossposts?limit=100"),
+        api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
         api("/api/platforms"), api("/api/reddit/metrics"),
       ]);
@@ -1908,6 +1952,7 @@
       renderChannels(channels.channels || []);
       renderSources(sources.sources || []);
       state.data.crossposts = crossposts;
+      renderCrosspostHealth(deliveryHealth || {});
       renderCrossposts(crossposts.crossposts || []);
       renderRuns(runs.runs || []);
       renderMemory(memory || {});

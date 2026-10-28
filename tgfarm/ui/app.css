@@ -1146,3 +1146,20 @@ main {
   .delivery-card { flex-direction: column; }
   .delivery-card .item-side { align-self: flex-start; }
 }
+
+
+/* Fleet-wide delivery health summary */
+.delivery-health { display: grid; gap: 12px; margin: 2px 0 16px; }
+.delivery-health-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.delivery-health-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.delivery-health-kpi { display: flex; flex-direction: column; gap: 4px; padding: 12px; min-width: 0; background: var(--surface, rgba(255,255,255,.025)); border: 1px solid var(--line, rgba(255,255,255,.08)); border-radius: 12px; }
+.delivery-health-label { font-size: 11px; color: var(--muted); }
+.delivery-health-kpi strong { font-size: 22px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.delivery-health-hint { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.delivery-health-platforms { display: flex; gap: 8px; flex-wrap: wrap; }
+.delivery-health-platform { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 7px 10px; border: 1px solid var(--line, rgba(255,255,255,.08)); border-radius: 10px; min-width: 0; }
+.delivery-health-platform strong { font-size: 12px; }
+.delivery-health-empty { color: var(--muted); font-size: 12px; padding: 8px; }
+@media (max-width: 760px) {
+  .delivery-health-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
