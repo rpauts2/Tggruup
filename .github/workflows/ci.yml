@@ -45,3 +45,13 @@ jobs:
           IMAGE_ENABLED: "false"
           VIDEO_ENABLED: "false"
         run: python -m pytest -q
+
+      - name: Run offline end-to-end smoke cycle
+        env:
+          TGFARM_MODE: off
+          LLM_PROVIDERS: offline
+          EMBEDDING_PROVIDER: local
+          IMAGE_ENABLED: "false"
+          VIDEO_ENABLED: "false"
+          DATABASE_URL: sqlite:////tmp/tgfarm-ci-smoke.db
+        run: python -m tgfarm.cli demo --cycles 1
