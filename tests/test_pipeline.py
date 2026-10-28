@@ -1550,3 +1550,32 @@ def test_manual_crosspost_retry_is_reserved_for_exhausted_attempts():
     assert active["error"] == "not_reconcilable"
     assert exhausted["ok"] is True
     assert exhausted["status"] == "retry_authorized"
+
+
+def test_crosspost_sampling_is_stable_across_cycles_and_bounds_rate():
+    import math
+
+    from tgfarm.s9_growth import _crosspost_sampled
+
+    public_ids = [f"sample-post-{index:04d}" for index in range(500)]
+    first = {post_id for post_id in public_ids if _crosspost_sampled(post_id, 0.5)}
+    second = {post_id for post_id in public_ids if _crosspost_sampled(post_id, 0.5)}
+
+    assert first == second
+    assert 200 <= len(first) <= 300
+    assert all(not _crosspost_sampled(post_id, 0.0) for post_id in public_ids)
+    assert all(_crosspost_sampled(post_id, 1.0) for post_id in public_ids)
+    assert not _crosspost_sampled("bad-rate", math.nan)
+    assert not _crosspost_sampled("bad-rate", math.inf)
+
+
+def test_crosspost_sampling_supports_an_injected_random_generator():
+    import random
+
+    from tgfarm.s9_growth import _crosspost_sampled
+
+    first_rng = random.Random(1234)
+    second_rng = random.Random(1234)
+    first = [_crosspost_sampled(f"post-{i}", 0.4, first_rng) for i in range(50)]
+    second = [_crosspost_sampled(f"post-{i}", 0.4, second_rng) for i in range(50)]
+    assert first == second
