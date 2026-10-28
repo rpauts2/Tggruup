@@ -1134,8 +1134,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             }
             # OAuth authorization codes are secrets and must not reach access logs.
             request.scope["query_string"] = b""
-        response = await call_next(request)        response = await call_next(request)
-        if request.url.path == "/api/platforms/mastodon/auth/callback":
+        response = await call_next(request)
+        if request.url.path in {"/api/platforms/mastodon/auth/callback", "/api/platforms/x/auth/callback"}:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
