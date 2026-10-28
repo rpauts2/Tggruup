@@ -261,7 +261,7 @@
     const claims = dossier.claim_checks || [];
     const ideas = dossier.continuation_ideas || [];
     const stats = [
-      [ "История", n(dossier.history_count) + " постов" ],
+      [ "История", n(dossier.history_count) + (dossier.history_truncated ? "+ постов" : " постов") ],
       [ "Свежие источники", n(dossier.current_source_count) ],
       [ "После последнего поста", n(dossier.updates_found) ],
       [ "Давность публикации", dossier.days_since_latest_post == null ? "нет истории" : n(dossier.days_since_latest_post) + " дн." ],
