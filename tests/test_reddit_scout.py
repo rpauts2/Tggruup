@@ -371,3 +371,78 @@ def test_dashboard_exposes_reddit_scout_and_human_review_controls(client):
     assert "submitRedditScout" in script.text
     assert "tailorRedditCandidate" in script.text
     assert "publishRedditDraft" in script.text
+
+
+def test_reddit_publish_rechecks_global_switch_after_rule_fetch(client, monkeypatch):
+    import tgfarm.api as api_module
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    settings = SimpleNamespace(live=True)
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    switch_values = iter([True, False])
+    monkeypatch.setattr(
+        platforms,
+        "is_platform_enabled",
+        lambda platform_id: next(switch_values),
+    )
+    monkeypatch.setattr(
+        scout,
+        "_post_record",
+        lambda post_id: {
+            "public_id": post_id,
+            "status": "published",
+            "title": "Original title",
+            "body": "Original body",
+            "cta": "",
+            "hashtags": [],
+            "sources": [],
+            "channel_id": "channel-1",
+        },
+    )
+
+    async def fake_inspect(subreddit):
+        return {
+            "name": subreddit,
+            "about": {
+                "over18": False,
+                "subreddit_type": "public",
+                "submission_type": "any",
+                "restrict_posting": False,
+            },
+            "rules": [],
+            "requirements": {},
+            "risk_flags": [],
+        }
+
+    monkeypatch.setattr(scout, "inspect_community", fake_inspect)
+    monkeypatch.setattr(scout, "validate_submission", lambda title, body, community: [])
+    monkeypatch.setattr("tgfarm.s9_growth.already_done", lambda post_id, platform: False)
+    monkeypatch.setattr("tgfarm.s9_growth.begin_crosspost", lambda post_id, platform: 1)
+    logs = []
+    monkeypatch.setattr(adapters, "log_result", lambda *args, **kwargs: logs.append(args))
+    monkeypatch.setattr(api_module, "_operator", lambda *args, **kwargs: None)
+
+    adapter = adapters.ADAPTERS["reddit"]
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+
+    async def fail_if_submitted(payload):
+        pytest.fail("Reddit must be rechecked before the submit side effect")
+
+    monkeypatch.setattr(adapter, "publish", fail_if_submitted)
+
+    response = client.post(
+        "/api/reddit/publish",
+        json={
+            "post_public_id": "published_123",
+            "subreddit": "learnpython",
+            "title": "A useful title",
+            "body": "A useful post body",
+            "confirm": True,
+        },
+        headers={HEADER: ensure_token()},
+    )
+
+    assert response.status_code == 409
+    assert "выключен до отправки" in response.json()["detail"]
+    assert len(logs) == 1
+    assert logs[0][1].status == "skipped"
