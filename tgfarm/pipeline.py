@@ -36,6 +36,20 @@ _cycle_started_at: datetime | None = None
 _cycle_finished_at: datetime | None = None
 _cycle_state = "idle"
 _active_cycle_task: asyncio.Task | None = None
+_watchdog_recovery_attempts = 0
+_watchdog_last_recovery_at: datetime | None = None
+
+
+def _watchdog_recovery_delay_min(
+    attempts: int,
+    base_min: int,
+    max_min: int,
+) -> int:
+    """Exponential retry delay, capped so a persistent failure cannot hot-loop."""
+    base = max(1, int(base_min))
+    cap = max(base, int(max_min))
+    exponent = min(max(0, int(attempts) - 1), 10)
+    return min(cap, base * (2**exponent))
 
 
 def cycle_health(now: datetime | None = None) -> dict:
@@ -714,7 +728,8 @@ async def _watchdog() -> None:
     of waiting for the next scheduled slot. Operator alerts are re-emitted on
     every tick on purpose: silence is the failure mode this exists to prevent.
     """
-    import asyncio
+    global _cycle_state, _cycle_finished_at
+    global _watchdog_recovery_attempts, _watchdog_last_recovery_at
 
     alerts = await to_thread(collect_alerts)
     for alert in alerts:
@@ -735,7 +750,6 @@ async def _watchdog() -> None:
             health["age_s"],
             health["state"],
         )
-        global _cycle_state, _cycle_finished_at
         active = _active_cycle_task
         if active is not None and active is not asyncio.current_task() and not active.done():
             active.cancel()
@@ -746,16 +760,47 @@ async def _watchdog() -> None:
         # can safely schedule catch-up if no newer cycle has started.
         return
     elif health["state"] in ("failed", "timeout", "partial"):
-        log.warning("watchdog: last cycle ended as %s; scheduling catch-up", health["state"])
+        log.warning("watchdog: last cycle ended as %s; considering catch-up", health["state"])
+    elif health["state"] == "ok":
+        if _watchdog_recovery_attempts or _watchdog_last_recovery_at is not None:
+            log.info("watchdog: healthy cycle observed; resetting recovery backoff")
+        _watchdog_recovery_attempts = 0
+        _watchdog_last_recovery_at = None
+        return
     else:
         log.debug("watchdog: cycle %s", health)
         return
 
-    if _cycle_state != "running":
-        try:
-            asyncio.create_task(_guarded_cycle(collect=False))
-        except RuntimeError:  # no running event loop
-            log.debug("watchdog: no event loop for catch-up task")
+    settings = get_settings()
+    now = datetime.now(UTC)
+    if _watchdog_last_recovery_at is not None:
+        delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_attempt_at = _watchdog_last_recovery_at + timedelta(minutes=delay_min)
+        if now < next_attempt_at:
+            remaining_min = max(1, int((next_attempt_at - now).total_seconds() // 60) + 1)
+            log.warning(
+                "watchdog: recovery backoff active; retry window in ~%d min "
+                "(attempt=%d, delay=%d min)",
+                remaining_min,
+                _watchdog_recovery_attempts,
+                delay_min,
+            )
+            return
+
+    try:
+        asyncio.create_task(_guarded_cycle(collect=False))
+        _watchdog_recovery_attempts += 1
+        _watchdog_last_recovery_at = now
+        log.warning(
+            "watchdog: scheduled recovery cycle attempt %d",
+            _watchdog_recovery_attempts,
+        )
+    except RuntimeError:  # no running event loop
+        log.debug("watchdog: no event loop for catch-up task")
 
 
 async def _top_groups_tick() -> dict | None:
