@@ -569,7 +569,7 @@ def _checkable_numbers(text: str) -> list[str]:
         if line_end < 0:
             line_end = len(text)
         line = text[line_start:line_end]
-        marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)]\s+", line)
+        marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)](?:\s+|$)", line)
         if marker:
             marker_start = line_start + marker.start(1)
             marker_end = line_start + marker.end(1)
