@@ -239,6 +239,68 @@ def load_history_export(path: str | Path, platform: str = "auto") -> list[Histor
     return parse_history_payload(payload, platform=platform)
 
 
+async def fetch_telegram_history(chat: int | str, limit: int = 1000) -> list[HistoricalPublication]:
+    """Read a bounded Telegram chat history using TgFarm's guarded user session.
+
+    This is read-only. reverse=True asks Telethon for oldest-first order so a
+    bounded import captures the beginning of the history rather than silently
+    importing only the newest messages.
+    """
+    if isinstance(chat, str):
+        chat = chat.strip()
+        if not chat:
+            raise ValueError("Укажите username, ссылку или ID Telegram-чата.")
+        if chat.lstrip("-").isdigit():
+            chat = int(chat)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Лимит сообщений должен быть целым числом.") from exc
+    if not 1 <= limit <= 5000:
+        raise ValueError("Лимит Telegram-истории должен быть от 1 до 5000 сообщений.")
+
+    from tgfarm import tguser
+
+    client = await tguser.connect(read_only=True)
+    records: list[HistoricalPublication] = []
+    async with client:
+        entity = await client.get_entity(chat)
+        channel_title = (
+            getattr(entity, "title", None)
+            or getattr(entity, "username", None)
+            or str(chat)
+        )
+        username = getattr(entity, "username", None)
+        async for message in client.iter_messages(entity, limit=limit, reverse=True):
+            text = str(getattr(message, "message", None) or "").strip()
+            if not text:
+                continue
+            published_at = getattr(message, "date", None)
+            if published_at is not None:
+                if published_at.tzinfo is None:
+                    published_at = published_at.replace(tzinfo=UTC)
+                else:
+                    published_at = published_at.astimezone(UTC)
+            message_id = getattr(message, "id", None)
+            permalink = (
+                f"https://t.me/{username}/{message_id}"
+                if username and message_id
+                else ""
+            )
+            records.append(
+                HistoricalPublication(
+                    platform="telegram",
+                    source_channel=str(channel_title)[:200],
+                    external_id=str(message_id or ""),
+                    title="",
+                    text=text[:100_000],
+                    published_at=published_at,
+                    url=permalink,
+                )
+            )
+    return records
+
+
 def _fold(text: str) -> str:
     return " ".join((text or "").split()).casefold()
 
