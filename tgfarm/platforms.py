@@ -133,9 +133,9 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "linkedin", "name": "LinkedIn", "symbol": "in", "color": "#0A66C2",
         "category": "Профессиональные", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["text", "professional"],
-        "description": "Экспертные публикации, кейсы и B2B-контент с отдельной деловой редактурой.",
-        "requirements": "OAuth, w_member_social или права публикации от имени организации.",
+        "mode": "built_in", "roles": ["text", "professional", "crosspost"],
+        "description": "Экспертные публикации и B2B-контент через пользовательский OAuth.",
+        "requirements": "LinkedIn Developer App с Sign In using OpenID Connect и Share on LinkedIn, разрешение w_member_social.",
         "docs_url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
     },
     {
@@ -318,6 +318,16 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "THREADS_USER_ID", "attribute": "threads_user_id", "label": "User ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "THREADS_USERNAME", "attribute": "threads_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "linkedin": [
+        {"key": "LINKEDIN_CLIENT_ID", "attribute": "linkedin_client_id", "label": "LinkedIn Client ID", "secret": False, "placeholder": "Client ID из Developer Portal", "help": "Приложение должно иметь OpenID Connect и Share on LinkedIn."},
+        {"key": "LINKEDIN_CLIENT_SECRET", "attribute": "linkedin_client_secret", "label": "LinkedIn Client Secret", "secret": True, "placeholder": "Client Secret из Developer Portal", "help": "Секрет хранится только в локальном .env."},
+        {"key": "LINKEDIN_ACCESS_TOKEN", "attribute": "linkedin_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний OAuth-токен."},
+        {"key": "LINKEDIN_REFRESH_TOKEN", "attribute": "linkedin_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний токен обновления, если LinkedIn его выдал."},
+        {"key": "LINKEDIN_TOKEN_EXPIRES_AT", "attribute": "linkedin_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "LINKEDIN_REFRESH_TOKEN_EXPIRES_AT", "attribute": "linkedin_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+        {"key": "LINKEDIN_MEMBER_ID", "attribute": "linkedin_member_id", "label": "Member ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
+        {"key": "LINKEDIN_MEMBER_NAME", "attribute": "linkedin_member_name", "label": "Member name", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
     "reddit": [
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
         {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
@@ -454,7 +464,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -479,7 +489,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
             ("Для X или Threads сначала сохрани App ID/Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
-            if platform_id in {"x", "threads"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
+            if platform_id in {"x", "threads", "linkedin"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
     }
 
@@ -682,6 +692,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
+    if platform_id == "linkedin":
+        if settings.linkedin_access_token and settings.linkedin_member_id:
+            return True, "LinkedIn OAuth сохранён; проверка профиля выполняется через OpenID Connect."
+        if settings.linkedin_client_id and settings.linkedin_client_secret:
+            return False, "LinkedIn App настроено; подключи аккаунт через OAuth."
+        return False, "Нужны LinkedIn Client ID/Secret и подключение аккаунта через OAuth."
     if platform_id == "reddit":
         user_agent = settings.reddit_user_agent.strip()
         configured = all((
