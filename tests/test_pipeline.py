@@ -462,6 +462,52 @@ def test_publish_server_error_is_ambiguous():
     assert _is_ambiguous_publish_error(ServerError("503 Service Unavailable"))
 
 
+def test_publish_now_rejects_ineligible_statuses():
+    from tgfarm.api import _blocked_publish_now_ids
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import unpublish
+
+    channel_id = "force_publish_guard"
+    ids = [
+        ("force_pub_scheduled", "scheduled"),
+        ("force_pub_gated", "gated"),
+        ("force_pub_published", "published"),
+        ("force_pub_draft", "draft"),
+        ("force_pub_unknown", "publish_unknown"),
+    ]
+    with session_scope() as session:
+        session.merge(Channel(id=channel_id, title="Guard", niche="tech", platform="telegram"))
+        session.add_all(
+            [
+                Post(
+                    public_id=public_id,
+                    channel_id=channel_id,
+                    hook=public_id,
+                    body="Body",
+                    status=status,
+                    scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+                )
+                for public_id, status in ids
+            ]
+        )
+
+    blocked = _blocked_publish_now_ids([public_id for public_id, _ in ids] + ["force_pub_missing"])
+    assert blocked == [
+        {"id": "force_pub_published", "status": "published"},
+        {"id": "force_pub_draft", "status": "draft"},
+        {"id": "force_pub_unknown", "status": "publish_unknown"},
+        {"id": "force_pub_missing", "status": "not_found"},
+    ]
+
+    # The low-level rescheduler is defensive too, even if called outside the API.
+    assert unpublish([public_id for public_id, _ in ids]) == 2
+    with session_scope() as session:
+        assert session.query(Post).filter_by(public_id="force_pub_published").one().status == "published"
+        assert session.query(Post).filter_by(public_id="force_pub_draft").one().status == "draft"
+        assert session.query(Post).filter_by(public_id="force_pub_unknown").one().status == "publish_unknown"
+
+
 def test_reconcile_publish_outcomes_require_explicit_unknown_state():
     from tgfarm.api import _reconcile_publish_outcome
     from tgfarm.db.models import Channel, Post
