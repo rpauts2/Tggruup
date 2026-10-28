@@ -554,31 +554,49 @@ def _normalise_haystack(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", ".", collapsed)
 
 
-def _lexically_supported(claim: str, item) -> bool:
-    """Cheap corroboration: every number in the claim must appear in the source.
+def _checkable_numbers(text: str) -> list[str]:
+    """Canonical numeric values, excluding leading numbered-list markers only."""
+    text = text or ""
+    values: list[str] = []
+    for match in _NUMBER_RE.finditer(text):
+        digits = _normalise_number(match.group())
+        if not digits:
+            continue
 
-    Catches the dominant hallucination class (invented figures) without any API
-    call. A claim with no checkable numbers passes; qualitative claims still need
-    the LLM fact-checker and editorial gates.
+        # Don't treat "1." or "12)" at the start of a line as a content claim.
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.start())
+        if line_end < 0:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)]\s+", line)
+        if marker:
+            marker_start = line_start + marker.start(1)
+            marker_end = line_start + marker.end(1)
+            if match.start() == marker_start and match.end() <= marker_end:
+                continue
+        values.append(digits)
+    return values
+
+
+def _lexically_supported(claim: str, item) -> bool:
+    """Every checkable number in a claim must occur as a whole value in a source.
+
+    This includes single-digit measurements and percentages. Enumerated list
+    markers are ignored so they don't become bogus factual claims.
     """
-    source_numbers = {
-        _normalise_number(token)
-        for token in _NUMBER_RE.findall(f"{item.title} {item.text}")
-        if _normalise_number(token)
-    }
-    for token in _NUMBER_RE.findall(claim or ""):
-        digits = _normalise_number(token)
-        if len(digits) >= 2 and digits not in source_numbers:
-            return False
-    return True
+    source_numbers = set(_checkable_numbers(f"{item.title} {item.text}"))
+    return all(
+        digits in source_numbers
+        for digits in _checkable_numbers(claim or "")
+    )
 
 
 def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
-    """Return sentences containing meaningful numeric assertions.
+    """Return sentences containing numeric assertions, including single-digit values.
 
     Splitting only at punctuation followed by whitespace avoids splitting decimal
-    numbers such as 0.02. Very short numbers are ignored by the same grounding
-    rule used elsewhere, so list labels like "1." do not become false alarms.
+    numbers such as 0.02. Leading enumerated-list markers are filtered separately.
     """
     parts = [draft.hook, draft.body]
     if draft.cta:
@@ -591,11 +609,7 @@ def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
         sentence = " ".join(sentence.split()).strip()
         if not sentence:
             continue
-        checkable = [
-            _normalise_number(token)
-            for token in _NUMBER_RE.findall(sentence)
-            if len(_normalise_number(token)) >= 2
-        ]
+        checkable = _checkable_numbers(sentence)
         key = sentence.casefold()
         if checkable and key not in seen:
             seen.add(key)
@@ -649,6 +663,10 @@ def _dedupe_claims(claims: list[Claim]) -> list[Claim]:
         existing = out[index]
         if not claim.verified and existing.verified:
             out[index] = claim
+        elif not existing.verified and claim.verified:
+            # Numeric corroboration validates the figures, not the whole semantic
+            # assertion. Preserve an existing unverified model claim.
+            continue
         elif claim.note == "numeric_audit" and existing.note != "numeric_audit":
             out[index] = claim
     return out

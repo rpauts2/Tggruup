@@ -355,6 +355,51 @@ async def test_verify_audits_numbers_even_when_llm_omits_them(monkeypatch):
     assert "99 млн" in unsupported[0].claim
 
 
+def test_single_digit_numeric_claims_are_audited_but_list_markers_are_ignored():
+    from tgfarm.core.schemas import DraftPost
+    from tgfarm.s4_generation import _numeric_audit_claims
+
+    item = scored(
+        "Отчёт компании",
+        "Бюджет сократили на 5%. Команда работает уже 3 года.",
+        url="https://example.invalid/metrics",
+    )
+    draft = DraftPost(
+        hook="Бюджет сократили на 7%.",
+        body="Команда работает уже 3 года.\n1. Дополнительный пункт без цифр.",
+        sources=[{"title": item.title, "url": item.url}],
+    )
+
+    audits = _numeric_audit_claims(draft, [item])
+    assert len(audits) == 2
+    assert audits[0].verified is False
+    assert "7%" in audits[0].claim
+    assert audits[1].verified is True
+
+
+def test_dedupe_does_not_promote_an_unverified_semantic_claim():
+    from tgfarm.core.schemas import Claim
+    from tgfarm.s4_generation import _dedupe_claims
+
+    text = "Компания стала лидером рынка с выручкой 12 млн рублей."
+    model_claim = Claim(
+        claim=text,
+        source_url="https://example.invalid/report",
+        verified=False,
+    )
+    numeric_audit = Claim(
+        claim=text,
+        source_url="https://example.invalid/report",
+        verified=True,
+        note="numeric_audit",
+    )
+
+    deduped = _dedupe_claims([model_claim, numeric_audit])
+    assert len(deduped) == 1
+    assert deduped[0].verified is False
+    assert deduped[0].note is None
+
+
 def test_unverified_numeric_audit_cannot_be_diluted_by_other_verified_claims():
     from tgfarm.core.schemas import Claim, DraftPost
     from tgfarm.s5_quality import gate_facts
