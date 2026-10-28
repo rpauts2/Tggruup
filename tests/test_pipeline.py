@@ -429,6 +429,27 @@ def test_due_posts_preserves_dzen_platform():
     assert tg[2] != "dz_due"
     assert dz[2] == "dz_due"
 
+    selected = due_posts(limit=20, post_public_ids=["due-dz"])
+    assert len(selected) == 1
+    assert selected[0][0] == dz[0]
+    assert selected[0][3] == "dzen"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError("read timed out"), True),
+        (RuntimeError("connection reset by peer"), True),
+        (RuntimeError("DNS getaddrinfo failed"), False),
+        (RuntimeError("connection refused"), False),
+        (ValueError("bad text before request"), False),
+    ],
+)
+def test_publish_error_ambiguity_is_conservative(error, expected):
+    from tgfarm.s7_publish import _is_ambiguous_publish_error
+
+    assert _is_ambiguous_publish_error(error) is expected
+
 
 @pytest.mark.asyncio
 async def test_dzen_dry_run_marks_published_and_logs_remote():
