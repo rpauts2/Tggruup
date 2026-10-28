@@ -11,7 +11,6 @@ from collections import Counter
 from typing import Any
 
 from tgfarm.core.schemas import CrosspostPayload
-from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.llm import policy
