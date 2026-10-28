@@ -10,6 +10,7 @@ post: only the current source block can ground new facts.
 from __future__ import annotations
 
 import json
+import threading
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Iterable
@@ -30,6 +31,7 @@ FTS_TRIGGER_UPDATE = "tgfarm_post_memory_au"
 FTS_TRIGGER_DELETE = "tgfarm_post_memory_ad"
 MAX_QUERY_TERMS = 16
 MAX_CANDIDATES = 300
+_INDEX_LOCK = threading.RLock()
 _READY_ENGINES: set[tuple[str, int]] = set()
 _FAILED_ENGINES: set[tuple[str, int]] = set()
 
@@ -43,11 +45,13 @@ def _published_count(session) -> int:
 
 
 def ensure_archive_index(*, force: bool = False) -> bool:
-    """Ensure the searchable sidecar exists, its triggers are installed, and old posts are indexed.
+    """Serialize initial creation/rebuild; generation and dashboard can start together."""
+    with _INDEX_LOCK:
+        return _ensure_archive_index_locked(force=force)
 
-    The FTS5 table is intentionally a derived index, not a second source of truth.
-    Non-SQLite databases use the query fallback below.
-    """
+
+def _ensure_archive_index_locked(*, force: bool = False) -> bool:
+    """Ensure the searchable sidecar exists and historical rows are indexed."""
     engine = get_engine()
     if engine.dialect.name != "sqlite":
         return False
@@ -96,7 +100,7 @@ def ensure_archive_index(*, force: bool = False) -> bool:
             conn.exec_driver_sql(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS {FTS_TRIGGER_UPDATE}
-                AFTER UPDATE ON posts BEGIN
+                AFTER UPDATE OF hook, body, cta, claims, sources, channel_id, public_id, status, published_at, created_at ON posts BEGIN
                     DELETE FROM {FTS_TABLE} WHERE rowid = OLD.id;
                     INSERT INTO {FTS_TABLE}(
                         rowid, hook, body, cta, claims_text, sources_text,
@@ -144,7 +148,9 @@ def ensure_archive_index(*, force: bool = False) -> bool:
         _FAILED_ENGINES.discard(engine_key)
         return True
     except Exception as exc:  # noqa: BLE001 - the DB query fallback is still useful
-        _FAILED_ENGINES.add(engine_key)
+        message = str(exc).lower()
+        if "no such module: fts5" in message or "no such tokenizer" in message:
+            _FAILED_ENGINES.add(engine_key)
         log.warning("FTS5 archive index unavailable; using database fallback: %s", exc)
         return False
 
