@@ -10,6 +10,7 @@ enabled:
   reddit: false
   bluesky: false
   mastodon: false
+  threads: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
