@@ -358,3 +358,49 @@ def test_backup_failure_appears_in_watchdog_alerts():
             for item in existing:
                 session.delete(item)
 
+
+def test_backup_freshness_alert_warns_when_missing_and_errors_when_stale():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _backup_freshness_alert
+
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+
+    missing = _backup_freshness_alert(None, now, 36)
+    assert missing is not None
+    assert missing["code"] == "backup_missing"
+    assert missing["level"] == "warning"
+
+    assert _backup_freshness_alert(now - timedelta(hours=24), now, 36) is None
+
+    stale = _backup_freshness_alert(now - timedelta(hours=48), now, 36)
+    assert stale is not None
+    assert stale["code"] == "backup_stale"
+    assert stale["level"] == "error"
+    assert "48.0 ч назад" in stale["message"]
+
+
+def test_backup_freshness_alert_normalizes_naive_sqlite_timestamps():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _backup_freshness_alert
+
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+    naive_recent = (now - timedelta(hours=4)).replace(tzinfo=None)
+
+    assert _backup_freshness_alert(naive_recent, now, 36) is None
+
+
+def test_backup_scheduler_is_daily_and_has_a_stable_job_id():
+    from tgfarm.pipeline import _build_scheduler
+
+    scheduler = _build_scheduler()
+    job = scheduler.get_job("daily-backup")
+
+    assert job is not None
+    fields = {field.name: str(field) for field in job.trigger.fields}
+    assert fields["day_of_week"] == "*"
+    assert fields["hour"] == "4"
+    assert fields["minute"] == "0"
+    assert job.name == "daily verified sqlite backup"
+
