@@ -907,6 +907,7 @@ def _reconcile_crosspost_outcome(
     action: str,
 ) -> dict:
     """Resolve a crosspost whose remote outcome could not be confirmed."""
+    from tgfarm.db.models import CrosspostClaim
     from tgfarm.s9_growth.adapters import ADAPTERS, MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
 
     if platform not in ADAPTERS:
@@ -952,6 +953,11 @@ def _reconcile_crosspost_outcome(
 
         if action not in {"confirm_posted", "retry_after_check"}:
             return {"ok": False, "error": "invalid_action"}
+
+        # Reconciliation is the only path that releases an ambiguous/stale claim.
+        session.query(CrosspostClaim).filter_by(
+            post_public_id=post_public_id, platform=platform
+        ).delete(synchronize_session=False)
 
         attempt = latest.attempt
         if action == "confirm_posted":

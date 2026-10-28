@@ -699,7 +699,7 @@ def test_crosspost_permanent_failure_requires_operator_intervention():
 def test_crosspost_begin_claim_blocks_unknown_and_publishing_states():
     import uuid
 
-    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.models import CrosspostClaim, CrosspostLog
     from tgfarm.db.session import session_scope
     from tgfarm.s9_growth.adapters import already_done, begin_crosspost, log_result
     from tgfarm.core.schemas import CrosspostResult
@@ -720,6 +720,10 @@ def test_crosspost_begin_claim_blocks_unknown_and_publishing_states():
 
     # An explicit operator-authorized retry is the only state allowed to reopen it.
     with session_scope() as session:
+        # Match the API reconciliation path: release the durable in-flight claim.
+        session.query(CrosspostClaim).filter_by(
+            post_public_id=public_id, platform="vk"
+        ).delete(synchronize_session=False)
         session.add(
             CrosspostLog(
                 post_public_id=public_id,
@@ -793,7 +797,7 @@ def test_crosspost_reconciliation_requires_unknown_state():
     import uuid
 
     from tgfarm.api import _reconcile_crosspost_outcome
-    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.models import Channel, CrosspostClaim, CrosspostLog, Post
     from tgfarm.db.session import session_scope
 
     suffix = uuid.uuid4().hex[:8]
@@ -820,11 +824,16 @@ def test_crosspost_reconciliation_requires_unknown_state():
                 attempt=1,
             )
         )
+        session.add(CrosspostClaim(post_public_id=public_id, platform="vk"))
 
     confirmed = _reconcile_crosspost_outcome(public_id, "vk", "confirm_posted")
     assert confirmed["ok"] is True
     assert confirmed["status"] == "posted"
     assert confirmed["post_id"] == post_id
+    with session_scope() as session:
+        assert session.query(CrosspostClaim).filter_by(
+            post_public_id=public_id, platform="vk"
+        ).count() == 0
     assert _reconcile_crosspost_outcome(public_id, "vk", "retry_after_check")["error"] == "not_reconcilable"
 
 
@@ -1683,3 +1692,30 @@ def test_crosspost_alert_counts_permanent_and_exhausted_failures_only():
         ])
 
     assert failure_count() - before == 2
+
+
+def test_crosspost_database_claim_is_atomic_across_workers():
+    from concurrent.futures import ThreadPoolExecutor
+    import uuid
+
+    from tgfarm.db.models import CrosspostClaim, CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import begin_crosspost
+
+    public_id = "crosspost_atomic_claim_" + uuid.uuid4().hex[:8]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda _worker: begin_crosspost(public_id, "vk"),
+            range(2),
+        ))
+
+    assert sum(result is not None for result in results) == 1
+    with session_scope() as session:
+        claims = session.query(CrosspostClaim).filter_by(
+            post_public_id=public_id, platform="vk"
+        ).count()
+        publishing = session.query(CrosspostLog).filter_by(
+            post_public_id=public_id, platform="vk", status="publishing"
+        ).count()
+    assert claims == 1
+    assert publishing == 1

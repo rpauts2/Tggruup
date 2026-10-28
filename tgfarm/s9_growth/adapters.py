@@ -1043,49 +1043,76 @@ def already_done(post_public_id: str, platform: str) -> bool:
 
 
 def begin_crosspost(post_public_id: str, platform: str) -> int | None:
-    """Claim a crosspost attempt before network I/O to prevent duplicate workers."""
+    """Atomically claim a crosspost before network I/O across all farm processes."""
     from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError, OperationalError
 
-    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.models import CrosspostClaim, CrosspostLog
     from tgfarm.db.session import session_scope
 
-    with session_scope() as session:
-        row = session.execute(
-            select(CrosspostLog)
-            .where(
-                CrosspostLog.post_public_id == post_public_id,
-                CrosspostLog.platform == platform,
-            )
-            .order_by(CrosspostLog.id.desc())
-            .limit(1)
-            .with_for_update()
-        ).scalar_one_or_none()
-        if row and row.status in {"posted", "unknown", "publishing", "permanent"}:
-            return None
-        if row and row.status == "failed":
-            delay_min = crosspost_retry_delay_min(row.attempt)
-            if delay_min is None:
+    try:
+        with session_scope() as session:
+            row = session.execute(
+                select(CrosspostLog)
+                .where(
+                    CrosspostLog.post_public_id == post_public_id,
+                    CrosspostLog.platform == platform,
+                )
+                .order_by(CrosspostLog.id.desc())
+                .limit(1)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row and row.status in {"posted", "unknown", "publishing", "permanent"}:
                 return None
-            created = row.created_at
-            if created is not None:
-                created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
-                if datetime.now(UTC) < created + timedelta(minutes=delay_min):
+            if row and row.status == "failed":
+                delay_min = crosspost_retry_delay_min(row.attempt)
+                if delay_min is None:
                     return None
-        attempt = (row.attempt + 1) if row else 1
-        session.add(
-            CrosspostLog(
-                post_public_id=post_public_id,
-                platform=platform,
-                status="publishing",
-                attempt=attempt,
+                created = row.created_at
+                if created is not None:
+                    created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
+                    if datetime.now(UTC) < created + timedelta(minutes=delay_min):
+                        return None
+            attempt = (row.attempt + 1) if row else 1
+            # Unique constraint is the actual cross-process mutex. The log row
+            # and claim are committed together, so a crash cannot leave a
+            # publishing journal entry without its durable claim or vice versa.
+            session.add(CrosspostClaim(post_public_id=post_public_id, platform=platform))
+            session.flush()
+            session.add(
+                CrosspostLog(
+                    post_public_id=post_public_id,
+                    platform=platform,
+                    status="publishing",
+                    attempt=attempt,
+                )
             )
-        )
-        session.flush()
-        return attempt
+            session.flush()
+            return attempt
+    except IntegrityError:
+        # Another process already claimed this material/platform pair.
+        return None
+    except OperationalError:
+        # SQLite can report BUSY while another process wins the unique claim.
+        # Only treat it as a competing worker if that claim is now visible.
+        with session_scope() as session:
+            claimed = session.execute(
+                select(CrosspostClaim.id)
+                .where(
+                    CrosspostClaim.post_public_id == post_public_id,
+                    CrosspostClaim.platform == platform,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+        if claimed is not None:
+            return None
+        raise
 
 
 def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -> None:
-    from tgfarm.db.models import CrosspostLog
+    from sqlalchemy import delete
+
+    from tgfarm.db.models import CrosspostClaim, CrosspostLog
     from tgfarm.db.session import session_scope
 
     with session_scope() as session:
@@ -1100,6 +1127,15 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
                 attempt=attempt,
             )
         )
+        # An unknown outcome remains locked until an operator reconciles it.
+        # Definite outcomes release the claim atomically with the journal event.
+        if result.status != "unknown":
+            session.execute(
+                delete(CrosspostClaim).where(
+                    CrosspostClaim.post_public_id == post_public_id,
+                    CrosspostClaim.platform == result.platform,
+                )
+            )
 
 
 __all__ = [

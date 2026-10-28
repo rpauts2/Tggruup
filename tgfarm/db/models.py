@@ -264,6 +264,25 @@ class CrosspostLog(Base):
     )
 
 
+class CrosspostClaim(Base):
+    """One durable in-flight claim per material/platform pair.
+
+    CrosspostLog is append-only history; its historical 'publishing' rows cannot
+    uniquely lock a pair. This separate row provides a database-enforced lock
+    across multiple TgFarm processes and survives a crash for manual reconciliation.
+    """
+    __tablename__ = "crosspost_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_public_id: Mapped[str] = mapped_column(String(32), index=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("post_public_id", "platform", name="uq_crosspost_claim_pair"),
+    )
+
+
 class RedditMetricSnapshot(Base):
     """A bounded history of publicly available Reddit post-level feedback."""
 
