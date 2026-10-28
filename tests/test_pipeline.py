@@ -467,7 +467,7 @@ def test_publish_server_error_is_ambiguous():
 
 
 def test_publish_now_rejects_ineligible_statuses():
-    from tgfarm.api import _blocked_publish_now_ids
+    from tgfarm.api import _blocked_publish_now_ids, _reject
     from tgfarm.db.models import Channel, Post
     from tgfarm.db.session import session_scope
     from tgfarm.s7_publish import unpublish
@@ -510,6 +510,11 @@ def test_publish_now_rejects_ineligible_statuses():
         assert session.query(Post).filter_by(public_id="force_pub_published").one().status == "published"
         assert session.query(Post).filter_by(public_id="force_pub_draft").one().status == "draft"
         assert session.query(Post).filter_by(public_id="force_pub_unknown").one().status == "publish_unknown"
+
+    assert _reject(["force_pub_published", "force_pub_scheduled"], "test guard") == 1
+    with session_scope() as session:
+        assert session.query(Post).filter_by(public_id="force_pub_published").one().status == "published"
+        assert session.query(Post).filter_by(public_id="force_pub_scheduled").one().status == "rejected"
 
 
 def test_cli_publish_is_scoped_and_rejects_published_posts(monkeypatch):
