@@ -90,8 +90,16 @@ def _topic_score(query_terms: list[str], text: str) -> float:
         if term in tokens or (len(term) >= 5 and term[:5] in prefixes)
     }
     anchors = [term for term in terms if len(term) >= 8]
+    anchor_prefixes = {
+        token[:7] for token in tokens if len(token) >= 7
+    }
+    matched_anchors = {
+        term
+        for term in anchors
+        if term in tokens or term[:7] in anchor_prefixes
+    }
     required_anchors = min(2, len(anchors))
-    if anchors and sum(term in matched for term in anchors) < required_anchors:
+    if anchors and len(matched_anchors) < required_anchors:
         return 0.0
     if len(terms) >= 3 and len(matched) < 2:
         return 0.0
