@@ -774,6 +774,8 @@ def due_posts(
         return []
     now = datetime.now(UTC)
     out: list[tuple[int, str, int | str, str]] = []
+    from tgfarm.platforms import is_platform_enabled
+
     with session_scope() as session:
         stmt = (
             select(PostRow)
@@ -786,6 +788,10 @@ def due_posts(
         for row in rows:
             channel = session.get(ChannelRow, row.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
+            if not is_platform_enabled(platform):
+                # Pause delivery without changing the queued post's state.
+                # Re-enabling the platform makes the same queued post eligible again.
+                continue
             if platform == "dzen":
                 target: int | str = channel.id if channel else "dzen"
                 out.append((row.id, assemble_text(row, platform), target, platform))
