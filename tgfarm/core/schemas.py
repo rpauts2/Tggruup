@@ -18,7 +18,7 @@ Lang = str
 Angle = Literal["news", "analysis", "why_it_matters", "comparison", "checklist", "history",
     "listicle"]
 PostStatus = Literal[
-    "draft", "gated", "scheduled", "publishing", "published", "rejected", "failed"
+    "draft", "gated", "scheduled", "publishing", "publish_unknown", "published", "rejected", "failed"
 ]
 
 
@@ -225,7 +225,7 @@ class CrosspostPayload(Strict):
 
 class CrosspostResult(Strict):
     platform: str
-    status: Literal["posted", "skipped", "failed", "dry_run"]
+    status: Literal["posted", "skipped", "failed", "permanent_failure", "unknown", "dry_run"]
     remote_id: str | None = None
     url: str | None = None
     error: str | None = None

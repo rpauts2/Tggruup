@@ -10,14 +10,14 @@ import asyncio
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from tgfarm import pipeline
 from tgfarm.config import get_config
@@ -59,6 +59,16 @@ class PublishRequest(BaseModel):
 class RejectRequest(BaseModel):
     post_public_ids: list[str]
     reason: str = "manual"
+
+
+class PublishReconcileRequest(BaseModel):
+    action: Literal["confirm_published", "retry_after_check"]
+    confirm_not_published: bool = False
+
+
+class CrosspostReconcileRequest(BaseModel):
+    action: Literal["confirm_posted", "retry_after_check"]
+    confirm_not_published: bool = False
 
 
 class PolishRequest(BaseModel):
@@ -190,6 +200,15 @@ def _sources() -> list[dict]:
                 "failures": r.failures,
                 "last_yield": r.last_yield,
                 "idle_streak": r.idle_streak,
+                "cooldown_until": r.cooldown_until,
+                "cooldown_active": bool(
+                    r.cooldown_until
+                    and (
+                        r.cooldown_until.replace(tzinfo=UTC)
+                        if r.cooldown_until.tzinfo is None
+                        else r.cooldown_until.astimezone(UTC)
+                    ) > datetime.now(UTC)
+                ),
                 "effective_interval_s": effective_interval(r),
                 "last_error": (r.last_error or "")[:200] or None,
             }
@@ -767,6 +786,7 @@ def _crossposts(limit: int) -> list[dict]:
                 "status": r.status,
                 "url": r.url,
                 "error": (r.error or "")[:200] or None,
+                "attempt": r.attempt,
                 "at": r.created_at,
             }
             for r in rows
@@ -796,14 +816,144 @@ def _channels() -> list[dict]:
 
 
 def _reject(public_ids: list[str], reason: str) -> int:
+    """Reject only drafts/queued posts; never rewrite published or in-flight state."""
+    with session_scope() as session:
+        result = session.execute(
+            update(Post)
+            .where(
+                Post.public_id.in_(public_ids),
+                Post.status.in_(("draft", "gated", "scheduled", "rejected", "failed")),
+            )
+            .values(status="rejected", reject_reason=reason)
+        )
+        return result.rowcount or 0
+
+
+def _reconcile_crosspost_outcome(
+    post_public_id: str,
+    platform: str,
+    action: str,
+) -> dict:
+    """Resolve a crosspost whose remote outcome could not be confirmed."""
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    if platform not in ADAPTERS:
+        return {"ok": False, "error": "unsupported_platform"}
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == post_public_id)
+        ).scalar_one_or_none()
+        if post is None:
+            return {"ok": False, "error": "not_found"}
+
+        latest = session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest is None or latest.status not in {"unknown", "publishing"}:
+            return {
+                "ok": False,
+                "error": "not_unknown",
+                "status": latest.status if latest else None,
+            }
+        if latest.status == "publishing":
+            created = latest.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created > datetime.now(UTC) - timedelta(minutes=30):
+                return {"ok": False, "error": "still_in_flight"}
+
+        attempt = latest.attempt
+        if action == "confirm_posted":
+            session.add(
+                CrosspostLog(
+                    post_public_id=post_public_id,
+                    platform=platform,
+                    status="posted",
+                    remote_id=latest.remote_id,
+                    url=latest.url,
+                    error="confirmed by operator; destination ID may be unavailable",
+                    attempt=attempt,
+                )
+            )
+            return {"ok": True, "status": "posted", "post_id": post.id, "detail": "operator confirmed destination post"}
+
+        session.add(
+            CrosspostLog(
+                post_public_id=post_public_id,
+                platform=platform,
+                status="retry_authorized",
+                error="operator checked destination and authorized retry",
+                attempt=attempt,
+            )
+        )
+        return {
+            "ok": True,
+            "status": "retry_authorized",
+            "post_id": post.id,
+            "detail": "operator checked destination and authorized retry",
+        }
+
+
+def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
     with session_scope() as session:
         rows = session.execute(
-            select(Post).where(Post.public_id.in_(public_ids))
+            select(Post.public_id).where(
+                Post.public_id.in_(public_ids),
+                Post.status == "publish_unknown",
+            )
         ).scalars().all()
-        for row in rows:
-            row.status = "rejected"
-            row.reject_reason = reason
-        return len(rows)
+        return list(rows)
+
+
+def _blocked_publish_now_ids(public_ids: list[str]) -> list[dict]:
+    """Only gate-passed or already-scheduled posts may be forced out now."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(Post.public_id, Post.status).where(Post.public_id.in_(public_ids))
+        ).all()
+        status_by_id = {public_id: status for public_id, status in rows}
+    return [
+        {"id": public_id, "status": status_by_id.get(public_id, "not_found")}
+        for public_id in public_ids
+        if status_by_id.get(public_id) not in {"scheduled", "gated"}
+    ]
+
+
+def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
+    """Resolve a publish whose remote outcome could not be confirmed.
+
+    Retrying is only enabled after the operator has checked the destination.
+    This is intentionally not an automatic retry policy.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(Post).where(Post.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "error": "not_found"}
+        if row.status != "publish_unknown":
+            return {"ok": False, "error": "not_unknown", "status": row.status}
+
+        if action == "confirm_published":
+            row.status = "published"
+            row.published_at = datetime.now(UTC)
+            row.publish_error = None
+            detail = "operator confirmed post exists on destination"
+        elif action == "retry_after_check":
+            row.status = "scheduled"
+            row.scheduled_at = datetime.now(UTC)
+            row.publish_error = "manual retry approved after operator checked destination"
+            detail = "operator checked destination and authorised retry"
+        else:
+            return {"ok": False, "error": "invalid_action"}
+
+        return {"ok": True, "status": row.status, "detail": detail}
 
 
 def _config_payload() -> dict:
@@ -1045,10 +1195,46 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def crossposts(limit: int = Query(50, ge=1, le=300)) -> dict:
         return {"crossposts": await io(_crossposts, limit)}
 
+    @app.post("/api/crossposts/{post_public_id}/{platform}/reconcile")
+    async def reconcile_crosspost(
+        post_public_id: str,
+        platform: str,
+        request: CrosspostReconcileRequest,
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили целевую площадку и поста там нет.",
+            )
+        result = await io(_reconcile_crosspost_outcome, post_public_id, platform, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "still_in_flight":
+            raise HTTPException(409, "Публикация ещё может выполняться; повторно проверьте позже.")
+        if result.get("error") == "not_unknown":
+            raise HTTPException(409, detail=f"Кросспост не ожидает сверки (текущий статус: {result.get('status')})")
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        if request.action == "retry_after_check":
+            from tgfarm import s9_growth
+
+            outcomes = await s9_growth.crosspost_post(result["post_id"], [platform])
+            result["outcomes"] = [outcome.model_dump() for outcome in outcomes]
+        _operator("crosspost-reconcile", f"{post_public_id}:{platform}", result["detail"])
+        return result
+
     # --------------------------------------------------------------- actions
     @app.post("/api/cycle")
     async def run_cycle(collect: bool = True, max_clusters: int = 8) -> dict:
-        result = await pipeline.run_cycle(collect=collect, max_clusters=max_clusters)
+        result = await pipeline._guarded_cycle(
+            collect=collect,
+            max_clusters=max(1, min(max_clusters, pipeline.MAX_CLUSTERS_PER_CYCLE)),
+        )
+        if result is None:
+            health = pipeline.cycle_health()
+            if health.get("state") == "running":
+                raise HTTPException(409, "Полный цикл уже выполняется; повторный запуск пропущен.")
+            raise HTTPException(503, "Цикл не завершился успешно. Проверьте состояние и журнал фермы.")
         return result.as_dict()
 
     @app.post("/api/posts/publish")
@@ -1057,14 +1243,59 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         if not request.post_public_ids:
             raise HTTPException(400, "empty post list")
+        unknown_ids = await io(_unknown_publish_ids, request.post_public_ids)
+        if unknown_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "publish_outcome_unknown",
+                    "post_public_ids": unknown_ids,
+                    "message": "Проверьте площадку и разрешите повтор через reconcile.",
+                },
+            )
+        blocked_ids = await io(_blocked_publish_now_ids, request.post_public_ids)
+        if blocked_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "post_not_publishable_now",
+                    "posts": blocked_ids,
+                    "message": "Немедленная публикация разрешена только для постов в очереди или прошедших гейты.",
+                },
+            )
         updated = await io(s7_publish.unpublish, request.post_public_ids)
-        published = await s7_publish.publish_due(limit=len(request.post_public_ids))
+        published = await s7_publish.publish_due(
+            limit=len(request.post_public_ids),
+            post_public_ids=request.post_public_ids,
+        )
         _operator(
             "publish",
             ",".join(request.post_public_ids)[:64],
-            f"published={published.get('published')} failed={published.get('failed')}",
+            f"rescheduled={updated} published={published.get('published')} failed={published.get('failed')}",
         )
         return {"rescheduled": updated, **published}
+
+    @app.post("/api/posts/{post_public_id}/reconcile")
+    async def reconcile_publish(
+        post_public_id: str, request: PublishReconcileRequest
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили площадку и поста там нет.",
+            )
+        result = await io(_reconcile_publish_outcome, post_public_id, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "not_unknown":
+            raise HTTPException(
+                409,
+                detail=f"Пост не ожидает сверки (текущий статус: {result.get('status')})",
+            )
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        _operator("publish-reconcile", post_public_id, result["detail"])
+        return result
 
     @app.post("/api/posts/reject")
     async def reject(request: RejectRequest) -> dict:

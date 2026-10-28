@@ -107,6 +107,7 @@ def test_destructive_endpoints_are_protected(client):
         ("/api/cycle", {}),
         ("/api/posts/publish", {"post_public_ids": ["x"]}),
         ("/api/posts/reject", {"post_public_ids": ["x"]}),
+        ("/api/crossposts/post-id/vk/reconcile", {"action": "confirm_posted"}),
     ):
         assert client.post(path, json=payload).status_code == 401, path
 

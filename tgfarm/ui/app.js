@@ -221,11 +221,11 @@
 
   const STATUS_TAG = {
     published: "tag-ok", scheduled: "tag-acc", gated: "tag-ok",
-    rejected: "tag-err", failed: "tag-err", draft: "",
+    publish_unknown: "tag-warn", rejected: "tag-err", failed: "tag-err", draft: "",
   };
   const STATUS_RU = {
     published: "опубликован", scheduled: "в очереди", gated: "прошёл гейты",
-    rejected: "отклонён", failed: "ошибка", draft: "черновик",
+    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка", draft: "черновик",
   };
   const FORMAT_RU = {
     flash: "картинка + коротко", stat: "цифра", news: "новость",
@@ -265,7 +265,7 @@
       ? posts.map(postCard).join("")
       : `<div class="empty">Постов нет</div>`;
 
-    const queue = posts.filter((p) => ["scheduled", "gated"].includes(p.status)).slice(0, 6);
+    const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
     // to the most recent posts so the card always reflects the last real output.
     const title = $("#overview-queue-title");
@@ -275,9 +275,9 @@
       <div class="item" data-post="${esc(p.id)}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
-          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота"}</div>
+          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
         </div>
-        <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(FORMAT_RU[p.post_format] || p.post_format)}</span></div>
+        <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || FORMAT_RU[p.post_format] || p.post_format)}</span></div>
       </div>`).join("");
     } else if (posts.length) {
       title.textContent = "Последние публикации";
@@ -344,19 +344,95 @@
 
   function renderSources(sources) {
     $("#sources-list").innerHTML = sources.map((s) => {
-      const st = s.failures >= 3 ? "tag-err" : s.last_status === "ok" ? "tag-ok" : "";
+      const cooling = Boolean(s.cooldown_active);
+      const st = cooling ? "tag-warn" : s.failures >= 3 ? "tag-err" : s.last_status === "ok" ? "tag-ok" : "";
+      const status = cooling ? "в карантине" : s.last_status === "cooldown" ? "ожидает повторной проверки" : s.last_status;
       return `
         <div class="item">
           <div class="item-main">
             <div class="item-title">${esc(s.name || s.id)}</div>
-            <div class="item-meta">${esc(s.kind)} · вес ${s.weight} · ${dt(s.last_fetched_at)}${s.last_error ? " · " + esc((s.last_error || "").slice(0, 70)) : ""}</div>
+            <div class="item-meta">${esc(s.kind)} · вес ${s.weight} · ${dt(s.last_fetched_at)}${cooling ? " · пауза до " + dt(s.cooldown_until) : ""}${s.last_error ? " · " + esc((s.last_error || "").slice(0, 70)) : ""}</div>
           </div>
           <div class="item-side">
-            <span class="tag ${st}">${esc(s.last_status)}</span>
+            <span class="tag ${st}">${esc(status)}</span>
             ${s.failures ? `<span class="tag tag-err">${s.failures} ошибок</span>` : ""}
           </div>
         </div>`;
     }).join("") || `<div class="empty">Источники не заданы</div>`;
+  }
+
+  function renderCrossposts(entries) {
+    const container = $("#crossposts-list");
+    if (!container) return;
+
+    const latest = [];
+    const seen = new Set();
+    for (const row of entries || []) {
+      const key = `${row.post}\u0000${row.platform}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      latest.push(row);
+    }
+
+    const labels = {
+      posted: "опубликован",
+      skipped: "пропущен",
+      failed: "ошибка, будет повтор",
+      permanent_failure: "ошибка настройки/API",
+      unknown: "нужна сверка",
+      publishing: "отправляется",
+      retry_authorized: "повтор разрешён",
+      dry_run: "тестовый режим",
+    };
+    const statusClass = {
+      posted: "tag-ok",
+      failed: "tag-warn",
+      permanent_failure: "tag-err",
+      unknown: "tag-err",
+      publishing: "tag-warn",
+      retry_authorized: "tag-acc",
+      dry_run: "tag-acc",
+    };
+
+    container.innerHTML = latest.slice(0, 12).map((row) => {
+      const label = labels[row.status] || row.status;
+      const status = esc(row.status);
+      const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
+      const canReconcile = row.status === "unknown"
+        || (row.status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
+      const url = row.url
+        ? ` · <a href="${esc(row.url)}" target="_blank" rel="noopener">открыть</a>`
+        : "";
+      const error = row.error && row.status !== "posted"
+        ? ` · ${esc(String(row.error).slice(0, 110))}`
+        : "";
+      const actions = canReconcile ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn btn-primary btn-sm js-crosspost-reconcile"
+            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="confirm_posted">Пост уже есть</button>
+          <button class="btn btn-ghost btn-sm js-crosspost-reconcile"
+            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="retry_after_check">Проверил: поста нет</button>
+        </div>` : "";
+      return `
+        <div class="item">
+          <div class="item-main">
+            <div class="item-title">${esc(row.post)} · ${esc(PLATFORM_RU[row.platform] || row.platform)}</div>
+            <div class="item-meta">${esc(dt(row.at))} · попытка ${n(row.attempt || 1)}${url}${error}</div>
+            ${actions}
+          </div>
+          <div class="item-side">
+            <span class="tag ${statusClass[row.status] || ""}">${esc(label)}</span>
+          </div>
+        </div>`;
+    }).join("") || `<div class="empty">Кросспостов пока нет</div>`;
+
+    $(".js-crosspost-reconcile", container).forEach((button) => {
+      button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
+        button.dataset.post,
+        button.dataset.platform,
+        button.dataset.action,
+      ));
+    });
   }
 
   function renderRuns(runs) {
@@ -451,16 +527,22 @@
       ${(p.media || []).length ? `<div class="drawer-block"><h4>Медиа</h4>
         ${p.media.map((m) => `<div class="drawer-src"><span class="tag">${esc(m.kind)}</span> ${esc(m.path)}</div>`).join("")}</div>` : ""}
 
-            <div class="drawer-block" style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="tgfarmPublish('${esc(p.id)}')">Опубликовать сейчас</button>
-        <button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>
+            ${p.status === "publish_unknown" ? `<div class="drawer-block" style="width:100%">
+        <div class="drawer-text"><strong>Результат не подтверждён.</strong> Откройте канал или ленту площадки. Не нажимайте повтор, пока не проверите, появился ли пост.</div>
+      </div>
+      <div class="drawer-block" style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="tgfarmReconcile('${esc(p.id)}','confirm_published')">Да, пост уже есть</button>
+        <button class="btn btn-ghost btn-sm" onclick="tgfarmReconcile('${esc(p.id)}','retry_after_check')">Проверил: поста нет</button>
+      </div>` : `<div class="drawer-block" style="display:flex;gap:8px;flex-wrap:wrap">
+        ${["scheduled", "gated"].includes(p.status) ? `<button class="btn btn-primary btn-sm" onclick="tgfarmPublish('${esc(p.id)}')">Опубликовать сейчас</button>` : ""}
+        ${["draft", "gated", "scheduled", "rejected", "failed"].includes(p.status) ? `<button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="tgfarmCopyText('${esc(p.id)}')">Копировать текст</button>
         <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Трейс</button>
         ${p.external_url ? `<a class="btn btn-ghost btn-sm" href="${esc(p.external_url)}" target="_blank" rel="noopener">Открыть оригинал</a>` : ""}
         ${EDITABLE.has(p.status) && !p.tg_message_id
           ? `<button class="btn btn-ghost btn-sm" id="btn-edit" onclick="tgfarmEditStart('${esc(p.id)}')">Редактировать</button>
              <button class="btn btn-ghost btn-sm" onclick="tgfarmPreview('${esc(p.id)}')">Предпросмотр</button>` : ""}
-      </div>
+      </div>`}
 
       ${state.bestHour != null ? `<div class="drawer-block"><h4>Умная подсказка</h4><div class="drawer-text">Лучшее время публикации по статистике: ${state.bestHour}:00. Пост пройдёт гейты и встанет в очередь автоматически.</div></div>` : ""}
 
@@ -662,11 +744,12 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
+        api("/api/crossposts?limit=100"),
       ]);
 
       const mode = status.mode || "?";
@@ -690,6 +773,7 @@
       renderPosts(posts.posts || []);
       renderChannels(channels.channels || []);
       renderSources(sources.sources || []);
+      renderCrossposts(crossposts.crossposts || []);
       renderRuns(runs.runs || []);
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
@@ -727,6 +811,58 @@
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
   }
+
+  window.tgfarmReconcileCrosspost = async (postId, platform, action) => {
+    if (!postId || !platform) return;
+    const body = { action };
+    if (action === "confirm_posted") {
+      if (!confirm("Подтверждаете, что пост уже появился на целевой площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили целевую площадку и не нашли там этот пост?")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+
+    try {
+      const result = await post(
+        `/api/crossposts/${encodeURIComponent(postId)}/${encodeURIComponent(platform)}/reconcile`,
+        body,
+      );
+      const outcome = (result.outcomes || [])[0];
+      if (outcome && outcome.status === "unknown") {
+        toast("Результат снова не подтверждён. Проверьте целевую площадку вручную.", "err");
+      } else if (action === "confirm_posted") {
+        toast("Кросспост отмечен как опубликованный", "ok");
+      } else {
+        toast("Повтор выполнен: " + ((outcome && outcome.status) || "статус не получен"), "ok");
+      }
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить кросспост: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmReconcile = async (id, action) => {
+    if (!id) return;
+    const body = { action };
+    if (action === "confirm_published") {
+      if (!confirm("Подтверждаете, что пост уже появился на площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили площадку и не нашли этот пост? Только тогда безопаснее повторять.")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+    try {
+      await post(`/api/posts/${encodeURIComponent(id)}/reconcile`, body);
+      toast(action === "confirm_published" ? "Публикация отмечена как подтверждённая" : "Пост возвращён в очередь", "ok");
+      $("#drawer").hidden = true;
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
+    }
+  };
 
   window.tgfarmPublish = async (id) => {
     let proceed = true;

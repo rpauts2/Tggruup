@@ -151,7 +151,7 @@ def test_publish_claim_is_atomic():
     assert _claim_post(post_id) is False, "второй воркер не должен взять тот же пост"
 
 
-def test_stuck_publishing_posts_are_requeued():
+def test_stuck_publishing_posts_require_reconciliation():
     from tgfarm.db.models import Post
     from tgfarm.db.session import session_scope
     from tgfarm.s7_publish import _requeue_stuck
@@ -167,13 +167,12 @@ def test_stuck_publishing_posts_are_requeued():
         )
         post_id = post.id
 
-    # В общей тестовой Бде могут быть застрявшие посты из других тестов —
-    # проверяем, что наш среди переоткрытых, а не единственный.
+    # В общей тестовой БД могут быть застрявшие посты из других тестов.
     assert _requeue_stuck() >= 1
     with session_scope() as session:
         row = session.get(Post, post_id)
-        assert row.status == "scheduled"
-        assert "requeued" in (row.publish_error or "")
+        assert row.status == "publish_unknown"
+        assert "outcome unknown" in (row.publish_error or "")
 
 def test_offline_draft_cannot_pass_the_dzen_length_floor():
     """An offline draft may be short for Telegram, never for a Dzen article."""

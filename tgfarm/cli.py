@@ -89,11 +89,20 @@ def cmd_cycle(args) -> int:
 
     async def _run() -> int:
         await pipeline.bootstrap()
-        result = await pipeline.run_cycle(collect=not args.no_collect, max_clusters=args.max_clusters)
-        return (0 if not result.errors else 2) if result.as_dict() else 0
+        result = await pipeline._guarded_cycle(
+            collect=not args.no_collect,
+            max_clusters=args.max_clusters,
+        )
+        if result is None:
+            _print({
+                "error": "cycle skipped, timed out, or failed",
+                "health": pipeline.cycle_health(),
+            })
+            return 2
+        _print(result.as_dict())
+        return 0 if not result.errors else 2
 
-    code = asyncio.run(_run())
-    return code
+    return asyncio.run(_run())
 
 
 def cmd_serve(args) -> int:
@@ -337,8 +346,6 @@ def cmd_render(args) -> int:
 
 
 def cmd_publish(args) -> int:
-    from datetime import timedelta
-
     from sqlalchemy import select
 
     from tgfarm import s7_publish
@@ -346,7 +353,6 @@ def cmd_publish(args) -> int:
     from tgfarm.db.session import session_scope
 
     _bootstrap()
-    now = datetime.now(UTC)
     with session_scope() as session:
         post = session.execute(
             select(Post).where(Post.public_id == args.post_id)
@@ -354,10 +360,25 @@ def cmd_publish(args) -> int:
         if post is None:
             _print({"error": "not found"})
             return 1
-        post.status = "scheduled"
-        post.scheduled_at = now - timedelta(seconds=1)
+        if post.status not in {"scheduled", "gated"}:
+            _print({
+                "error": "not publishable now",
+                "post_id": args.post_id,
+                "status": post.status,
+                "allowed_statuses": ["scheduled", "gated"],
+            })
+            return 2
 
-    result = asyncio.run(s7_publish.publish_due(limit=1))
+    # Use the publisher's conditional UPDATE; never overwrite a worker that
+    # claimed this post between the status check and the forced publish.
+    rescheduled = s7_publish.unpublish([args.post_id])
+    if not rescheduled:
+        _print({"error": "state changed; reload the queue and try again", "post_id": args.post_id})
+        return 2
+
+    result = asyncio.run(
+        s7_publish.publish_due(limit=1, post_public_ids=[args.post_id])
+    )
     _print(result)
     return 0 if result.get("failed", 0) == 0 else 1
 

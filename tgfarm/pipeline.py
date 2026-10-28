@@ -19,13 +19,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import Cluster, PipelineRun, Post, RawItem
+from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -35,6 +35,21 @@ MAX_CLUSTERS_PER_CYCLE = 1000
 _cycle_started_at: datetime | None = None
 _cycle_finished_at: datetime | None = None
 _cycle_state = "idle"
+_active_cycle_task: asyncio.Task | None = None
+_watchdog_recovery_attempts = 0
+_watchdog_last_recovery_at: datetime | None = None
+
+
+def _watchdog_recovery_delay_min(
+    attempts: int,
+    base_min: int,
+    max_min: int,
+) -> int:
+    """Exponential retry delay, capped so a persistent failure cannot hot-loop."""
+    base = max(1, int(base_min))
+    cap = max(base, int(max_min))
+    exponent = min(max(0, int(attempts) - 1), 10)
+    return min(cap, base * (2**exponent))
 
 
 def cycle_health(now: datetime | None = None) -> dict:
@@ -51,17 +66,40 @@ def cycle_health(now: datetime | None = None) -> dict:
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
         age = max(0, int((current - started).total_seconds()))
+    settings = get_settings()
     stale = (
         _cycle_state == "running"
         and age is not None
-        and age >= max(1, get_settings().cycle_stale_min) * 60
+        and age >= max(1, settings.cycle_stale_min) * 60
     )
+    recovery_next_at = None
+    recovery_delay_min = None
+    recovery_wait_s = None
+    if _watchdog_last_recovery_at is not None:
+        recovery_at = _watchdog_last_recovery_at
+        if recovery_at.tzinfo is None:
+            recovery_at = recovery_at.replace(tzinfo=UTC)
+        else:
+            recovery_at = recovery_at.astimezone(UTC)
+        recovery_delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_at = recovery_at + timedelta(minutes=recovery_delay_min)
+        recovery_next_at = next_at.isoformat(timespec="seconds")
+        recovery_wait_s = max(0, int((next_at - current).total_seconds()))
+
     return {
         "state": _cycle_state,
         "started_at": started.isoformat(timespec="seconds") if started else None,
         "finished_at": finished.isoformat(timespec="seconds") if finished else None,
         "age_s": age,
         "stale": stale,
+        "recovery_attempts": _watchdog_recovery_attempts,
+        "recovery_delay_min": recovery_delay_min,
+        "recovery_next_at": recovery_next_at,
+        "recovery_wait_s": recovery_wait_s,
     }
 
 
@@ -170,6 +208,28 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 Post.scheduled_at < current - timedelta(minutes=30),
             )
         ).scalar_one()
+        publish_unknown = session.execute(
+            select(func.count()).select_from(Post).where(Post.status == "publish_unknown")
+        ).scalar_one()
+        latest_crosspost_ids = (
+            select(func.max(CrosspostLog.id).label("latest_id"))
+            .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+            .subquery()
+        )
+        crosspost_attention = session.execute(
+            select(func.count())
+            .select_from(CrosspostLog)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(
+                or_(
+                    CrosspostLog.status == "unknown",
+                    and_(
+                        CrosspostLog.status == "publishing",
+                        CrosspostLog.created_at <= current - timedelta(minutes=30),
+                    ),
+                )
+            )
+        ).scalar_one()
         last_generate = session.execute(
             select(PipelineRun.status, PipelineRun.error)
             .where(PipelineRun.stage == "s4_generate")
@@ -220,6 +280,28 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "level": "warning",
                 "code": "publishing_stuck",
                 "message": f"{stuck} пост(ов) висят в publishing дольше 30 минут",
+            }
+        )
+    if publish_unknown:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "publish_outcome_unknown",
+                "message": (
+                    f"{publish_unknown} пост(ов) требуют сверки на площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
+            }
+        )
+    if crosspost_attention:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "crosspost_outcome_unknown",
+                "message": (
+                    f"{crosspost_attention} кросспост(ов) требуют сверки на целевой площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
             }
         )
 
@@ -418,7 +500,8 @@ async def deliver_alerts() -> int:
     async with httpx.AsyncClient(timeout=15) as client:
         for alert in alerts:
             code = alert["code"]
-            if now - _alert_last_sent.get(code, 0.0) < cooldown:
+            last_sent = _alert_last_sent.get(code)
+            if last_sent is not None and now - last_sent < cooldown:
                 continue
             resp = await client.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
@@ -583,38 +666,111 @@ async def run_cycle(
     return result
 
 
-async def _guarded_cycle(*, collect: bool = True) -> CycleResult | None:
-    """Run one cycle under a hard timeout so a hung stage cannot wedge the farm."""
-    global _cycle_finished_at, _cycle_state
+async def _guarded_cycle(
+    *,
+    collect: bool = True,
+    max_clusters: int = MAX_CLUSTERS_PER_CYCLE,
+) -> CycleResult | None:
+    """Run one full cycle, skipping overlap and bounding its runtime."""
+    global _cycle_finished_at, _cycle_state, _active_cycle_task
+
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        active = _active_cycle_task
+        if active is not None and active is not current_task and not active.done():
+            log.warning("cycle skipped: another full cycle is still active")
+            return None
+        _active_cycle_task = current_task
 
     settings = get_settings()
     timeout = max(60, settings.cycle_timeout_min * 60)
     try:
-        return await asyncio.wait_for(run_cycle(collect=collect), timeout=timeout)
+        try:
+            return await asyncio.wait_for(
+                run_cycle(collect=collect, max_clusters=max_clusters),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            _cycle_state = "timeout"
+            _cycle_finished_at = datetime.now(UTC)
+            log.error("cycle exceeded %ss and was cancelled", timeout)
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "timeout",
+                error=f"cycle exceeded {timeout}s",
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
+            _cycle_state = "failed"
+            _cycle_finished_at = datetime.now(UTC)
+            log.exception("cycle crashed")
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+    finally:
+        if current_task is not None and _active_cycle_task is current_task:
+            _active_cycle_task = None
+
+
+async def _publish_tick() -> dict:
+    """Drain the publication queue without re-running expensive content stages.
+
+    The full cycle collects trends, generates drafts, performs quality checks,
+    and learns from analytics. That work must not run every five minutes just
+    because the scheduler wants to deliver already-prepared posts.
+    """
+    from tgfarm import s7_publish
+
+    run_id = f"pub-{uuid.uuid4().hex[:10]}"
+    result = CycleResult(run_id=run_id)
+    started = time.perf_counter()
+
+    await _stage(result, "s7_publish", s7_publish.run)
+
+    result.duration_ms = int((time.perf_counter() - started) * 1000)
+    status = "ok" if not result.errors else "partial"
+    await to_thread(
+        _record,
+        result.run_id,
+        "publish_tick",
+        status,
+        duration_ms=result.duration_ms,
+        error="; ".join(result.errors) if result.errors else None,
+        meta={"errors": result.errors},
+    )
+    log.info(
+        "publish tick %s finished in %dms errors=%d",
+        result.run_id,
+        result.duration_ms,
+        len(result.errors),
+    )
+    return result.as_dict()
+
+
+async def _guarded_publish_tick() -> dict:
+    """Bound a fast publisher tick independently of the long content cycle."""
+    settings = get_settings()
+    timeout = max(60, settings.dzen_publish_timeout_s + 60)
+    run_id = f"pt-{uuid.uuid4().hex[:8]}"
+    try:
+        return await asyncio.wait_for(_publish_tick(), timeout=timeout)
     except TimeoutError:
-        _cycle_state = "timeout"
-        _cycle_finished_at = datetime.now(UTC)
-        log.error("cycle exceeded %ss and was cancelled", timeout)
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "timeout",
-            error=f"cycle exceeded {timeout}s",
-        )
-        return None
+        message = f"publish tick exceeded {timeout}s"
+        log.error(message)
+        await to_thread(_record, run_id, "publish_tick", "timeout", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": timeout * 1000}
     except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
-        _cycle_state = "failed"
-        _cycle_finished_at = datetime.now(UTC)
-        log.exception("cycle crashed")
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "error",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return None
+        message = f"{type(exc).__name__}: {exc}"
+        log.exception("publish tick crashed")
+        await to_thread(_record, run_id, "publish_tick", "error", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": 0}
 
 
 async def _watchdog() -> None:
@@ -625,7 +781,8 @@ async def _watchdog() -> None:
     of waiting for the next scheduled slot. Operator alerts are re-emitted on
     every tick on purpose: silence is the failure mode this exists to prevent.
     """
-    import asyncio
+    global _cycle_state, _cycle_finished_at
+    global _watchdog_recovery_attempts, _watchdog_last_recovery_at
 
     alerts = await to_thread(collect_alerts)
     for alert in alerts:
@@ -642,23 +799,61 @@ async def _watchdog() -> None:
     health = cycle_health()
     if health["stale"]:
         log.error(
-            "watchdog: cycle has been running for %ss (state=%s); forcing recovery",
+            "watchdog: cycle has been running for %ss (state=%s); cancelling stale task",
             health["age_s"],
             health["state"],
         )
-        global _cycle_state
+        active = _active_cycle_task
+        if active is not None and active is not asyncio.current_task() and not active.done():
+            active.cancel()
         _cycle_state = "failed"
+        _cycle_finished_at = datetime.now(UTC)
+        # Do not start a replacement in the same tick. The cancelled task must
+        # unwind and release its active-task slot first; the next watchdog tick
+        # can safely schedule catch-up if no newer cycle has started.
+        return
     elif health["state"] in ("failed", "timeout", "partial"):
-        log.warning("watchdog: last cycle ended as %s; scheduling catch-up", health["state"])
+        log.warning("watchdog: last cycle ended as %s; considering catch-up", health["state"])
+    elif health["state"] == "ok":
+        if _watchdog_recovery_attempts or _watchdog_last_recovery_at is not None:
+            log.info("watchdog: healthy cycle observed; resetting recovery backoff")
+        _watchdog_recovery_attempts = 0
+        _watchdog_last_recovery_at = None
+        return
     else:
         log.debug("watchdog: cycle %s", health)
         return
 
-    if _cycle_state != "running":
-        try:
-            asyncio.create_task(_guarded_cycle(collect=False))
-        except RuntimeError:  # no running event loop
-            log.debug("watchdog: no event loop for catch-up task")
+    settings = get_settings()
+    now = datetime.now(UTC)
+    if _watchdog_last_recovery_at is not None:
+        delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_attempt_at = _watchdog_last_recovery_at + timedelta(minutes=delay_min)
+        if now < next_attempt_at:
+            remaining_min = max(1, int((next_attempt_at - now).total_seconds() // 60) + 1)
+            log.warning(
+                "watchdog: recovery backoff active; retry window in ~%d min "
+                "(attempt=%d, delay=%d min)",
+                remaining_min,
+                _watchdog_recovery_attempts,
+                delay_min,
+            )
+            return
+
+    try:
+        asyncio.create_task(_guarded_cycle(collect=False))
+        _watchdog_recovery_attempts += 1
+        _watchdog_last_recovery_at = now
+        log.warning(
+            "watchdog: scheduled recovery cycle attempt %d",
+            _watchdog_recovery_attempts,
+        )
+    except RuntimeError:  # no running event loop
+        log.debug("watchdog: no event loop for catch-up task")
 
 
 async def _top_groups_tick() -> dict | None:
@@ -726,13 +921,12 @@ def _build_scheduler():
     )
 
     scheduler.add_job(
-        _guarded_cycle,
+        _guarded_publish_tick,
         IntervalTrigger(minutes=5),
         id="publish-tick",
         name="publish tick",
         max_instances=1,
         coalesce=True,
-        kwargs={"collect": False},
     )
 
     scheduler.add_job(

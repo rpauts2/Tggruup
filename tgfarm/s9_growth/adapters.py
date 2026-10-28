@@ -13,6 +13,7 @@ Every adapter:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -36,6 +37,84 @@ class Adapter(Protocol):
 
 
 # ------------------------------------------------------------------- helpers
+def ambiguous_crosspost_error(exc: BaseException) -> bool:
+    """Whether a platform may have accepted a crosspost before the error surfaced."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code >= 500 or status_code in (408, 425):
+            return True
+        if 400 <= status_code < 500:
+            return False
+
+    kind = type(exc).__name__.lower()
+    message = f"{kind}: {exc}".lower()
+    definitely_before_send = (
+        "connecttimeout",
+        "connecterror",
+        "gaierror",
+        "getaddrinfo",
+        "name or service not known",
+        "connection refused",
+        "network is unreachable",
+    )
+    if any(marker in message for marker in definitely_before_send):
+        return False
+
+    ambiguous = (
+        "readtimeout",
+        "writetimeout",
+        "readerror",
+        "writeerror",
+        "request timeout",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "server disconnected",
+        "remotedisconnected",
+        "remoteprotocolerror",
+        "incomplete read",
+        "unexpected eof",
+        "broken pipe",
+    )
+    if any(marker in message for marker in ambiguous):
+        return True
+    # Unknown failures after calling an adapter are not evidence that the
+    # remote side effect failed. Prefer reconciliation over creating duplicates.
+    return True
+
+
+MAX_AUTOMATIC_CROSSPOST_ATTEMPTS = 5
+CROSSPOST_RETRY_DELAYS_MIN = (2, 10, 30, 120)
+
+
+def crosspost_retry_delay_min(attempt: int) -> int | None:
+    """Cooldown after a definite failure, indexed by the failed attempt number."""
+    try:
+        number = int(attempt)
+    except (TypeError, ValueError):
+        return None
+    if number < 1 or number >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS:
+        return None
+    return CROSSPOST_RETRY_DELAYS_MIN[number - 1]
+
+
+def crosspost_error_status(exc: BaseException) -> str:
+    """Classify a failed API request without retrying an ambiguous side effect."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        # A rate-limit rejection is safe to retry after the cooldown.
+        if status_code == 429:
+            return "failed"
+        if status_code in (408, 425) or status_code >= 500:
+            return "unknown"
+        if 400 <= status_code < 500:
+            return "permanent_failure"
+    return "unknown" if ambiguous_crosspost_error(exc) else "failed"
+
+
 def _first_source_url(sources: list[dict]) -> str | None:
     return sources[0].get("url") if sources else None
 
@@ -94,8 +173,9 @@ class MaxAdapter:
             message_id = str(resp.json().get("message_id", ""))
             return CrosspostResult(platform=self.platform, status="posted", remote_id=message_id)
         except Exception as exc:  # noqa: BLE001
-            log.warning("max crosspost failed: %s", exc)
-            return CrosspostResult(platform=self.platform, status="failed", error=str(exc)[:300])
+            status = crosspost_error_status(exc)
+            log.warning("max crosspost %s: %s", status, exc)
+            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
 
 
 # ----------------------------------------------------------------------- VK
@@ -193,8 +273,21 @@ class VkAdapter:
                 resp.raise_for_status()
             body = resp.json()
             if "error" in body:
+                error_body = body["error"]
+                try:
+                    error_code = int(error_body.get("error_code", 0)) if isinstance(error_body, dict) else 0
+                except (TypeError, ValueError):
+                    error_code = 0
+                if error_code in {6, 9}:
+                    error_status = "failed"
+                elif error_code == 10:
+                    error_status = "unknown"
+                else:
+                    error_status = "permanent_failure"
                 return CrosspostResult(
-                    platform=self.platform, status="failed", error=str(body["error"])[:300]
+                    platform=self.platform,
+                    status=error_status,
+                    error=str(error_body)[:300],
                 )
             post_id = str(body.get("response", {}).get("post_id", ""))
             return CrosspostResult(
@@ -204,8 +297,9 @@ class VkAdapter:
                 url=f"https://vk.com/wall{group}_{post_id}" if post_id else None,
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning("vk crosspost failed: %s", exc)
-            return CrosspostResult(platform=self.platform, status="failed", error=str(exc)[:300])
+            status = crosspost_error_status(exc)
+            log.warning("vk crosspost %s: %s", status, exc)
+            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
 
 
 # ------------------------------------------------------------------------- X
@@ -244,8 +338,9 @@ class XAdapter:
                 url=f"https://x.com/i/status/{tweet_id}" if tweet_id else None,
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning("x crosspost failed: %s", exc)
-            return CrosspostResult(platform=self.platform, status="failed", error=str(exc)[:300])
+            status = crosspost_error_status(exc)
+            log.warning("x crosspost %s: %s", status, exc)
+            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
 
 
 ADAPTERS: dict[str, Adapter] = {
@@ -255,23 +350,75 @@ ADAPTERS: dict[str, Adapter] = {
 }
 
 
-def build_payload(post) -> CrosspostPayload:
+def primary_image_path(post_id: int) -> str | None:
+    """Find an existing farm-generated primary image suitable for a VK wall post."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Media as MediaRow
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        paths = session.execute(
+            select(MediaRow.path)
+            .where(
+                MediaRow.post_id == post_id,
+                MediaRow.is_primary.is_(True),
+                MediaRow.kind.notin_(("video", "article_image")),
+            )
+            .order_by(MediaRow.id.desc())
+        ).scalars().all()
+
+    for raw_path in paths:
+        if raw_path and Path(raw_path).is_file():
+            return str(Path(raw_path))
+    return None
+
+
+def build_payload(post, *, image_path: str | None = None) -> CrosspostPayload:
     """Translate a published post into a per-platform payload."""
     body = post.body.strip()
     link = _first_source_url(post.sources or [])
     if link:
         body = f"{body}\n\nПодробнее: {link}"
     tags = " ".join(f"#{h}" for h in (post.hashtags or [])[:5])
+    meta = {"cta": post.cta, "post_public_id": post.public_id}
+    if image_path:
+        meta["image_path"] = image_path
     return CrosspostPayload(
         platform="",
         title=post.hook.strip(),
         text=f"{body}\n\n{tags}".strip() if tags else body,
         link=link,
-        meta={"cta": post.cta, "post_public_id": post.public_id},
+        meta=meta,
     )
 
 
+def latest_crosspost(post_public_id: str, platform: str):
+    """Most recent state for a post/platform pair."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        return session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+
 def already_done(post_public_id: str, platform: str) -> bool:
+    row = latest_crosspost(post_public_id, platform)
+    return bool(row and row.status in {"posted", "unknown", "publishing", "permanent_failure"})
+
+
+def begin_crosspost(post_public_id: str, platform: str) -> int | None:
+    """Claim a crosspost attempt before network I/O to prevent duplicate workers."""
     from sqlalchemy import select
 
     from tgfarm.db.models import CrosspostLog
@@ -279,13 +426,37 @@ def already_done(post_public_id: str, platform: str) -> bool:
 
     with session_scope() as session:
         row = session.execute(
-            select(CrosspostLog).where(
+            select(CrosspostLog)
+            .where(
                 CrosspostLog.post_public_id == post_public_id,
                 CrosspostLog.platform == platform,
-                CrosspostLog.status == "posted",
             )
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+            .with_for_update()
         ).scalar_one_or_none()
-        return row is not None
+        if row and row.status in {"posted", "unknown", "publishing", "permanent_failure"}:
+            return None
+        if row and row.status == "failed":
+            delay_min = crosspost_retry_delay_min(row.attempt)
+            if delay_min is None:
+                return None
+            created = row.created_at
+            if created is not None:
+                created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
+                if datetime.now(UTC) < created + timedelta(minutes=delay_min):
+                    return None
+        attempt = (row.attempt + 1) if row else 1
+        session.add(
+            CrosspostLog(
+                post_public_id=post_public_id,
+                platform=platform,
+                status="publishing",
+                attempt=attempt,
+            )
+        )
+        session.flush()
+        return attempt
 
 
 def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -> None:
@@ -306,4 +477,13 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
         )
 
 
-__all__ = ["ADAPTERS", "Adapter", "AdapterNotConfigured", "CrosspostPayload", "CrosspostResult"]
+__all__ = [
+    "ADAPTERS",
+    "Adapter",
+    "AdapterNotConfigured",
+    "CrosspostPayload",
+    "CrosspostResult",
+    "MAX_AUTOMATIC_CROSSPOST_ATTEMPTS",
+    "crosspost_error_status",
+    "crosspost_retry_delay_min",
+]

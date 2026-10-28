@@ -324,6 +324,12 @@ class Settings(BaseSettings):
     source_failure_backoff_max: int = Field(
         default=4, alias="SOURCE_FAILURE_BACKOFF_MAX"
     )
+    source_auto_cooldown_after_failures: int = Field(
+        default=5, alias="SOURCE_AUTO_COOLDOWN_AFTER_FAILURES"
+    )
+    source_auto_cooldown_hours: int = Field(
+        default=24, alias="SOURCE_AUTO_COOLDOWN_HOURS"
+    )
 
     # --- always-on supervision ---------------------------------------------
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
@@ -351,6 +357,12 @@ class Settings(BaseSettings):
     retention_runs_days: int = Field(default=30, alias="RETENTION_RUNS_DAYS")
     cycle_stale_min: int = Field(default=45, alias="CYCLE_STALE_MIN")
     watchdog_interval_min: int = Field(default=5, alias="WATCHDOG_INTERVAL_MIN")
+    watchdog_recovery_base_min: int = Field(
+        default=5, alias="WATCHDOG_RECOVERY_BASE_MIN"
+    )
+    watchdog_recovery_max_min: int = Field(
+        default=60, alias="WATCHDOG_RECOVERY_MAX_MIN"
+    )
 
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 3

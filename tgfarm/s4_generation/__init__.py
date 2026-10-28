@@ -480,13 +480,13 @@ async def verify(
             reason=reason,
             cluster_public_id="",
         )
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     decision = await to_thread(
         policy.reserve, "s4_verify", purpose="verify"
     )
     if not decision.allowed:
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     payload, response = await llm.complete_json(
         _VERIFY_SYSTEM, prompt, max_tokens=1600, offline_fallback=fallback
@@ -503,7 +503,7 @@ async def verify(
     claims: list[Claim] = []
     raw_claims = payload.get("claims")
     if not isinstance(raw_claims, list):
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     for entry in raw_claims[:8]:
         if not isinstance(entry, dict):
@@ -516,14 +516,18 @@ async def verify(
         url = url if url in allowed else items[0].url
         verified = bool(entry.get("verified")) and _lexically_supported(claim_text, allowed[url])
         claims.append(Claim(claim=claim_text, source_url=url, verified=verified))
-    return claims
+
+    # Independently audit every numeric sentence, even when the model omitted
+    # it from its claim list. This also runs in offline/budget-limited mode.
+    claims.extend(_numeric_audit_claims(draft, items))
+    return _dedupe_claims(claims)
 
 
 # A number followed by an optional unit. Deliberately strict about the decimal
 # point (`\d+(?:[.,]\d+)*`) so a sentence-ending period is never swallowed into
 # the token — "GPT-5.5." must normalise to "5.5", not "5.5.".
 _NUMBER_RE = re.compile(
-    r"\d+(?:[.,]\d+)*\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$)?",
+    r"\d+(?:(?:[ \u00a0]\d{3})|(?:[.,]\d+))*(?:\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$))?",
     re.I,
 )
 _DIGIT_STRIP = re.compile(r"[^\d]")
@@ -537,8 +541,11 @@ def _normalise_number(token: str) -> str:
     the RU/EU sources write decimal commas ("0,02" -> "0.02").
     """
     cleaned = (token or "").replace(" ", "").replace(" ", "")
-    cleaned = re.sub(r"[^\d.,]", "", cleaned)
-    cleaned = cleaned.rstrip(".,")
+    cleaned = re.sub(r"[^\d.,]", "", cleaned).rstrip(".,")
+    if "," in cleaned and "." not in cleaned:
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", cleaned):
+            return cleaned.replace(",", "")
+        return cleaned.replace(",", ".")
     return cleaned.replace(",", ".")
 
 
@@ -547,19 +554,122 @@ def _normalise_haystack(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", ".", collapsed)
 
 
-def _lexically_supported(claim: str, item) -> bool:
-    """Cheap corroboration: every number in the claim must appear in the source.
+def _checkable_numbers(text: str) -> list[str]:
+    """Canonical numeric values, excluding leading numbered-list markers only."""
+    text = text or ""
+    values: list[str] = []
+    for match in _NUMBER_RE.finditer(text):
+        digits = _normalise_number(match.group())
+        if not digits:
+            continue
 
-    Catches the dominant hallucination class (invented figures) without any API
-    call. A claim with no numbers passes — it is qualitative and gets caught by
-    the tone critic instead.
+        # Don't treat "1." or "12)" at the start of a line as a content claim.
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.start())
+        if line_end < 0:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)](?:\s+|$)", line)
+        if marker:
+            marker_start = line_start + marker.start(1)
+            marker_end = line_start + marker.end(1)
+            if match.start() == marker_start and match.end() <= marker_end:
+                continue
+        values.append(digits)
+    return values
+
+
+def _lexically_supported(claim: str, item) -> bool:
+    """Every checkable number in a claim must occur as a whole value in a source.
+
+    This includes single-digit measurements and percentages. Enumerated list
+    markers are ignored so they don't become bogus factual claims.
     """
-    haystack = _normalise_haystack(f"{item.title} {item.text}")
-    for token in _NUMBER_RE.findall(claim or ""):
-        digits = _normalise_number(token)
-        if len(digits) >= 2 and digits not in haystack:
-            return False
-    return True
+    source_numbers = set(_checkable_numbers(f"{item.title} {item.text}"))
+    return all(
+        digits in source_numbers
+        for digits in _checkable_numbers(claim or "")
+    )
+
+
+def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
+    """Return sentences containing numeric assertions, including single-digit values.
+
+    Splitting only at punctuation followed by whitespace avoids splitting decimal
+    numbers such as 0.02. Leading enumerated-list markers are filtered separately.
+    """
+    parts = [draft.hook, draft.body]
+    if draft.cta:
+        parts.append(draft.cta)
+    text = "\n".join(part for part in parts if part)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in candidates:
+        sentence = " ".join(sentence.split()).strip()
+        if not sentence:
+            continue
+        checkable = _checkable_numbers(sentence)
+        key = sentence.casefold()
+        if checkable and key not in seen:
+            seen.add(key)
+            out.append(sentence)
+    return out
+
+
+def _numeric_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Ground all numeric sentences against sources independently of the LLM."""
+    if not items:
+        return []
+    audits: list[Claim] = []
+    for sentence in _numeric_claim_sentences(draft):
+        source = next((item for item in items if _lexically_supported(sentence, item)), None)
+        audits.append(
+            Claim(
+                claim=sentence[:400],
+                source_url=(source or items[0]).url,
+                verified=source is not None,
+                note="numeric_audit",
+            )
+        )
+    return audits
+
+
+def _fallback_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Deterministic claim set for offline mode and exhausted AI budget."""
+    if not items:
+        return []
+    base = Claim(
+        claim=draft.hook[:200],
+        source_url=items[0].url,
+        verified=_lexically_supported(draft.hook, items[0]),
+    )
+    return _dedupe_claims([base, *_numeric_audit_claims(draft, items)])
+
+
+def _dedupe_claims(claims: list[Claim]) -> list[Claim]:
+    """Deduplicate claims without letting a permissive duplicate mask a failure."""
+    out: list[Claim] = []
+    positions: dict[str, int] = {}
+    for claim in claims:
+        key = " ".join(claim.claim.casefold().split())
+        if not key:
+            continue
+        if key not in positions:
+            positions[key] = len(out)
+            out.append(claim)
+            continue
+        index = positions[key]
+        existing = out[index]
+        if not claim.verified and existing.verified:
+            out[index] = claim
+        elif not existing.verified and claim.verified:
+            # Numeric corroboration validates the figures, not the whole semantic
+            # assertion. Preserve an existing unverified model claim.
+            continue
+        elif claim.note == "numeric_audit" and existing.note != "numeric_audit":
+            out[index] = claim
+    return out
 
 
 def _channel_history_vectors(channel_id: str, limit: int = 60) -> list:
