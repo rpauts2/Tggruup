@@ -240,3 +240,19 @@ def test_reddit_adapter_fails_closed_for_missing_credentials_and_invalid_subredd
     )
     assert invalid.status == "permanent"
     assert "Invalid Reddit subreddit" in (invalid.error or "")
+
+
+
+def test_cli_reddit_live_mode_requires_explicit_confirmation(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from tgfarm import cli
+
+    monkeypatch.setattr(cli, "_bootstrap", lambda: None)
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(live=True))
+    args = SimpleNamespace(post_id="published_post_123", confirm_live=False)
+
+    code = cli.cmd_reddit_test(args)
+
+    assert code == 2
+    assert "explicit --confirm-live" in capsys.readouterr().out
