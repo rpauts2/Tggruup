@@ -49,7 +49,7 @@ def test_portfolio_compares_groups_within_each_channel_and_reports_format():
         formats[pid] = "story"
         metrics.append(SimpleNamespace(
             post_public_id=pid, channel_id="a", angle="story", hook_style="question",
-            quality=0.9, views=200, impressions=0, published_at=now - timedelta(days=2),
+            quality=0.9, views=200, impressions=0, published_at=now - timedelta(days=1 + (15 * i / 9)),
         ))
     for i in range(10):
         pid = f"weak-{i}"
@@ -79,3 +79,64 @@ def test_portfolio_compares_groups_within_each_channel_and_reports_format():
     assert alpha_formats["story"]["decision"] == "promote"
     assert beta_angles["digest"]["decision"] == "hold"
     assert report["measured_posts"] == 30
+
+def test_portfolio_holds_decisions_until_fourteen_days_of_observations():
+    now = datetime(2026, 10, 28, 12, tzinfo=UTC)
+    metrics = [
+        SimpleNamespace(
+            post_public_id=f"recent-{i}",
+            channel_id="a",
+            angle="story",
+            hook_style="question",
+            quality=0.9,
+            views=200,
+            impressions=0,
+            published_at=now - timedelta(days=1.5 + i * 0.5),
+        )
+        for i in range(10)
+    ]
+
+    report = build_portfolio_report(metrics, now=now)
+    channel = report["channels"][0]
+    angle = next(
+        item for item in channel["recommendations"]
+        if item["dimension"] == "angle" and item["key"] == "story"
+    )
+
+    assert channel["observation_span_days"] == 4.5
+    assert channel["recommendations_ready"] is False
+    assert angle["proposed_decision"] == "promote"
+    assert angle["decision"] == "hold"
+    assert angle["actionable"] is False
+    assert "14" in angle["reason"]
+
+
+def test_portfolio_explains_recommendation_and_confidence_semantics_after_two_weeks():
+    now = datetime(2026, 10, 28, 12, tzinfo=UTC)
+    metrics = [
+        SimpleNamespace(
+            post_public_id=f"older-{i}",
+            channel_id="a",
+            angle="story",
+            hook_style="question",
+            quality=0.9,
+            views=200,
+            impressions=0,
+            published_at=now - timedelta(days=1 + (15 * i / 9)),
+        )
+        for i in range(10)
+    ]
+
+    report = build_portfolio_report(metrics, now=now)
+    channel = report["channels"][0]
+    angle = next(
+        item for item in channel["recommendations"]
+        if item["dimension"] == "angle" and item["key"] == "story"
+    )
+
+    assert channel["recommendations_ready"] is True
+    assert angle["decision"] == "promote"
+    assert angle["actionable"] is True
+    assert "выборка 10 постов" in angle["reason"]
+    assert angle["confidence_kind"] == "shrinkage_weight_not_probability"
+    assert "rather than a probability" in report["confidence_definition"]
