@@ -27,10 +27,10 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # JSON, form, and debug key/value snippets including AT Protocol JWT names.
     (
         re.compile(
-            r"(?i)([\\"']?(?:access_token|refresh_token|accessjwt|refreshjwt|"
-            r"client_secret|client_id|api_key|apikey|password|passwd|"
-            r"authorization|app_password|token|secret)[\\"']?\\s*[:=]\\s*[\\"']?)"
-            r"[^\\"'\\s,;}]+"
+            r"""(?i)(["']?(?:access_token|refresh_token|accessjwt|refreshjwt|"""
+            r"""client_secret|client_id|api_key|apikey|password|passwd|"""
+            r"""authorization|app_password|token|secret)["']?\\s*[:=]\\s*["']?)"""
+            r"""[^"'\\s,;}]+"""
         ),
         r"\\1[REDACTED]",
     ),
