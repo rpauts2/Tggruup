@@ -95,8 +95,18 @@
     <article class="card">
       <header class="card-head">
         <h2>Кросспостинг</h2>
-        <span class="card-sub">состояние внешних публикаций</span>
+        <span class="card-sub">единая история доставки по площадкам</span>
       </header>
+      <div class="toolbar delivery-toolbar">
+        <div class="segmented" id="crosspost-filters" role="group" aria-label="Фильтр доставки">
+          <button type="button" class="is-active" data-crosspost-filter="">Все</button>
+          <button type="button" data-crosspost-filter="queued">В процессе</button>
+          <button type="button" data-crosspost-filter="posted">Опубликовано</button>
+          <button type="button" data-crosspost-filter="failed">Временная ошибка</button>
+          <button type="button" data-crosspost-filter="permanent">Постоянная ошибка</button>
+          <button type="button" data-crosspost-filter="unknown">Нужна сверка</button>
+        </div>
+      </div>
       <div id="crossposts-list" class="list"></div>
     </article>
   </section>
