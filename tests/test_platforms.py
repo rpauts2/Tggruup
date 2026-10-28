@@ -135,7 +135,7 @@ def test_dashboard_includes_platform_hub_and_accessible_switches(client):
     assert script.status_code == 200
     assert "updatePlatformSwitch" in script.text
     assert '"/api/platforms"' in script.text
-    assert 'role="switch"' in script.text or "role=\\"switch\\"" in script.text
+    assert 'role="switch"' in script.text
 
 def test_paused_primary_platform_stays_queued_and_returns_when_reenabled(monkeypatch, tmp_path):
     from datetime import UTC, datetime, timedelta
