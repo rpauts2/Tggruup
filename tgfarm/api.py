@@ -84,6 +84,10 @@ class PlatformPlanRequest(BaseModel):
 class PlatformCredentialsRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
+
+class MastodonOAuthStartRequest(BaseModel):
+    instance: str = Field(min_length=1, max_length=300)
+
 class RedditScoutRequest(BaseModel):
     query: str = Field(min_length=2, max_length=120)
     post_public_id: str | None = Field(default=None, max_length=120)
@@ -1108,6 +1112,32 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 )
         return await call_next(request)
 
+    @app.middleware("http")
+    async def redact_mastodon_oauth_callback(request: Request, call_next):
+        """Capture OAuth credentials, then strip the query before access logging."""
+        if request.url.path == "/api/platforms/mastodon/auth/callback":
+            from urllib.parse import parse_qs
+
+            raw_query = request.scope.get("query_string", b"")
+            if isinstance(raw_query, bytes):
+                raw_query = raw_query.decode("utf-8", errors="replace")
+            parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
+            request.scope["tgfarm_mastodon_oauth_params"] = {
+                key: values[0]
+                for key, values in parsed.items()
+                if key in {"code", "state", "error"} and values
+            }
+            # Mastodon specifically warns that authorization codes must not be
+            # written to request logs. Routes read the values captured above.
+            request.scope["query_string"] = b""
+        response = await call_next(request)
+        if request.url.path == "/api/platforms/mastodon/auth/callback":
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        return response
+
     # ------------------------------------------------------------------- UI
     # no-store: the dashboard ships with the app, and a cached stylesheet after
     # an update is a dashboard that lies about its own state
@@ -1371,6 +1401,101 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "authorized" if result["authorized"] else "check failed",
         )
         return result
+
+    @app.post("/api/platforms/mastodon/auth/start")
+    async def mastodon_oauth_start(payload: MastodonOAuthStartRequest, request: Request) -> dict:
+        from tgfarm.mastodon_oauth import begin_mastodon_oauth, normalize_instance_url
+        from tgfarm.platforms import save_platform_credentials as save_credentials
+
+        try:
+            instance = normalize_instance_url(payload.instance)
+            # Remember the chosen instance before beginning so the OAuth
+            # descriptor and future requests refer to the same server.
+            await io(save_credentials, "mastodon", {"MASTODON_INSTANCE": instance})
+            redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/mastodon/auth/callback"
+            return await begin_mastodon_oauth(instance, redirect_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/platforms/mastodon/auth/callback")
+    async def mastodon_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.mastodon_oauth import cancel_mastodon_oauth, complete_mastodon_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_mastodon_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_mastodon_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_mastodon_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "mastodon",
+                {
+                    "MASTODON_INSTANCE": credentials["instance"],
+                    "MASTODON_CLIENT_ID": credentials["client_id"],
+                    "MASTODON_CLIENT_SECRET": credentials["client_secret"],
+                    "MASTODON_ACCESS_TOKEN": credentials["access_token"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "mastodon",
+                True,
+                account=credentials["account"],
+                detail="Mastodon OAuth подтверждён; профиль доступен.",
+            )
+            _operator("platform-auth-check", "mastodon", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Mastodon подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Публикация остаётся выключенной, пока ты не включишь площадку в TgFarm.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_mastodon_oauth(state_value)
+            # OAuth codes, tokens and exception bodies are never written to logs.
+            log.warning("mastodon OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(str(exc)[:240])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Mastodon</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_mastodon_oauth(state_value)
+            log.warning("mastodon OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Mastodon</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
 
     @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:
