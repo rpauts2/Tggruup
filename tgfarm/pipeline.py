@@ -170,6 +170,9 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 Post.scheduled_at < current - timedelta(minutes=30),
             )
         ).scalar_one()
+        publish_unknown = session.execute(
+            select(func.count()).select_from(Post).where(Post.status == "publish_unknown")
+        ).scalar_one()
         last_generate = session.execute(
             select(PipelineRun.status, PipelineRun.error)
             .where(PipelineRun.stage == "s4_generate")
@@ -220,6 +223,17 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "level": "warning",
                 "code": "publishing_stuck",
                 "message": f"{stuck} пост(ов) висят в publishing дольше 30 минут",
+            }
+        )
+    if publish_unknown:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "publish_outcome_unknown",
+                "message": (
+                    f"{publish_unknown} пост(ов) требуют сверки на площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
             }
         )
 
