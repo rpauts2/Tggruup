@@ -48,6 +48,7 @@ def test_crosspost_diagnostics_export_omits_raw_errors_and_secrets(monkeypatch):
             "remote_id": "at://did:plc:abc/app.bsky.feed.post/xyz",
             "url": "https://bsky.app/profile/demo.bsky.social/post/xyz",
             "attempt": 2,
+            "retry_after_at": None,
             "at": "2026-10-28T00:00:00+00:00",
             "has_error": True,
         }
