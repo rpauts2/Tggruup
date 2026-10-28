@@ -393,6 +393,18 @@ async def generate(
         )
 
     if decision is not None and decision.allowed:
+        # Pull archive context only when an online draft will actually be requested.
+        # The archive guides novelty, never factual grounding; S4 verification still
+        # binds every factual claim to today's source block.
+        try:
+            from tgfarm.s4_generation.memory import build_prompt_memory
+
+            archive_memory = await to_thread(build_prompt_memory, items, plan.channel_id)
+            if archive_memory:
+                prompt = f"{prompt}\\n\\n{archive_memory}"
+        except Exception as exc:  # noqa: BLE001 - memory must never stall generation
+            log.warning("archive memory lookup failed: %s", exc)
+
         payload, response = await llm.complete_json(
             _DRAFT_SYSTEM,
             prompt,
@@ -695,21 +707,26 @@ async def run(cluster_public_id: str) -> list[str]:
 
     scored_items = _to_scored(raw_items)
     created: list[str] = []
-    # Two clusters can carry the same story under different labels; routing
-    # compares labels and lets both through, and the wall ends up with the
-    # same post twice in a row. The draft embedding is the honest check.
+    # Load per-channel history before checking the first generated draft. The
+    # separate archive lookup below covers the entire published history, not just
+    # this short vector window.
     history: list = []
     seen_batch: list = []
     embedder = get_embedder()
+    for channel_id in sorted({plan.channel_id for plan in plans}):
+        history.extend(
+            {"channel_id": channel_id, "vec": vec, "label": ""}
+            for vec in await to_thread(_channel_history_vectors, channel_id)
+        )
 
-    def _too_similar(draft_text: str, channel_id: str) -> bool:
+    def _too_similar(draft_text: str, channel_id: str):
         vec = embedder.embed(draft_text)
         if _too_similar_vec(vec, history + seen_batch, channel_id):
-            return True
+            return True, vec
         seen_batch.append(
             {"channel_id": channel_id, "vec": vec, "label": draft_text[:60]}
         )
-        return False
+        return False, vec
 
     with StageTimer("s4_generate") as timer:
         for plan in plans:
@@ -728,15 +745,25 @@ async def run(cluster_public_id: str) -> list[str]:
             except Exception as exc:  # noqa: BLE001 - one bad plan must not kill the cluster
                 log.warning("generation failed for %s: %s", plan.channel_id, exc)
                 continue
-            if _too_similar(draft.text, plan.channel_id):
+            batch_duplicate, draft_vector = _too_similar(draft.text, plan.channel_id)
+            if batch_duplicate:
+                log.info("s4 duplicate suppressed against in-cycle history: %s/%s", plan.channel_id, cluster_public_id)
                 continue
-            if not history:
-                history = [
-                    {"channel_id": plan.channel_id, "vec": vec, "label": ""}
-                    for vec in await to_thread(
-                        _channel_history_vectors, plan.channel_id
-                    )
-                ]
+            try:
+                from tgfarm.s4_generation.memory import find_near_duplicate
+
+                prior = await to_thread(
+                    find_near_duplicate, draft.text, plan.channel_id, draft_vector
+                )
+            except Exception as exc:  # noqa: BLE001 - archive search is fail-open
+                prior = None
+                log.warning("archive duplicate check failed: %s", exc)
+            if prior:
+                log.info(
+                    "s4 duplicate suppressed against full archive: %s/%s prior=%s similarity=%.3f",
+                    plan.channel_id, cluster_public_id, prior["post_public_id"], prior["similarity"],
+                )
+                continue
             public_id = await to_thread(
                 persist_draft, draft, plan, format_plan, video
             )
