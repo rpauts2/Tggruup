@@ -182,7 +182,7 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
                     skipped += 1
                 elif result.status == "failed":
                     failed += 1
-                elif result.status == "permanent_failure":
+                elif result.status == "permanent":
                     permanent_failure += 1
                 elif result.status == "unknown":
                     unknown += 1
