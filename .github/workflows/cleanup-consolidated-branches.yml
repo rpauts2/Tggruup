@@ -1,0 +1,58 @@
+name: One-time cleanup after mainline consolidation
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-superseded-branches:
+    if: contains(github.event.head_commit.message, 'Consolidate topic memory and historical publication import')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete only the explicitly superseded branch refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker="repos/${GITHUB_REPOSITORY}/contents/.branch-cleanup-once"
+          if ! gh api "$marker" >/dev/null 2>&1; then
+            echo "One-time cleanup marker is absent; nothing to do."
+            exit 0
+          fi
+
+          branches=(
+            "consolidate/mainline-2026-10"
+            "feat/confidence-aware-learning"
+            "feat/history-import-main"
+            "feat/import-historical-publications"
+            "feat/persistent-content-memory"
+            "feat/portfolio-intelligence"
+            "feat/portfolio-intelligence-main"
+            "feat/publish-recovery-autonomy"
+            "feat/topic-knowledge-chains"
+            "feat/topic-knowledge-chains-clean"
+          )
+
+          for branch in "${branches[@]}"; do
+            ref="heads/${branch}"
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" >/dev/null 2>&1; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/${ref}" >/dev/null
+              echo "Deleted ${branch}"
+            else
+              echo "Already absent: ${branch}"
+            fi
+          done
+
+          marker_sha="$(gh api "$marker" --jq '.sha')"
+          gh api --method DELETE "$marker" \
+            -f message="Consume one-time branch cleanup marker" \
+            -f sha="$marker_sha" \
+            -f branch="main" >/dev/null
+
+          echo "Branch cleanup finished; the one-time marker was removed."
