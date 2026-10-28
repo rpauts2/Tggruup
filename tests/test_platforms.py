@@ -181,3 +181,43 @@ def test_paused_primary_platform_stays_queued_and_returns_when_reenabled(monkeyp
 
     platforms.set_platform_enabled("dzen", True)
     assert any(row[0] == queued.id for row in due_posts(limit=1000))
+
+
+def test_crosspost_only_reddit_is_never_misrouted_to_telegram(monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from tgfarm import platforms
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import due_posts
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    channel_id = "reddit_primary_" + uuid4().hex[:10]
+    post_id = "reddit_queued_" + uuid4().hex[:10]
+    with session_scope() as session:
+        session.add(
+            Channel(
+                id=channel_id,
+                title="Reddit safety test",
+                niche="general",
+                platform="reddit",
+            )
+        )
+        session.add(
+            Post(
+                public_id=post_id,
+                channel_id=channel_id,
+                hook="Reddit-only post",
+                body="This must not be sent through Telegram.",
+                status="scheduled",
+                scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+
+    platforms.set_platform_enabled("reddit", True)
+    assert all(row[0] != post_id for row in due_posts(limit=1000))
+
+    with session_scope() as session:
+        queued = session.query(Post).filter_by(public_id=post_id).one()
+        assert queued.status == "scheduled"
