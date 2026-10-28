@@ -540,7 +540,10 @@ def save_platform_credentials(platform_id: str, values: dict[str, str]) -> dict[
         raise
     reset_settings_cache()
     checks = _read_auth_checks()
-    checks.pop(platform_id, None)
+    # Rotating hidden OAuth tokens does not change the authorized app/account.
+    # Visible credentials and identity fields still invalidate the previous check.
+    if any(allowed[key].get("fingerprint", True) for key in updates):
+        checks.pop(platform_id, None)
     path = _auth_state_path()
     try:
         path.write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
