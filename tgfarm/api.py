@@ -1054,6 +1054,25 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         return await io(rebuild_archive_index)
 
+    @app.get("/api/memory/topic")
+    async def memory_topic(
+        query: str = Query(..., min_length=2, max_length=500),
+        channel_id: str | None = None,
+        days: int = Query(30, ge=1, le=180),
+        archive_limit: int = Query(60, ge=1, le=100),
+    ) -> dict:
+        """Build a topic dossier from historical posts and recently collected sources."""
+        from tgfarm.s4_generation.topic_memory import build_topic_dossier
+
+        return await io(
+            build_topic_dossier,
+            query,
+            channel_id=channel_id,
+            preferred_channel_id=channel_id,
+            days=days,
+            archive_limit=archive_limit,
+        )
+
     @app.get("/api/editorial")
     async def editorial(limit: int = Query(25, ge=1, le=100)) -> dict:
         from tgfarm.editorial import queue
