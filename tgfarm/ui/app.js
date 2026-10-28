@@ -141,8 +141,8 @@
       ${kv("Средний ER", pct(fleet.avg_er))}
       ${kv("Лучший угол", topAngle ? `${esc(topAngle[0])} (${pct(angleScore(topAngle[1]))})` : "—")}
       ${kv("Лучший час", best ? `${best[0]}:00 (${pct(best[1])})` : "—")}
-      ${experimentsBlock(report)}
-    renderPortfolio(report.portfolio || {});`;
+      ${experimentsBlock(report)}`;
+    renderPortfolio(report.portfolio || {});
   }
 
   function renderPortfolio(portfolio) {
