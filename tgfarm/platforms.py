@@ -303,8 +303,12 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "MASTODON_ACCESS_TOKEN", "attribute": "mastodon_access_token", "label": "OAuth access token", "secret": True, "placeholder": "Заполняется автоматически", "help": "Пользовательский токен с разрешением write:statuses."},
     ],
     "x": [
-        {"key": "X_BEARER_TOKEN", "attribute": "x_bearer_token", "label": "Bearer token", "secret": True, "placeholder": "X API bearer token", "help": "Проверка профиля не гарантирует наличие write-доступа."},
-        {"key": "X_USER_ID", "attribute": "x_user_id", "label": "User ID", "secret": False, "placeholder": "Числовой ID профиля X", "help": "Профиль, к которому относится интеграция."},
+        {"key": "X_OAUTH_CLIENT_ID", "attribute": "x_oauth_client_id", "label": "OAuth Client ID", "secret": False, "placeholder": "Client ID из X Developer Portal", "help": "В X Developer Portal включи OAuth 2.0 и укажи callback URL панели."},
+        {"key": "X_OAUTH_CLIENT_SECRET", "attribute": "x_oauth_client_secret", "label": "OAuth Client Secret", "secret": True, "placeholder": "Client Secret из X Developer Portal", "help": "Используй приложение типа Web App/Confidential client. Пароль от аккаунта X не нужен."},
+        {"key": "X_ACCESS_TOKEN", "attribute": "x_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний OAuth-токен."},
+        {"key": "X_REFRESH_TOKEN", "attribute": "x_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний токен обновления."},
+        {"key": "X_TOKEN_EXPIRES_AT", "attribute": "x_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия токена."},
+        {"key": "X_USER_ID", "attribute": "x_user_id", "label": "User ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого аккаунта."},
     ],
     "reddit": [
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
@@ -360,7 +364,10 @@ def _read_auth_checks() -> dict[str, dict[str, Any]]:
 def _credential_fingerprint(platform_id: str) -> str:
     settings = get_settings()
     fields = _AUTH_FIELDS.get(platform_id, [])
-    material = "\x1f".join(str(getattr(settings, field["attribute"], "") or "") for field in fields)
+    material = "\x1f".join(
+        str(getattr(settings, field["attribute"], "") or "")
+        for field in fields if field.get("fingerprint", True)
+    )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -404,6 +411,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
     settings = get_settings()
     fields = []
     for spec in _AUTH_FIELDS.get(platform_id, []):
+        if spec.get("hidden"):
+            continue
         fields.append({
             "key": spec["key"],
             "label": spec["label"],
@@ -437,6 +446,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
+    elif platform_id in {"mastodon", "x"}:
+        method = "oauth"
     elif platform_id == "mastodon":
         method = "oauth"
     elif fields:
@@ -652,9 +663,9 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return True, "Mastodon OAuth-токен сохранён; повторно проверь срок доступа и scope."
         return False, "Нажми «Подключить через OAuth», выбери сервер и подтверди доступ к профилю и публикациям."
     if platform_id == "x":
-        if settings.x_bearer_token and settings.x_user_id:
-            return True, "Данные X заданы; права токена и лимиты API требуют проверки."
-        return False, "Нужны X_BEARER_TOKEN и X_USER_ID."
+        if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
+            return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
+        return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
     if platform_id == "reddit":
         user_agent = settings.reddit_user_agent.strip()
         configured = all((
