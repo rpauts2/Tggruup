@@ -1503,7 +1503,7 @@
         const platform = String(row.platform || "unknown");
         const status = String(row.status || "unknown");
         const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
-        const canReconcile = status === "unknown"
+        const canReconcile = ["unknown", "failed", "permanent", "permanent_failure"].includes(status)
           || (status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
         const safeUrl = typeof row.url === "string" && row.url.startsWith("https://")
           ? row.url : "";
