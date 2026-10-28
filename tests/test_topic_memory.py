@@ -170,6 +170,32 @@ def test_topic_context_can_be_added_to_generation_prompt():
     assert "текущий блок ИСТОЧНИКИ" in block
 
 
+def test_topic_archive_pages_through_the_candidate_window_and_marks_truncation(monkeypatch):
+    import tgfarm.s4_generation.topic_memory as topic_memory
+
+    calls = []
+    total = 425
+
+    def fake_search(query, *, channel_id=None, preferred_channel_id=None, limit=20, offset=0):
+        calls.append((limit, offset))
+        end = min(total, offset + limit)
+        return {
+            "total": total,
+            "results": [{"id": f"topic-post-{i}", "score": 0.5} for i in range(offset, end)],
+        }
+
+    monkeypatch.setattr(topic_memory, "search_archive", fake_search)
+    result = topic_memory._search_topic_archive(
+        "Kestrelion reactor",
+        channel_id=None,
+        preferred_channel_id=None,
+        limit=300,
+    )
+    assert result["scanned"] == 300
+    assert result["truncated"] is True
+    assert calls == [(100, 0), (100, 100), (100, 200)]
+
+
 def test_topic_dossier_handles_short_or_empty_queries_without_scanning_archive():
     from tgfarm.s4_generation.topic_memory import build_topic_dossier
 
