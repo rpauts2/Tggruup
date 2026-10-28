@@ -403,4 +403,92 @@ def test_backup_scheduler_is_daily_and_has_a_stable_job_id():
     assert fields["hour"] == "4"
     assert fields["minute"] == "0"
     assert job.name == "daily verified sqlite backup"
+    startup_check = scheduler.get_job("startup-backup-check")
+    assert startup_check is not None
+    assert startup_check.name == "ensure a recent backup on startup"
+
+
+@pytest.mark.asyncio
+async def test_startup_backup_check_creates_initial_snapshot(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from tgfarm import pipeline
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeSession:
+        def __init__(self):
+            self.values = iter([None, None])
+
+        def execute(self, _statement):
+            return FakeResult(next(self.values))
+
+    @contextmanager
+    def fake_scope():
+        yield FakeSession()
+
+    calls = []
+
+    async def fake_backup():
+        calls.append(True)
+        return {"verified": True, "backup": "test.db"}
+
+    monkeypatch.setattr(pipeline, "session_scope", fake_scope)
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(backup_max_age_hours=36),
+    )
+    monkeypatch.setattr(pipeline, "backup_job", fake_backup)
+
+    result = await pipeline._startup_backup_check()
+
+    assert result == {"verified": True, "backup": "test.db"}
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_startup_backup_check_skips_when_snapshot_is_fresh(monkeypatch):
+    from contextlib import contextmanager
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from tgfarm import pipeline
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeSession:
+        def __init__(self):
+            self.values = iter([datetime.now(UTC) - timedelta(hours=2), "ok"])
+
+        def execute(self, _statement):
+            return FakeResult(next(self.values))
+
+    @contextmanager
+    def fake_scope():
+        yield FakeSession()
+
+    async def fail_backup():
+        pytest.fail("a fresh verified snapshot must not be copied on every restart")
+
+    monkeypatch.setattr(pipeline, "session_scope", fake_scope)
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(backup_max_age_hours=36),
+    )
+    monkeypatch.setattr(pipeline, "backup_job", fail_backup)
+
+    assert await pipeline._startup_backup_check() is None
 
