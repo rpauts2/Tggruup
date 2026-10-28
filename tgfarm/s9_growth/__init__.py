@@ -173,7 +173,7 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
             if post and published_at and published_at <= cutoff:
                 due.append(post_pk)
 
-        posted = skipped = failed = unknown = 0
+        posted = skipped = failed = permanent_failure = unknown = 0
         for post_pk in due:
             for result in await crosspost_post(post_pk, platforms):
                 if result.status == "posted":
@@ -182,22 +182,26 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
                     skipped += 1
                 elif result.status == "failed":
                     failed += 1
+                elif result.status == "permanent_failure":
+                    permanent_failure += 1
                 elif result.status == "unknown":
                     unknown += 1
 
         timer.items_in = len(candidates)
         timer.items_out = posted
     log.info(
-        "s9: crosspost posted=%d skipped=%d failed=%d unknown=%d",
+        "s9: crosspost posted=%d skipped=%d failed=%d permanent_failure=%d unknown=%d",
         posted,
         skipped,
         failed,
+        permanent_failure,
         unknown,
     )
     return {
         "posted": posted,
         "skipped": skipped,
         "failed": failed,
+        "permanent_failure": permanent_failure,
         "unknown": unknown,
         "considered": len(due),
     }
