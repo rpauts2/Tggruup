@@ -801,7 +801,7 @@
       }
       const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/x/auth/callback";
       const proceed = window.confirm(
-        "Перед продолжением добавь этот Callback URI в X Developer Portal → User authentication settings:\\n\\n"
+        "Перед продолжением добавь этот Callback URI в X Developer Portal → User authentication settings:\n\n"
         + callbackUri
         + "\\n\\nРазрешения приложения должны включать tweet.read, users.read, tweet.write и offline.access. Продолжить?",
       );
