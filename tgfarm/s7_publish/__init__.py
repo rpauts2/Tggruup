@@ -734,9 +734,8 @@ async def _publish_one(
         # A timeout/reset after sending may mean the platform already accepted it.
         ambiguous = _is_ambiguous_publish_error(exc)
         transport = any(
-            marker in error_text
+            marker in raw_error_text
             for marker in ("getaddrinfo", "Network is unreachable", "connection refused", "ConnectTimeout")
-            if marker in raw_error_text
         )
         with session_scope() as session:
             post = session.get(PostRow, post_id)
