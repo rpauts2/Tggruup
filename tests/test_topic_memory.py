@@ -174,6 +174,28 @@ def test_topic_context_can_be_added_to_generation_prompt():
     assert "текущий блок ИСТОЧНИКИ" in block
 
 
+def test_topic_dossier_api_returns_history_for_authenticated_request():
+    from fastapi.testclient import TestClient
+
+    from tgfarm.core.apiauth import HEADER, ensure_token
+    from tgfarm.api import create_app
+
+    now = datetime.now(UTC)
+    channel_id, public_id = _seed_history(now=now)
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1") as client:
+        response = client.get(
+            "/api/memory/topic",
+            params={"query": "Kestrelion thermal reactor cooling", "channel_id": channel_id},
+            headers={HEADER: ensure_token()},
+        )
+
+    assert response.status_code == 200
+    dossier = response.json()
+    assert dossier["status"] == "ok"
+    assert dossier["history_count"] == 1
+    assert dossier["timeline"][0]["id"] == public_id
+
+
 def test_topic_archive_pages_through_the_candidate_window_and_marks_truncation(monkeypatch):
     import tgfarm.s4_generation.topic_memory as topic_memory
 
