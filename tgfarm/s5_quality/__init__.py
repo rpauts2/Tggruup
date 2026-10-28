@@ -220,6 +220,22 @@ def gate_facts(draft: DraftPost, persona: Persona) -> GateOutcome:
     if not draft.claims:
         return GateOutcome(False, "facts", "no verified claims produced")
 
+    # Independent S4 numeric audits are a hard safety gate. A post must not
+    # smuggle an unsupported number through by diluting one failed claim among
+    # several easier claims that the model marked as verified.
+    unsupported_numbers = [
+        claim for claim in draft.claims
+        if claim.note == "numeric_audit" and not claim.verified
+    ]
+    if unsupported_numbers:
+        examples = "; ".join(claim.claim[:90] for claim in unsupported_numbers[:2])
+        return GateOutcome(
+            False,
+            "facts",
+            f"{len(unsupported_numbers)} numeric claim(s) not grounded in sources: {examples}",
+            scores={"facts": 0.0},
+        )
+
     verified = sum(1 for c in draft.claims if c.verified)
     ratio = verified / len(draft.claims)
     if ratio < MIN_VERIFIED_RATIO:
