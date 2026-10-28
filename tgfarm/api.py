@@ -2032,7 +2032,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
         from tgfarm.platforms import is_platform_enabled
         from tgfarm.s9_growth import adapters as growth_adapters
-        from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, log_result
+        from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, crosspost_retry_after_seconds, log_result
         from tgfarm.s9_growth import already_done, begin_crosspost
         from tgfarm.s9_growth.reddit_scout import (
             RedditScoutError,
