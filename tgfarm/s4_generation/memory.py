@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from typing import Iterable
 
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.types import String
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.text import content_tokens, normalize
