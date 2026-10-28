@@ -306,6 +306,55 @@ def test_numeric_audit_covers_body_sentences_and_detects_unsupported_values():
     assert any(claim.note == "numeric_audit" and not claim.verified for claim in fallback)
 
 
+@pytest.mark.asyncio
+async def test_verify_audits_numbers_even_when_llm_omits_them(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import s4_generation as generation
+    from tgfarm.core.schemas import DraftPost
+
+    item = scored(
+        "Компания получила финансирование",
+        "Инвестиции составили 12 млн рублей.",
+        url="https://example.invalid/investment",
+    )
+    draft = DraftPost(
+        hook="Компания получила финансирование.",
+        body="Размер инвестиций вырос до 99 млн рублей.",
+        sources=[{"title": item.title, "url": item.url}],
+    )
+
+    class FakeLLM:
+        async def complete_json(self, *args, **kwargs):
+            return (
+                {
+                    "claims": [
+                        {
+                            "claim": "Компания получила финансирование.",
+                            "source_url": item.url,
+                            "verified": True,
+                        }
+                    ]
+                },
+                SimpleNamespace(provider="fake", model="fake-model", latency_ms=1),
+            )
+
+    monkeypatch.setattr(generation, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(generation.policy, "should_use_ai", lambda *a, **k: (True, "test"))
+    monkeypatch.setattr(
+        generation.policy,
+        "reserve",
+        lambda *a, **k: SimpleNamespace(allowed=True, usage_id="audit-test"),
+    )
+    monkeypatch.setattr(generation.policy, "finalize", lambda *a, **k: None)
+
+    claims = await generation.verify(draft, [item], generation_provider="online")
+    unsupported = [c for c in claims if c.note == "numeric_audit" and not c.verified]
+
+    assert len(unsupported) == 1
+    assert "99 млн" in unsupported[0].claim
+
+
 def test_unverified_numeric_audit_cannot_be_diluted_by_other_verified_claims():
     from tgfarm.core.schemas import Claim, DraftPost
     from tgfarm.s5_quality import gate_facts
