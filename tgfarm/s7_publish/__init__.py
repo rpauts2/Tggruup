@@ -568,7 +568,7 @@ async def _publish_dzen(
                 await to_thread(_log_result, public_id, vk_result)
                 log.info("vk mirror from dzen: %s", vk_result.status)
     except Exception as exc:  # noqa: BLE001
-        log.warning("vk mirror from dzen failed: %s", exc)
+        log.warning("vk mirror from dzen failed: %s", redact_sensitive_text(exc, limit=180))
 
     return {"ok": True, "message_id": None, "remote_id": result.remote_id}
 
