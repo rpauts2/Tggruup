@@ -1404,7 +1404,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             item = await io(set_platform_planned, platform_id, request.planned)
         except ValueError as exc:
             status = 404 if "Неизвестная" in str(exc) else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=status, detail=redact_sensitive_text(exc, limit=300)) from exc
         _operator(
             "platform-plan",
             platform_id,
@@ -1422,7 +1422,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         try:
             item = await io(save_credentials, platform_id, request.values)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
         _operator(
             "platform-auth-save",
             platform_id,
@@ -1463,9 +1463,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/mastodon/auth/callback"
             return await begin_mastodon_oauth(instance, redirect_uri)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.get("/api/platforms/mastodon/auth/callback")
     async def mastodon_oauth_callback(request: Request) -> HTMLResponse:
@@ -1557,9 +1557,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 redirect_uri,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.get("/api/platforms/x/auth/callback")
     async def x_oauth_callback(request: Request) -> HTMLResponse:
@@ -1621,7 +1621,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         except (ValueError, RuntimeError) as exc:
             cancel_x_oauth(state_value)
             log.warning("X OAuth callback rejected (%s)", type(exc).__name__)
-            message = html.escape(str(exc)[:240])
+            message = html.escape(redact_sensitive_text(exc, limit=240))
             body = (
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
@@ -1653,9 +1653,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 redirect_uri,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.get("/api/platforms/threads/auth/callback")
     async def threads_oauth_callback(request: Request) -> HTMLResponse:
@@ -1717,7 +1717,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         except (ValueError, RuntimeError) as exc:
             cancel_threads_oauth(state_value)
             log.warning("Threads OAuth callback rejected (%s)", type(exc).__name__)
-            message = html.escape(str(exc)[:240])
+            message = html.escape(redact_sensitive_text(exc, limit=240))
             body = (
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
@@ -1749,9 +1749,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 redirect_uri,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.get("/api/platforms/linkedin/auth/callback")
     async def linkedin_oauth_callback(request: Request) -> HTMLResponse:
@@ -1814,7 +1814,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         except (ValueError, RuntimeError) as exc:
             cancel_linkedin_oauth(state_value)
             log.warning("LinkedIn OAuth callback rejected (%s)", type(exc).__name__)
-            message = html.escape(str(exc)[:240])
+            message = html.escape(redact_sensitive_text(exc, limit=240))
             body = (
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
@@ -1846,7 +1846,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         try:
             return await refresh_reddit_metrics(limit=request.limit)
         except RedditMetricsError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.post("/api/reddit/scout")
     async def reddit_scout(request: RedditScoutRequest) -> dict:
@@ -1861,7 +1861,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 limit=request.limit,
             )
         except RedditScoutError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.post("/api/reddit/tailor")
     async def reddit_tailor(request: RedditTailorRequest) -> dict:
@@ -1870,7 +1870,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         try:
             return await tailor_post(request.post_public_id, request.subreddit)
         except RedditScoutError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
 
     @app.post("/api/reddit/publish")
     async def reddit_publish(request: RedditPublishRequest) -> dict:
@@ -1926,7 +1926,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             if problems:
                 raise HTTPException(status_code=422, detail={"errors": problems})
         except RedditScoutError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
 
         if await io(already_done, post["public_id"], "reddit"):
             raise HTTPException(
