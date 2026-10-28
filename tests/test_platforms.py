@@ -265,10 +265,6 @@ def test_save_platform_credentials_keeps_existing_values_and_removes_duplicate_k
     monkeypatch.setattr(settings_module, "ROOT", tmp_path)
     monkeypatch.setattr(settings_module, "reset_settings_cache", lambda: None)
 
-    descriptor = platforms.save_platform_credentials(
-        "vk",
-        {"VK_ACCESS_TOKEN": "fresh-token", "VK_GROUP_ID": "123456", "IGNORED": ""},
-    ) if False else None
     # Unknown fields must fail closed rather than being silently accepted.
     import pytest
     with pytest.raises(ValueError, match="не разрешено"):
