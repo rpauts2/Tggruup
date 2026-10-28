@@ -134,6 +134,25 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "mastodon":
+            from tgfarm.mastodon_oauth import normalize_instance_url
+
+            instance = normalize_instance_url(settings.mastodon_instance)
+            token = str(settings.mastodon_access_token or "").strip()
+            if not token:
+                raise RuntimeError("Сначала нажми «Подключить через OAuth» и подтверди доступ на сервере Mastodon.")
+            async with httpx.AsyncClient(
+                timeout=15.0, headers={"Authorization": f"Bearer {token}"}
+            ) as client:
+                user = await _response_json(client, f"{instance}/api/v1/accounts/verify_credentials")
+            acct = str(user.get("acct") or user.get("username") or "")
+            if not acct:
+                raise RuntimeError("Mastodon не подтвердил пользовательский профиль.")
+            if "@" not in acct:
+                acct += "@" + instance.split("://", 1)[-1]
+            account = "@" + acct
+            authorized = True
+            detail = "Mastodon OAuth подтверждён; профиль доступен. Текстовая публикация использует API с защитой от повторной отправки."
         elif platform_id == "x":
             token = str(settings.x_bearer_token or "").strip()
             user_id = str(settings.x_user_id or "").strip()

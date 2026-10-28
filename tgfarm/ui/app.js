@@ -701,10 +701,11 @@
         : authStatus === "failed" ? "is-failed"
         : authStatus === "not_integrated" ? "is-not-integrated" : "is-pending";
       const authSetupLabel = auth.method === "browser" ? "Войти в Дзен"
+        : auth.method === "oauth" ? "Подключить через OAuth"
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authCheck = supported && auth.method === "credentials"
+      const authCheck = supported && ["credentials", "oauth"].includes(auth.method)
         ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
              data-platform-auth-check="${esc(item.id)}" ${busy ? "disabled" : ""}>Проверить</button>`
         : "";
@@ -764,12 +765,28 @@
     state.authSaving = false;
   }
 
-  function openPlatformAuthorization(platformId) {
+  async function openPlatformAuthorization(platformId) {
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item) return;
     const auth = item.auth || {};
     if (auth.method === "browser" && platformId === "dzen") {
       window.tgfarmDzenLogin();
+      return;
+    }
+    if (auth.method === "oauth" && platformId === "mastodon") {
+      const instance = window.prompt(
+        "Укажи адрес Mastodon-сервера (например mastodon.social). Откроется официальное окно согласия на чтение профиля и публикацию постов.",
+        auth.instance_url || "https://mastodon.social",
+      );
+      if (!instance || !instance.trim()) return;
+      try {
+        const result = await post("/api/platforms/mastodon/auth/start", { instance: instance.trim() });
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Сервер вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Mastodon OAuth: " + (error?.message || error), "err");
+      }
       return;
     }
     if (auth.method !== "credentials") {
@@ -1965,7 +1982,7 @@
   $("#platforms-grid")?.addEventListener("click", async (event) => {
     const authSetup = event.target.closest("[data-platform-auth]");
     if (authSetup) {
-      openPlatformAuthorization(authSetup.dataset.platformAuth);
+      await openPlatformAuthorization(authSetup.dataset.platformAuth);
       return;
     }
     const authCheck = event.target.closest("[data-platform-auth-check]");

@@ -172,10 +172,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "mastodon", "name": "Mastodon", "symbol": "M", "color": "#6364FF",
-        "category": "Федеративные", "market": "Мировые", "priority": "P3",
-        "mode": "planned", "roles": ["text"],
-        "description": "Федеративные посты; настройки и адрес сервера отличаются между инстансами.",
-        "requirements": "Сервер пользователя, OAuth и scope write:statuses.",
+        "category": "Федеративные", "market": "Мировые", "priority": "P1",
+        "mode": "built_in", "roles": ["crosspost"],
+        "description": "Нативные текстовые посты через OAuth 2.0 + PKCE на выбранном Mastodon-сервере.",
+        "requirements": "OAuth-подключение к HTTPS-инстансу с разрешениями read и write:statuses.",
         "docs_url": "https://docs.joinmastodon.org/methods/statuses/",
     },
     {
@@ -295,6 +295,12 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "bluesky": [
         {"key": "BLUESKY_HANDLE", "attribute": "bluesky_handle", "label": "Handle", "secret": False, "placeholder": "name.bsky.social", "help": "Handle аккаунта Bluesky, можно с собственным доменом."},
         {"key": "BLUESKY_APP_PASSWORD", "attribute": "bluesky_app_password", "label": "App password", "secret": True, "placeholder": "xxxx-xxxx-xxxx-xxxx", "help": "Создай отдельный пароль приложения в Settings → Privacy and Security → App passwords. Не вводи основной пароль."},
+    ],
+    "mastodon": [
+        {"key": "MASTODON_INSTANCE", "attribute": "mastodon_instance", "label": "Сервер Mastodon", "secret": False, "placeholder": "https://mastodon.social", "help": "Можно использовать собственный публичный HTTPS-инстанс."},
+        {"key": "MASTODON_CLIENT_ID", "attribute": "mastodon_client_id", "label": "OAuth client ID", "secret": False, "placeholder": "Заполняется автоматически", "help": "Создаётся на выбранном Mastodon-сервере."},
+        {"key": "MASTODON_CLIENT_SECRET", "attribute": "mastodon_client_secret", "label": "OAuth client secret", "secret": True, "placeholder": "Заполняется автоматически", "help": "Секрет локального OAuth-приложения."},
+        {"key": "MASTODON_ACCESS_TOKEN", "attribute": "mastodon_access_token", "label": "OAuth access token", "secret": True, "placeholder": "Заполняется автоматически", "help": "Пользовательский токен с разрешением write:statuses."},
     ],
     "x": [
         {"key": "X_BEARER_TOKEN", "attribute": "x_bearer_token", "label": "Bearer token", "secret": True, "placeholder": "X API bearer token", "help": "Проверка профиля не гарантирует наличие write-доступа."},
@@ -431,6 +437,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
+    elif platform_id == "mastodon":
+        method = "oauth"
     elif fields:
         method = "credentials"
     else:
@@ -446,6 +454,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         "checked_at": check.get("checked_at") if valid_check else None,
         "fields": fields,
         "connect_url": _AUTH_URLS.get(platform_id, ""),
+        "instance_url": str(getattr(settings, "mastodon_instance", "") or "") if platform_id == "mastodon" else "",
         "integration_ready": supported,
         "note": (
             "Вход выполняется в отдельном окне браузера и сохраняется в профиле Дзена."
@@ -638,6 +647,10 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.bluesky_handle and settings.bluesky_app_password:
             return True, "Handle и app password заданы; проверь сессию и write-доступ."
         return False, "Нужны BLUESKY_HANDLE и BLUESKY_APP_PASSWORD."
+    if platform_id == "mastodon":
+        if settings.mastodon_instance and settings.mastodon_access_token:
+            return True, "Mastodon OAuth-токен сохранён; повторно проверь срок доступа и scope."
+        return False, "Нажми «Подключить через OAuth», выбери сервер и подтверди доступ к профилю и публикациям."
     if platform_id == "x":
         if settings.x_bearer_token and settings.x_user_id:
             return True, "Данные X заданы; права токена и лимиты API требуют проверки."
