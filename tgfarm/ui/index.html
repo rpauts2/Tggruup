@@ -25,6 +25,7 @@
     <button class="tab" data-view="posts" role="tab">Посты</button>
     <button class="tab" data-view="memory" role="tab">Память</button>
     <button class="tab" data-view="channels" role="tab">Каналы</button>
+    <button class="tab" data-view="platforms" role="tab">Площадки <span class="tab-counter" id="platforms-nav-count">5</span></button>
     <button class="tab" data-view="sources" role="tab">Источники</button>
     <button class="tab" data-view="runs" role="tab">Прогоны</button>
   </nav>
@@ -177,6 +178,74 @@
   <!-- ============================================================ CHANNELS -->
   <section class="view" data-view="channels">
     <div id="channels-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================ PLATFORMS -->
+  <section class="view" data-view="platforms">
+    <div class="platform-hero">
+      <div class="platform-hero-copy">
+        <div class="platform-kicker"><span class="platform-live-dot"></span> DISTRIBUTION CONTROL</div>
+        <h2>Все площадки в одном месте</h2>
+        <p>Управляй маршрутом публикаций, не копаясь в настройках. Выключенная площадка ставится на паузу: её посты не теряются и не отправляются до повторного включения.</p>
+        <div class="platform-hero-notes">
+          <span><span class="mini-check">✓</span> переключатели связаны с доставкой</span>
+          <span><span class="mini-check">✓</span> секреты не показываются в панели</span>
+          <span><span class="mini-check">✓</span> будущие сети отмечаются отдельно</span>
+        </div>
+      </div>
+      <div class="platform-hero-aside">
+        <div class="platform-hub-orbit" aria-hidden="true">
+          <span class="orbit orbit-one"></span>
+          <span class="orbit orbit-two"></span>
+          <span class="orbit-core">TF</span>
+          <span class="orbit-node orbit-node-a">VK</span>
+          <span class="orbit-node orbit-node-b">TG</span>
+          <span class="orbit-node orbit-node-c">▶</span>
+          <span class="orbit-node orbit-node-d">r/</span>
+        </div>
+        <div class="platform-hero-aside-label">СХЕМА РАСПРОСТРАНЕНИЯ</div>
+      </div>
+    </div>
+
+    <div class="platform-summary" id="platform-summary">
+      <div class="platform-summary-card"><span>Площадок включено</span><strong>—</strong><small>загрузка состояния…</small></div>
+      <div class="platform-summary-card"><span>Настройки найдены</span><strong>—</strong><small>проверка ключей и профилей</small></div>
+      <div class="platform-summary-card"><span>В плане интеграций</span><strong>—</strong><small>выбранные следующие шаги</small></div>
+      <div class="platform-summary-card"><span>Требуют настройки</span><strong>—</strong><small>включены, но не готовы</small></div>
+    </div>
+
+    <article class="card platform-control-panel">
+      <div class="platform-control-top">
+        <div>
+          <h3>Каталог площадок</h3>
+          <p>Рабочие интеграции управляются переключателем. Для остальных можно зафиксировать приоритет, но отправки не начнутся до разработки и проверки адаптера.</p>
+        </div>
+        <span class="platform-catalog-count" id="platform-catalog-count">— сетей</span>
+      </div>
+      <div class="platform-toolbar">
+        <label class="platform-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="platform-search" type="search" placeholder="Найти сеть, например Reddit или VK…" autocomplete="off">
+          <kbd>/</kbd>
+        </label>
+        <div class="segmented platform-filter-tabs" id="platform-filters" role="group" aria-label="Фильтр площадок">
+          <button class="is-active" data-platform-filter="all">Все</button>
+          <button data-platform-filter="enabled">Включены</button>
+          <button data-platform-filter="setup">Нужна настройка</button>
+          <button data-platform-filter="planned">В плане</button>
+        </div>
+      </div>
+      <div class="platform-categories" id="platform-categories" aria-label="Категории площадок"></div>
+    </article>
+
+    <div class="platform-grid" id="platforms-grid">
+      <div class="platform-loading"><span class="platform-loading-ring"></span><strong>Подключаю каталог</strong><span>Читаю состояние интеграций и настройки площадок.</span></div>
+    </div>
+
+    <div class="platform-footer-note">
+      <span class="platform-footer-icon">i</span>
+      <p id="platform-note">Проверка ключей показывает только наличие настроек. Реальную авторизацию и публикацию нужно подтверждать отдельным тестом на каждой площадке.</p>
+    </div>
   </section>
 
   <!-- ============================================================= SOURCES -->
