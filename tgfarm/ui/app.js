@@ -1535,8 +1535,15 @@
         return acc;
       }, {});
       const successCount = (summary.posted || 0) + (summary.dry_run || 0);
-      const needsAttention = (summary.unknown || 0) + (summary.permanent || 0) + (summary.permanent_failure || 0);
-      const overall = needsAttention ? "есть проблемы" : (successCount ? "доставка идёт" : "ожидает доставки");
+      const needsAttention = (summary.unknown || 0) + (summary.failed || 0)
+        + (summary.permanent || 0) + (summary.permanent_failure || 0);
+      const activeCount = (summary.publishing || 0) + (summary.retry_authorized || 0);
+      const allSkipped = rows.length > 0 && rows.every((row) => row.status === "skipped");
+      const overall = needsAttention ? "нужно внимание"
+        : activeCount ? "доставка идёт"
+        : successCount ? "есть результат"
+        : allSkipped ? "не настроено"
+        : "ожидает доставки";
       const overallClass = needsAttention ? "tag-warn" : (successCount ? "tag-ok" : "");
       return `
         <div class="item delivery-card" style="align-items:flex-start">
