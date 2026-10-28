@@ -457,10 +457,7 @@ async def backup_job() -> dict:
         # Only a verified, fully closed snapshot receives the public .db name.
         os.replace(temp, dest)
 
-        backups = sorted(
-            dest_dir.glob("tgfarm-*.db"),
-            key=lambda path: path.stat().st_mtime_ns,
-        )
+        backups = sorted(dest_dir.glob("tgfarm-*.db"), key=lambda path: path.name)
         keep = max(1, int(settings.keep_backups))
         for old in backups[: max(0, len(backups) - keep)]:
             old.unlink(missing_ok=True)
@@ -475,6 +472,14 @@ async def backup_job() -> dict:
             "kept": kept,
         }
     except Exception:
+        # Close handles before unlinking the temporary file; Windows refuses
+        # to remove an open SQLite file.
+        if dst is not None:
+            dst.close()
+            dst = None
+        if src is not None:
+            src.close()
+            src = None
         temp.unlink(missing_ok=True)
         raise
     finally:
