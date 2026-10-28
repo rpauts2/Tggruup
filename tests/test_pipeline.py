@@ -175,6 +175,41 @@ def test_watchdog_recovery_backoff_is_exponential_and_bounded():
     assert _watchdog_recovery_delay_min(20, 5, 30) == 30
 
 
+def test_cycle_health_exposes_recovery_backoff_window(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import pipeline
+
+    now = datetime.now(UTC)
+    monkeypatch.setattr(pipeline, "_cycle_state", "failed")
+    monkeypatch.setattr(pipeline, "_cycle_started_at", now - timedelta(minutes=3))
+    monkeypatch.setattr(pipeline, "_cycle_finished_at", now)
+    monkeypatch.setattr(pipeline, "_watchdog_recovery_attempts", 3)
+    monkeypatch.setattr(
+        pipeline,
+        "_watchdog_last_recovery_at",
+        now - timedelta(minutes=4),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            cycle_stale_min=45,
+            watchdog_recovery_base_min=5,
+            watchdog_recovery_max_min=60,
+        ),
+    )
+
+    health = pipeline.cycle_health(now)
+
+    assert health["state"] == "failed"
+    assert health["stale"] is False
+    assert health["recovery_attempts"] == 3
+    assert health["recovery_delay_min"] == 20
+    assert health["recovery_wait_s"] == 16 * 60
+    assert health["recovery_next_at"] == (now + timedelta(minutes=16)).isoformat(timespec="seconds")
+
+
 @pytest.mark.asyncio
 async def test_watchdog_resets_recovery_backoff_after_healthy_cycle(monkeypatch):
     from datetime import UTC, datetime
