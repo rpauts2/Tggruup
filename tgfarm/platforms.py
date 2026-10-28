@@ -672,6 +672,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.threads_access_token and settings.threads_user_id:
             return True, "Threads OAuth найден; профиль и срок действия проверяются перед публикацией."
         return False, "Нужно сохранить Threads App ID/Secret и подключить аккаунт через OAuth."
+    if platform_id == "threads":
+        if settings.threads_app_id and settings.threads_app_secret and settings.threads_access_token and settings.threads_user_id:
+            return True, "Threads OAuth подключён; проверка профиля выполняется через API."
+        if settings.threads_app_id and settings.threads_app_secret:
+            return False, "Meta App настроено; подключи Threads-аккаунт через OAuth."
+        return False, "Нужны Threads App ID/Secret и подключение аккаунта через OAuth."
     if platform_id == "mastodon":
         if settings.mastodon_instance and settings.mastodon_access_token:
             return True, "Mastodon OAuth-токен сохранён; повторно проверь срок доступа и scope."
