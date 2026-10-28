@@ -737,6 +737,46 @@ def test_crosspost_reconciliation_requires_unknown_state():
     assert _reconcile_crosspost_outcome(public_id, "vk", "retry_after_check")["error"] == "not_unknown"
 
 
+def test_crosspost_reconciliation_rejects_recent_claim_and_recovers_stale_claim():
+    import uuid
+
+    from tgfarm.api import _reconcile_crosspost_outcome
+    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "crosspost_stale_" + suffix
+    now = datetime.now(UTC)
+    ids = [("crosspost_recent_" + suffix, now - timedelta(minutes=2)),
+           ("crosspost_stale_" + suffix, now - timedelta(minutes=45))]
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="Crosspost stale", niche="tech", platform="telegram"))
+        for public_id, created in ids:
+            session.add(
+                Post(
+                    public_id=public_id,
+                    channel_id=channel_id,
+                    hook="Test",
+                    body="Body",
+                    status="published",
+                )
+            )
+            session.add(
+                CrosspostLog(
+                    post_public_id=public_id,
+                    platform="vk",
+                    status="publishing",
+                    created_at=created,
+                    attempt=1,
+                )
+            )
+
+    recent = _reconcile_crosspost_outcome(ids[0][0], "vk", "confirm_posted")
+    stale = _reconcile_crosspost_outcome(ids[1][0], "vk", "confirm_posted")
+    assert recent["error"] == "still_in_flight"
+    assert stale["ok"] is True and stale["status"] == "posted"
+
+
 def test_crosspost_adapters_self_disable_without_credentials():
     from tgfarm.s9_growth.adapters import ADAPTERS
 
