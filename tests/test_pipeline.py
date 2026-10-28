@@ -442,7 +442,7 @@ def test_due_posts_preserves_dzen_platform():
         (RuntimeError("connection reset by peer"), True),
         (RuntimeError("DNS getaddrinfo failed"), False),
         (RuntimeError("connection refused"), False),
-        (ValueError("bad text before request"), False),
+        (ValueError("bad text before request"), True),
     ],
 )
 def test_publish_error_ambiguity_is_conservative(error, expected):
@@ -459,7 +459,11 @@ def test_publish_server_error_is_ambiguous():
     class ServerError(Exception):
         response = SimpleNamespace(status_code=503)
 
+    class ClientError(Exception):
+        response = SimpleNamespace(status_code=400)
+
     assert _is_ambiguous_publish_error(ServerError("503 Service Unavailable"))
+    assert not _is_ambiguous_publish_error(ClientError("400 Bad Request"))
 
 
 def test_publish_now_rejects_ineligible_statuses():
