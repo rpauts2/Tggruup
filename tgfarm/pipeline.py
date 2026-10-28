@@ -385,44 +385,103 @@ async def _tg_send_text(text: str) -> bool:
 
 
 async def backup_job() -> dict:
-    """Weekly sqlite backup into backup/, keeping only the newest few.
+    """Create, validate and atomically publish a SQLite backup.
 
-    A backup that lives next to the database is not a real disaster plan, but
-    it survives the common failures: a bad migration, a corrupt WAL, an
-    operator mistake. Off-machine copies stay the operator's job (see RUNBOOK).
+    A same-directory backup protects against operator mistakes and bad
+    migrations, but is not an off-machine disaster-recovery plan. The file is
+    never added to retention until SQLite's integrity check succeeds.
     """
+    import os
     import sqlite3
+    import uuid
     from pathlib import Path
 
     from sqlalchemy.engine import make_url
 
     settings = get_settings()
-    db_path = make_url(str(get_engine_url())).database
-    if not db_path:
-        return {"backup": None, "reason": "non-sqlite database"}
+    db_url = make_url(str(get_engine_url()))
+    if db_url.get_backend_name() != "sqlite":
+        return {
+            "backup": None,
+            "verified": False,
+            "reason": "non-sqlite database; configure an external database backup",
+        }
+
+    db_path = db_url.database
+    if not db_path or db_path == ":memory:":
+        return {
+            "backup": None,
+            "verified": False,
+            "reason": "SQLite database has no persistent file to back up",
+        }
+
+    source_path = Path(db_path).expanduser()
+    if not source_path.is_absolute():
+        source_path = source_path.resolve()
+    if not source_path.is_file():
+        return {
+            "backup": None,
+            "verified": False,
+            "reason": f"SQLite database file not found: {source_path}",
+        }
 
     dest_dir = (
-        Path(settings.backup_dir)
+        Path(settings.backup_dir).expanduser()
         if settings.backup_dir
         else Path(__file__).resolve().parent.parent / "backup"
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M")
+
+    # Microseconds prevent two manual backups in the same minute from
+    # silently overwriting one another. A unique temporary file also makes a
+    # crashed/failed backup invisible to the retention/pruning logic.
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S-%f")
     dest = dest_dir / f"tgfarm-{stamp}.db"
+    temp = dest_dir / f".{dest.name}.{uuid.uuid4().hex}.tmp"
 
-    src = sqlite3.connect(db_path)
-    dst = sqlite3.connect(str(dest))
-    src.backup(dst)
-    dst.close()
-    src.close()
+    src = None
+    dst = None
+    try:
+        src = sqlite3.connect(str(source_path), timeout=30)
+        dst = sqlite3.connect(str(temp), timeout=30)
+        src.backup(dst)
+        dst.commit()
+        check = dst.execute("PRAGMA integrity_check").fetchone()
+        if not check or check[0] != "ok":
+            raise sqlite3.DatabaseError(f"backup integrity_check failed: {check!r}")
+        dst.close()
+        dst = None
+        src.close()
+        src = None
 
-    backups = sorted(dest_dir.glob("tgfarm-*.db"))
-    kept = 0
-    for old in backups[: max(0, len(backups) - max(1, settings.keep_backups))]:
-        old.unlink(missing_ok=True)
-    kept = len(backups)
-    log.info("backup written: %s (%s kept)", dest.name, kept)
-    return {"backup": str(dest), "kept": kept}
+        # Only a verified, fully closed snapshot receives the public .db name.
+        os.replace(temp, dest)
+
+        backups = sorted(
+            dest_dir.glob("tgfarm-*.db"),
+            key=lambda path: path.stat().st_mtime_ns,
+        )
+        keep = max(1, int(settings.keep_backups))
+        for old in backups[: max(0, len(backups) - keep)]:
+            old.unlink(missing_ok=True)
+        kept = len(list(dest_dir.glob("tgfarm-*.db")))
+        size_bytes = dest.stat().st_size
+        log.info("verified backup written: %s (%s kept)", dest.name, kept)
+        return {
+            "backup": str(dest),
+            "verified": True,
+            "integrity_check": "ok",
+            "size_bytes": size_bytes,
+            "kept": kept,
+        }
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
+    finally:
+        if dst is not None:
+            dst.close()
+        if src is not None:
+            src.close()
 
 
 def get_engine_url() -> str:
