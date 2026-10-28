@@ -305,6 +305,13 @@ class Settings(BaseSettings):
     reddit_refresh_token: str = Field(default="", alias="REDDIT_REFRESH_TOKEN")
     reddit_subreddit: str = Field(default="", alias="REDDIT_SUBREDDIT")
     reddit_user_agent: str = Field(default="", alias="REDDIT_USER_AGENT")
+    # Threads user OAuth, refreshed locally before expiry.
+    threads_app_id: str = Field(default="", alias="THREADS_APP_ID")
+    threads_app_secret: str = Field(default="", alias="THREADS_APP_SECRET")
+    threads_access_token: str = Field(default="", alias="THREADS_ACCESS_TOKEN")
+    threads_token_expires_at: int = Field(default=0, alias="THREADS_TOKEN_EXPIRES_AT")
+    threads_user_id: str = Field(default="", alias="THREADS_USER_ID")
+    threads_username: str = Field(default="", alias="THREADS_USERNAME")
 
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
