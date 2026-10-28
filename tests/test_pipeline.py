@@ -164,6 +164,43 @@ async def test_watchdog_cancels_stale_cycle_before_catchup(monkeypatch):
     assert scheduled == [], "catch-up must wait until the cancelled task releases its slot"
 
 
+def test_watchdog_recovery_backoff_is_exponential_and_bounded():
+    from tgfarm.pipeline import _watchdog_recovery_delay_min
+
+    assert _watchdog_recovery_delay_min(0, 5, 30) == 5
+    assert _watchdog_recovery_delay_min(1, 5, 30) == 5
+    assert _watchdog_recovery_delay_min(2, 5, 30) == 10
+    assert _watchdog_recovery_delay_min(3, 5, 30) == 20
+    assert _watchdog_recovery_delay_min(4, 5, 30) == 30
+    assert _watchdog_recovery_delay_min(20, 5, 30) == 30
+
+
+@pytest.mark.asyncio
+async def test_watchdog_resets_recovery_backoff_after_healthy_cycle(monkeypatch):
+    from datetime import UTC, datetime
+
+    from tgfarm import pipeline
+
+    monkeypatch.setattr(pipeline, "_watchdog_recovery_attempts", 4)
+    monkeypatch.setattr(pipeline, "_watchdog_last_recovery_at", datetime.now(UTC))
+    monkeypatch.setattr(pipeline, "collect_alerts", lambda: [])
+
+    async def no_alerts():
+        return 0
+
+    monkeypatch.setattr(pipeline, "deliver_alerts", no_alerts)
+    monkeypatch.setattr(
+        pipeline,
+        "cycle_health",
+        lambda: {"state": "ok", "stale": False, "age_s": 1},
+    )
+
+    await pipeline._watchdog()
+
+    assert pipeline._watchdog_recovery_attempts == 0
+    assert pipeline._watchdog_last_recovery_at is None
+
+
 def test_scheduler_uses_dedicated_publish_tick():
     from tgfarm import pipeline
 
