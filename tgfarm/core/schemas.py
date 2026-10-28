@@ -18,7 +18,7 @@ Lang = str
 Angle = Literal["news", "analysis", "why_it_matters", "comparison", "checklist", "history",
     "listicle"]
 PostStatus = Literal[
-    "draft", "gated", "scheduled", "publishing", "published", "rejected", "failed"
+    "draft", "gated", "scheduled", "publishing", "publish_unknown", "published", "rejected", "failed"
 ]
 
 
