@@ -173,6 +173,25 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + acct
             authorized = True
             detail = "Mastodon OAuth подтверждён; профиль доступен. Текстовая публикация использует API с защитой от повторной отправки."
+        elif platform_id == "linkedin":
+            from tgfarm.linkedin_oauth import get_valid_linkedin_access_token
+
+            member_id = str(settings.linkedin_member_id or "").strip()
+            if not member_id or not settings.linkedin_access_token:
+                raise RuntimeError("Сначала настрой LinkedIn OAuth-приложение и подключи аккаунт.")
+            token = await get_valid_linkedin_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                profile = await _response_json(client, "https://api.linkedin.com/v2/userinfo")
+            returned_id = str(profile.get("sub") or "")
+            name = str(profile.get("name") or settings.linkedin_member_name or "").strip()
+            if not returned_id or returned_id != member_id:
+                raise RuntimeError("LinkedIn не подтвердил ожидаемый аккаунт. Переподключи OAuth.")
+            account = name or f"LinkedIn member {member_id}"
+            authorized = True
+            detail = "LinkedIn OAuth подтверждён запросом OpenID Connect userinfo. Публикация зависит от разрешения w_member_social."
         elif platform_id == "x":
             from tgfarm.x_oauth import get_valid_x_access_token
 
