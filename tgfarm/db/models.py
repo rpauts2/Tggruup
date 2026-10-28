@@ -56,6 +56,7 @@ class Source(Base):
     failures: Mapped[int] = mapped_column(Integer, default=0)
     last_yield: Mapped[int] = mapped_column(Integer, default=0)
     idle_streak: Mapped[int] = mapped_column(Integer, default=0)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_sources_enabled", "enabled", "kind"),)

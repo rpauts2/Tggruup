@@ -324,6 +324,12 @@ class Settings(BaseSettings):
     source_failure_backoff_max: int = Field(
         default=4, alias="SOURCE_FAILURE_BACKOFF_MAX"
     )
+    source_auto_cooldown_after_failures: int = Field(
+        default=5, alias="SOURCE_AUTO_COOLDOWN_AFTER_FAILURES"
+    )
+    source_auto_cooldown_hours: int = Field(
+        default=24, alias="SOURCE_AUTO_COOLDOWN_HOURS"
+    )
 
     # --- always-on supervision ---------------------------------------------
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
