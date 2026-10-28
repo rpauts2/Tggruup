@@ -37,7 +37,7 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
     settings = get_settings()
     account = ""
     detail = ""
-    authorized = False
+    authorized: bool | None = None
 
     try:
         configured, config_hint = _configured_state(platform_id)
@@ -159,8 +159,10 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             raise RuntimeError("Для этой площадки пока нет API-проверки авторизации.")
 
     except httpx.TimeoutException:
+        authorized = None
         detail = "Площадка не ответила вовремя. Это не доказывает, что токен неверный."
     except httpx.RequestError:
+        authorized = None
         detail = "Не удалось подключиться к площадке. Проверь интернет и повтори попытку."
     except Exception as exc:  # noqa: BLE001 - return only a bounded, redacted operator hint
         detail = str(exc)[:400] or "Проверка доступа не пройдена."
