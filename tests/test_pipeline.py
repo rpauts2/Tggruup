@@ -29,8 +29,6 @@ def scored(title: str, text: str = "", url: str = "", niche="tech", weight=0.6) 
 
 @pytest.mark.asyncio
 async def test_publish_tick_runs_only_the_publisher(monkeypatch):
-    import asyncio
-
     from tgfarm import pipeline, s7_publish
 
     calls = []
@@ -51,6 +49,37 @@ async def test_publish_tick_runs_only_the_publisher(monkeypatch):
     assert result["errors"] == []
     assert result["stages"]["s7_publish"]["scheduled"] == 2
     assert result["stages"]["s7_publish"]["published"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_batches_are_serialized(monkeypatch):
+    import asyncio
+
+    from tgfarm import s7_publish
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def fake_publish_once(limit=1000, post_public_ids=None):
+        calls.append((limit, post_public_ids))
+        started.set()
+        await release.wait()
+        return {"published": 1, "failed": 0, "errors": []}
+
+    monkeypatch.setattr(s7_publish, "_active_publish_task", None)
+    monkeypatch.setattr(s7_publish, "_publish_due_once", fake_publish_once)
+
+    first = asyncio.create_task(s7_publish.publish_due(limit=7))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    second = await s7_publish.publish_due(limit=4)
+
+    assert second["skipped_concurrent"] == 1
+    assert calls == [(7, None)]
+
+    release.set()
+    result = await asyncio.wait_for(first, timeout=2)
+    assert result["published"] == 1
 
 
 @pytest.mark.asyncio
