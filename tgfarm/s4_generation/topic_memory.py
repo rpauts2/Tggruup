@@ -443,7 +443,7 @@ def build_topic_dossier(
         "Источники ограничены материалами, сохранёнными в БД за выбранное окно.",
     ]
     if archive.get("truncated"):
-        limitations.append("По запросу найдено больше результатов, чем включено в это досье; сузь тему или увеличь лимит, чтобы изучить следующие материалы.")
+        limitations.append("По запросу найдено больше результатов, чем включено в это досье; уточни тему дополнительными терминами, чтобы сузить цепочку до нужных материалов.")
 
     return {
         "query": query,
@@ -458,7 +458,7 @@ def build_topic_dossier(
         "covered_angles": covered_angles,
         "updates_found": len(new_sources),
         "current_source_count": len(current_sources),
-        "timeline": timeline[-max(1, min(100, int(archive_limit))):],
+        "timeline": timeline[-max(1, min(300, int(archive_limit))):],
         "current_sources": [
             {key: value for key, value in source.items() if key != "text"}
             for source in current_sources
