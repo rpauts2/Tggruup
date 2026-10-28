@@ -825,6 +825,20 @@ def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
         return list(rows)
 
 
+def _blocked_publish_now_ids(public_ids: list[str]) -> list[dict]:
+    """Only gate-passed or already-scheduled posts may be forced out now."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(Post.public_id, Post.status).where(Post.public_id.in_(public_ids))
+        ).all()
+        status_by_id = {public_id: status for public_id, status in rows}
+    return [
+        {"id": public_id, "status": status_by_id.get(public_id, "not_found")}
+        for public_id in public_ids
+        if status_by_id.get(public_id) not in {"scheduled", "gated"}
+    ]
+
+
 def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
     """Resolve a publish whose remote outcome could not be confirmed.
 
@@ -1115,6 +1129,16 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                     "error": "publish_outcome_unknown",
                     "post_public_ids": unknown_ids,
                     "message": "Проверьте площадку и разрешите повтор через reconcile.",
+                },
+            )
+        blocked_ids = await io(_blocked_publish_now_ids, request.post_public_ids)
+        if blocked_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "post_not_publishable_now",
+                    "posts": blocked_ids,
+                    "message": "Немедленная публикация разрешена только для постов в очереди или прошедших гейты.",
                 },
             )
         updated = await io(s7_publish.unpublish, request.post_public_ids)
