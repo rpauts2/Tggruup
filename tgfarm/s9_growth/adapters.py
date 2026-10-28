@@ -438,8 +438,9 @@ class BlueskyAdapter:
     """Publish a short native post through the official AT Protocol API."""
 
     platform = "bluesky"
-    max_title = 300
+    max_title = 120
     max_body = 300
+    max_post_length = 300
 
     def _credentials(self) -> tuple[str, str]:
         settings = get_settings()
@@ -456,6 +457,9 @@ class BlueskyAdapter:
 
         text_value = _clip(payload, self.max_title, self.max_body)
         body = f"{text_value.title}\n\n{text_value.text}".strip()
+        # Bluesky stores title and body in one text field. Enforce the limit
+        # after combining them so a long title cannot silently consume the body.
+        body = truncate(body, self.max_post_length)
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
                 session_response = await client.post(
@@ -471,7 +475,7 @@ class BlueskyAdapter:
                 repo = str(session.get("did") or did)
                 record = {
                     "$type": "app.bsky.feed.post",
-                    "text": body[:300],
+                    "text": body,
                     "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
                 response = await client.post(
