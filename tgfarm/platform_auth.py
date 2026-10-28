@@ -109,6 +109,31 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 if channel_id else
                 "Токен принят. Добавь ID целевого канала и проверь права бота."
             )
+        elif platform_id == "bluesky":
+            handle = str(settings.bluesky_handle or "").strip()
+            app_password = str(settings.bluesky_app_password or "").strip()
+            if not handle or not app_password:
+                raise RuntimeError("Введи BLUESKY_HANDLE и BLUESKY_APP_PASSWORD.")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                session_response = await client.post(
+                    "https://bsky.social/xrpc/com.atproto.server.createSession",
+                    json={"identifier": handle, "password": app_password},
+                )
+                try:
+                    session_payload = session_response.json()
+                except ValueError:
+                    session_payload = {}
+                if session_response.status_code >= 400:
+                    if session_response.status_code in (401, 403):
+                        raise RuntimeError("Bluesky отклонил app password. Создай новый пароль приложения и повтори.")
+                    raise RuntimeError(f"Bluesky ответил HTTP {session_response.status_code}.")
+                did = str(session_payload.get("did") or "")
+                returned_handle = str(session_payload.get("handle") or handle)
+                if not did:
+                    raise RuntimeError("Bluesky не подтвердил DID аккаунта.")
+                account = "@" + returned_handle
+                authorized = True
+                detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
         elif platform_id == "x":
             token = str(settings.x_bearer_token or "").strip()
             user_id = str(settings.x_user_id or "").strip()
