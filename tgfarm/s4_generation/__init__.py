@@ -573,7 +573,10 @@ def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
     numbers such as 0.02. Very short numbers are ignored by the same grounding
     rule used elsewhere, so list labels like "1." do not become false alarms.
     """
-    text = f"{draft.hook}\n{draft.body}"
+    parts = [draft.hook, draft.body]
+    if draft.cta:
+        parts.append(draft.cta)
+    text = "\n".join(part for part in parts if part)
     candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
     out: list[str] = []
     seen: set[str] = set()
