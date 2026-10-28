@@ -1662,7 +1662,7 @@ def test_crosspost_alert_counts_permanent_and_exhausted_failures_only():
             (alert for alert in collect_alerts(now) if alert["code"] == "crosspost_delivery_failed"),
             None,
         )
-        return int(re.search(r"\\d+", entry["message"]).group()) if entry else 0
+        return int(re.search(r"\d+", entry["message"]).group()) if entry else 0
 
     before = failure_count()
     suffix = uuid.uuid4().hex[:8]
