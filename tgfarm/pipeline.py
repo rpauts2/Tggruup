@@ -299,6 +299,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).first()
+        last_backup = session.execute(
+            select(PipelineRun.status, PipelineRun.error, PipelineRun.meta)
+            .where(PipelineRun.stage == "backup")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).first()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -433,6 +439,25 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "level": "warning",
                 "code": "generation_failing",
                 "message": f"генерация падает: {(last_generate.error or '')[:160]}",
+            }
+        )
+    if last_backup is not None and last_backup.status == "error":
+        backup_meta = last_backup.meta or {}
+        if backup_meta.get("local_verified"):
+            message = (
+                "Локальная резервная копия создана, но зеркало резервных копий "
+                "не прошло проверку. Проверь BACKUP_MIRROR_DIR и доступность диска."
+            )
+        else:
+            message = (
+                "Последняя резервная копия не прошла проверку: "
+                + redact_sensitive_text(last_backup.error or "причина не записана", limit=180)
+            )
+        alerts.append(
+            {
+                "level": "error",
+                "code": "backup_failed",
+                "message": message,
             }
         )
     return alerts
