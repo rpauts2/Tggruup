@@ -825,7 +825,7 @@ def test_crosspost_reconciliation_requires_unknown_state():
     assert confirmed["ok"] is True
     assert confirmed["status"] == "posted"
     assert confirmed["post_id"] == post_id
-    assert _reconcile_crosspost_outcome(public_id, "vk", "retry_after_check")["error"] == "not_unknown"
+    assert _reconcile_crosspost_outcome(public_id, "vk", "retry_after_check")["error"] == "not_reconcilable"
 
 
 def test_crosspost_reconciliation_rejects_recent_claim_and_recovers_stale_claim():
@@ -1485,3 +1485,34 @@ def test_s9_only_crossposts_telegram_posts():
 
 
 
+
+
+def test_permanent_crosspost_failure_can_be_retried_after_operator_check():
+    import uuid
+
+    from tgfarm.api import _reconcile_crosspost_outcome
+    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import already_done, begin_crosspost
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "crosspost_permanent_retry_" + suffix
+    public_id = "crosspost_permanent_retry_post_" + suffix
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id, title="Permanent failure retry", niche="tech", platform="telegram"
+        ))
+        session.add(Post(
+            public_id=public_id, channel_id=channel_id, hook="Test", body="Body", status="published"
+        ))
+        session.add(CrosspostLog(
+            post_public_id=public_id, platform="bluesky", status="permanent",
+            error="invalid credentials", attempt=1,
+        ))
+
+    assert already_done(public_id, "bluesky") is True
+    retried = _reconcile_crosspost_outcome(public_id, "bluesky", "retry_after_check")
+    assert retried["ok"] is True
+    assert retried["status"] == "retry_authorized"
+    assert already_done(public_id, "bluesky") is False
+    assert begin_crosspost(public_id, "bluesky") == 2
