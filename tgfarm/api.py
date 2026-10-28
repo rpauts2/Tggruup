@@ -907,7 +907,7 @@ def _reconcile_crosspost_outcome(
     action: str,
 ) -> dict:
     """Resolve a crosspost whose remote outcome could not be confirmed."""
-    from tgfarm.s9_growth.adapters import ADAPTERS
+    from tgfarm.s9_growth.adapters import ADAPTERS, MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
 
     if platform not in ADAPTERS:
         return {"ok": False, "error": "unsupported_platform"}
@@ -930,7 +930,14 @@ def _reconcile_crosspost_outcome(
         # Ambiguous outcomes require reconciliation; definite failed/permanent
         # outcomes may be retried only after an operator fixes the cause and
         # explicitly confirms that the destination does not already contain the post.
-        if latest is None or latest.status not in {"unknown", "publishing", "failed", "permanent"}:
+        retry_exhausted = bool(
+            latest and latest.status == "failed"
+            and int(latest.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+        )
+        reconcilable_status = bool(
+            latest and latest.status in {"unknown", "publishing", "permanent"}
+        )
+        if latest is None or not (reconcilable_status or retry_exhausted):
             return {
                 "ok": False,
                 "error": "not_reconcilable",
