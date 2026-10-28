@@ -215,7 +215,7 @@ def test_fetch_telegram_history_uses_read_only_session_and_returns_oldest_first(
             return False
 
         async def get_entity(self, chat):
-            assert chat == 777
+            assert chat == "my_public_channel"
             return channel
 
         def iter_messages(self, entity, *, limit, reverse):
@@ -234,7 +234,7 @@ def test_fetch_telegram_history_uses_read_only_session_and_returns_oldest_first(
         return fake
 
     monkeypatch.setattr(tguser, "connect", fake_connect)
-    rows = asyncio.run(fetch_telegram_history("777", limit=123))
+    rows = asyncio.run(fetch_telegram_history("https://t.me/my_public_channel/123", limit=123))
 
     assert fake.entered and fake.exited
     assert fake.requested == (channel, 123, True)
