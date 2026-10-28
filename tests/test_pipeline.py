@@ -1516,3 +1516,37 @@ def test_permanent_crosspost_failure_can_be_retried_after_operator_check():
     assert retried["status"] == "retry_authorized"
     assert already_done(public_id, "bluesky") is False
     assert begin_crosspost(public_id, "bluesky") == 2
+
+
+def test_manual_crosspost_retry_is_reserved_for_exhausted_attempts():
+    import uuid
+
+    from tgfarm.api import _reconcile_crosspost_outcome
+    from tgfarm.db.models import Channel, CrosspostLog, Post
+    from tgfarm.db.session import session_scope
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "crosspost_retry_exhaust_" + suffix
+    public_ids = [
+        ("crosspost_retry_active_" + suffix, 1),
+        ("crosspost_retry_exhausted_" + suffix, 5),
+    ]
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id, title="Retry budget", niche="tech", platform="telegram"
+        ))
+        for public_id, attempt in public_ids:
+            session.add(Post(
+                public_id=public_id, channel_id=channel_id,
+                hook="Test", body="Body", status="published",
+            ))
+            session.add(CrosspostLog(
+                post_public_id=public_id, platform="bluesky",
+                status="failed", error="temporary rejection", attempt=attempt,
+            ))
+
+    active = _reconcile_crosspost_outcome(public_ids[0][0], "bluesky", "retry_after_check")
+    exhausted = _reconcile_crosspost_outcome(public_ids[1][0], "bluesky", "retry_after_check")
+    assert active["error"] == "not_reconcilable"
+    assert exhausted["ok"] is True
+    assert exhausted["status"] == "retry_authorized"
