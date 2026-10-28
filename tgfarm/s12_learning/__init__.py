@@ -62,9 +62,13 @@ def _shrink_quality(
 
 
 def _sample_confidence(sample_size: int) -> float:
-    """Confidence as the share of observed evidence after prior smoothing."""
+    """Confidence as the share of observed evidence after prior smoothing.
+
+    Keep the mathematical value unrounded; presentation and persisted summaries
+    may round it, but strategy weighting and tests should use the actual ratio.
+    """
     n = max(0, int(sample_size))
-    return round(n / (n + PRIOR_STRENGTH), 4) if n else 0.0
+    return n / (n + PRIOR_STRENGTH) if n else 0.0
 
 
 def _confidence_weighted_qualities(performance: dict) -> tuple[float, dict[str, dict]]:
