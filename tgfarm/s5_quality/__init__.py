@@ -214,11 +214,57 @@ def gate_length(draft: DraftPost, persona: Persona) -> GateOutcome:
     return GateOutcome(True, scores={"length": 1.0})
 
 
+def _source_url_key(value: object) -> tuple[str, str, int | None, str, str] | None:
+    """Normalize a cited URL for provenance matching without conflating articles.
+
+    Scheme/host are case-insensitive, default ports and fragments are not part
+    of the resource identity, and a trailing slash is ignored. Path and query
+    remain significant because they can identify different articles.
+    """
+    raw = str(value or "").strip()
+    try:
+        parsed = urlparse(raw)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return None
+    if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        return None
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        port = None
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/") or "/"
+    return scheme, host, port, path, parsed.query
+
+
 def gate_facts(draft: DraftPost, persona: Persona) -> GateOutcome:
     if persona.always_cite_sources and not draft.sources:
         return GateOutcome(False, "facts", "persona requires sources")
     if not draft.claims:
         return GateOutcome(False, "facts", "no verified claims produced")
+
+    # A model or imported draft must not be allowed to mark a claim as
+    # grounded in a URL that the published post does not actually cite.
+    attached_source_keys = {
+        key
+        for source in draft.sources
+        if isinstance(source, dict)
+        if (key := _source_url_key(source.get("url"))) is not None
+    }
+    detached_verified = [
+        claim for claim in draft.claims
+        if claim.verified and _source_url_key(claim.source_url) not in attached_source_keys
+    ]
+    if detached_verified:
+        examples = "; ".join(claim.claim[:70] for claim in detached_verified[:2])
+        return GateOutcome(
+            False,
+            "facts",
+            f"{len(detached_verified)} verified claim(s) cite URLs not attached to the draft: {examples}",
+            scores={"facts": 0.0},
+        )
 
     # Independent S4 numeric audits are a hard safety gate. A post must not
     # smuggle an unsupported number through by diluting one failed claim among
