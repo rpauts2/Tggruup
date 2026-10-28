@@ -7,7 +7,10 @@ returned by this module.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from threading import RLock
@@ -272,6 +275,249 @@ CATALOG: tuple[dict[str, Any], ...] = (
     },
 )
 
+
+# Per-platform connection UX. Values are never returned to the browser; only
+# a has_value flag is exposed. Credential-backed adapters save into local .env.
+_AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
+    "telegram": [
+        {"key": "TELEGRAM_BOT_TOKEN", "attribute": "telegram_bot_token", "label": "Bot token", "secret": True, "placeholder": "Токен из @BotFather", "help": "Токен бота, который имеет право публиковать в целевой канал."},
+        {"key": "TELEGRAM_CHANNELS", "attribute": "telegram_channels", "label": "ID целевого канала", "secret": False, "placeholder": "-1001234567890", "help": "Один или несколько chat ID через запятую."},
+    ],
+    "vk": [
+        {"key": "VK_ACCESS_TOKEN", "attribute": "vk_access_token", "label": "Access token", "secret": True, "placeholder": "VK access token", "help": "Токен с разрешениями, нужными для публикации в сообщество."},
+        {"key": "VK_GROUP_ID", "attribute": "vk_group_id", "label": "ID сообщества", "secret": False, "placeholder": "123456789", "help": "Числовой ID сообщества без знака минус."},
+    ],
+    "max": [
+        {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен сохраняется в локальном .env и не показывается повторно."},
+        {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала или чата", "secret": False, "placeholder": "ID канала", "help": "Бот должен иметь права публикации в целевом канале."},
+    ],
+    "x": [
+        {"key": "X_BEARER_TOKEN", "attribute": "x_bearer_token", "label": "Bearer token", "secret": True, "placeholder": "X API bearer token", "help": "Проверка профиля не гарантирует наличие write-доступа."},
+        {"key": "X_USER_ID", "attribute": "x_user_id", "label": "User ID", "secret": False, "placeholder": "Числовой ID профиля X", "help": "Профиль, к которому относится интеграция."},
+    ],
+    "reddit": [
+        {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
+        {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
+        {"key": "REDDIT_REFRESH_TOKEN", "attribute": "reddit_refresh_token", "label": "Refresh token", "secret": True, "placeholder": "Permanent OAuth refresh token", "help": "OAuth-токен с нужными scope, например read и submit."},
+        {"key": "REDDIT_SUBREDDIT", "attribute": "reddit_subreddit", "label": "Сообщество по умолчанию", "secret": False, "placeholder": "learnpython", "help": "Название без префикса r/."},
+        {"key": "REDDIT_USER_AGENT", "attribute": "reddit_user_agent", "label": "User-Agent", "secret": False, "placeholder": "python:tgfarm:1.0 (by /u/your_name)", "help": "Уникальная описательная строка. Не оставляй шаблонное имя."},
+    ],
+}
+_AUTH_URLS: dict[str, str] = {
+    "telegram": "https://web.telegram.org/",
+    "dzen": "https://dzen.ru/profile/editor/",
+    "vk": "https://vk.com/",
+    "max": "https://web.max.ru/",
+    "x": "https://x.com/",
+    "reddit": "https://www.reddit.com/",
+    "youtube": "https://studio.youtube.com/",
+    "tiktok": "https://www.tiktok.com/",
+    "instagram": "https://www.instagram.com/",
+    "threads": "https://www.threads.net/",
+    "facebook": "https://www.facebook.com/",
+    "linkedin": "https://www.linkedin.com/",
+    "pinterest": "https://www.pinterest.com/",
+    "odnoklassniki": "https://ok.ru/",
+    "rutube": "https://rutube.ru/",
+    "discord": "https://discord.com/app",
+    "bluesky": "https://bsky.app/",
+    "mastodon": "https://joinmastodon.org/",
+    "whatsapp_channels": "https://web.whatsapp.com/",
+    "medium": "https://medium.com/",
+    "vc_ru": "https://vc.ru/",
+    "habr": "https://habr.com/",
+    "pikabu": "https://pikabu.ru/",
+    "tenchat": "https://tenchat.ru/",
+    "twitch": "https://www.twitch.tv/",
+    "tumblr": "https://www.tumblr.com/",
+    "snapchat": "https://www.snapchat.com/",
+}
+
+def _auth_state_path() -> Path:
+    from tgfarm.core.settings import DATA_DIR
+    return DATA_DIR / "platform_auth_checks.json"
+
+
+def _read_auth_checks() -> dict[str, dict[str, Any]]:
+    try:
+        value = json.loads(_auth_state_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _credential_fingerprint(platform_id: str) -> str:
+    settings = get_settings()
+    fields = _AUTH_FIELDS.get(platform_id, [])
+    material = "\x1f".join(str(getattr(settings, field["attribute"], "") or "") for field in fields)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def record_auth_check(
+    platform_id: str, authorized: bool, *, account: str = "", detail: str = ""
+) -> dict[str, Any]:
+    """Persist only a redacted connection result, never credentials or tokens."""
+    platform_id = str(platform_id).lower()
+    checks = _read_auth_checks()
+    checks[platform_id] = {
+        "authorized": bool(authorized),
+        "account": str(account or "")[:160],
+        "detail": str(detail or "")[:400],
+        "checked_at": datetime.now(UTC).isoformat(),
+        "fingerprint": _credential_fingerprint(platform_id),
+    }
+    path = _auth_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(checks, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(temp_name, 0o600)
+        except OSError:
+            pass
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+    return _auth_descriptor(platform_id)
+
+
+def _auth_descriptor(platform_id: str) -> dict[str, Any]:
+    platform_id = str(platform_id).lower()
+    settings = get_settings()
+    fields = []
+    for spec in _AUTH_FIELDS.get(platform_id, []):
+        fields.append({
+            "key": spec["key"],
+            "label": spec["label"],
+            "secret": bool(spec["secret"]),
+            "has_value": bool(str(getattr(settings, spec["attribute"], "") or "").strip()),
+            "placeholder": spec["placeholder"],
+            "help": spec["help"],
+        })
+    checks = _read_auth_checks()
+    check = checks.get(platform_id) or {}
+    valid_check = check.get("fingerprint") == _credential_fingerprint(platform_id)
+    supported = bool(_BY_ID.get(platform_id, {}).get("mode") == "built_in")
+    configured, _detail = _configured_state(platform_id) if supported else (False, "")
+    if not supported:
+        status = "not_integrated"
+        status_label = "Вход на сайт отдельно, интеграции пока нет"
+    elif valid_check and check.get("authorized") is True:
+        status = "authorized"
+        status_label = "Доступ подтверждён"
+    elif valid_check and check.get("authorized") is False:
+        status = "failed"
+        status_label = "Проверка доступа не пройдена"
+    elif configured:
+        status = "unverified"
+        status_label = "Данные сохранены, нужна проверка"
+    else:
+        status = "needs_setup"
+        status_label = "Не настроено"
+    if platform_id == "dzen":
+        method = "browser"
+    elif fields:
+        method = "credentials"
+    else:
+        method = "external"
+    return {
+        "method": method,
+        "status": status,
+        "status_label": status_label,
+        "configured": configured,
+        "authorized": check.get("authorized") if valid_check else None,
+        "account": check.get("account", "") if valid_check else "",
+        "detail": check.get("detail", "") if valid_check else "",
+        "checked_at": check.get("checked_at") if valid_check else None,
+        "fields": fields,
+        "connect_url": _AUTH_URLS.get(platform_id, ""),
+        "integration_ready": supported,
+        "note": (
+            "Вход выполняется в отдельном окне браузера и сохраняется в профиле Дзена."
+            if platform_id == "dzen" else
+            "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
+            if not supported else
+            "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации."
+        ),
+    }
+
+
+def save_platform_credentials(platform_id: str, values: dict[str, str]) -> dict[str, Any]:
+    """Save allowlisted credentials to the local .env without returning secrets."""
+    platform_id = str(platform_id).lower()
+    allowed = {field["key"]: field for field in _AUTH_FIELDS.get(platform_id, [])}
+    if not allowed:
+        raise ValueError("Для этой площадки нет формы токенов: используй её способ входа.")
+    updates: dict[str, str] = {}
+    for key, raw_value in values.items():
+        if key not in allowed:
+            raise ValueError(f"Поле {key!r} не разрешено для этой площадки.")
+        if not isinstance(raw_value, str):
+            raise ValueError("Значения ключей должны быть текстом.")
+        value = raw_value.strip()
+        if not value:
+            continue  # Empty fields mean "leave the saved value unchanged".
+        if len(value) > 4096 or "\n" in value or "\r" in value or "\x00" in value:
+            raise ValueError(f"Поле {key} имеет недопустимый формат или слишком длинное значение.")
+        updates[key] = value
+    if not updates:
+        raise ValueError("Введи хотя бы одно новое значение. Пустые поля не затирают сохранённые ключи.")
+
+    from tgfarm.core.settings import ROOT, reset_settings_cache
+    env_path = ROOT / ".env"
+    existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    pending = dict(updates)
+    output: list[str] = []
+    for line in existing:
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        key = match.group(1) if match else ""
+        if key in pending:
+            output.append(f"{key}='{pending.pop(key).replace(chr(92), chr(92)*2).replace(chr(39), chr(92)+chr(39))}'")
+        else:
+            output.append(line)
+    if pending:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(
+            f"{key}='{value.replace(chr(92), chr(92)*2).replace(chr(39), chr(92)+chr(39))}'"
+            for key, value in pending.items()
+        )
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".tgfarm-env-", dir=str(env_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(output) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(temp_name, 0o600)
+        except OSError:
+            pass
+        os.replace(temp_name, env_path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+    reset_settings_cache()
+    checks = _read_auth_checks()
+    checks.pop(platform_id, None)
+    path = _auth_state_path()
+    try:
+        path.write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return _auth_descriptor(platform_id)
+
+
 _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
@@ -440,6 +686,7 @@ def get_platform_catalog() -> dict[str, Any]:
         row["channel_count"] = sum(
             1 for persona in cfg.personas if persona.platform == platform_id and persona.enabled
         )
+        row["auth"] = _auth_descriptor(platform_id)
         row["roles_label"] = ", ".join({
             "primary": "Основная публикация",
             "crosspost": "Кросспостинг",
