@@ -448,8 +448,6 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "browser"
     elif platform_id in {"mastodon", "x"}:
         method = "oauth"
-    elif platform_id == "mastodon":
-        method = "oauth"
     elif fields:
         method = "credentials"
     else:
