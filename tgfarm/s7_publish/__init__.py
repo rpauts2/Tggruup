@@ -938,19 +938,22 @@ async def run() -> dict[str, int]:
 
 
 def unpublish(posts_public_ids: list[str]) -> int:
-    """Admin action: pull a post back to `scheduled` (never deletes remotely)."""
+    """Schedule eligible posts immediately without overwriting concurrent claims.
+
+    A single conditional UPDATE is important here: selecting ORM objects and
+    saving them later can overwrite a worker's concurrent transition to
+    `publishing`, reopening a duplicate-send race.
+    """
     with session_scope() as session:
-        rows = session.execute(
-            select(PostRow).where(
+        result = session.execute(
+            update(PostRow)
+            .where(
                 PostRow.public_id.in_(posts_public_ids),
                 PostRow.status.in_(("scheduled", "gated")),
             )
-        ).scalars().all()
-        now = datetime.now(UTC)
-        for row in rows:
-            row.status = "scheduled"
-            row.scheduled_at = now
-        return len(rows)
+            .values(status="scheduled", scheduled_at=datetime.now(UTC))
+        )
+        return result.rowcount or 0
 
 
 def new_run_id() -> str:
