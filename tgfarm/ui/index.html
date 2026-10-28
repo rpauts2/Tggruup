@@ -23,6 +23,7 @@
     <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
+    <button class="tab" data-view="memory" role="tab">Память</button>
     <button class="tab" data-view="channels" role="tab">Каналы</button>
     <button class="tab" data-view="sources" role="tab">Источники</button>
     <button class="tab" data-view="runs" role="tab">Прогоны</button>
@@ -61,6 +62,16 @@
         <div id="pipeline-visual" class="pipeline"></div>
       </article>
     </div>
+
+    <article class="card">
+      <header class="card-head">
+        <h2>Разведка портфеля</h2>
+        <span class="card-sub" id="portfolio-meta">Ожидание метрик</span>
+      </header>
+      <div id="portfolio-insights" class="list">
+        <div class="empty">Собираем измеримые результаты постов.</div>
+      </div>
+    </article>
 
     <div class="grid-2">
       <article class="card">
@@ -113,6 +124,54 @@
       </div>
     </div>
     <div id="posts-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================= MEMORY -->
+  <section class="view" data-view="memory">
+    <article class="card">
+      <header class="card-head">
+        <h2>Память публикаций</h2>
+        <span class="card-sub" id="memory-meta">Загружаю архив…</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub" style="white-space:normal;line-height:1.6;margin:0 0 12px">
+          Поиск идёт по всему архиву TgFarm: заголовкам, текстам, сохранённым утверждениям и источникам, а не только по последним постам.
+          Ручные публикации, которых нет в базе фермы, здесь пока не отображаются.
+        </p>
+        <form id="memory-search-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Найти в прошлых публикациях</span>
+            <input id="memory-query" type="search" placeholder="Например: Aurora-X, цена, исследование, конкретный факт" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Найти</button>
+          <button class="btn btn-ghost" type="button" id="memory-reindex">Перестроить индекс</button>
+        </form>
+        <div id="memory-count" class="card-sub" style="margin:0 0 8px"></div>
+      </div>
+      <div id="memory-results" class="list">
+        <div class="empty">Загружаю полный архив публикаций…</div>
+      </div>
+    </article>
+
+    <article class="card topic-dossier-card">
+      <header class="card-head">
+        <h2>Досье темы</h2>
+        <span class="card-sub">история → обновления → продолжение</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub topic-intro">Собирает хронологию постов, свежие материалы и старые утверждения, которые стоит перепроверить. Расхождения чисел помечаются как возможные, а не как доказанная ошибка.</p>
+        <form id="topic-dossier-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Тема, продукт, компания или исследование</span>
+            <input id="topic-query" type="search" placeholder="Например: Orion-X, OpenAI, цена подписки" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Собрать досье</button>
+        </form>
+      </div>
+      <div id="topic-dossier-results" class="topic-dossier-results">
+        <div class="empty">Введи тему и нажми «Собрать досье», чтобы соединить старые публикации со свежими источниками.</div>
+      </div>
+    </article>
   </section>
 
   <!-- ============================================================ CHANNELS -->

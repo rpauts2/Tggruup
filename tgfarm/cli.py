@@ -18,6 +18,7 @@
     tgfarm demo                 seed synthetic data and run a cycle offline
     tgfarm dzen-login           open Dzen and keep the Yandex session in a profile
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
+    tgfarm history-import FILE  import old publication exports (preview by default)
 """
 
 from __future__ import annotations
@@ -477,6 +478,31 @@ def cmd_dzen_login(args) -> int:
     return 0
 
 
+def cmd_history_import(args) -> int:
+    """Import a local platform export into the archive, without publishing."""
+    from tgfarm.history_import import import_history, load_history_export
+
+    _bootstrap()
+    records = load_history_export(args.input, platform=args.platform)
+    report = import_history(records, channel_id=args.channel, apply=args.apply)
+    report["source_file"] = str(args.input)
+    _print(report)
+    return 0
+
+
+def cmd_history_import_telegram(args) -> int:
+    """Import bounded history through the existing read-only Telegram session."""
+    from tgfarm.history_import import fetch_telegram_history, import_history
+
+    _bootstrap()
+    records = asyncio.run(fetch_telegram_history(args.chat, limit=args.limit))
+    report = import_history(records, channel_id=args.channel, apply=args.apply)
+    report["telegram_chat"] = args.chat
+    report["requested_limit"] = args.limit
+    _print(report)
+    return 0
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tgfarm", description=__doc__,
@@ -602,6 +628,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--respect-interval", action="store_true", help="skip if DZEN_STATS_INTERVAL_MIN has not elapsed"
     )
     p_dzen_stats.set_defaults(func=cmd_dzen_stats)
+
+    p_history = sub.add_parser(
+        "history-import", help="import a historical JSON/CSV export (preview by default)"
+    )
+    p_history.add_argument("input", help="path to a local .json or .csv export")
+    p_history.add_argument("--channel", required=True, help="existing TgFarm channel id")
+    p_history.add_argument(
+        "--platform",
+        choices=["auto", "telegram", "vk", "dzen", "generic"],
+        default="auto",
+        help="source export format/platform (default: auto)",
+    )
+    p_history.add_argument(
+        "--apply",
+        action="store_true",
+        help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_history.set_defaults(func=cmd_history_import)
+
+    p_tg_history = sub.add_parser(
+        "history-import-telegram",
+        help="preview/import Telegram history using the configured read-only user session",
+    )
+    p_tg_history.add_argument("chat", help="Telegram username, t.me link, or chat ID")
+    p_tg_history.add_argument("--channel", required=True, help="existing TgFarm channel id")
+    p_tg_history.add_argument(
+        "--limit", type=int, default=1000, help="messages from the oldest part of history (1..5000)"
+    )
+    p_tg_history.add_argument(
+        "--apply",
+        action="store_true",
+        help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_tg_history.set_defaults(func=cmd_history_import_telegram)
 
     return parser
 

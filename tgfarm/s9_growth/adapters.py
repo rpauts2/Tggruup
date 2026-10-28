@@ -111,7 +111,7 @@ def crosspost_error_status(exc: BaseException) -> str:
         if status_code in (408, 425) or status_code >= 500:
             return "unknown"
         if 400 <= status_code < 500:
-            return "permanent_failure"
+            return "permanent"
     return "unknown" if ambiguous_crosspost_error(exc) else "failed"
 
 
@@ -283,7 +283,7 @@ class VkAdapter:
                 elif error_code == 10:
                     error_status = "unknown"
                 else:
-                    error_status = "permanent_failure"
+                    error_status = "permanent"
                 return CrosspostResult(
                     platform=self.platform,
                     status=error_status,
@@ -414,7 +414,7 @@ def latest_crosspost(post_public_id: str, platform: str):
 
 def already_done(post_public_id: str, platform: str) -> bool:
     row = latest_crosspost(post_public_id, platform)
-    return bool(row and row.status in {"posted", "unknown", "publishing", "permanent_failure"})
+    return bool(row and row.status in {"posted", "unknown", "publishing", "permanent"})
 
 
 def begin_crosspost(post_public_id: str, platform: str) -> int | None:
@@ -435,7 +435,7 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
             .limit(1)
             .with_for_update()
         ).scalar_one_or_none()
-        if row and row.status in {"posted", "unknown", "publishing", "permanent_failure"}:
+        if row and row.status in {"posted", "unknown", "publishing", "permanent"}:
             return None
         if row and row.status == "failed":
             delay_min = crosspost_retry_delay_min(row.attempt)
