@@ -16,7 +16,7 @@ from typing import Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 
 from tgfarm import pipeline
@@ -77,6 +77,27 @@ class PlatformToggleRequest(BaseModel):
 
 class PlatformPlanRequest(BaseModel):
     planned: bool
+
+
+class RedditScoutRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=120)
+    post_public_id: str | None = Field(default=None, max_length=120)
+    title: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=5000)
+    limit: int = Field(default=6, ge=1, le=8)
+
+
+class RedditTailorRequest(BaseModel):
+    post_public_id: str = Field(min_length=3, max_length=120)
+    subreddit: str = Field(min_length=2, max_length=21)
+
+
+class RedditPublishRequest(BaseModel):
+    post_public_id: str = Field(min_length=3, max_length=120)
+    subreddit: str = Field(min_length=2, max_length=21)
+    title: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1, max_length=40000)
+    confirm: bool = False
 
 
 class PolishRequest(BaseModel):
@@ -1303,6 +1324,127 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "planned" if request.planned else "removed from plan",
         )
         return {"ok": True, "platform": item}
+
+
+    @app.post("/api/reddit/scout")
+    async def reddit_scout(request: RedditScoutRequest) -> dict:
+        from tgfarm.s9_growth.reddit_scout import RedditScoutError, search_communities
+
+        try:
+            return await search_communities(
+                request.query,
+                post_public_id=request.post_public_id or "",
+                title=request.title,
+                body=request.body,
+                limit=request.limit,
+            )
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/reddit/tailor")
+    async def reddit_tailor(request: RedditTailorRequest) -> dict:
+        from tgfarm.s9_growth.reddit_scout import RedditScoutError, tailor_post
+
+        try:
+            return await tailor_post(request.post_public_id, request.subreddit)
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/reddit/publish")
+    async def reddit_publish(request: RedditPublishRequest) -> dict:
+        from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth import adapters as growth_adapters
+        from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, log_result
+        from tgfarm.s9_growth import already_done, begin_crosspost
+        from tgfarm.s9_growth.reddit_scout import (
+            RedditScoutError,
+            _post_record,
+            inspect_community,
+            validate_submission,
+        )
+        import re
+
+        if not request.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Подтверди, что просмотрел черновик и правила сообщества.",
+            )
+        settings_now = get_settings()
+        if not settings_now.live:
+            raise HTTPException(
+                status_code=409,
+                detail="TGFARM_MODE не live. Сначала проверь черновик в dry-режиме.",
+            )
+        if not is_platform_enabled("reddit"):
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit выключен в центре площадок.",
+            )
+        adapter = growth_adapters.ADAPTERS.get("reddit")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit OAuth не настроен. Проверь локальный .env.",
+            )
+        subreddit = request.subreddit.strip()
+        if subreddit.lower().startswith("r/"):
+            subreddit = subreddit[2:]
+        if not re.fullmatch(r"[A-Za-z0-9_]{2,21}", subreddit):
+            raise HTTPException(status_code=422, detail="Некорректное имя subreddit.")
+
+        try:
+            post = await io(_post_record, request.post_public_id)
+            if post["status"] != "published":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Для Reddit можно использовать только уже опубликованный пост TgFarm.",
+                )
+            community = await inspect_community(subreddit)
+            problems = validate_submission(request.title, request.body, community)
+            if problems:
+                raise HTTPException(status_code=422, detail={"errors": problems})
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        if await io(already_done, post["public_id"], "reddit"):
+            raise HTTPException(
+                status_code=409,
+                detail="Для этого исходного поста уже есть результат Reddit. Проверь журнал перед повтором.",
+            )
+        attempt = await io(begin_crosspost, post["public_id"], "reddit")
+        if attempt is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Публикация уже запускалась или ожидает сверки. Повтор запрещён до проверки журнала.",
+            )
+
+        payload = CrosspostPayload(
+            platform="reddit",
+            title=request.title.strip(),
+            text=request.body.strip(),
+            meta={"subreddit": subreddit, "reddit_kind": "self"},
+        )
+        try:
+            result = await adapter.publish(payload)
+        except Exception as exc:  # noqa: BLE001 - ambiguity must block blind retries
+            result = CrosspostResult(
+                platform="reddit",
+                status="unknown" if ambiguous_crosspost_error(exc) else "failed",
+                error=f"{type(exc).__name__}: {str(exc)[:220]}",
+            )
+        await io(log_result, post["public_id"], result, attempt)
+        _operator(
+            "reddit-publish",
+            f"{post['public_id']}:r/{subreddit}",
+            result.status,
+        )
+        return {
+            "ok": result.status == "posted",
+            "result": result.model_dump(),
+            "subreddit": subreddit,
+            "review_required": True,
+        }
 
     @app.get("/api/runs")
     async def runs(limit: int = Query(30, ge=1, le=200)) -> dict:
