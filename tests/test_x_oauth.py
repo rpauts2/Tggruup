@@ -103,7 +103,6 @@ async def test_x_oauth_refresh_persists_rotated_tokens(monkeypatch):
 
     FakeXOAuthClient.calls = []
     monkeypatch.setattr(x_oauth.httpx, "AsyncClient", FakeXOAuthClient)
-    monkeypatch.setattr(x_oauth.get_settings if hasattr(x_oauth, "get_settings") else platforms, "unused", lambda: None, raising=False)
     monkeypatch.setattr("tgfarm.core.settings.get_settings", lambda: SimpleNamespace(
         x_access_token="expired-token",
         x_refresh_token="refresh-before",
