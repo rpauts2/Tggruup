@@ -89,11 +89,20 @@ def cmd_cycle(args) -> int:
 
     async def _run() -> int:
         await pipeline.bootstrap()
-        result = await pipeline.run_cycle(collect=not args.no_collect, max_clusters=args.max_clusters)
-        return (0 if not result.errors else 2) if result.as_dict() else 0
+        result = await pipeline._guarded_cycle(
+            collect=not args.no_collect,
+            max_clusters=args.max_clusters,
+        )
+        if result is None:
+            _print({
+                "error": "cycle skipped, timed out, or failed",
+                "health": pipeline.cycle_health(),
+            })
+            return 2
+        _print(result.as_dict())
+        return 0 if not result.errors else 2
 
-    code = asyncio.run(_run())
-    return code
+    return asyncio.run(_run())
 
 
 def cmd_serve(args) -> int:
