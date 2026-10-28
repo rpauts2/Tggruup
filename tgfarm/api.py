@@ -776,6 +776,7 @@ def _crossposts(limit: int) -> list[dict]:
 def _report(days: int) -> dict:
     from tgfarm import s8_analytics
     from tgfarm.s8_analytics.dzen_web import metrics_status
+    from tgfarm.s8_analytics.portfolio import portfolio_report
 
     return {
         "fleet": s8_analytics.fleet_summary(days),
@@ -785,6 +786,7 @@ def _report(days: int) -> dict:
         "guardrail": s8_analytics.style_diversity(min(days, 7)),
         "platform_health": s8_analytics.platform_health(min(days, 14)),
         "hours": s8_analytics.slot_performance(days),
+        "portfolio": portfolio_report(max(30, days)),
         "dzen": metrics_status(),
     }
 
@@ -1017,6 +1019,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/report")
     async def report(days: int = Query(7, ge=1, le=90)) -> dict:
         return await io(_report, days)
+
+    @app.get("/api/portfolio")
+    async def portfolio(
+        days: int = Query(30, ge=1, le=90),
+        min_age_hours: int = Query(24, ge=0, le=336),
+    ) -> dict:
+        from tgfarm.s8_analytics.portfolio import portfolio_report
+
+        return await io(portfolio_report, days, min_age_hours)
 
     @app.get("/api/editorial")
     async def editorial(limit: int = Query(25, ge=1, le=100)) -> dict:
