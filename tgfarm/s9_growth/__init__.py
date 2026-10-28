@@ -106,7 +106,6 @@ def _pending_crossposts(
     posts there would duplicate the same story under a second byline.
     """
     cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
-    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     with session_scope() as session:
         rows = session.execute(
             select(PostRow)
@@ -117,6 +116,7 @@ def _pending_crossposts(
                 or_(ChannelRow.platform.is_(None), ChannelRow.platform == "telegram"),
                 ChannelRow.enabled.is_(True),
             )
+            .order_by(PostRow.published_at.asc(), PostRow.id.asc())
         ).scalars().all()
         return [
             (row.id, row.public_id)
@@ -198,7 +198,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
     return results
 
 
-async def run_crossposts(limit: int = 20) -> dict[str, int]:
+async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
     config = get_config()
     get_settings()
     cfg = config.schedule.crosspost
@@ -215,16 +215,28 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
         candidates = await to_thread(_pending_crossposts, sample_rate)
         # only cross-post posts old enough to have settled in the feed
         cutoff = datetime.now(UTC) - timedelta(minutes=delay_min)
-        due = []
-        for post_pk, _public_id in candidates[:limit]:
+        due: list[tuple[int, list[str]]] = []
+        target_limit = max(1, int(limit))
+        for post_pk, public_id in candidates:
             post = await to_thread(_load_post, post_pk)
             published_at = ensure_utc(post.published_at) if post else None
-            if post and published_at and published_at <= cutoff:
-                due.append(post_pk)
+            if not post or not published_at or published_at > cutoff:
+                continue
+            # Don't consume batch slots on posts that have already reached every
+            # enabled target. Otherwise old successful rows can starve new posts.
+            pending_platforms = [
+                name for name in platforms
+                if not await to_thread(already_done, public_id, name)
+            ]
+            if not pending_platforms:
+                continue
+            due.append((post_pk, pending_platforms))
+            if len(due) >= target_limit:
+                break
 
         posted = skipped = failed = permanent_failure = unknown = 0
-        for post_pk in due:
-            for result in await crosspost_post(post_pk, platforms):
+        for post_pk, pending_platforms in due:
+            for result in await crosspost_post(post_pk, pending_platforms):
                 if result.status == "posted":
                     posted += 1
                 elif result.status == "skipped":
@@ -254,6 +266,37 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
         "unknown": unknown,
         "considered": len(due),
     }
+
+
+# Serialize the background crosspost tick against the full farm cycle.
+_active_crosspost_task: asyncio.Task | None = None
+
+
+async def run_crossposts(limit: int = 20) -> dict[str, int]:
+    """Run one crosspost batch at a time, even when the full cycle and retry tick overlap."""
+    global _active_crosspost_task
+
+    current = asyncio.current_task()
+    active = _active_crosspost_task
+    if active is not None and active is not current and not active.done():
+        log.info("s9: crosspost batch skipped because another batch is still running")
+        return {
+            "posted": 0,
+            "skipped": 0,
+            "failed": 0,
+            "permanent_failure": 0,
+            "unknown": 0,
+            "considered": 0,
+            "skipped_concurrent": 1,
+        }
+
+    if current is not None:
+        _active_crosspost_task = current
+    try:
+        return await _run_crossposts_once(limit)
+    finally:
+        if current is not None and _active_crosspost_task is current:
+            _active_crosspost_task = None
 
 
 # --------------------------------------------------------------- SEO articles

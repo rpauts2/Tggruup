@@ -838,6 +838,31 @@ async def _guarded_publish_tick() -> dict:
         return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": 0}
 
 
+async def _guarded_crosspost_tick() -> dict:
+    """Drain eligible external deliveries independently of content generation."""
+    from tgfarm import s9_growth
+
+    settings = get_settings()
+    timeout = max(60, min(900, settings.cycle_timeout_min * 60))
+    run_id = f"xpost-{uuid.uuid4().hex[:8]}"
+    started = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(s9_growth.run_crossposts(limit=10), timeout=timeout)
+        if result.get("skipped_concurrent"):
+            log.info("crosspost tick skipped because another batch is still active")
+        return result
+    except TimeoutError:
+        message = f"crosspost tick exceeded {timeout}s"
+        log.error(message)
+        await to_thread(_record, run_id, "crosspost_tick", "timeout", error=message)
+        return {"posted": 0, "failed": 0, "unknown": 0, "errors": [message]}
+    except Exception as exc:  # noqa: BLE001 - periodic work must not kill the scheduler
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+        log.error("crosspost tick failed: %s", message)
+        await to_thread(_record, run_id, "crosspost_tick", "error", duration_ms=int((time.perf_counter() - started) * 1000), error=message)
+        return {"posted": 0, "failed": 0, "unknown": 0, "errors": [message]}
+
+
 async def _watchdog() -> None:
     """Keep the farm alive: alert on stale cycles and schedule a catch-up run.
 
@@ -992,6 +1017,16 @@ def _build_scheduler():
         name="publish tick",
         max_instances=1,
         coalesce=True,
+    )
+
+    scheduler.add_job(
+        _guarded_crosspost_tick,
+        IntervalTrigger(minutes=10),
+        id="crosspost-tick",
+        name="crosspost retry and delivery",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
 
     scheduler.add_job(

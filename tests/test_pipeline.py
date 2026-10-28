@@ -1579,3 +1579,60 @@ def test_crosspost_sampling_supports_an_injected_random_generator():
     first = [_crosspost_sampled(f"post-{i}", 0.4, first_rng) for i in range(50)]
     second = [_crosspost_sampled(f"post-{i}", 0.4, second_rng) for i in range(50)]
     assert first == second
+
+
+def test_crosspost_already_done_respects_retry_cooldown_and_budget():
+    import uuid
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import already_done
+
+    public_id = "crosspost_backoff_state_" + uuid.uuid4().hex[:8]
+    with session_scope() as session:
+        session.add(CrosspostLog(
+            post_public_id=public_id,
+            platform="vk",
+            status="failed",
+            attempt=1,
+            created_at=datetime.now(UTC) - timedelta(minutes=1),
+        ))
+    assert already_done(public_id, "vk") is True
+
+    with session_scope() as session:
+        row = session.query(CrosspostLog).filter_by(post_public_id=public_id).one()
+        row.created_at = datetime.now(UTC) - timedelta(minutes=3)
+    assert already_done(public_id, "vk") is False
+
+    with session_scope() as session:
+        row = session.query(CrosspostLog).filter_by(post_public_id=public_id).one()
+        row.attempt = 5
+        row.created_at = datetime.now(UTC) - timedelta(hours=1)
+    assert already_done(public_id, "vk") is True
+
+
+@pytest.mark.asyncio
+async def test_crosspost_batches_are_serialized(monkeypatch):
+    import asyncio
+    from tgfarm import s9_growth
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def fake_batch(limit=20):
+        calls.append(limit)
+        started.set()
+        await release.wait()
+        return {"posted": 1, "skipped": 0, "failed": 0, "considered": 1}
+
+    monkeypatch.setattr(s9_growth, "_active_crosspost_task", None)
+    monkeypatch.setattr(s9_growth, "_run_crossposts_once", fake_batch)
+    first = asyncio.create_task(s9_growth.run_crossposts(limit=7))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    second = await s9_growth.run_crossposts(limit=4)
+    assert second["skipped_concurrent"] == 1
+    assert calls == [7]
+    release.set()
+    result = await asyncio.wait_for(first, timeout=2)
+    assert result["posted"] == 1

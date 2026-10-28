@@ -1025,8 +1025,21 @@ def latest_crosspost(post_public_id: str, platform: str):
 
 
 def already_done(post_public_id: str, platform: str) -> bool:
+    """Whether another automatic attempt must wait for operator action or cooldown."""
     row = latest_crosspost(post_public_id, platform)
-    return bool(row and row.status in {"posted", "unknown", "publishing", "permanent"})
+    if row is None:
+        return False
+    if row.status in {"posted", "unknown", "publishing", "permanent"}:
+        return True
+    if row.status == "failed":
+        delay_min = crosspost_retry_delay_min(row.attempt)
+        if delay_min is None:
+            return True
+        created = row.created_at
+        if created is not None:
+            created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
+            return datetime.now(UTC) < created + timedelta(minutes=delay_min)
+    return False
 
 
 def begin_crosspost(post_public_id: str, platform: str) -> int | None:
