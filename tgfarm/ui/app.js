@@ -1429,20 +1429,26 @@
     const container = $("#crossposts-list");
     if (!container) return;
 
-    const latest = [];
+    // API rows are newest-first. Keep the newest attempt for each
+    // material/platform pair, then show all platforms together as one delivery card.
+    const byPost = new Map();
     const seen = new Set();
     for (const row of entries || []) {
-      const key = `${row.post}\u0000${row.platform}`;
-      if (seen.has(key)) continue;
+      const post = String(row.post || "");
+      const platform = String(row.platform || "unknown");
+      const key = `${post}\\u0000${platform}`;
+      if (!post || seen.has(key)) continue;
       seen.add(key);
-      latest.push(row);
+      if (!byPost.has(post)) byPost.set(post, []);
+      byPost.get(post).push(row);
     }
 
     const labels = {
       posted: "опубликован",
       skipped: "пропущен",
-      failed: "ошибка, будет повтор",
-      permanent: "ошибка настройки/API",
+      failed: "временная ошибка",
+      permanent: "постоянная ошибка",
+      permanent_failure: "постоянная ошибка",
       unknown: "нужна сверка",
       publishing: "отправляется",
       retry_authorized: "повтор разрешён",
@@ -1451,46 +1457,83 @@
     const statusClass = {
       posted: "tag-ok",
       failed: "tag-warn",
+      permanent: "tag-err",
       permanent_failure: "tag-err",
       unknown: "tag-err",
       publishing: "tag-warn",
       retry_authorized: "tag-acc",
       dry_run: "tag-acc",
+      skipped: "",
+    };
+    const platformNames = {
+      telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X",
+      reddit: "Reddit", bluesky: "Bluesky", mastodon: "Mastodon",
+      threads: "Threads", linkedin: "LinkedIn", youtube: "YouTube",
+      tiktok: "TikTok",
     };
 
-    container.innerHTML = latest.slice(0, 12).map((row) => {
-      const label = labels[row.status] || row.status;
-      const status = esc(row.status);
-      const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
-      const canReconcile = row.status === "unknown"
-        || (row.status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
-      const url = row.url
-        ? ` · <a href="${esc(row.url)}" target="_blank" rel="noopener">открыть</a>`
-        : "";
-      const error = row.error && row.status !== "posted"
-        ? ` · ${esc(String(row.error).slice(0, 110))}`
-        : "";
-      const actions = canReconcile ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
-          <button class="btn btn-primary btn-sm js-crosspost-reconcile"
-            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="confirm_posted">Пост уже есть</button>
-          <button class="btn btn-ghost btn-sm js-crosspost-reconcile"
-            data-post="${esc(row.post)}" data-platform="${esc(row.platform)}" data-action="retry_after_check">Проверил: поста нет</button>
-        </div>` : "";
+    const cards = [...byPost.entries()].sort((a, b) => {
+      const aTime = Math.max(...a[1].map((row) => row.at ? new Date(row.at).getTime() : 0));
+      const bTime = Math.max(...b[1].map((row) => row.at ? new Date(row.at).getTime() : 0));
+      return bTime - aTime;
+    });
+
+    container.innerHTML = cards.slice(0, 12).map(([post, rows]) => {
+      const latestAt = rows.reduce((best, row) => {
+        const time = row.at ? new Date(row.at).getTime() : 0;
+        return time > best ? time : best;
+      }, 0);
+      const deliveryStates = rows.map((row) => {
+        const platform = String(row.platform || "unknown");
+        const status = String(row.status || "unknown");
+        const ageMs = row.at ? Date.now() - new Date(row.at).getTime() : 0;
+        const canReconcile = status === "unknown"
+          || (status === "publishing" && Number.isFinite(ageMs) && ageMs >= 30 * 60 * 1000);
+        const safeUrl = typeof row.url === "string" && row.url.startsWith("https://")
+          ? row.url : "";
+        const url = safeUrl
+          ? ` <a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">открыть</a>`
+          : "";
+        const remote = row.remote_id
+          ? ` <span class="muted">ID: ${esc(String(row.remote_id).slice(0, 54))}</span>`
+          : "";
+        const error = row.error && status !== "posted"
+          ? `<div class="item-meta">${esc(String(row.error).slice(0, 140))}</div>`
+          : "";
+        const actions = canReconcile ? `
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+            <button class="btn btn-primary btn-sm js-crosspost-reconcile"
+              data-post="${esc(post)}" data-platform="${esc(platform)}" data-action="confirm_posted">Пост уже есть</button>
+            <button class="btn btn-ghost btn-sm js-crosspost-reconcile"
+              data-post="${esc(post)}" data-platform="${esc(platform)}" data-action="retry_after_check">Проверил: поста нет</button>
+          </div>` : "";
+        return `
+          <div class="delivery-platform">
+            <div class="item-meta"><strong>${esc(platformNames[platform] || PLATFORM_RU[platform] || platform)}</strong>
+              <span class="tag ${statusClass[status] || ""}">${esc(labels[status] || status)}</span>${url}${remote}</div>
+            ${error}${actions}
+          </div>`;
+      }).join("");
+      const summary = rows.reduce((acc, row) => {
+        acc[row.status] = (acc[row.status] || 0) + 1;
+        return acc;
+      }, {});
+      const successCount = (summary.posted || 0) + (summary.dry_run || 0);
+      const needsAttention = (summary.unknown || 0) + (summary.permanent || 0) + (summary.permanent_failure || 0);
+      const overall = needsAttention ? "есть проблемы" : (successCount ? "доставка идёт" : "ожидает доставки");
+      const overallClass = needsAttention ? "tag-warn" : (successCount ? "tag-ok" : "");
       return `
-        <div class="item">
-          <div class="item-main">
-            <div class="item-title">${esc(row.post)} · ${esc(PLATFORM_RU[row.platform] || row.platform)}</div>
-            <div class="item-meta">${esc(dt(row.at))} · попытка ${n(row.attempt || 1)}${url}${error}</div>
-            ${actions}
+        <div class="item delivery-card" style="align-items:flex-start">
+          <div class="item-main" style="min-width:0">
+            <div class="item-title">${esc(post)}</div>
+            <div class="item-meta">${esc(dt(latestAt ? new Date(latestAt).toISOString() : null))} · площадок с записью: ${n(rows.length)}</div>
+            <div class="delivery-platforms">${deliveryStates}</div>
           </div>
-          <div class="item-side">
-            <span class="tag ${statusClass[row.status] || ""}">${esc(label)}</span>
-          </div>
+          <div class="item-side"><span class="tag ${overallClass}">${esc(overall)}</span></div>
         </div>`;
     }).join("") || `<div class="empty">Кросспостов пока нет</div>`;
 
-    $(".js-crosspost-reconcile", container).forEach((button) => {
+    $(".js-crosspost-reconcile", container) && $$(".js-crosspost-reconcile", container).forEach((button) => {
       button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
         button.dataset.post,
         button.dataset.platform,
