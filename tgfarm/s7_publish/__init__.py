@@ -14,6 +14,7 @@ the clearest tell of an automated network.
 
 from __future__ import annotations
 
+import asyncio
 import random
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -859,7 +860,7 @@ def _last_dzen_publish_time() -> datetime | None:
     return value
 
 
-async def publish_due(
+async def _publish_due_once(
     limit: int = 1000,
     post_public_ids: list[str] | None = None,
 ) -> dict[str, int]:
@@ -929,6 +930,31 @@ async def publish_due(
             "errors": errors,
             **({"skipped_llm": skipped_llm} if skipped_llm else {}),
         }
+
+
+_active_publish_task: asyncio.Task | None = None
+
+
+async def publish_due(
+    limit: int = 1000,
+    post_public_ids: list[str] | None = None,
+) -> dict[str, int]:
+    """Serialize publisher batches so platform-level spacing rules stay valid."""
+    global _active_publish_task
+
+    current_task = asyncio.current_task()
+    active = _active_publish_task
+    if active is not None and active is not current_task and not active.done():
+        log.info("s7: publish batch skipped because another batch is still running")
+        return {"published": 0, "failed": 0, "skipped_concurrent": 1}
+
+    if current_task is not None:
+        _active_publish_task = current_task
+    try:
+        return await _publish_due_once(limit, post_public_ids)
+    finally:
+        if current_task is not None and _active_publish_task is current_task:
+            _active_publish_task = None
 
 
 async def run() -> dict[str, int]:
