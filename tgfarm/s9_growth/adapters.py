@@ -310,37 +310,56 @@ class XAdapter:
 
     def _credentials(self) -> tuple[str, str]:
         settings = get_settings()
-        return settings.x_bearer_token, settings.x_user_id
+        return str(settings.x_access_token or "").strip(), str(settings.x_user_id or "").strip()
 
     def configured(self) -> bool:
-        return all(self._credentials())
+        settings = get_settings()
+        return bool((settings.x_access_token or settings.x_refresh_token) and settings.x_user_id)
 
     async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
-        token, _user = self._credentials()
-        if not (token and _user):
+        _token, user_id = self._credentials()
+        if not self.configured():
             return CrosspostResult(platform=self.platform, status="skipped")
         payload = _clip(payload, self.max_title, self.max_body)
         import httpx
 
         try:
+            from tgfarm.x_oauth import get_valid_x_access_token
+
+            token = await get_valid_x_access_token()
+        except Exception as exc:  # noqa: BLE001 - refresh is separate from posting
+            status = "failed" if isinstance(exc, httpx.RequestError) else "permanent"
+            log.warning("x OAuth refresh %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status=status,
+                error="X OAuth token refresh failed. Reconnect the account if the token was revoked.",
+            )
+        try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(
-                    "https://api.twitter.com/2/tweets",
+                    "https://api.x.com/2/tweets",
                     headers={"Authorization": f"Bearer {token}"},
                     json={"text": f"{payload.title}\n\n{payload.text}".strip()},
                 )
                 resp.raise_for_status()
             tweet_id = str(resp.json().get("data", {}).get("id", ""))
+            if not tweet_id:
+                return CrosspostResult(
+                    platform=self.platform, status="unknown",
+                    error="X returned a response without a verifiable post ID.",
+                )
             return CrosspostResult(
-                platform=self.platform,
-                status="posted",
+                platform=self.platform, status="posted",
                 remote_id=tweet_id,
-                url=f"https://x.com/i/status/{tweet_id}" if tweet_id else None,
+                url=f"https://x.com/i/status/{tweet_id}",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - no blind retry after an ambiguous write
             status = crosspost_error_status(exc)
-            log.warning("x crosspost %s: %s", status, exc)
-            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
+            log.warning("x crosspost %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status=status,
+                error=f"X request failed ({type(exc).__name__}).",
+            )
 
 
 
