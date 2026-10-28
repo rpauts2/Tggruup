@@ -17,6 +17,11 @@ STATE_TTL_SECONDS = 600
 SCOPES = "tweet.read users.read tweet.write offline.access"
 AUTHORIZE_URL = "https://twitter.com/i/oauth2/authorize"
 TOKEN_URL = "https://api.x.com/2/oauth2/token"
+
+
+class XOAuthTemporaryError(RuntimeError):
+    """Transient provider/network failure that should not permanently reject a post."""
+
 _PENDING: dict[str, dict[str, object]] = {}
 _PENDING_LOCK = threading.RLock()
 
@@ -100,7 +105,7 @@ async def _exchange_token(client: httpx.AsyncClient, *, data: dict[str, str], cl
     try:
         response = await client.post(TOKEN_URL, data=data, auth=(client_id, client_secret))
     except httpx.RequestError as exc:
-        raise RuntimeError("Не удалось подключиться к X OAuth. Проверь сеть и повтори попытку.") from exc
+        raise XOAuthTemporaryError("Не удалось подключиться к X OAuth. Проверь сеть и повтори попытку.") from exc
     if response.status_code >= 400:
         raise RuntimeError(
             f"X отклонил OAuth-запрос (HTTP {response.status_code}). Проверь OAuth-настройки и callback URL."
