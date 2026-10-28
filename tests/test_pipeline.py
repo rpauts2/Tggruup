@@ -1444,6 +1444,9 @@ def test_s9_only_crossposts_telegram_posts():
     with session_scope() as session:
         session.merge(Channel(id="tg_cross", title="TG", niche="tech", platform="telegram"))
         session.merge(Channel(id="dz_cross", title="DZ", niche="general", platform="dzen"))
+        session.merge(Channel(
+            id="off_cross", title="Disabled TG", niche="tech", platform="telegram", enabled=False
+        ))
         session.add(
             Post(
                 public_id="cross-tg",
@@ -1464,10 +1467,21 @@ def test_s9_only_crossposts_telegram_posts():
                 published_at=now,
             )
         )
+        session.add(
+            Post(
+                public_id="cross-off",
+                channel_id="off_cross",
+                hook="Disabled",
+                body="body",
+                status="published",
+                published_at=now,
+            )
+        )
 
     found = {public_id for _, public_id in _pending_crossposts(1.0)}
     assert "cross-tg" in found
     assert "cross-dz" not in found
+    assert "cross-off" not in found
 
 
 
