@@ -69,16 +69,34 @@ def _number_set(value: str) -> set[str]:
 
 
 def _topic_score(query_terms: list[str], text: str) -> float:
-    if not query_terms:
+    """Score topical overlap while requiring distinctive terms to anchor a match.
+
+    A source mentioning only generic words such as "reactor", "launch" or
+    "prices" should not become a continuation of a named topic. Longer terms
+    often represent people, products, institutions or technical concepts, so
+    at least one (and, when there are several, two) must match before common
+    words can contribute to the score. This remains a retrieval heuristic, not
+    proof that a source is factually about the same event.
+    """
+    terms = list(dict.fromkeys(str(term).lower() for term in query_terms if str(term).strip()))
+    if not terms:
         return 0.0
     tokens = set(content_tokens(text or ""))
+    if not tokens:
+        return 0.0
     prefixes = {token[:5] for token in tokens if len(token) >= 5}
-    found = sum(
-        1 for term in query_terms
+    matched = {
+        term for term in terms
         if term in tokens or (len(term) >= 5 and term[:5] in prefixes)
-    )
-    denominator = min(len(query_terms), 8)
-    return round(found / denominator, 4) if denominator else 0.0
+    }
+    anchors = [term for term in terms if len(term) >= 8]
+    required_anchors = min(2, len(anchors))
+    if anchors and sum(term in matched for term in anchors) < required_anchors:
+        return 0.0
+    if len(terms) >= 4 and len(matched) < 2:
+        return 0.0
+    denominator = min(len(terms), 8)
+    return round(len(matched) / denominator, 4) if denominator else 0.0
 
 
 def _source_payload(item, query_terms: list[str]) -> dict:
