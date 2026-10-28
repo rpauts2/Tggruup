@@ -47,7 +47,7 @@ PLATFORM_TEXT_LIMITS = {
     "vk": VK_TEXT_LIMIT,
 }
 # A post left in `publishing` longer than this was interrupted (crash,
-# timeout, kill). It goes back to the queue instead of blocking forever.
+# timeout, kill). Its outcome becomes `publish_unknown` until reconciled.
 STUCK_PUBLISHING_MIN = 15
 
 
