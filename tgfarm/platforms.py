@@ -669,10 +669,6 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return True, "Handle и app password заданы; проверь сессию и write-доступ."
         return False, "Нужны BLUESKY_HANDLE и BLUESKY_APP_PASSWORD."
     if platform_id == "threads":
-        if settings.threads_access_token and settings.threads_user_id:
-            return True, "Threads OAuth найден; профиль и срок действия проверяются перед публикацией."
-        return False, "Нужно сохранить Threads App ID/Secret и подключить аккаунт через OAuth."
-    if platform_id == "threads":
         if settings.threads_app_id and settings.threads_app_secret and settings.threads_access_token and settings.threads_user_id:
             return True, "Threads OAuth подключён; проверка профиля выполняется через API."
         if settings.threads_app_id and settings.threads_app_secret:
