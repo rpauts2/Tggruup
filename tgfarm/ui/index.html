@@ -296,6 +296,21 @@
         </div>
         <div id="reddit-publish-result" class="reddit-publish-result" role="status" aria-live="polite"></div>
       </section>
+
+      <section class="reddit-metrics-panel" aria-labelledby="reddit-metrics-title">
+        <div class="reddit-metrics-head">
+          <div>
+            <div class="reddit-kicker">FEEDBACK LOOP · REDDIT</div>
+            <h3 id="reddit-metrics-title">Что реально сработало</h3>
+            <p>Собираем score, комментарии и долю голосов из доступного Reddit Data API. Рейтинг Scout постепенно учитывает фактический результат, а не только описание сообщества.</p>
+          </div>
+          <button type="button" id="reddit-metrics-refresh" class="btn btn-ghost btn-sm">↻ Обновить метрики</button>
+        </div>
+        <div id="reddit-metrics-status" class="reddit-status" role="status" aria-live="polite">Статистика ещё не загружена.</div>
+        <div id="reddit-metrics-grid" class="reddit-metrics-grid">
+          <div class="reddit-empty">Пока нет сохранённых метрик. После публикации одной записи нажми «Обновить метрики».</div>
+        </div>
+      </section>
     </article>
   </section>
 
@@ -321,6 +336,26 @@
     </article>
   </section>
 </main>
+
+<dialog id="platform-auth-dialog" class="platform-auth-dialog" aria-labelledby="platform-auth-title">
+  <form id="platform-auth-form" method="dialog">
+    <div class="platform-auth-dialog-head">
+      <div>
+        <span class="auth-dialog-kicker">PLATFORM ACCESS</span>
+        <h2 id="platform-auth-title">Подключение площадки</h2>
+        <p id="platform-auth-description">Ключи хранятся в локальном .env и не отображаются после сохранения.</p>
+      </div>
+      <button type="button" id="platform-auth-close" class="platform-auth-close" aria-label="Закрыть">×</button>
+    </div>
+    <div id="platform-auth-fields" class="platform-auth-fields"></div>
+    <div id="platform-auth-message" class="platform-auth-message" role="status" aria-live="polite"></div>
+    <div class="platform-auth-dialog-actions">
+      <button type="button" id="platform-auth-cancel" class="btn btn-ghost">Закрыть</button>
+      <button type="button" id="platform-auth-check" class="btn btn-ghost" hidden>Проверить доступ</button>
+      <button type="submit" id="platform-auth-save" class="btn btn-primary">Сохранить ключи</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 
