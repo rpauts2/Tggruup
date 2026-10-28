@@ -13,6 +13,14 @@ import json
 from tgfarm.core.settings import get_settings
 
 
+def _directory_has_entries(path) -> bool:
+    """Return False for a missing/unreadable profile, not an uncaught exception."""
+    try:
+        return path.is_dir() and next(path.iterdir(), None) is not None
+    except OSError:
+        return False
+
+
 def run_doctor() -> dict:
     """Check everything that has to be true before the farm can work."""
     from tgfarm.config import get_config
@@ -76,7 +84,7 @@ def run_doctor() -> dict:
 
     playwright_ok = find_spec("playwright") is not None
     profile = settings.dzen_profile_path()
-    profile_ready = any(profile.iterdir())
+    profile_ready = _directory_has_entries(profile)
     if not settings.live:
         check("dzen", True, "dry-run; live publishing uses the web editor")
     elif playwright_ok and profile_ready:

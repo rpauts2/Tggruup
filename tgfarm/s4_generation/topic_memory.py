@@ -25,6 +25,38 @@ MAX_CURRENT_CANDIDATES = 600
 MAX_CURRENT_RESULTS = 16
 MAX_CLAIM_REVIEW = 40
 
+# Length alone does not make a word a useful topic anchor. Common editorial and
+# connective terms often appear in unrelated coverage and must not satisfy the
+# distinctive-name/entity requirement.
+_LOW_INFORMATION_TOPIC_ANCHORS = frozenset(
+    """
+    training information technology development different important according
+    following possible currently researchers companies company production
+    generation applications application performance measurement measurements
+    compared comparison analysis additional significant features operations
+    research scientists discussed reported includes including available
+    national international general systems process results method methods
+    services community official working increasing activity activities
+    update updates latest future public private individual individuals
+    various several previous continue continued created becomes became
+    becoming published publication publications
+    информация технологии технологии развитие различные различный различных
+    важный важные важно согласно следующие следующий возможно возможные
+    исследование исследования исследователь исследователи компания компании
+    компаний производство производственный производственные приложение
+    приложения производительность показатели измерения сравнение анализ
+    дополнительный дополнительные значительный значительные функции процессы
+    исследования результаты результатах опубликовано публикации публикация
+    доступный доступные доступность используется использовать использование
+    пользователей пользователь сообщения сообщение последние последний
+    новая новые нового новый нового материала материалы материалы
+    несколько различных информации означает означает являются является
+    возможность возможности результате результатов например примерно
+    известно известно сегодня недавно обновление обновления
+    """
+    .split()
+)
+
 
 def _as_utc(value) -> datetime | None:
     if value is None:
@@ -69,16 +101,45 @@ def _number_set(value: str) -> set[str]:
 
 
 def _topic_score(query_terms: list[str], text: str) -> float:
-    if not query_terms:
+    """Score topical overlap while requiring distinctive terms to anchor a match.
+
+    A source mentioning only generic words such as "reactor", "launch" or
+    "prices" should not become a continuation of a named topic. Longer terms
+    often represent people, products, institutions or technical concepts, so
+    at least one (and, when there are several, two) must match before common
+    words can contribute to the score. This remains a retrieval heuristic, not
+    proof that a source is factually about the same event.
+    """
+    terms = list(dict.fromkeys(str(term).lower() for term in query_terms if str(term).strip()))
+    if not terms:
         return 0.0
     tokens = set(content_tokens(text or ""))
+    if not tokens:
+        return 0.0
     prefixes = {token[:5] for token in tokens if len(token) >= 5}
-    found = sum(
-        1 for term in query_terms
+    matched = {
+        term for term in terms
         if term in tokens or (len(term) >= 5 and term[:5] in prefixes)
-    )
-    denominator = min(len(query_terms), 8)
-    return round(found / denominator, 4) if denominator else 0.0
+    }
+    anchors = [
+        term for term in terms
+        if len(term) >= 8 and term not in _LOW_INFORMATION_TOPIC_ANCHORS
+    ]
+    anchor_prefixes = {
+        token[:7] for token in tokens if len(token) >= 7
+    }
+    matched_anchors = {
+        term
+        for term in anchors
+        if term in tokens or term[:7] in anchor_prefixes
+    }
+    required_anchors = min(2, len(anchors))
+    if anchors and len(matched_anchors) < required_anchors:
+        return 0.0
+    if len(terms) >= 3 and len(matched) < 2:
+        return 0.0
+    denominator = min(len(terms), 8)
+    return round(len(matched) / denominator, 4) if denominator else 0.0
 
 
 def _source_payload(item, query_terms: list[str]) -> dict:
