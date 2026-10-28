@@ -16,6 +16,7 @@
     tgfarm editorial            ranked queue of ready clusters
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm doctor               diagnose configuration and connectivity
+    tgfarm backup-test FILE     restore a backup to a temporary DB and verify it
     tgfarm demo                 seed synthetic data and run a cycle offline
     tgfarm dzen-login           open Dzen and keep the Yandex session in a profile
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
@@ -570,6 +571,15 @@ def cmd_backup(_args) -> int:
     return 0 if report.get("verified") else 2
 
 
+def cmd_backup_test(args) -> int:
+    """Restore a snapshot into a disposable SQLite database and verify it."""
+    from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+    report = verify_sqlite_backup_restore(args.path)
+    _print(report)
+    return 0 if report.get("verified") else 2
+
+
 def cmd_history_import(args) -> int:
     """Import a local platform export into the archive, without publishing."""
     from tgfarm.history_import import import_history, load_history_export
@@ -738,6 +748,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="diagnose configuration").set_defaults(func=cmd_doctor)
     sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
+
+    p_backup_test = sub.add_parser(
+        "backup-test", help="test restoring a SQLite backup to a temporary database"
+    )
+    p_backup_test.add_argument("path", help="path to a .db backup snapshot")
+    p_backup_test.set_defaults(func=cmd_backup_test)
 
     p_demo = sub.add_parser("demo", help="offline end-to-end demo with synthetic data")
     p_demo.add_argument("--cycles", type=int, default=1)

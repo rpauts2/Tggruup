@@ -110,3 +110,46 @@ async def test_failed_backup_keeps_previous_verified_backups_and_removes_temp_fi
     assert not list(backup_dir.glob("*.tmp"))
     assert not list(backup_dir.glob(".tgfarm-*.tmp"))
     assert {path.name for path in backup_dir.glob("tgfarm-*.db")} == {path.name for path in old_backups}
+
+
+def test_verify_sqlite_backup_restore_round_trip(tmp_path):
+    from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+    backup = tmp_path / "verified-snapshot.db"
+    with sqlite3.connect(backup) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        connection.execute(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, "
+            "FOREIGN KEY(parent_id) REFERENCES parent(id))"
+        )
+        connection.execute("INSERT INTO parent(name) VALUES ('farm')")
+        connection.execute("INSERT INTO child(parent_id) VALUES (1)")
+
+    result = verify_sqlite_backup_restore(backup)
+
+    assert result["verified"] is True
+    assert result["restore_tested"] is True
+    assert result["integrity_check"] == "ok"
+    assert result["restored_integrity_check"] == "ok"
+    assert result["tables_match"] is True
+    assert result["row_counts_match"] is True
+    assert result["foreign_key_violations"] == 0
+    assert backup.is_file()
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("SELECT name FROM parent").fetchone()[0] == "farm"
+
+
+def test_verify_sqlite_backup_restore_rejects_corrupt_or_missing_files(tmp_path):
+    from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_bytes(b"not a sqlite database")
+    result = verify_sqlite_backup_restore(corrupt)
+    assert result["verified"] is False
+    assert result["restore_tested"] is False
+
+    missing = verify_sqlite_backup_restore(tmp_path / "missing.db")
+    assert missing["verified"] is False
+    assert missing["reason"] == "backup file not found"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["corrupt.db"]
