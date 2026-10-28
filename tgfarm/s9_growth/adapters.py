@@ -19,6 +19,7 @@ from typing import Protocol
 
 from tgfarm.core.errors import AdapterNotConfigured
 from tgfarm.core.logging import get_logger
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
@@ -174,8 +175,8 @@ class MaxAdapter:
             return CrosspostResult(platform=self.platform, status="posted", remote_id=message_id)
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
-            log.warning("max crosspost %s: %s", status, exc)
-            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
+            log.warning("max crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
+            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300))
 
 
 # ----------------------------------------------------------------------- VK
@@ -253,7 +254,7 @@ class VkAdapter:
             try:
                 attachment = await self._upload_wall_photo(str(image_path))
             except Exception as exc:  # noqa: BLE001 - a cover is optional
-                log.warning("vk photo upload failed: %s", exc)
+                log.warning("vk photo upload failed: %s", redact_sensitive_text(exc, limit=180))
         try:
             data = {
                 "access_token": token,
@@ -298,8 +299,8 @@ class VkAdapter:
             )
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
-            log.warning("vk crosspost %s: %s", status, exc)
-            return CrosspostResult(platform=self.platform, status=status, error=str(exc)[:300])
+            log.warning("vk crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
+            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300))
 
 
 # ------------------------------------------------------------------------- X
@@ -677,7 +678,7 @@ class RedditAdapter:
                 error=(
                     "Reddit OAuth setup was rejected."
                     if isinstance(exc, RedditAuthError)
-                    else str(exc)[:300]
+                    else redact_sensitive_text(exc, limit=300)
                 ),
             )
 
@@ -698,7 +699,7 @@ class RedditAdapter:
             return CrosspostResult(
                 platform=self.platform,
                 status=status,
-                error=str(exc)[:300],
+                error=redact_sensitive_text(exc, limit=300),
             )
 
         result_body = response_body.get("json") if isinstance(response_body, dict) else None
