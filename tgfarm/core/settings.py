@@ -260,6 +260,11 @@ class Settings(BaseSettings):
     # --- crossposting -------------------------------------------------------
     bluesky_handle: str = Field(default="", alias="BLUESKY_HANDLE")
     bluesky_app_password: str = Field(default="", alias="BLUESKY_APP_PASSWORD")
+    # Mastodon OAuth user token; client credentials are registered per instance.
+    mastodon_instance: str = Field(default="", alias="MASTODON_INSTANCE")
+    mastodon_client_id: str = Field(default="", alias="MASTODON_CLIENT_ID")
+    mastodon_client_secret: str = Field(default="", alias="MASTODON_CLIENT_SECRET")
+    mastodon_access_token: str = Field(default="", alias="MASTODON_ACCESS_TOKEN")
     vk_access_token: str = Field(default="", alias="VK_ACCESS_TOKEN")
     vk_group_id: str = Field(default="", alias="VK_GROUP_ID")
     max_access_token: str = Field(default="", alias="MAX_ACCESS_TOKEN")
