@@ -11,6 +11,7 @@ enabled:
   bluesky: false
   mastodon: false
   threads: false
+  linkedin: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
@@ -19,5 +20,4 @@ planned:
   - instagram
   - odnoklassniki
   - rutube
-  - linkedin
   - pinterest
