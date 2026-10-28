@@ -1055,3 +1055,82 @@ main {
   .reddit-community-actions { align-items: stretch; flex-direction: column; }
   .reddit-community-actions .btn { width: 100%; }
 }
+
+
+/* ----------------------------------------------------------- platform access */
+.platform-auth-block {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 10px; padding: 11px; border: 1px solid var(--line-soft);
+  border-radius: 11px; background: rgba(3,6,12,.18); min-width: 0;
+}
+.platform-auth-copy { display: flex; align-items: flex-start; gap: 9px; min-width: 0; flex: 1; }
+.platform-auth-copy > div { min-width: 0; }
+.platform-auth-copy strong { display: block; color: #cbd6e9; font-size: 10.5px; line-height: 1.4; }
+.platform-auth-copy p { margin: 4px 0 0; color: #8592aa; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.platform-auth-dot { display: block; flex: 0 0 8px; width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: #9ba8bd; box-shadow: 0 0 0 3px rgba(155,168,189,.09); }
+.platform-auth-block.is-authorized { border-color: rgba(70,211,154,.24); background: rgba(52,211,153,.035); }
+.platform-auth-block.is-authorized .platform-auth-dot { background: #4bd6a0; box-shadow: 0 0 0 3px rgba(75,214,160,.1); }
+.platform-auth-block.is-failed { border-color: rgba(245,101,101,.28); background: rgba(245,101,101,.035); }
+.platform-auth-block.is-failed .platform-auth-dot { background: #f57575; box-shadow: 0 0 0 3px rgba(245,101,101,.1); }
+.platform-auth-block.is-pending .platform-auth-dot { background: #e2b562; box-shadow: 0 0 0 3px rgba(226,181,98,.1); }
+.platform-auth-block.is-not-integrated { border-style: dashed; }
+.platform-auth-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
+.platform-auth-actions .btn { white-space: nowrap; min-height: 32px; }
+.platform-auth-button { color: #b8c5dc; border-color: rgba(150,172,211,.2); background: rgba(150,172,211,.04); }
+.platform-auth-check { border-color: rgba(91,140,255,.25); background: rgba(91,140,255,.1); color: #a9c5ff; }
+.platform-auth-dialog {
+  width: min(640px, calc(100% - 24px)); max-width: 640px; max-height: min(86vh, 900px);
+  padding: 0; overflow: auto; color: var(--text); background: #101727;
+  border: 1px solid rgba(137,158,197,.23); border-radius: 18px;
+  box-shadow: 0 24px 90px rgba(0,0,0,.5);
+}
+.platform-auth-dialog::backdrop { background: rgba(4,7,14,.76); backdrop-filter: blur(5px); }
+.platform-auth-dialog form { padding: 22px; }
+.platform-auth-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.platform-auth-dialog-head h2 { margin: 3px 0 0; font-size: 22px; letter-spacing: -.035em; }
+.platform-auth-dialog-head p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.auth-dialog-kicker { color: #88a8ec; font-size: 9px; font-weight: 850; letter-spacing: .16em; }
+.platform-auth-close { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid var(--line-soft); border-radius: 10px; background: rgba(255,255,255,.035); color: var(--text); font-size: 24px; cursor: pointer; }
+.platform-auth-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 13px; margin-top: 20px; }
+.platform-auth-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.platform-auth-field > span { color: #bac6dd; font-size: 11px; font-weight: 750; }
+.platform-auth-field input { width: 100%; min-width: 0; border: 1px solid rgba(137,158,197,.22); border-radius: 10px; padding: 11px 12px; color: #eef3ff; background: rgba(3,6,12,.35); font: inherit; font-size: 12px; outline: none; }
+.platform-auth-field input:focus { border-color: rgba(116,157,255,.7); box-shadow: 0 0 0 3px rgba(91,140,255,.1); }
+.platform-auth-field input::placeholder { color: #66758f; font-size: 10px; }
+.platform-auth-field small { color: #7f8ba2; font-size: 10px; line-height: 1.45; }
+.platform-auth-message { min-height: 37px; margin-top: 15px; padding: 10px 11px; border: 1px solid var(--line-soft); border-radius: 9px; color: #aab7cd; background: rgba(255,255,255,.025); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.platform-auth-message.is-ok { color: #7ce0b7; border-color: rgba(70,211,154,.24); background: rgba(70,211,154,.05); }
+.platform-auth-message.is-err { color: #ff9b9b; border-color: rgba(245,101,101,.24); background: rgba(245,101,101,.05); }
+.platform-auth-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.platform-auth-dialog-actions .btn[hidden] { display: none; }
+
+/* --------------------------------------------------------- Reddit feedback */
+.reddit-metrics-panel { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--border); }
+.reddit-metrics-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.reddit-metrics-head h3 { margin: 0; font-size: 18px; letter-spacing: -.03em; }
+.reddit-metrics-head p { max-width: 740px; margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.reddit-metrics-head .btn { flex: 0 0 auto; }
+.reddit-metrics-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,260px),1fr)); gap: 11px; margin-top: 14px; }
+.reddit-metric-card { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.018); }
+.reddit-metric-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reddit-metric-card-head strong { min-width: 0; color: #ff9875; font-size: 13px; overflow-wrap: anywhere; }
+.reddit-metric-card-head span { flex: 0 0 auto; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 9px; }
+.reddit-metric-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 13px; }
+.reddit-metric-value { min-width: 0; padding: 9px; border-radius: 8px; background: rgba(130,150,180,.055); }
+.reddit-metric-value span { display: block; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.reddit-metric-value strong { display: block; margin-top: 5px; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.reddit-metric-footer { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; color: #ff9875; font-size: 10px; }
+.reddit-metric-footer span:last-child { color: var(--muted); text-align: right; }
+.reddit-metric-card > a { display: inline-block; margin-top: 10px; color: #ff825e; font-size: 10px; text-decoration: none; }
+.reddit-metric-card > a:hover { text-decoration: underline; }
+
+@media (max-width: 700px) {
+  .platform-auth-block { align-items: stretch; flex-direction: column; }
+  .platform-auth-actions { justify-content: flex-start; }
+  .platform-auth-fields { grid-template-columns: 1fr; }
+  .platform-auth-dialog form { padding: 16px; }
+  .platform-auth-dialog-actions { justify-content: stretch; }
+  .platform-auth-dialog-actions .btn { flex: 1; }
+  .reddit-metrics-head { flex-direction: column; }
+  .reddit-metrics-head .btn { align-self: flex-start; }
+}

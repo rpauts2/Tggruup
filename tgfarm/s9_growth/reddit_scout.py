@@ -198,6 +198,12 @@ async def inspect_community(subreddit: str) -> dict[str, Any]:
     adapter = _adapter()
     _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
     token = await adapter._access_token()
+    try:
+        from tgfarm.s9_growth.reddit_metrics import community_learning_signals
+
+        learned_communities = community_learning_signals()
+    except Exception:  # noqa: BLE001 - ranking remains available if local analytics is unavailable
+        learned_communities = {}
 
     import httpx
 
@@ -354,6 +360,12 @@ async def search_communities(
     adapter = _adapter()
     _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
     token = await adapter._access_token()
+    try:
+        from tgfarm.s9_growth.reddit_metrics import community_learning_signals
+
+        learned_communities = community_learning_signals()
+    except Exception:  # noqa: BLE001 - scout still works if local analytics is unavailable
+        learned_communities = {}
 
     import httpx
 
@@ -386,6 +398,18 @@ async def search_communities(
                 result_index=index,
                 result_count=len(filtered),
             )
+            history = learned_communities.get(name.lower())
+            if history:
+                history_bonus = float(history.get("learning_bonus") or 0.0)
+                score = int(max(0, min(100, round(score + history_bonus))))
+                parts = dict(parts)
+                parts["farm_history_bonus"] = round(history_bonus, 2)
+                post_count = int(history.get("published_posts") or 0)
+                sample_count = int(history.get("metric_samples") or 0)
+                reasons.append(
+                    f"История TgFarm: {post_count} постов опубликовано; "
+                    f"метрик собрано: {sample_count}; поправка рейтинга {history_bonus:+.1f}."
+                )
             flags = _risk_flags(about, rules, requirements)
             submission_type = str(about.get("submission_type") or "any")
             if submission_type in {"link", "self"}:
@@ -438,7 +462,7 @@ async def search_communities(
         "scanned": len(raw_candidates),
         "returned": len(candidates),
         "read_only": True,
-        "note": "Рейтинг оценивает только тематическое совпадение и активность. Правила нужно проверить вручную перед публикацией.",
+        "note": "Рейтинг учитывает тематическое совпадение, активность и ограниченную историю TgFarm. Баллы сообщества не заменяют проверку правил и ручную редактуру.",
     }
 
 

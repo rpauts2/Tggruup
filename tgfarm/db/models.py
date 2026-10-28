@@ -264,6 +264,27 @@ class CrosspostLog(Base):
     )
 
 
+class RedditMetricSnapshot(Base):
+    """A bounded history of publicly available Reddit post-level feedback."""
+
+    __tablename__ = "reddit_metric_snapshots"
+    __table_args__ = (
+        Index("ix_reddit_metrics_subreddit_time", "subreddit", "collected_at"),
+        Index("ix_reddit_metrics_log_time", "crosspost_log_id", "collected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    crosspost_log_id: Mapped[int] = mapped_column(
+        ForeignKey("crosspost_logs.id", ondelete="CASCADE"), index=True
+    )
+    subreddit: Mapped[str] = mapped_column(String(32), index=True)
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    num_comments: Mapped[int] = mapped_column(Integer, default=0)
+    upvote_ratio: Mapped[float | None] = mapped_column(Float)
+    created_utc: Mapped[float | None] = mapped_column(Float)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PipelineRun(Base):
     """One row per stage per cycle.
 

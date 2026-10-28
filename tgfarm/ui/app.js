@@ -20,6 +20,10 @@
     platformFilter: "all",
     platformCategory: "Все",
     platformBusy: new Set(),
+    authPlatformId: "",
+    authSaving: false,
+    dzenStatus: null,
+    redditMetrics: null,
     redditCandidates: [],
     redditPreview: null,
     redditBusy: false,
@@ -681,6 +685,29 @@
              data-platform-plan="${esc(item.id)}" ${busy ? "disabled" : ""}>
              ${item.planned ? "✓ В плане" : "+ В план"}
            </button>`;
+      const auth = item.auth || {};
+      let authStatus = auth.status || (supported ? "needs_setup" : "not_integrated");
+      let authLabel = auth.status_label || (supported ? "Не настроено" : "Интеграция не готова");
+      if (item.id === "dzen" && state.dzenStatus) {
+        if (state.dzenStatus.authorized === true) {
+          authStatus = "authorized";
+          authLabel = "Дзен: авторизован";
+        } else if (state.dzenStatus.authorized === false) {
+          authStatus = "needs_setup";
+          authLabel = "Нужен вход в Дзен";
+        }
+      }
+      const authStyle = authStatus === "authorized" ? "is-authorized"
+        : authStatus === "failed" ? "is-failed"
+        : authStatus === "not_integrated" ? "is-not-integrated" : "is-pending";
+      const authSetupLabel = auth.method === "browser" ? "Войти в Дзен"
+        : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
+      const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
+          data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
+      const authCheck = supported && auth.method === "credentials"
+        ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
+             data-platform-auth-check="${esc(item.id)}" ${busy ? "disabled" : ""}>Проверить</button>`
+        : "";
       const readyHint = supported
         ? (item.configured ? item.connection_detail : item.connection_detail)
         : (item.planned ? "Выбрана для следующей волны интеграций." : "Можно добавить в список следующих интеграций.");
@@ -706,6 +733,13 @@
               <p>${esc(readyHint)}</p>
             </div>
           </div>
+          <div class="platform-auth-block ${authStyle}">
+            <div class="platform-auth-copy">
+              <span class="platform-auth-dot" aria-hidden="true"></span>
+              <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p></div>
+            </div>
+            <div class="platform-auth-actions">${authSetup}${authCheck}</div>
+          </div>
           <div class="platform-requirements"><span>ТРЕБУЕТСЯ</span><p>${esc(item.requirements || "Информация уточняется.")}</p></div>
           <div class="platform-card-footer">
             <span class="platform-role">${esc(item.roles_label || "")}</span>
@@ -715,6 +749,226 @@
     }).join("");
   }
 
+
+  function setPlatformAuthMessage(message, kind = "") {
+    const target = $("#platform-auth-message");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "platform-auth-message" + (kind ? " is-" + kind : "");
+  }
+
+  function closePlatformAuthDialog() {
+    const dialog = $("#platform-auth-dialog");
+    if (dialog?.open) dialog.close();
+    state.authPlatformId = "";
+    state.authSaving = false;
+  }
+
+  function openPlatformAuthorization(platformId) {
+    const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
+    if (!item) return;
+    const auth = item.auth || {};
+    if (auth.method === "browser" && platformId === "dzen") {
+      window.tgfarmDzenLogin();
+      return;
+    }
+    if (auth.method !== "credentials") {
+      const url = safeExternalUrl(auth.connect_url);
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+      toast(
+        item.supported
+          ? "Сайт открыт. Чтобы подтвердить доступ, вернись в карточку и проверь интеграцию."
+          : "Сайт открыт. Эта сеть пока не публикует через TgFarm, вход на сайт не означает подключение API.",
+        item.supported ? "" : "err",
+      );
+      return;
+    }
+
+    state.authPlatformId = platformId;
+    const dialog = $("#platform-auth-dialog");
+    $("#platform-auth-title").textContent = item.name + " · подключение";
+    $("#platform-auth-description").textContent =
+      "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
+    const fields = $("#platform-auth-fields");
+    fields.replaceChildren();
+    (auth.fields || []).forEach((field) => {
+      const label = redditNode("label", "platform-auth-field");
+      label.appendChild(redditNode("span", "", field.label + (field.secret ? " · секрет" : "")));
+      const input = redditNode("input", "");
+      input.type = field.secret ? "password" : "text";
+      input.name = field.key;
+      input.dataset.platformCredential = field.key;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = field.has_value
+        ? "Уже сохранено. Введи новое значение, чтобы заменить."
+        : (field.placeholder || "");
+      input.maxLength = 4096;
+      input.setAttribute("aria-label", field.label);
+      label.appendChild(input);
+      if (field.help) label.appendChild(redditNode("small", "", field.help));
+      fields.appendChild(label);
+    });
+    const save = $("#platform-auth-save");
+    save.hidden = false;
+    save.disabled = false;
+    save.textContent = "Сохранить и проверить";
+    $("#platform-auth-check").hidden = false;
+    setPlatformAuthMessage(
+      (auth.fields || []).some((field) => field.has_value)
+        ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
+        : "Заполни поля, которые нужны этой площадке. Пустые значения ничего не стирают.",
+    );
+    if (!dialog.open) dialog.showModal();
+  }
+
+  async function checkPlatformAuthorization(platformId, button = null) {
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-busy");
+    }
+    try {
+      const result = await post(
+        "/api/platforms/" + encodeURIComponent(platformId) + "/auth/check", {},
+      );
+      const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
+      if (item && result.auth) item.auth = result.auth;
+      const message = result.authorized
+        ? "Доступ подтверждён: " + (result.account || platformId) + ". " + (result.detail || "")
+        : "Доступ не подтверждён: " + (result.detail || "проверь настройки.");
+      if (state.authPlatformId === platformId) {
+        setPlatformAuthMessage(message, result.authorized ? "ok" : "err");
+      }
+      toast(message, result.authorized ? "ok" : "err");
+      renderPlatformCards();
+      await refresh();
+      return result;
+    } catch (error) {
+      const message = "Не удалось проверить доступ: " + (error?.message || error);
+      if (state.authPlatformId === platformId) setPlatformAuthMessage(message, "err");
+      toast(message, "err");
+      return null;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove("is-busy");
+      }
+    }
+  }
+
+  async function savePlatformCredentials(event) {
+    event?.preventDefault();
+    if (state.authSaving || !state.authPlatformId) return;
+    const platformId = state.authPlatformId;
+    const values = {};
+    $("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
+      const value = String(input.value || "").trim();
+      if (value) values[input.dataset.platformCredential] = value;
+    });
+    if (!Object.keys(values).length) {
+      setPlatformAuthMessage("Введи хотя бы одно новое значение. Пустые поля оставляют сохранённые ключи без изменений.", "err");
+      return;
+    }
+    state.authSaving = true;
+    const save = $("#platform-auth-save");
+    save.disabled = true;
+    save.textContent = "Сохраняю…";
+    try {
+      const result = await put(
+        "/api/platforms/" + encodeURIComponent(platformId) + "/credentials",
+        { values },
+      );
+      const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
+      if (item && result.auth) item.auth = result.auth;
+      $("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
+        input.value = "";
+        const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
+        if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
+      });
+      setPlatformAuthMessage("Ключи сохранены локально. Проверяю доступ через API…");
+      await checkPlatformAuthorization(platformId);
+    } catch (error) {
+      setPlatformAuthMessage("Не удалось сохранить: " + (error?.message || error), "err");
+      toast("Не удалось сохранить настройки площадки", "err");
+    } finally {
+      state.authSaving = false;
+      save.disabled = false;
+      save.textContent = "Сохранить и проверить";
+      renderPlatformCards();
+    }
+  }
+
+  function renderRedditMetrics(payload) {
+    state.redditMetrics = payload || { communities: [] };
+    const rows = state.redditMetrics.communities || [];
+    const container = $("#reddit-metrics-grid");
+    const status = $("#reddit-metrics-status");
+    if (!container || !status) return;
+    status.textContent = state.redditMetrics.note || "Статистика обновляется вручную.";
+    container.replaceChildren();
+    if (!rows.length) {
+      container.appendChild(redditNode(
+        "div", "reddit-empty",
+        "Пока нет успешных Reddit-кросспостов с доступными метриками. Сначала нужна хотя бы одна подтверждённая публикация.",
+      ));
+      return;
+    }
+    rows.forEach((row) => {
+      const card = redditNode("article", "reddit-metric-card");
+      const head = redditNode("div", "reddit-metric-card-head");
+      const name = redditNode("strong", "", "r/" + row.subreddit);
+      head.appendChild(name);
+      const posts = redditNode("span", "", n(row.published_posts) + " постов");
+      head.appendChild(posts);
+      card.appendChild(head);
+      const values = redditNode("div", "reddit-metric-values");
+      [
+        ["Средний score", row.avg_score === null || row.avg_score === undefined ? "нет данных" : n(row.avg_score)],
+        ["Комментарии", row.avg_comments === null || row.avg_comments === undefined ? "нет данных" : n(row.avg_comments)],
+        ["Upvote ratio", row.avg_upvote_ratio === null || row.avg_upvote_ratio === undefined ? "нет данных" : Math.round(Number(row.avg_upvote_ratio) * 100) + "%"],
+        ["Замеров", n(row.metric_samples)],
+      ].forEach(([label, value]) => {
+        const metric = redditNode("div", "reddit-metric-value");
+        metric.appendChild(redditNode("span", "", label));
+        metric.appendChild(redditNode("strong", "", value));
+        values.appendChild(metric);
+      });
+      card.appendChild(values);
+      const footer = redditNode("div", "reddit-metric-footer");
+      footer.appendChild(redditNode("span", "", "Поправка Scout " + ((Number(row.learning_bonus) > 0 ? "+" : "") + Number(row.learning_bonus || 0).toFixed(1))));
+      footer.appendChild(redditNode("span", "", row.small_sample ? "мало данных" : "по истории фермы"));
+      card.appendChild(footer);
+      const url = safeExternalUrl(row.url);
+      if (url) {
+        const link = redditNode("a", "", "Открыть сообщество ↗");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        card.appendChild(link);
+      }
+      container.appendChild(card);
+    });
+  }
+
+  async function refreshRedditMetrics() {
+    const button = $("#reddit-metrics-refresh");
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    button.classList.add("is-busy");
+    $("#reddit-metrics-status").textContent = "Получаю статистику доступных Reddit-постов…";
+    try {
+      const result = await post("/api/reddit/metrics/refresh", { limit: 50 });
+      renderRedditMetrics(result.report || {});
+      $("#reddit-metrics-status").textContent = result.message || "Метрики обновлены.";
+      toast(result.message || "Метрики Reddit обновлены", result.errors ? "err" : "ok");
+    } catch (error) {
+      $("#reddit-metrics-status").textContent = "Сбор метрик не удался: " + (error?.message || error);
+      toast("Не удалось обновить Reddit-метрики", "err");
+    } finally {
+      button.disabled = false;
+      button.classList.remove("is-busy");
+    }
+  }
 
   function redditNode(tag, className, text) {
     const element = document.createElement(tag);
@@ -1433,14 +1687,14 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory, platforms] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory, platforms, redditMetrics] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
         api("/api/crossposts?limit=100"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
-        api("/api/platforms"),
+        api("/api/platforms"), api("/api/reddit/metrics"),
       ]);
 
       const mode = status.mode || "?";
@@ -1456,6 +1710,7 @@
         `${status.channels} каналов · ${status.sources} источников · ${status.embedder}`;
 
       renderAlerts(status.alerts || []);
+      state.dzenStatus = dzen || {};
       renderDzen(dzen || {});
       renderKPIs(status.kpis || status);
       renderReport(report);
@@ -1469,6 +1724,7 @@
       renderMemory(memory || {});
       renderTopicDossier(state.topicDossier);
       renderPlatforms(platforms || {});
+      renderRedditMetrics(redditMetrics || {});
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -1675,6 +1931,17 @@
     if (button) await tailorRedditCandidate(button.dataset.redditTailor);
   });
   $("#reddit-publish-button")?.addEventListener("click", publishRedditDraft);
+  $("#reddit-metrics-refresh")?.addEventListener("click", refreshRedditMetrics);
+  $("#platform-auth-form")?.addEventListener("submit", savePlatformCredentials);
+  $("#platform-auth-close")?.addEventListener("click", closePlatformAuthDialog);
+  $("#platform-auth-cancel")?.addEventListener("click", closePlatformAuthDialog);
+  $("#platform-auth-check")?.addEventListener("click", async () => {
+    if (state.authPlatformId) await checkPlatformAuthorization(state.authPlatformId);
+  });
+  $("#platform-auth-dialog")?.addEventListener("close", () => {
+    state.authSaving = false;
+    state.authPlatformId = "";
+  });
 
   $("#platform-search")?.addEventListener("input", (event) => {
     state.platformQuery = event.target.value || "";
@@ -1696,6 +1963,16 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const authSetup = event.target.closest("[data-platform-auth]");
+    if (authSetup) {
+      openPlatformAuthorization(authSetup.dataset.platformAuth);
+      return;
+    }
+    const authCheck = event.target.closest("[data-platform-auth-check]");
+    if (authCheck) {
+      await checkPlatformAuthorization(authCheck.dataset.platformAuthCheck, authCheck);
+      return;
+    }
     const toggle = event.target.closest("[data-platform-toggle]");
     if (toggle) {
       const item = (state.platformData?.platforms || []).find((entry) => entry.id === toggle.dataset.platformToggle);
