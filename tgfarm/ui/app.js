@@ -28,6 +28,15 @@
     String(s ?? "").replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  const safeExternalUrl = (value) => {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+    } catch (_) {
+      return "";
+    }
+  };
+
   const dt = (v) => {
     if (!v) return "—";
     const d = new Date(v);
@@ -290,7 +299,7 @@
             <div class="item-meta">${esc(source.source_id || "источник")} · ${esc(dt(source.date || source.published_at || source.fetched_at))} · релевантность ${pct(source.score || 0)}</div>
             ${source.excerpt ? `<div class="topic-small">${esc(source.excerpt.slice(0, 300))}</div>` : ""}
           </div>
-          ${source.url ? `<a class="btn btn-ghost btn-sm" href="${esc(source.url)}" target="_blank" rel="noopener">Источник</a>` : ""}
+          ${safeExternalUrl(source.url) ? `<a class="btn btn-ghost btn-sm" href="${esc(safeExternalUrl(source.url))}" target="_blank" rel="noopener">Источник</a>` : ""}
         </div>`).join("")}
       </section>` : `<div class="topic-block"><h4>Свежие материалы</h4><div class="empty">В сохранённых источниках выбранного периода не найдено достаточно совпадений. Это не означает, что обновлений нет.</div></div>`}
       ${claims.length ? `<section class="topic-block">
@@ -301,7 +310,7 @@
             <div class="topic-claim-text">${esc(claim.claim)}</div>
             <div class="item-meta">Исторически подтверждено: ${claim.historically_verified ? "да" : "нет"} · совпадение ${pct(claim.evidence_score || 0)}</div>
             <div class="topic-small">${esc(claim.current_note || "")}</div>
-            ${(claim.current_sources || []).map((url) => `<a class="topic-source-link" href="${esc(url)}" target="_blank" rel="noopener">Открыть свежий источник</a>`).join("")}
+            ${(claim.current_sources || []).map((url) => safeExternalUrl(url) ? `<a class="topic-source-link" href="${esc(safeExternalUrl(url))}" target="_blank" rel="noopener">Открыть свежий источник</a>` : "").join("")}
           </div>
         </div>`).join("")}
       </section>` : ""}
@@ -310,7 +319,7 @@
         ${ideas.map((idea) => `<div class="topic-idea">
           <strong>${esc(idea.title)}</strong>
           <div class="topic-small">${esc(idea.reason)}</div>
-          ${idea.source_url ? `<a class="topic-source-link" href="${esc(idea.source_url)}" target="_blank" rel="noopener">Опорный источник</a>` : ""}
+          ${safeExternalUrl(idea.source_url) ? `<a class="topic-source-link" href="${esc(safeExternalUrl(idea.source_url))}" target="_blank" rel="noopener">Опорный источник</a>` : ""}
         </div>`).join("")}
       </section>` : ""}
       <details class="topic-block topic-brief">
@@ -321,7 +330,7 @@
       <p class="card-sub topic-disclaimer">${(dossier.limitations || []).map(esc).join(" ")}</p>
     `;
 
-    $("[data-topic-post]").forEach((el) => {
+    $$("[data-topic-post]").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.topicPost));
     });
     $("#copy-topic-brief")?.addEventListener("click", async () => {
