@@ -211,12 +211,13 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             try:
                 result = await adapter.publish(payload)
             except Exception as exc:  # noqa: BLE001 - leave a durable state after adapter faults
-                from tgfarm.s9_growth.adapters import ambiguous_crosspost_error
+                from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, crosspost_retry_after_seconds
 
                 result = CrosspostResult(
                     platform=name,
                     status="unknown" if ambiguous_crosspost_error(exc) else "failed",
                     error=redact_sensitive_text(exc, limit=300),
+                    retry_after_seconds=crosspost_retry_after_seconds(exc),
                 )
         else:
             result = CrosspostResult(

@@ -831,6 +831,7 @@ def _crossposts(limit: int) -> list[dict]:
                 "url": r.url,
                 "error": (r.error or "")[:200] or None,
                 "attempt": r.attempt,
+                "retry_after_at": r.retry_after_at,
                 "at": r.created_at,
             }
             for r in rows
@@ -989,6 +990,7 @@ def _crossposts_export(limit: int = 300) -> dict:
                     "remote_id": r.remote_id,
                     "url": r.url,
                     "attempt": r.attempt,
+                    "retry_after_at": r.retry_after_at.isoformat() if r.retry_after_at else None,
                     "at": r.created_at.isoformat() if r.created_at else None,
                     "has_error": bool(r.error),
                 }
@@ -2120,6 +2122,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 platform="reddit",
                 status="unknown" if ambiguous_crosspost_error(exc) else "failed",
                 error=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
         await io(log_result, post["public_id"], result, attempt)
         _operator(

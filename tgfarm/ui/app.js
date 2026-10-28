@@ -1561,6 +1561,9 @@
         const error = row.error && status !== "posted"
           ? `<div class="item-meta">${esc(String(row.error).slice(0, 140))}</div>`
           : "";
+        const retryAfter = row.retry_after_at
+          ? `<div class="item-meta">Автоповтор не раньше ${esc(dt(row.retry_after_at))}</div>`
+          : "";
         const actions = canReconcile ? `
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <button class="btn btn-primary btn-sm js-crosspost-reconcile"
@@ -1572,7 +1575,7 @@
           <div class="delivery-platform">
             <div class="item-meta"><strong>${esc(platformNames[platform] || PLATFORM_RU[platform] || platform)}</strong>
               <span class="tag ${statusClass[status] || ""}">${esc(labels[status] || status)}</span>${url}${remote}</div>
-            ${error}${actions}
+            ${error}${retryAfter}${actions}
           </div>`;
       }).join("");
       const summary = rows.reduce((acc, row) => {

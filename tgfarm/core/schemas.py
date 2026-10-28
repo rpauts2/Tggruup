@@ -229,6 +229,7 @@ class CrosspostResult(Strict):
     remote_id: str | None = None
     url: str | None = None
     error: str | None = None
+    retry_after_seconds: int | None = None
 
 
 class ChannelHealth(Strict):

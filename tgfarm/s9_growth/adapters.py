@@ -14,6 +14,8 @@ Every adapter:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from math import ceil
 from pathlib import Path
 from typing import Protocol
 
@@ -101,6 +103,54 @@ def crosspost_retry_delay_min(attempt: int) -> int | None:
     return CROSSPOST_RETRY_DELAYS_MIN[number - 1]
 
 
+def crosspost_retry_after_seconds(
+    exc: BaseException, *, now: datetime | None = None, max_seconds: int = 86_400
+) -> int | None:
+    """Read provider Retry-After for explicit rate-limit/service-unavailable replies."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code not in (429, 503):
+        return None
+    headers = getattr(response, "headers", {}) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    if raw is None:
+        return None
+
+    value = str(raw).strip()
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        seconds = ceil((retry_at.astimezone(UTC) - current.astimezone(UTC)).total_seconds())
+
+    return min(max(0, seconds), max(0, int(max_seconds)))
+
+
+def crosspost_retry_not_before(row) -> datetime | None:
+    """Latest of the configured exponential delay and provider Retry-After."""
+    deadlines: list[datetime] = []
+    created = getattr(row, "created_at", None)
+    if created is not None:
+        created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
+        delay_min = crosspost_retry_delay_min(getattr(row, "attempt", 1))
+        if delay_min is not None:
+            deadlines.append(created + timedelta(minutes=delay_min))
+
+    retry_at = getattr(row, "retry_after_at", None)
+    if retry_at is not None:
+        retry_at = retry_at.replace(tzinfo=UTC) if retry_at.tzinfo is None else retry_at.astimezone(UTC)
+        deadlines.append(retry_at)
+    return max(deadlines) if deadlines else None
+
+
 def crosspost_error_status(exc: BaseException) -> str:
     """Classify a failed API request without retrying an ambiguous side effect."""
     response = getattr(exc, "response", None)
@@ -176,7 +226,8 @@ class MaxAdapter:
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
             log.warning("max crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
-            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300))
+            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300),
+                retry_after_seconds=crosspost_retry_after_seconds(exc), retry_after_seconds=crosspost_retry_after_seconds(exc))
 
 
 # ----------------------------------------------------------------------- VK
@@ -300,7 +351,8 @@ class VkAdapter:
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
             log.warning("vk crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
-            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300))
+            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(exc, limit=300),
+                retry_after_seconds=crosspost_retry_after_seconds(exc), retry_after_seconds=crosspost_retry_after_seconds(exc))
 
 
 # ------------------------------------------------------------------------- X
@@ -334,6 +386,7 @@ class XAdapter:
             return CrosspostResult(
                 platform=self.platform, status=status,
                 error="X OAuth token refresh failed. Reconnect the account if the token was revoked.",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
@@ -360,6 +413,7 @@ class XAdapter:
             return CrosspostResult(
                 platform=self.platform, status=status,
                 error=f"X request failed ({type(exc).__name__}).",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
 
 
@@ -431,6 +485,7 @@ class MastodonAdapter:
             return CrosspostResult(
                 platform=self.platform, status=status,
                 error=f"Mastodon request failed ({type(exc).__name__}).",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
 
 
@@ -497,7 +552,8 @@ class BlueskyAdapter:
             status = crosspost_error_status(exc)
             log.warning("bluesky crosspost %s: %s", status, type(exc).__name__)
             return CrosspostResult(
-                platform=self.platform, status=status, error=f"Bluesky request failed ({type(exc).__name__})."
+                platform=self.platform, status=status, error=f"Bluesky request failed ({type(exc).__name__}).",
+                retry_after_seconds=crosspost_retry_after_seconds(exc)
             )
 
 
@@ -700,6 +756,7 @@ class RedditAdapter:
                 platform=self.platform,
                 status=status,
                 error=redact_sensitive_text(exc, limit=300),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
 
         result_body = response_body.get("json") if isinstance(response_body, dict) else None
@@ -844,6 +901,7 @@ class ThreadsAdapter:
             return CrosspostResult(
                 platform=self.platform, status=status,
                 error=f"Threads request failed ({type(exc).__name__}).",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
 
 
@@ -947,6 +1005,7 @@ class LinkedInAdapter:
                 platform=self.platform,
                 status=status,
                 error=f"LinkedIn request failed ({type(exc).__name__}).",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
 
 
@@ -1032,13 +1091,10 @@ def already_done(post_public_id: str, platform: str) -> bool:
     if row.status in {"posted", "unknown", "publishing", "permanent"}:
         return True
     if row.status == "failed":
-        delay_min = crosspost_retry_delay_min(row.attempt)
-        if delay_min is None:
+        if crosspost_retry_delay_min(row.attempt) is None:
             return True
-        created = row.created_at
-        if created is not None:
-            created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
-            return datetime.now(UTC) < created + timedelta(minutes=delay_min)
+        retry_at = crosspost_retry_not_before(row)
+        return retry_at is not None and datetime.now(UTC) < retry_at
     if row.status == "dry_run":
         # Do not journal the same dry-run forever, but allow a later switch to live.
         return not get_settings().live
@@ -1073,14 +1129,11 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
             if row and row.status in {"posted", "unknown", "publishing", "permanent"}:
                 return None
             if row and row.status == "failed":
-                delay_min = crosspost_retry_delay_min(row.attempt)
-                if delay_min is None:
+                if crosspost_retry_delay_min(row.attempt) is None:
                     return None
-                created = row.created_at
-                if created is not None:
-                    created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
-                    if datetime.now(UTC) < created + timedelta(minutes=delay_min):
-                        return None
+                retry_at = crosspost_retry_not_before(row)
+                if retry_at is not None and datetime.now(UTC) < retry_at:
+                    return None
             attempt = (row.attempt + 1) if row else 1
             # Unique constraint is the actual cross-process mutex. The log row
             # and claim are committed together, so a crash cannot leave a
@@ -1133,6 +1186,11 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
                 url=result.url,
                 error=redact_sensitive_text(result.error, limit=300) if result.error else None,
                 attempt=attempt,
+                retry_after_at=(
+                    datetime.now(UTC) + timedelta(seconds=min(86_400, max(0, result.retry_after_seconds)))
+                    if result.status == "failed" and result.retry_after_seconds is not None
+                    else None
+                ),
             )
         )
         # An unknown outcome remains locked until an operator reconciles it.
