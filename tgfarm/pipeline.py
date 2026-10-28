@@ -281,6 +281,37 @@ def _source_health_alert(enabled_source_rows) -> dict | None:
     }
 
 
+def _platform_auth_alert(platform_rows) -> dict | None:
+    """Alert only for explicitly failed auth checks on enabled, configured adapters."""
+    failed = [
+        row
+        for row in platform_rows
+        if row.get("supported")
+        and row.get("enabled")
+        and row.get("configured")
+        and (row.get("auth") or {}).get("status") == "failed"
+    ]
+    if not failed:
+        return None
+
+    names = [
+        str(row.get("name") or row.get("id") or "неизвестная площадка")
+        for row in failed
+    ]
+    shown = names[:6]
+    suffix = f" и ещё {len(names) - len(shown)}" if len(names) > len(shown) else ""
+    return {
+        "level": "error",
+        "code": "platform_auth_failed",
+        "message": (
+            "Проверка доступа не пройдена для площадок: "
+            + ", ".join(shown)
+            + suffix
+            + ". Переподключи аккаунт или обнови токен; публикация на этих площадках может не работать."
+        ),
+    }
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -551,6 +582,17 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     source_alert = _source_health_alert(enabled_source_health)
     if source_alert:
         alerts.append(source_alert)
+
+    # Auth state is read from the local platform catalog; this path performs
+    # no network requests and never includes token values in the alert.
+    try:
+        from tgfarm.platforms import get_platform_catalog
+
+        auth_alert = _platform_auth_alert(get_platform_catalog().get("platforms", []))
+        if auth_alert:
+            alerts.append(auth_alert)
+    except Exception as exc:  # noqa: BLE001 - health reporting must not break the dashboard
+        log.debug("platform auth alert projection failed (%s)", type(exc).__name__)
     return alerts
 
 
@@ -1248,6 +1290,82 @@ async def _branding_tick() -> dict | None:
         return None
 
 
+async def _platform_auth_tick() -> dict:
+    """Periodically verify configured credentials with read-only provider requests."""
+    settings = get_settings()
+    run_id = f"auth-{uuid.uuid4().hex[:8]}"
+    if not settings.online:
+        return {"checked": 0, "authorized": 0, "failed": 0, "indeterminate": 0, "skipped": "mode=off"}
+
+    from tgfarm.platform_auth import check_platform_auth
+    from tgfarm.platforms import get_platform_catalog
+
+    # These adapters have a read-only auth probe. Dzen has its own browser
+    # warm-up, while non-integrated catalog entries are intentionally ignored.
+    checkable = {
+        "telegram", "vk", "max", "x", "reddit", "bluesky",
+        "threads", "linkedin", "mastodon",
+    }
+    catalog = await to_thread(get_platform_catalog)
+    candidates = [
+        row
+        for row in catalog.get("platforms", [])
+        if row.get("supported")
+        and row.get("enabled")
+        and row.get("configured")
+        and row.get("id") in checkable
+    ]
+
+    authorized_ids: list[str] = []
+    failed_ids: list[str] = []
+    indeterminate_ids: list[str] = []
+    for item in candidates:
+        platform_id = str(item["id"])
+        try:
+            result = await check_platform_auth(platform_id)
+            authorized = result.get("authorized")
+            if authorized is True:
+                authorized_ids.append(platform_id)
+            elif authorized is False:
+                failed_ids.append(platform_id)
+                log.warning("platform auth check failed for %s", platform_id)
+            else:
+                indeterminate_ids.append(platform_id)
+                log.info("platform auth check was inconclusive for %s", platform_id)
+        except Exception as exc:  # noqa: BLE001 - one adapter must not block the others
+            indeterminate_ids.append(platform_id)
+            log.warning(
+                "platform auth check raised for %s (%s)",
+                platform_id,
+                type(exc).__name__,
+            )
+
+    state = "error" if failed_ids else "partial" if indeterminate_ids else "ok"
+    report = {
+        "checked": len(candidates),
+        "authorized": len(authorized_ids),
+        "failed": len(failed_ids),
+        "indeterminate": len(indeterminate_ids),
+        "failed_platforms": failed_ids,
+        "indeterminate_platforms": indeterminate_ids,
+    }
+    await to_thread(
+        _record,
+        run_id,
+        "platform_auth",
+        state,
+        items_in=len(candidates),
+        items_out=len(authorized_ids),
+        error=("authorization check failed for: " + ", ".join(failed_ids)) if failed_ids else None,
+        meta={
+            "checked": len(candidates),
+            "failed_platforms": failed_ids,
+            "indeterminate_platforms": indeterminate_ids,
+        },
+    )
+    return report
+
+
 async def _startup_backup_check() -> dict | None:
     """Create a verified snapshot on startup when none is fresh or the last attempt failed."""
     settings = get_settings()
@@ -1402,6 +1520,25 @@ def _build_scheduler():
         run_date=datetime.now(UTC),
         id="startup-backup-check",
         name="ensure a recent backup on startup",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        _platform_auth_tick,
+        IntervalTrigger(hours=6),
+        id="platform-auth-health",
+        name="read-only platform auth health",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _platform_auth_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-platform-auth-check",
+        name="initial read-only platform auth check",
         max_instances=1,
         misfire_grace_time=3600,
     )
