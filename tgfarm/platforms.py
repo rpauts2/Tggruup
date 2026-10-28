@@ -83,6 +83,14 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "docs_url": "https://www.reddit.com/dev/api/",
     },
     {
+        "id": "bluesky", "name": "Bluesky", "symbol": "BS", "color": "#1185FE",
+        "category": "Мировые", "market": "Мировые", "priority": "P1",
+        "mode": "built_in", "roles": ["crosspost"],
+        "description": "Короткие посты через официальный AT Protocol API с app password.",
+        "requirements": "BLUESKY_HANDLE и отдельный app password из настроек безопасности Bluesky.",
+        "docs_url": "https://docs.bsky.app/docs/starter-templates/post",
+    },
+    {
         "id": "youtube", "name": "YouTube", "symbol": "YT", "color": "#FF0033",
         "category": "Видео", "market": "Мировые", "priority": "P1",
         "mode": "planned", "roles": ["video"],
@@ -291,6 +299,10 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "max": [
         {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен сохраняется в локальном .env и не показывается повторно."},
         {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала или чата", "secret": False, "placeholder": "ID канала", "help": "Бот должен иметь права публикации в целевом канале."},
+    ],
+    "bluesky": [
+        {"key": "BLUESKY_HANDLE", "attribute": "bluesky_handle", "label": "Handle", "secret": False, "placeholder": "name.bsky.social", "help": "Handle аккаунта Bluesky, можно с собственным доменом."},
+        {"key": "BLUESKY_APP_PASSWORD", "attribute": "bluesky_app_password", "label": "App password", "secret": True, "placeholder": "xxxx-xxxx-xxxx-xxxx", "help": "Создай отдельный пароль приложения в Settings → Privacy and Security → App passwords. Не вводи основной пароль."},
     ],
     "x": [
         {"key": "X_BEARER_TOKEN", "attribute": "x_bearer_token", "label": "Bearer token", "secret": True, "placeholder": "X API bearer token", "help": "Проверка профиля не гарантирует наличие write-доступа."},
