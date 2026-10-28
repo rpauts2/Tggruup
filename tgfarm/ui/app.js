@@ -705,7 +705,7 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads"].includes(item.id) && auth.method === "oauth"
+      const authConfig = supported && ["x", "threads", "linkedin"].includes(item.id) && auth.method === "oauth"
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
@@ -820,6 +820,34 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "linkedin" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани LinkedIn Client ID/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/linkedin/auth/callback";
+      const proceed = window.confirm(
+        "В LinkedIn Developer Portal добавь этот Authorized redirect URL, включи OpenID Connect и Share on LinkedIn, а в разрешениях выбери openid, profile и w_member_social:\n\n"
+        + callbackUri
+        + "\n\nПриложение должно иметь доступ к продукту Share on LinkedIn. Продолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/linkedin/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Адрес callback отличается от текущего адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("LinkedIn вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать LinkedIn OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "x" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_SECRET");
@@ -866,7 +894,9 @@
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
       : platformId === "threads"
         ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
-        : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
+        : platformId === "linkedin"
+          ? "Введи LinkedIn Client ID и Client Secret. Добавь callback URL панели в Developer Portal и включи OpenID Connect + Share on LinkedIn; для публикации нужен w_member_social."
+          : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
     const fields = $("#platform-auth-fields");
     fields.replaceChildren();
     (auth.fields || []).forEach((field) => {
@@ -890,8 +920,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = ["x", "threads"].includes(platformId);
+    save.textContent = ["x", "threads", "linkedin"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads", "linkedin"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
@@ -963,12 +993,14 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (["x", "threads"].includes(platformId)) {
+      if (["x", "threads", "linkedin"].includes(platformId)) {
         closePlatformAuthDialog();
         toast(
           platformId === "x"
             ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-            : "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
+            : platformId === "threads"
+              ? "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
+              : "LinkedIn App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
           "ok",
         );
         await refresh();
