@@ -11,28 +11,28 @@ from typing import Any
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Telegram Bot API tokens and MAX's /bot<TOKEN>/ URL convention.
-    (re.compile(r"(?i)(https?://[^/\\s]+/bot)[^/\\s]+"), r"\\1[REDACTED]"),
-    (re.compile(r"\\b\\d{5,}:[A-Za-z0-9_-]{20,}\\b"), "[REDACTED_TELEGRAM_BOT_TOKEN]"),
+    (re.compile(r"(?i)(https?://[^/\s]+/bot)[^/\s]+"), r"\1[REDACTED]"),
+    (re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{20,}\b"), "[REDACTED_TELEGRAM_BOT_TOKEN]"),
     # HTTP authentication headers and URL user-info.
-    (re.compile(r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
-    (re.compile(r"(?i)(https?://[^:\\s/@]+:)[^@\\s]+(@)"), r"\\1[REDACTED]\\2"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
+    (re.compile(r"(?i)(https?://[^:\s/@]+:)[^@\s]+(@)"), r"\1[REDACTED]\2"),
     # Common credential-bearing query parameters.
     (
         re.compile(
             r"(?i)([?&](?:access_token|refresh_token|client_secret|client_id|"
-            r"api_key|apikey|password|passwd|secret|token|code)=)[^&#\\s]+"
+            r"api_key|apikey|password|passwd|secret|token|code)=)[^&#\s]+"
         ),
-        r"\\1[REDACTED]",
+        r"\1[REDACTED]",
     ),
     # JSON, form, and debug key/value snippets including AT Protocol JWT names.
     (
         re.compile(
             r"""(?i)(["']?(?:access_token|refresh_token|accessjwt|refreshjwt|"""
             r"""client_secret|client_id|api_key|apikey|password|passwd|"""
-            r"""authorization|app_password|token|secret)["']?\\s*[:=]\\s*["']?)"""
-            r"""[^"'\\s,;}]+"""
+            r"""authorization|app_password|token|secret)["']?\s*[:=]\s*["']?)"""
+            r"""[^"'\s,;}]+"""
         ),
-        r"\\1[REDACTED]",
+        r"\1[REDACTED]",
     ),
 )
 
