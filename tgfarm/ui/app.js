@@ -799,11 +799,11 @@
         toast("Сначала нажми «Настроить приложение» и сохрани Threads App ID/Secret.", "err");
         return;
       }
-      const callbackUri = window.location.origin.replace(/\\/$/, "") + "/api/platforms/threads/auth/callback";
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/threads/auth/callback";
       const proceed = window.confirm(
-        "В Meta Developer Portal → Threads API добавь этот OAuth Redirect URI и разрешения threads_basic и threads_content_publish:\\n\\n"
+        "В Meta Developer Portal → Threads API добавь этот OAuth Redirect URI и разрешения threads_basic и threads_content_publish:\n\n"
         + callbackUri
-        + "\\n\\nВ режиме разработки добавь аккаунт в роли/тестеры приложения. Продолжить?",
+        + "\n\nВ режиме разработки добавь аккаунт в роли/тестеры приложения. Продолжить?",
       );
       if (!proceed) return;
       try {
@@ -865,7 +865,7 @@
     $("#platform-auth-description").textContent = platformId === "x"
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
       : platformId === "threads"
-        ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth».
+        ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
         : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
     const fields = $("#platform-auth-fields");
     fields.replaceChildren();
