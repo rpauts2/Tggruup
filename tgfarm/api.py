@@ -831,7 +831,7 @@ def _crossposts(limit: int) -> list[dict]:
                 "url": r.url,
                 "error": (r.error or "")[:200] or None,
                 "attempt": r.attempt,
-                "retry_after_at": r.retry_after_at,
+                "retry_after_at": getattr(r, "retry_after_at", None),
                 "at": r.created_at,
             }
             for r in rows
@@ -990,7 +990,7 @@ def _crossposts_export(limit: int = 300) -> dict:
                     "remote_id": r.remote_id,
                     "url": r.url,
                     "attempt": r.attempt,
-                    "retry_after_at": r.retry_after_at.isoformat() if r.retry_after_at else None,
+                    "retry_after_at": getattr(r, "retry_after_at", None).isoformat() if getattr(r, "retry_after_at", None) else None,
                     "at": r.created_at.isoformat() if r.created_at else None,
                     "has_error": bool(r.error),
                 }
