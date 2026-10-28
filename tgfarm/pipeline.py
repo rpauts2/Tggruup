@@ -66,17 +66,40 @@ def cycle_health(now: datetime | None = None) -> dict:
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
         age = max(0, int((current - started).total_seconds()))
+    settings = get_settings()
     stale = (
         _cycle_state == "running"
         and age is not None
-        and age >= max(1, get_settings().cycle_stale_min) * 60
+        and age >= max(1, settings.cycle_stale_min) * 60
     )
+    recovery_next_at = None
+    recovery_delay_min = None
+    recovery_wait_s = None
+    if _watchdog_last_recovery_at is not None:
+        recovery_at = _watchdog_last_recovery_at
+        if recovery_at.tzinfo is None:
+            recovery_at = recovery_at.replace(tzinfo=UTC)
+        else:
+            recovery_at = recovery_at.astimezone(UTC)
+        recovery_delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_at = recovery_at + timedelta(minutes=recovery_delay_min)
+        recovery_next_at = next_at.isoformat(timespec="seconds")
+        recovery_wait_s = max(0, int((next_at - current).total_seconds()))
+
     return {
         "state": _cycle_state,
         "started_at": started.isoformat(timespec="seconds") if started else None,
         "finished_at": finished.isoformat(timespec="seconds") if finished else None,
         "age_s": age,
         "stale": stale,
+        "recovery_attempts": _watchdog_recovery_attempts,
+        "recovery_delay_min": recovery_delay_min,
+        "recovery_next_at": recovery_next_at,
+        "recovery_wait_s": recovery_wait_s,
     }
 
 
