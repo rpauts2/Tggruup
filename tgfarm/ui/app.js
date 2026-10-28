@@ -982,7 +982,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = platformId === "x" ? "Сохранить приложение" : "Сохранить и проверить";
+      save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
