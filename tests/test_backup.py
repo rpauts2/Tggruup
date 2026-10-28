@@ -324,3 +324,36 @@ async def test_backup_job_records_mirror_failure_for_watchdog_alerts(tmp_path, m
     assert kwargs["meta"]["local_verified"] is True
     assert kwargs["meta"]["mirror_configured"] is True
 
+
+def test_backup_failure_appears_in_watchdog_alerts():
+    from sqlalchemy import select
+
+    from tgfarm import pipeline
+    from tgfarm.db.models import PipelineRun
+    from tgfarm.db.session import session_scope
+
+    run_id = "backup-alert-test-" + uuid.uuid4().hex[:10]
+    row = PipelineRun(
+        run_id=run_id,
+        stage="backup",
+        status="error",
+        error="mirror verification failed",
+        meta={"local_verified": True, "mirror_configured": True, "mirror_verified": False},
+    )
+    with session_scope() as session:
+        session.add(row)
+
+    try:
+        alerts = pipeline.collect_alerts()
+        alert = next(item for item in alerts if item["code"] == "backup_failed")
+        assert alert["level"] == "error"
+        assert "Локальная резервная копия создана" in alert["message"]
+        assert "mirror verification failed" not in alert["message"]
+    finally:
+        with session_scope() as session:
+            existing = session.execute(
+                select(PipelineRun).where(PipelineRun.run_id == run_id)
+            ).scalars().all()
+            for item in existing:
+                session.delete(item)
+
