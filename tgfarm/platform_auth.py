@@ -134,6 +134,26 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "threads":
+            from tgfarm.threads_oauth import get_valid_threads_access_token
+
+            user_id = str(settings.threads_user_id or "").strip()
+            if not user_id or not settings.threads_access_token:
+                raise RuntimeError("Сначала подключи аккаунт через Threads OAuth.")
+            token = await get_valid_threads_access_token()
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                payload = await _response_json(
+                    client,
+                    "https://graph.threads.net/v1.0/me",
+                    params={"fields": "id,username", "access_token": token},
+                )
+            returned_id = str(payload.get("id") or "")
+            username = str(payload.get("username") or settings.threads_username or "")
+            if not returned_id or returned_id != user_id or not username:
+                raise RuntimeError("Threads не подтвердил ожидаемый аккаунт. Переподключи OAuth.")
+            account = "@" + username
+            authorized = True
+            detail = "Threads OAuth подтверждён read-запросом к профилю. Публикация отдельно зависит от разрешения threads_content_publish."
         elif platform_id == "mastodon":
             from tgfarm.mastodon_oauth import normalize_instance_url
 
