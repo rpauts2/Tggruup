@@ -135,7 +135,7 @@ def test_topic_context_can_be_added_to_generation_prompt():
     assert "ДОСЬЕ ТЕМЫ" in block
     assert "ХРОНОЛОГИЯ" in block
     assert "ТРЕБОВАНИЯ К ПРОДОЛЖЕНИЮ" in block
-    assert "текущем блоке ИСТОЧНИКИ" in block or "текущими источниками" in block
+    assert "текущий блок ИСТОЧНИКИ" in block
 
 
 def test_topic_dossier_handles_short_or_empty_queries_without_scanning_archive():
