@@ -842,10 +842,114 @@ class ThreadsAdapter:
             )
 
 
+# ------------------------------------------------------------------ LinkedIn
+class LinkedInAdapter:
+    """Publish native text posts as the connected LinkedIn member."""
+
+    platform = "linkedin"
+    max_title = 3000
+    max_body = 3000
+    api_url = "https://api.linkedin.com/rest/posts"
+    api_version = "202610"
+
+    def _credentials(self) -> tuple[str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.linkedin_member_id or "").strip(),
+            str(settings.linkedin_access_token or "").strip(),
+            str(settings.linkedin_member_name or "").strip(),
+        )
+
+    def configured(self) -> bool:
+        member_id, token, _name = self._credentials()
+        return bool(member_id and token)
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        member_id, saved_token, _name = self._credentials()
+        if not member_id or not saved_token:
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        from tgfarm.linkedin_oauth import get_valid_linkedin_access_token
+
+        try:
+            token = await get_valid_linkedin_access_token()
+        except Exception as exc:  # noqa: BLE001 - no post request has been made
+            log.warning("linkedin token refresh failed (%s)", type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="LinkedIn OAuth expired or could not be refreshed; reconnect the account.",
+            )
+
+        title = str(payload.title or "").strip()
+        text = str(payload.text or "").strip()
+        body = truncate("\n\n".join(part for part in (title, text) if part), self.max_body)
+        if not body:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="LinkedIn text posts require a non-empty body.",
+            )
+
+        author = f"urn:li:person:{member_id}"
+        post = {
+            "author": author,
+            "commentary": body,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "LinkedIn-Version": self.api_version,
+            "X-Restli-Protocol-Version": "2.0.0",
+            "Content-Type": "application/json",
+        }
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                timeout=25.0,
+                follow_redirects=False,
+                headers=headers,
+            ) as client:
+                response = await client.post(self.api_url, json=post)
+                response.raise_for_status()
+                remote_id = str(response.headers.get("x-restli-id") or "").strip()
+                if not remote_id:
+                    return CrosspostResult(
+                        platform=self.platform,
+                        status="unknown",
+                        error="LinkedIn accepted the request without a post ID; reconcile before retrying.",
+                    )
+                # LinkedIn post IDs are returned as URNs, e.g. urn:li:share:... .
+                url = f"https://www.linkedin.com/feed/update/{remote_id}/"
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="posted",
+                    remote_id=remote_id,
+                    url=url,
+                )
+        except Exception as exc:  # noqa: BLE001 - never blind retry after an ambiguous side effect
+            status = crosspost_error_status(exc)
+            log.warning("linkedin crosspost %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=f"LinkedIn request failed ({type(exc).__name__}).",
+            )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "mastodon": MastodonAdapter(),
     "bluesky": BlueskyAdapter(),
     "threads": ThreadsAdapter(),
+    "linkedin": LinkedInAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),
