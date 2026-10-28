@@ -1425,6 +1425,20 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             text=request.body.strip(),
             meta={"subreddit": subreddit, "reddit_kind": "self"},
         )
+        # The global switch may have changed while the API refreshed community
+        # rules and requirements. Recheck after claiming the attempt and just
+        # before the side-effecting request.
+        if not await io(is_platform_enabled, "reddit"):
+            paused = CrosspostResult(
+                platform="reddit",
+                status="skipped",
+                error="Reddit was disabled before submit; no post was sent.",
+            )
+            await io(log_result, post["public_id"], paused, attempt)
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit выключен до отправки. Никакая публикация не отправлена.",
+            )
         try:
             result = await adapter.publish(payload)
         except Exception as exc:  # noqa: BLE001 - ambiguity must block blind retries
