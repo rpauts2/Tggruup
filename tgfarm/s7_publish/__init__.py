@@ -926,17 +926,16 @@ def unpublish(posts_public_ids: list[str]) -> int:
     """Admin action: pull a post back to `scheduled` (never deletes remotely)."""
     with session_scope() as session:
         rows = session.execute(
-            select(PostRow).where(PostRow.public_id.in_(posts_public_ids))
+            select(PostRow).where(
+                PostRow.public_id.in_(posts_public_ids),
+                PostRow.status.in_(("scheduled", "gated")),
+            )
         ).scalars().all()
-        updated = 0
+        now = datetime.now(UTC)
         for row in rows:
-            # An uncertain side effect must never become a blind retry.
-            if row.status == "publish_unknown":
-                continue
             row.status = "scheduled"
-            row.scheduled_at = datetime.now(UTC)
-            updated += 1
-        return updated
+            row.scheduled_at = now
+        return len(rows)
 
 
 def new_run_id() -> str:
