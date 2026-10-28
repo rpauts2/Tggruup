@@ -432,7 +432,8 @@ async def deliver_alerts() -> int:
     async with httpx.AsyncClient(timeout=15) as client:
         for alert in alerts:
             code = alert["code"]
-            if now - _alert_last_sent.get(code, 0.0) < cooldown:
+            last_sent = _alert_last_sent.get(code)
+            if last_sent is not None and now - last_sent < cooldown:
                 continue
             resp = await client.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
