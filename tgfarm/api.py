@@ -104,6 +104,10 @@ class RedditPublishRequest(BaseModel):
     confirm: bool = False
 
 
+class RedditMetricsRefreshRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=100)
+
+
 class PolishRequest(BaseModel):
     """One-direction rewrite of an existing draft from the panel."""
 
@@ -1366,6 +1370,21 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "authorized" if result["authorized"] else "check failed",
         )
         return result
+
+    @app.get("/api/reddit/metrics")
+    async def reddit_metrics() -> dict:
+        from tgfarm.s9_growth.reddit_metrics import get_reddit_metrics_report
+
+        return await io(get_reddit_metrics_report)
+
+    @app.post("/api/reddit/metrics/refresh")
+    async def reddit_metrics_refresh(request: RedditMetricsRefreshRequest) -> dict:
+        from tgfarm.s9_growth.reddit_metrics import RedditMetricsError, refresh_reddit_metrics
+
+        try:
+            return await refresh_reddit_metrics(limit=request.limit)
+        except RedditMetricsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/reddit/scout")
     async def reddit_scout(request: RedditScoutRequest) -> dict:
