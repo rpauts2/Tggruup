@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -42,6 +42,12 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["threads"]["roles"] == ["text", "crosspost"]
     assert {field["key"] for field in entries["threads"]["auth"]["fields"]} == {
         "THREADS_APP_ID", "THREADS_APP_SECRET"
+    }
+    assert entries["linkedin"]["supported"] is True
+    assert entries["linkedin"]["auth"]["method"] == "oauth"
+    assert entries["linkedin"]["roles"] == ["text", "professional", "crosspost"]
+    assert {field["key"] for field in entries["linkedin"]["auth"]["fields"]} == {
+        "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"
     }
     assert entries["reddit"]["planned"] is False
     assert entries["youtube"]["supported"] is False
@@ -114,7 +120,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 9
+    assert payload["summary"]["supported"] == 10
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
