@@ -605,9 +605,18 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
     message = f"{kind}: {exc}".lower()
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
-    if isinstance(status_code, int) and status_code >= 500:
-        # A server can fail after committing the side effect; don't repeat blindly.
-        return True
+    if isinstance(status_code, int):
+        if status_code >= 500 or status_code in (408, 425):
+            # The server may have committed the post before returning an error.
+            return True
+        if 400 <= status_code < 500:
+            # Explicit client errors, including rate limits, mean the request was
+            # rejected; retry policy can handle them without duplicate risk.
+            return False
+
+    # These Dzen errors are detected before submitting the article.
+    if kind in {"dzencaptcha", "dzennotloggedin"}:
+        return False
 
     definitely_before_send = (
         "connecttimeout",
@@ -635,7 +644,13 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
         "unexpected eof",
         "broken pipe",
     )
-    return any(marker in message for marker in ambiguous)
+    if any(marker in message for marker in ambiguous):
+        return True
+
+    # An unknown exception can be raised after a remote side effect. Without a
+    # platform-specific proof that nothing was submitted, manual reconciliation
+    # is safer than automatically creating a second copy.
+    return True
 
 
 def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
