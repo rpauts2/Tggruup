@@ -21,11 +21,11 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit"} <= {
         key for key, item in entries.items() if item["supported"]
     }
-    assert entries["reddit"]["supported"] is False
-    assert entries["reddit"]["planned"] is True
+    assert entries["reddit"]["supported"] is True
+    assert entries["reddit"]["planned"] is False
     assert entries["youtube"]["supported"] is False
     assert entries["tiktok"]["supported"] is False
     assert catalog["summary"]["total"] >= 20
@@ -56,21 +56,21 @@ def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monk
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
-        platforms.set_platform_enabled("reddit", True)
-    assert platforms.is_platform_enabled("reddit") is False
+        platforms.set_platform_enabled("youtube", True)
+    assert platforms.is_platform_enabled("youtube") is False
 
 
 def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("reddit", True)
+    item = platforms.set_platform_planned("youtube", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("reddit", False)
+    item = platforms.set_platform_planned("youtube", False)
     assert item["planned"] is False
-    assert platforms.is_platform_enabled("reddit") is False
+    assert platforms.is_platform_enabled("youtube") is False
 
 
 def test_disabled_crosspost_network_never_reaches_the_post_loader(monkeypatch, tmp_path):
@@ -96,8 +96,9 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 5
-    assert any(item["id"] == "reddit" for item in payload["platforms"])
+    assert payload["summary"]["supported"] == 6
+    entries = {item["id"]: item for item in payload["platforms"]}
+    assert entries["reddit"]["supported"] is True
 
 
 def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tmp_path):
@@ -106,7 +107,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/reddit",
+        "/api/platforms/youtube",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )
