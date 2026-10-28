@@ -731,12 +731,20 @@ async def _watchdog() -> None:
     health = cycle_health()
     if health["stale"]:
         log.error(
-            "watchdog: cycle has been running for %ss (state=%s); forcing recovery",
+            "watchdog: cycle has been running for %ss (state=%s); cancelling stale task",
             health["age_s"],
             health["state"],
         )
-        global _cycle_state
+        global _cycle_state, _cycle_finished_at
+        active = _active_cycle_task
+        if active is not None and active is not asyncio.current_task() and not active.done():
+            active.cancel()
         _cycle_state = "failed"
+        _cycle_finished_at = datetime.now(UTC)
+        # Do not start a replacement in the same tick. The cancelled task must
+        # unwind and release its active-task slot first; the next watchdog tick
+        # can safely schedule catch-up if no newer cycle has started.
+        return
     elif health["state"] in ("failed", "timeout", "partial"):
         log.warning("watchdog: last cycle ended as %s; scheduling catch-up", health["state"])
     else:
