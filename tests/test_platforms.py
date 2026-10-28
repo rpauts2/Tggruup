@@ -221,3 +221,80 @@ def test_crosspost_only_reddit_is_never_misrouted_to_telegram(monkeypatch, tmp_p
     with session_scope() as session:
         queued = session.query(Post).filter_by(public_id=post_id).one()
         assert queued.status == "scheduled"
+
+
+def test_platform_auth_metadata_distinguishes_saved_keys_from_real_access(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_auth_state_path", lambda: tmp_path / "auth-checks.json")
+    catalog = platforms.get_platform_catalog()
+    entries = {item["id"]: item for item in catalog["platforms"]}
+
+    reddit = entries["reddit"]["auth"]
+    assert reddit["method"] == "credentials"
+    assert reddit["integration_ready"] is True
+    assert {field["key"] for field in reddit["fields"]} >= {
+        "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_REFRESH_TOKEN",
+        "REDDIT_SUBREDDIT", "REDDIT_USER_AGENT",
+    }
+    assert all("value" not in field for field in reddit["fields"])
+    assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
+
+    assert entries["dzen"]["auth"]["method"] == "browser"
+    assert entries["youtube"]["auth"]["method"] == "external"
+    assert entries["youtube"]["auth"]["integration_ready"] is False
+    assert entries["youtube"]["auth"]["status"] == "not_integrated"
+
+
+def test_save_platform_credentials_keeps_existing_values_and_removes_duplicate_key_lines(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import platforms
+    import tgfarm.core.settings as settings_module
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "VK_ACCESS_TOKEN='old-token'\\nOTHER_SETTING=keep-me\\n"
+        "VK_ACCESS_TOKEN='stale-duplicate'\\n",
+        encoding="utf-8",
+    )
+    auth_path = tmp_path / "platform_auth_checks.json"
+    settings = SimpleNamespace(vk_access_token="old-token", vk_group_id="123456")
+    monkeypatch.setattr(platforms, "get_settings", lambda: settings)
+    monkeypatch.setattr(platforms, "_auth_state_path", lambda: auth_path)
+    monkeypatch.setattr(settings_module, "ROOT", tmp_path)
+    monkeypatch.setattr(settings_module, "reset_settings_cache", lambda: None)
+
+    descriptor = platforms.save_platform_credentials(
+        "vk",
+        {"VK_ACCESS_TOKEN": "fresh-token", "VK_GROUP_ID": "123456", "IGNORED": ""},
+    ) if False else None
+    # Unknown fields must fail closed rather than being silently accepted.
+    import pytest
+    with pytest.raises(ValueError, match="не разрешено"):
+        platforms.save_platform_credentials(
+            "vk", {"VK_ACCESS_TOKEN": "fresh-token", "IGNORED": "bad"}
+        )
+
+    descriptor = platforms.save_platform_credentials(
+        "vk", {"VK_ACCESS_TOKEN": "fresh-token", "VK_GROUP_ID": ""}
+    )
+    content = env_path.read_text(encoding="utf-8")
+    assert content.count("VK_ACCESS_TOKEN=") == 1
+    assert "VK_ACCESS_TOKEN='fresh-token'" in content
+    assert "stale-duplicate" not in content
+    assert "OTHER_SETTING=keep-me" in content
+    assert "fresh-token" not in str(descriptor)
+    assert descriptor["status"] == "unverified"
+
+
+def test_reddit_metrics_report_api_is_authenticated_and_read_only(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    assert client.get("/api/reddit/metrics").status_code == 401
+    response = client.get("/api/reddit/metrics", headers={HEADER: ensure_token()})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert "communities" in payload
+    assert "просмотры" in payload["note"].lower() or "показы" in payload["note"].lower()
