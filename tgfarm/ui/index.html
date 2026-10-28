@@ -95,7 +95,17 @@
     <article class="card">
       <header class="card-head">
         <h2>Кросспостинг</h2>
-        <span class="card-sub">состояние внешних публикаций</span>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="card-sub">состояние внешних публикаций</span>
+          <label class="sr-only" for="crosspost-filter">Фильтр доставок</label>
+          <select id="crosspost-filter" class="input input-sm" aria-label="Фильтр доставок">
+            <option value="all">Все состояния</option>
+            <option value="attention">Требуют внимания</option>
+            <option value="published">Опубликовано</option>
+            <option value="errors">Ошибки</option>
+            <option value="pending">В очереди</option>
+          </select>
+        </div>
       </header>
       <div id="crossposts-list" class="list"></div>
     </article>
