@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.platforms import _configured_state, record_auth_check
 
 
@@ -250,7 +251,7 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
         authorized = None
         detail = "Не удалось подключиться к площадке. Проверь интернет и повтори попытку."
     except Exception as exc:  # noqa: BLE001 - return only a bounded, redacted operator hint
-        detail = str(exc)[:400] or "Проверка доступа не пройдена."
+        detail = redact_sensitive_text(exc, limit=400) or "Проверка доступа не пройдена."
     else:
         pass
 
