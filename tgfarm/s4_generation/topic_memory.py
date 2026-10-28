@@ -222,13 +222,51 @@ def _latest_time(posts: list[dict]) -> datetime | None:
     return max((value for value in values if value is not None), default=None)
 
 
+def _search_topic_archive(
+    query: str,
+    *,
+    channel_id: str | None,
+    preferred_channel_id: str | None,
+    limit: int,
+) -> dict:
+    """Page through the ranked FTS candidate window instead of silently reading only its first page."""
+    cap = max(1, min(300, int(limit)))
+    rows = []
+    offset = 0
+    total = 0
+    while offset < cap:
+        page_limit = min(100, cap - offset)
+        page = search_archive(
+            query,
+            channel_id=channel_id,
+            preferred_channel_id=preferred_channel_id,
+            limit=page_limit,
+            offset=offset,
+        )
+        total = int(page.get("total", 0))
+        batch = page.get("results") or []
+        if not batch:
+            break
+        rows.extend(batch)
+        offset += len(batch)
+        # search_archive ranks up to MAX_CANDIDATES candidates; avoid futile pages.
+        if len(batch) < page_limit or offset >= min(total, 300):
+            break
+    return {
+        "total": total,
+        "results": rows,
+        "scanned": len(rows),
+        "truncated": total > len(rows),
+    }
+
+
 def build_topic_dossier(
     query: str,
     *,
     channel_id: str | None = None,
     preferred_channel_id: str | None = None,
     days: int = 30,
-    archive_limit: int = 60,
+    archive_limit: int = 300,
     current_items: Iterable | None = None,
     now: datetime | None = None,
 ) -> dict:
@@ -251,11 +289,11 @@ def build_topic_dossier(
             "message": "Введи более конкретную тему, название или имя.",
         }
 
-    archive = search_archive(
+    archive = _search_topic_archive(
         query,
         channel_id=channel_id,
         preferred_channel_id=preferred_channel_id or channel_id,
-        limit=max(1, min(100, int(archive_limit))),
+        limit=archive_limit,
     )
     historical_posts = [
         row for row in archive.get("results", [])
@@ -391,11 +429,21 @@ def build_topic_dossier(
         "Предлагаемые направления продолжения: " + "; ".join(item["title"] for item in continuation_ideas[:6]),
     ])
 
+    limitations = [
+        "Это эвристический поиск, не доказательство истинности или причинности.",
+        "Числовые расхождения требуют проверки метрики, валюты, единиц и периода.",
+        "Источники ограничены материалами, сохранёнными в БД за выбранное окно.",
+    ]
+    if archive.get("truncated"):
+        limitations.append("По запросу найдено больше результатов, чем включено в это досье; сузь тему или увеличь лимит, чтобы изучить следующие материалы.")
+
     return {
         "query": query,
         "status": "ok",
         "window_days": window_days,
         "archive_total_matches": archive.get("total", 0),
+        "archive_scanned": archive.get("scanned", 0),
+        "history_truncated": bool(archive.get("truncated", False)),
         "history_count": len(timeline),
         "latest_post_at": _iso(latest_post_time),
         "days_since_latest_post": days_since_latest,
@@ -410,11 +458,7 @@ def build_topic_dossier(
         "claim_checks": claim_checks,
         "continuation_ideas": continuation_ideas,
         "brief": "\n".join(brief_lines),
-        "limitations": [
-            "Это эвристический поиск, не доказательство истинности или причинности.",
-            "Числовые расхождения требуют проверки метрики, валюты, единиц и периода.",
-            "Источники ограничены материалами, сохранёнными в БД за выбранное окно.",
-        ],
+        "limitations": limitations,
     }
 
 
