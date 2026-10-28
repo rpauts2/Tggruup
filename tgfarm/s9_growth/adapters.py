@@ -769,7 +769,7 @@ class ThreadsAdapter:
         return bool(user_id and token)
 
     async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
-        user_id, saved_token, username = self._credentials()
+        user_id, saved_token, _username = self._credentials()
         if not user_id or not saved_token:
             return CrosspostResult(platform=self.platform, status="skipped")
         import httpx
@@ -784,7 +784,7 @@ class ThreadsAdapter:
                 error="Threads OAuth expired or could not be refreshed; reconnect the account.",
             )
 
-        body = truncate(f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip(), self.max_body)
+        body = f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip()[:self.max_body]
         if not body:
             return CrosspostResult(
                 platform=self.platform, status="permanent",
