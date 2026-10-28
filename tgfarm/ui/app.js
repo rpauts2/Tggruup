@@ -734,6 +734,27 @@
     return res.json();
   }
 
+  window.tgfarmReconcile = async (id, action) => {
+    if (!id) return;
+    const body = { action };
+    if (action === "confirm_published") {
+      if (!confirm("Подтверждаете, что пост уже появился на площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили площадку и не нашли этот пост? Только тогда безопаснее повторять.")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+    try {
+      await post(`/api/posts/${encodeURIComponent(id)}/reconcile`, body);
+      toast(action === "confirm_published" ? "Публикация отмечена как подтверждённая" : "Пост возвращён в очередь", "ok");
+      $("#drawer").hidden = true;
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
   window.tgfarmPublish = async (id) => {
     let proceed = true;
     try { proceed = confirm("Опубликовать пост прямо сейчас?"); } catch (e) { proceed = true; }
