@@ -613,7 +613,7 @@
       posted: "опубликован",
       skipped: "пропущен",
       failed: "ошибка, будет повтор",
-      permanent_failure: "ошибка настройки/API",
+      permanent: "ошибка настройки/API",
       unknown: "нужна сверка",
       publishing: "отправляется",
       retry_authorized: "повтор разрешён",
