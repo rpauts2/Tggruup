@@ -705,8 +705,8 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && item.id === "x" && auth.method === "oauth"
-        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="x" ${busy ? "disabled" : ""}>Настроить приложение</button>`
+      const authConfig = supported && ["x", "threads"].includes(item.id) && auth.method === "oauth"
+        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
         ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
