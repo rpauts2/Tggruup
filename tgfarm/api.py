@@ -1126,14 +1126,17 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             raw_query = request.scope.get("query_string", b"")
             if isinstance(raw_query, bytes):
                 raw_query = raw_query.decode("utf-8", errors="replace")
-            parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
+            # Strip first: even an overlong/malformed callback query must not reach access logs.
+            request.scope["query_string"] = b""
+            try:
+                parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
+            except ValueError:
+                parsed = {}
             request.scope[callback_scope] = {
                 key: values[0]
                 for key, values in parsed.items()
                 if key in {"code", "state", "error"} and values
             }
-            # OAuth authorization codes are secrets and must not reach access logs.
-            request.scope["query_string"] = b""
         response = await call_next(request)
         if request.url.path in {"/api/platforms/mastodon/auth/callback", "/api/platforms/x/auth/callback"}:
             response.headers["Cache-Control"] = "no-store"
