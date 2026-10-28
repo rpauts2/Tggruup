@@ -23,8 +23,19 @@
 | Reddit | Кросспост в один выбранный subreddit | Reddit OAuth client ID/secret, постоянный refresh token, subreddit и User-Agent |
 | Mastodon | Кросспост текстовых статусов | OAuth 2.0 + PKCE, пользовательский токен на выбранном HTTPS-инстансе |
 | Threads | Кросспост текстовых постов | OAuth 2.0, Meta App ID/Secret, `threads_content_publish` |
+| LinkedIn | Кросспост профессиональных текстовых постов | OAuth 2.0, OpenID Connect, `w_member_social`, Posts API |
 
 Наличие ключей не считается проверкой авторизации. Используй контролируемый live smoke-test с одной тестовой публикацией на каждой площадке перед ростом объёма.
+
+## LinkedIn: OAuth и нативная публикация
+
+Для подключения создай приложение в [LinkedIn Developer Portal](https://www.linkedin.com/developers/) и добавь продукты **Sign In with LinkedIn using OpenID Connect** и **Share on LinkedIn**. В карточке площадки нажми «Настроить приложение» и сохрани Client ID/Client Secret. Затем нажми «Подключить через OAuth», скопируй callback URI из окна подтверждения и добавь его в Authorized redirect URLs в кабинете LinkedIn. Запрашиваются только `openid`, `profile` и `w_member_social`; разрешение публикации доступно лишь когда его выдал LinkedIn для приложения.
+
+TgFarm использует authorization-code flow с одноразовым случайным `state`, обменивает код на пользовательский access token и проверяет профиль через OpenID Connect `userinfo`. Коды и токены не возвращаются в браузер и удаляются из callback query string до access-логирования. Учётные данные хранятся в локальном `.env`. Если LinkedIn выдал refresh token, TgFarm пытается обновить истекающий access token и сохраняет ротированные значения; если refresh token не выдан, после истечения срока потребуется повторно подключить аккаунт.
+
+Для публикации используется `POST https://api.linkedin.com/rest/posts` с заголовками `LinkedIn-Version: 202610` и `X-Restli-Protocol-Version: 2.0.0`. Текущая реализация публикует только текст от имени подключённого участника, без изображений, видео и публикаций от имени организации. После принятия публикации сохраняется `x-restli-id`; если LinkedIn не вернул ID, результат остаётся неопределённым, чтобы ферма не создала возможный дубль автоматически.
+
+LinkedIn выключен по умолчанию. После успешного OAuth включи площадку вручную и сначала сделай один тестовый пост, который можно удалить. Реальная возможность публикации зависит от доступа приложения к продукту и разрешению `w_member_social`, а также актуальных правил, версий и лимитов LinkedIn API.
 
 ## Threads: OAuth и публикация текстовых постов
 
