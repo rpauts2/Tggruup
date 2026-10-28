@@ -136,3 +136,38 @@ def test_dashboard_includes_platform_hub_and_accessible_switches(client):
     assert "updatePlatformSwitch" in script.text
     assert '"/api/platforms"' in script.text
     assert 'role="switch"' in script.text or "role=\\"switch\\"" in script.text
+
+def test_paused_primary_platform_stays_queued_and_returns_when_reenabled(monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from tgfarm import platforms
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s7_publish import due_posts
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    channel_id = "paused_platform_" + uuid4().hex[:10]
+    post_id = "paused_post_" + uuid4().hex[:10]
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id, title="Paused platform test", niche="general", platform="dzen"
+        ))
+        session.add(Post(
+            public_id=post_id,
+            channel_id=channel_id,
+            hook="Queued article",
+            body="It must remain in the queue while Dzen is paused.",
+            status="scheduled",
+            scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+        ))
+
+    platforms.set_platform_enabled("dzen", False)
+    assert all(row[0] != post_id for row in due_posts(limit=1000))
+
+    with session_scope() as session:
+        queued = session.query(Post).filter_by(public_id=post_id).one()
+        assert queued.status == "scheduled"
+
+    platforms.set_platform_enabled("dzen", True)
+    assert any(row[0] == queued.id for row in due_posts(limit=1000))
