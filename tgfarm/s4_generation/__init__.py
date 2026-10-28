@@ -574,7 +574,7 @@ def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
     rule used elsewhere, so list labels like "1." do not become false alarms.
     """
     text = f"{draft.hook}\n{draft.body}"
-    candidates = re.split(r"(?<=[.!?…])\\s+|\\n+", text)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
     out: list[str] = []
     seen: set[str] = set()
     for sentence in candidates:
