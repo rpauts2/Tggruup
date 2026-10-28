@@ -536,7 +536,6 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
         "or ban evasion. Output a single JSON object only."
     )
 
-    settings = get_settings()
     use_ai, reason = policy.should_use_ai(
         "s9_reddit_tailor",
         generation_provider="manual",
