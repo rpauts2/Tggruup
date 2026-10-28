@@ -12,6 +12,9 @@
     refreshTimer: null,
     inFlight: false,
     bestHour: null,
+    memoryQuery: "",
+    topicQuery: "",
+    topicDossier: null,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -24,6 +27,15 @@
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const safeExternalUrl = (value) => {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+    } catch (_) {
+      return "";
+    }
+  };
 
   const dt = (v) => {
     if (!v) return "—";
@@ -142,6 +154,229 @@
       ${kv("Лучший угол", topAngle ? `${esc(topAngle[0])} (${pct(angleScore(topAngle[1]))})` : "—")}
       ${kv("Лучший час", best ? `${best[0]}:00 (${pct(best[1])})` : "—")}
       ${experimentsBlock(report)}`;
+    renderPortfolio(report.portfolio || {});
+  }
+
+  function renderPortfolio(portfolio) {
+    const root = $("#portfolio-insights");
+    if (!root) return;
+    const channels = portfolio.channels || [];
+    const meta = $("#portfolio-meta");
+    if (meta) {
+      meta.textContent = `${n(portfolio.measured_posts)} зрелых постов · ${channels.length} каналов · окно ${n(portfolio.window_days)} дн.`;
+    }
+
+    const priority = { promote: 0, reduce: 1, test: 2, hold: 3 };
+    const action = {
+      promote: "Усилить тест",
+      reduce: "Сократить долю",
+      test: "Проверить ещё",
+      hold: "Пока наблюдать",
+    };
+    const dimension = { angle: "угол", hook_style: "стиль хука", format: "формат" };
+    const rows = channels.flatMap((channel) => (channel.recommendations || [])
+      .filter((item) => item.decision !== "hold")
+      .map((item) => ({ ...item, channel_title: channel.title || channel.channel_id })))
+      .sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9) || Math.abs(b.lift) - Math.abs(a.lift))
+      .slice(0, 12);
+
+    if (!portfolio.measured_posts) {
+      root.innerHTML = `<div class="empty">Пока нет зрелых постов с измеримыми метриками. Для сравнения нужны данные и минимум 24 часа после публикации.</div>`;
+      return;
+    }
+    if (!rows.length) {
+      root.innerHTML = `<div class="empty">Пока нет устойчивых отличий между темами и форматами. Ферма не будет подстраиваться под случайные всплески.</div>`;
+      return;
+    }
+    root.innerHTML = rows.map((item) => {
+      const change = item.lift > 0 ? "+" : "";
+      const sample = `${n(item.sample_size)} постов · качество ${pct(item.adjusted_quality)} против базы ${pct(item.baseline_quality)} · ${Math.round((item.confidence || 0) * 100)}% веса от наблюдений`;
+      return `<div class="item">
+        <div class="item-main">
+          <div class="item-title">${esc(item.channel_title)} · ${esc(dimension[item.dimension] || item.dimension)}: ${esc(item.key)}</div>
+          <div class="item-meta">${esc(sample)}</div>
+        </div>
+        <div class="item-side">
+          <span class="pill">${esc(action[item.decision] || item.decision)}</span>
+          <div class="item-meta">${change}${pct(Math.abs(item.lift))}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderMemory(data) {
+    const root = $("#memory-results");
+    if (!root) return;
+    const index = data.index || {};
+    const meta = $("#memory-meta");
+    if (meta) {
+      const stateText = index.available ? "FTS5 индекс активен" : "резервный поиск";
+      meta.textContent = `${n(index.published_posts)} опубликованных постов · ${stateText}`;
+    }
+    const count = $("#memory-count");
+    if (count) {
+      count.textContent = data.query
+        ? `Найдено: ${n(data.total)} · показано ${n(data.returned)}`
+        : `Архив · ${n(data.total)} публикаций`;
+    }
+    const results = data.results || [];
+    if (!results.length) {
+      root.innerHTML = `<div class="empty">${data.query ? "Ничего не найдено. Попробуй имя, термин или ключевой факт из старой публикации." : "В архиве пока нет опубликованных постов, сохранённых TgFarm."}</div>`;
+      return;
+    }
+    root.innerHTML = results.map((row) => `
+      <div class="memory-result" data-memory-post="${esc(row.id)}" role="button" tabindex="0" title="Открыть полную публикацию">
+        <div class="memory-result-head">
+          <div>
+            <div class="item-title">${esc(row.hook || "(без заголовка)")}</div>
+            <div class="item-meta">${esc(row.channel_title || row.channel_id)} · ${esc(dt(row.published_at || row.created_at))} · ${esc(FORMAT_RU[row.post_format] || row.post_format || "пост")}</div>
+          </div>
+          <span class="tag">${row.score ? `совпадение ${pct(row.score)}` : "в архиве"}</span>
+        </div>
+        <div class="memory-excerpt">${esc(row.excerpt || (row.body || "").slice(0, 320))}</div>
+        <div class="item-meta memory-provenance">${n((row.claims || []).length)} утверждений · ${n((row.sources || []).length)} источников ${row.angle ? "· угол: " + esc(row.angle) : ""}</div>
+      </div>`).join("");
+    $$("[data-memory-post]").forEach((el) => {
+      el.addEventListener("click", () => openDrawer(el.dataset.memoryPost));
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDrawer(el.dataset.memoryPost);
+        }
+      });
+    });
+  }
+
+  const TOPIC_CLAIM_STATUS = {
+    reappears: "Есть похожие свежие данные",
+    possible_change: "Возможное изменение",
+    not_rechecked: "Не перепроверено",
+  };
+
+  function renderTopicDossier(dossier) {
+    const root = $("#topic-dossier-results");
+    if (!root) return;
+    if (!dossier) {
+      root.innerHTML = `<div class="empty">Введи тему и нажми «Собрать досье», чтобы соединить старые публикации со свежими источниками.</div>`;
+      return;
+    }
+    if (dossier.status !== "ok") {
+      root.innerHTML = `<div class="empty">${esc(dossier.message || "Недостаточно данных для досье.")}</div>`;
+      return;
+    }
+
+    const timeline = dossier.timeline || [];
+    const current = dossier.current_sources || [];
+    const claims = dossier.claim_checks || [];
+    const ideas = dossier.continuation_ideas || [];
+    const stats = [
+      [ "История", n(dossier.history_count) + (dossier.history_truncated ? "+ постов" : " постов") ],
+      [ "Свежие источники", n(dossier.current_source_count) ],
+      [ "После последнего поста", n(dossier.updates_found) ],
+      [ "Давность публикации", dossier.days_since_latest_post == null ? "нет истории" : n(dossier.days_since_latest_post) + " дн." ],
+    ];
+    root.innerHTML = `
+      <div class="topic-dossier-summary">
+        ${stats.map(([label, value]) => `<div class="topic-stat"><div class="item-meta">${esc(label)}</div><strong>${esc(value)}</strong></div>`).join("")}
+      </div>
+      ${timeline.length ? `<section class="topic-block">
+        <h4>Хронология TgFarm</h4>
+        ${timeline.slice(-16).reverse().map((row) => `<div class="topic-timeline-row">
+          <div class="topic-date">${esc(dt(row.published_at || row.created_at || row.date))}</div>
+          <div class="topic-timeline-main">
+            <div class="item-title">${esc(row.hook || "(без заголовка)")}</div>
+            <div class="item-meta">${esc(row.channel_title || row.channel_id)} · ${esc(row.angle || "—")} · ${esc(FORMAT_RU[row.post_format] || row.post_format || "пост")}</div>
+            ${(row.claims || []).length ? `<div class="topic-small">Утверждения: ${esc(row.claims.join(" · "))}</div>` : ""}
+          </div>
+          <button class="btn btn-ghost btn-sm" type="button" data-topic-post="${esc(row.id)}">Открыть</button>
+        </div>`).join("")}
+      </section>` : `<div class="topic-block"><div class="empty">В архиве не найдено подходящих публикаций. Тема может быть новой для фермы.</div></div>`}
+      ${current.length ? `<section class="topic-block">
+        <h4>Свежие материалы по теме</h4>
+        ${current.slice(0, 10).map((source) => `<div class="topic-source-row">
+          <div class="item-main">
+            <div class="item-title">${esc(source.title || "Материал без заголовка")}</div>
+            <div class="item-meta">${esc(source.source_id || "источник")} · ${esc(dt(source.date || source.published_at || source.fetched_at))} · релевантность ${pct(source.score || 0)}</div>
+            ${source.excerpt ? `<div class="topic-small">${esc(source.excerpt.slice(0, 300))}</div>` : ""}
+          </div>
+          ${safeExternalUrl(source.url) ? `<a class="btn btn-ghost btn-sm" href="${esc(safeExternalUrl(source.url))}" target="_blank" rel="noopener">Источник</a>` : ""}
+        </div>`).join("")}
+      </section>` : `<div class="topic-block"><h4>Свежие материалы</h4><div class="empty">В сохранённых источниках выбранного периода не найдено достаточно совпадений. Это не означает, что обновлений нет.</div></div>`}
+      ${claims.length ? `<section class="topic-block">
+        <h4>Старые утверждения и свежие данные</h4>
+        <p class="card-sub topic-disclaimer">Автоматическая текстовая сверка, не окончательный фактчек. Разные единицы, периоды и метрики могут объяснять расхождения.</p>
+        ${claims.slice(0, 12).map((claim) => `<div class="topic-claim-row">
+          <div><span class="tag ${claim.current_status === "possible_change" ? "tag-warn" : claim.current_status === "reappears" ? "tag-ok" : ""}">${esc(TOPIC_CLAIM_STATUS[claim.current_status] || claim.current_status)}</span>
+            <div class="topic-claim-text">${esc(claim.claim)}</div>
+            <div class="item-meta">Исторически подтверждено: ${claim.historically_verified ? "да" : "нет"} · совпадение ${pct(claim.evidence_score || 0)}</div>
+            <div class="topic-small">${esc(claim.current_note || "")}</div>
+            ${(claim.current_sources || []).map((url) => safeExternalUrl(url) ? `<a class="topic-source-link" href="${esc(safeExternalUrl(url))}" target="_blank" rel="noopener">Открыть свежий источник</a>` : "").join("")}
+          </div>
+        </div>`).join("")}
+      </section>` : ""}
+      ${ideas.length ? `<section class="topic-block">
+        <h4>Варианты продолжения</h4>
+        ${ideas.map((idea) => `<div class="topic-idea">
+          <strong>${esc(idea.title)}</strong>
+          <div class="topic-small">${esc(idea.reason)}</div>
+          ${safeExternalUrl(idea.source_url) ? `<a class="topic-source-link" href="${esc(safeExternalUrl(idea.source_url))}" target="_blank" rel="noopener">Опорный источник</a>` : ""}
+        </div>`).join("")}
+      </section>` : ""}
+      <details class="topic-block topic-brief">
+        <summary>Контекст для следующей генерации</summary>
+        <pre>${esc(dossier.brief || "")}</pre>
+        <button class="btn btn-ghost btn-sm" type="button" id="copy-topic-brief">Скопировать контекст</button>
+      </details>
+      <p class="card-sub topic-disclaimer">${(dossier.limitations || []).map(esc).join(" ")}</p>
+    `;
+
+    $$("[data-topic-post]").forEach((el) => {
+      el.addEventListener("click", () => openDrawer(el.dataset.topicPost));
+    });
+    $("#copy-topic-brief")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(dossier.brief || "");
+        toast("Контекст для продолжения скопирован", "ok");
+      } catch (_) {
+        toast("Не удалось скопировать контекст", "err");
+      }
+    });
+  }
+
+  async function submitTopicDossier() {
+    const field = $("#topic-query");
+    state.topicQuery = (field?.value || $("#memory-query")?.value || "").trim();
+    if (field && state.topicQuery) $("#memory-query").value = state.topicQuery;
+    switchView("memory");
+    const root = $("#topic-dossier-results");
+    if (!state.topicQuery) {
+      if (root) root.innerHTML = `<div class="empty">Сначала введи тему: например, название продукта, компании или исследования.</div>`;
+      return;
+    }
+    if (root) root.innerHTML = `<div class="empty">Собираю историю, свежие источники и проверку старых утверждений…</div>`;
+    try {
+      const dossier = await api(`/api/memory/topic?days=30&archive_limit=300&query=${encodeURIComponent(state.topicQuery)}`);
+      state.topicDossier = dossier;
+      renderTopicDossier(dossier);
+    } catch (error) {
+      if (root) root.innerHTML = `<div class="empty">Не удалось собрать досье: ${esc(error.message)}</div>`;
+      toast("Ошибка досье темы: " + error.message, "err");
+    }
+  }
+
+  async function submitMemorySearch() {
+    const field = $("#memory-query");
+    state.memoryQuery = (field?.value || "").trim();
+    switchView("memory");
+    const root = $("#memory-results");
+    if (root) root.innerHTML = `<div class="empty">Ищу по всему архиву…</div>`;
+    try {
+      const data = await api(`/api/memory?limit=20&query=${encodeURIComponent(state.memoryQuery)}`);
+      renderMemory(data);
+    } catch (error) {
+      if (root) root.innerHTML = `<div class="empty">Поиск не удался: ${esc(error.message)}</div>`;
+      toast("Ошибка поиска архива: " + error.message, "err");
+    }
   }
 
   function experimentsBlock(report) {
@@ -744,12 +979,13 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, memory] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
         api("/api/crossposts?limit=100"),
+        api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
       ]);
 
       const mode = status.mode || "?";
@@ -775,6 +1011,8 @@
       renderSources(sources.sources || []);
       renderCrossposts(crossposts.crossposts || []);
       renderRuns(runs.runs || []);
+      renderMemory(memory || {});
+      renderTopicDossier(state.topicDossier);
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -953,6 +1191,40 @@
       $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
+
+  $("#memory-search-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitMemorySearch();
+  });
+  $("#topic-dossier-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitTopicDossier();
+  });
+  $("#topic-query")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitTopicDossier();
+    }
+  });
+  $("#memory-reindex")?.addEventListener("click", async () => {
+    const btn = $("#memory-reindex");
+    btn.disabled = true;
+    try {
+      const result = await post("/api/memory/reindex", {});
+      toast(
+        result.available
+          ? `Архив переиндексирован: ${n(result.indexed_posts)} постов`
+          : "FTS5 недоступен, используется резервный поиск",
+        result.available ? "ok" : "err",
+      );
+      const data = await api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`);
+      renderMemory(data);
+    } catch (error) {
+      toast("Не удалось обновить индекс: " + error.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") $("#drawer").hidden = true;
