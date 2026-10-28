@@ -1039,6 +1039,14 @@ def already_done(post_public_id: str, platform: str) -> bool:
         if created is not None:
             created = created.replace(tzinfo=UTC) if created.tzinfo is None else created.astimezone(UTC)
             return datetime.now(UTC) < created + timedelta(minutes=delay_min)
+    if row.status == "dry_run":
+        # Do not journal the same dry-run forever, but allow a later switch to live.
+        return not get_settings().live
+    if row.status == "skipped":
+        # A missing credential should not occupy batch slots every 10 minutes.
+        # Re-evaluate it as soon as the adapter becomes configured.
+        adapter = ADAPTERS.get(platform)
+        return adapter is None or not adapter.configured()
     return False
 
 

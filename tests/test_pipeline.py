@@ -1719,3 +1719,32 @@ def test_crosspost_database_claim_is_atomic_across_workers():
         ).count()
     assert claims == 1
     assert publishing == 1
+
+
+def test_crosspost_skip_and_dry_run_states_do_not_starve_live_queue(monkeypatch):
+    import uuid
+    from types import SimpleNamespace
+
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth import adapters
+    from tgfarm.s9_growth.adapters import already_done
+
+    dry_id = "crosspost_dry_state_" + uuid.uuid4().hex[:8]
+    skip_id = "crosspost_skip_state_" + uuid.uuid4().hex[:8]
+    with session_scope() as session:
+        session.add_all([
+            CrosspostLog(post_public_id=dry_id, platform="bluesky", status="dry_run", attempt=1),
+            CrosspostLog(post_public_id=skip_id, platform="bluesky", status="skipped", attempt=1),
+        ])
+
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(live=False))
+    assert already_done(dry_id, "bluesky") is True
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(live=True))
+    assert already_done(dry_id, "bluesky") is False
+
+    adapter = adapters.ADAPTERS["bluesky"]
+    monkeypatch.setattr(adapter, "configured", lambda: False)
+    assert already_done(skip_id, "bluesky") is True
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+    assert already_done(skip_id, "bluesky") is False
