@@ -792,6 +792,34 @@
       }
       return;
     }
+    if (auth.method === "oauth" && platformId === "threads" && !forceCredentials) {
+      const appId = (auth.fields || []).find((field) => field.key === "THREADS_APP_ID");
+      const appSecret = (auth.fields || []).find((field) => field.key === "THREADS_APP_SECRET");
+      if (!appId?.has_value || !appSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани Threads App ID/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\\/$/, "") + "/api/platforms/threads/auth/callback";
+      const proceed = window.confirm(
+        "В Meta Developer Portal → Threads API добавь этот OAuth Redirect URI и разрешения threads_basic и threads_content_publish:\\n\\n"
+        + callbackUri
+        + "\\n\\nВ режиме разработки добавь аккаунт в роли/тестеры приложения. Продолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/threads/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Адрес callback отличается от текущего адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Threads вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Threads OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "x" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_SECRET");
