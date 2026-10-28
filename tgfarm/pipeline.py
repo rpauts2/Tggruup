@@ -209,6 +209,43 @@ def _publication_liveness_alert(
     }
 
 
+def _backup_freshness_alert(
+    last_successful_backup_at: datetime | None,
+    current: datetime,
+    max_age_hours: int,
+) -> dict | None:
+    """Warn when no verified backup exists or the last one is too old."""
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    threshold_hours = max(1, int(max_age_hours))
+    if last_successful_backup_at is None:
+        return {
+            "level": "warning",
+            "code": "backup_missing",
+            "message": (
+                "Нет ни одной успешной проверенной резервной копии. "
+                "TgFarm создаёт резервную копию автоматически раз в сутки; "
+                "проверь доступность папки BACKUP_DIR."
+            ),
+        }
+
+    stamp = (
+        last_successful_backup_at.replace(tzinfo=UTC)
+        if last_successful_backup_at.tzinfo is None
+        else last_successful_backup_at.astimezone(UTC)
+    )
+    age_hours = max(0.0, (current - stamp).total_seconds() / 3600)
+    if age_hours < threshold_hours:
+        return None
+    return {
+        "level": "error",
+        "code": "backup_stale",
+        "message": (
+            f"Последняя успешная резервная копия была {age_hours:.1f} ч назад "
+            f"(порог {threshold_hours} ч). Проверь расписание, диск и BACKUP_DIR."
+        ),
+    }
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -305,6 +342,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).first()
+        last_successful_backup_at = session.execute(
+            select(PipelineRun.created_at)
+            .where(PipelineRun.stage == "backup", PipelineRun.status == "ok")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -460,6 +503,13 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "message": message,
             }
         )
+    backup_freshness = _backup_freshness_alert(
+        last_successful_backup_at,
+        current,
+        getattr(settings, "backup_max_age_hours", 36),
+    )
+    if backup_freshness:
+        alerts.append(backup_freshness)
     return alerts
 
 
@@ -1219,9 +1269,9 @@ def _build_scheduler():
 
     scheduler.add_job(
         backup_job,
-        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=settings.tz),
-        id="weekly-backup",
-        name="weekly sqlite backup",
+        CronTrigger(hour=4, minute=0, timezone=settings.tz),
+        id="daily-backup",
+        name="daily verified sqlite backup",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
