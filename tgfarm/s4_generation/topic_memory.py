@@ -93,7 +93,7 @@ def _topic_score(query_terms: list[str], text: str) -> float:
     required_anchors = min(2, len(anchors))
     if anchors and sum(term in matched for term in anchors) < required_anchors:
         return 0.0
-    if len(terms) >= 4 and len(matched) < 2:
+    if len(terms) >= 3 and len(matched) < 2:
         return 0.0
     denominator = min(len(terms), 8)
     return round(len(matched) / denominator, 4) if denominator else 0.0
