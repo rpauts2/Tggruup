@@ -312,6 +312,15 @@ class Settings(BaseSettings):
     threads_token_expires_at: int = Field(default=0, alias="THREADS_TOKEN_EXPIRES_AT")
     threads_user_id: str = Field(default="", alias="THREADS_USER_ID")
     threads_username: str = Field(default="", alias="THREADS_USERNAME")
+    # LinkedIn member OAuth and post publishing.
+    linkedin_client_id: str = Field(default="", alias="LINKEDIN_CLIENT_ID")
+    linkedin_client_secret: str = Field(default="", alias="LINKEDIN_CLIENT_SECRET")
+    linkedin_access_token: str = Field(default="", alias="LINKEDIN_ACCESS_TOKEN")
+    linkedin_refresh_token: str = Field(default="", alias="LINKEDIN_REFRESH_TOKEN")
+    linkedin_token_expires_at: int = Field(default=0, alias="LINKEDIN_TOKEN_EXPIRES_AT")
+    linkedin_refresh_token_expires_at: int = Field(default=0, alias="LINKEDIN_REFRESH_TOKEN_EXPIRES_AT")
+    linkedin_member_id: str = Field(default="", alias="LINKEDIN_MEMBER_ID")
+    linkedin_member_name: str = Field(default="", alias="LINKEDIN_MEMBER_NAME")
 
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
