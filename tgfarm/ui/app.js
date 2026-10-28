@@ -142,6 +142,54 @@
       ${kv("Лучший угол", topAngle ? `${esc(topAngle[0])} (${pct(angleScore(topAngle[1]))})` : "—")}
       ${kv("Лучший час", best ? `${best[0]}:00 (${pct(best[1])})` : "—")}
       ${experimentsBlock(report)}`;
+    renderPortfolio(report.portfolio || {});
+  }
+
+  function renderPortfolio(portfolio) {
+    const root = $("#portfolio-insights");
+    if (!root) return;
+    const channels = portfolio.channels || [];
+    const meta = $("#portfolio-meta");
+    if (meta) {
+      meta.textContent = `${n(portfolio.measured_posts)} зрелых постов · ${channels.length} каналов · окно ${n(portfolio.window_days)} дн.`;
+    }
+
+    const priority = { promote: 0, reduce: 1, test: 2, hold: 3 };
+    const action = {
+      promote: "Усилить тест",
+      reduce: "Сократить долю",
+      test: "Проверить ещё",
+      hold: "Пока наблюдать",
+    };
+    const dimension = { angle: "угол", hook_style: "стиль хука", format: "формат" };
+    const rows = channels.flatMap((channel) => (channel.recommendations || [])
+      .filter((item) => item.decision !== "hold")
+      .map((item) => ({ ...item, channel_title: channel.title || channel.channel_id })))
+      .sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9) || Math.abs(b.lift) - Math.abs(a.lift))
+      .slice(0, 12);
+
+    if (!portfolio.measured_posts) {
+      root.innerHTML = `<div class="empty">Пока нет зрелых постов с измеримыми метриками. Для сравнения нужны данные и минимум 24 часа после публикации.</div>`;
+      return;
+    }
+    if (!rows.length) {
+      root.innerHTML = `<div class="empty">Пока нет устойчивых отличий между темами и форматами. Ферма не будет подстраиваться под случайные всплески.</div>`;
+      return;
+    }
+    root.innerHTML = rows.map((item) => {
+      const change = item.lift > 0 ? "+" : "";
+      const sample = `${n(item.sample_size)} постов · качество ${pct(item.adjusted_quality)} против базы ${pct(item.baseline_quality)} · ${Math.round((item.confidence || 0) * 100)}% веса от наблюдений`;
+      return `<div class="item">
+        <div class="item-main">
+          <div class="item-title">${esc(item.channel_title)} · ${esc(dimension[item.dimension] || item.dimension)}: ${esc(item.key)}</div>
+          <div class="item-meta">${esc(sample)}</div>
+        </div>
+        <div class="item-side">
+          <span class="pill">${esc(action[item.decision] || item.decision)}</span>
+          <div class="item-meta">${change}${pct(Math.abs(item.lift))}</div>
+        </div>
+      </div>`;
+    }).join("");
   }
 
   function experimentsBlock(report) {
