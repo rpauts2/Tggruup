@@ -272,3 +272,250 @@ _DEFAULT_PLANNED = [
     "reddit", "youtube", "tiktok", "instagram", "threads",
     "odnoklassniki", "rutube", "linkedin", "pinterest",
 ]
+
+
+def _state_path() -> Path:
+    return config_dir() / STATE_FILENAME
+
+
+def _default_state() -> dict[str, Any]:
+    cfg = get_config()
+    configured_crossposts = set(
+        str(item).lower()
+        for item in (cfg.schedule.crosspost.get("platforms") or ["vk", "x"])
+    )
+    enabled: dict[str, bool] = {}
+    for platform in CATALOG:
+        if platform["mode"] != "built_in":
+            continue
+        platform_id = platform["id"]
+        if platform_id == "telegram":
+            enabled[platform_id] = True
+        elif platform_id in {"dzen", "vk"}:
+            enabled[platform_id] = (
+                platform_id in configured_crossposts
+                or any(p.enabled and p.platform == platform_id for p in cfg.personas)
+            )
+        else:
+            enabled[platform_id] = platform_id in configured_crossposts
+    return {"enabled": enabled, "planned": list(_DEFAULT_PLANNED)}
+
+
+def _read_state() -> dict[str, Any]:
+    defaults = _default_state()
+    path = _state_path()
+    if not path.is_file():
+        return defaults
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"Не удалось прочитать {path.name}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} должен содержать YAML-объект.")
+    overrides = raw.get("enabled") or {}
+    if not isinstance(overrides, dict):
+        overrides = {}
+    for platform_id in _SUPPORTED_IDS:
+        if platform_id in overrides:
+            defaults["enabled"][platform_id] = bool(overrides[platform_id])
+    planned = raw.get("planned")
+    if isinstance(planned, list):
+        defaults["planned"] = list(dict.fromkeys(
+            value for value in planned
+            if isinstance(value, str) and value in _BY_ID and _BY_ID[value]["mode"] == "planned"
+        ))
+    return defaults
+
+
+def _write_state(state: dict[str, Any]) -> None:
+    path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = {
+        "enabled": {
+            platform_id: bool(state["enabled"].get(platform_id, False))
+            for platform_id in sorted(_SUPPORTED_IDS)
+        },
+        "planned": [
+            platform_id for platform_id in dict.fromkeys(state.get("planned", []))
+            if platform_id in _BY_ID and _BY_ID[platform_id]["mode"] == "planned"
+        ],
+    }
+    fd, temp_name = tempfile.mkstemp(prefix=".platforms-", suffix=".yaml.tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            yaml.safe_dump(normalized, handle, allow_unicode=True, sort_keys=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _configured_state(platform_id: str) -> tuple[bool, str]:
+    settings = get_settings()
+    if platform_id == "telegram":
+        if settings.telegram_bot_token:
+            return True, "Токен бота задан; доступность канала отдельно зависит от его прав."
+        return False, "Нужно задать TELEGRAM_BOT_TOKEN и выбрать целевой канал."
+    if platform_id == "vk":
+        if settings.vk_access_token and settings.vk_group_id:
+            return True, "Данные VK заданы; реальную публикацию нужно проверить smoke-тестом."
+        return False, "Нужны VK_ACCESS_TOKEN и VK_GROUP_ID."
+    if platform_id == "max":
+        if settings.max_access_token and settings.max_channel_id:
+            return True, "Данные MAX заданы; реальную публикацию нужно проверить."
+        return False, "Нужны MAX_ACCESS_TOKEN и MAX_CHANNEL_ID."
+    if platform_id == "x":
+        if settings.x_bearer_token and settings.x_user_id:
+            return True, "Данные X заданы; права токена и лимиты API требуют проверки."
+        return False, "Нужны X_BEARER_TOKEN и X_USER_ID."
+    if platform_id == "dzen":
+        try:
+            profile = settings.dzen_profile_path()
+            ready = profile.is_dir() and next(profile.iterdir(), None) is not None
+        except OSError:
+            ready = False
+        if ready:
+            return True, "Профиль браузера найден; авторизацию проверь в разделе диагностики."
+        return False, "Нужен авторизованный профиль браузера. Нажми «Дзен: войти» после запуска фермы."
+    return False, "Интеграция публикации ещё не реализована."
+
+
+def get_platform_catalog() -> dict[str, Any]:
+    """Return platform metadata and local readiness without ever exposing secrets."""
+    state = _read_state()
+    cfg = get_config()
+    platforms: list[dict[str, Any]] = []
+    for item in CATALOG:
+        row = dict(item)
+        platform_id = row["id"]
+        supported = row["mode"] == "built_in"
+        row["supported"] = supported
+        row["enabled"] = bool(state["enabled"].get(platform_id, False)) if supported else False
+        row["planned"] = platform_id in state["planned"] if not supported else False
+        row["configured"], row["connection_detail"] = (
+            _configured_state(platform_id) if supported
+            else (False, "Сначала потребуется разработать и проверить адаптер.")
+        )
+        if not supported:
+            row["status"] = "planned" if row["planned"] else "not_implemented"
+            row["status_label"] = "В плане интеграций" if row["planned"] else "Интеграция не добавлена"
+        elif not row["enabled"]:
+            row["status"] = "paused"
+            row["status_label"] = "Выключена"
+        elif not row["configured"]:
+            row["status"] = "needs_setup"
+            row["status_label"] = "Нужна настройка"
+        else:
+            row["status"] = "configured"
+            row["status_label"] = "Настройки найдены"
+        row["channel_count"] = sum(
+            1 for persona in cfg.personas if persona.platform == platform_id and persona.enabled
+        )
+        row["roles_label"] = ", ".join({
+            "primary": "Основная публикация",
+            "crosspost": "Кросспостинг",
+            "video": "Видео",
+            "visual": "Визуальный контент",
+            "text": "Текст",
+            "professional": "Профессиональный контент",
+            "search": "Поисковый трафик",
+            "community": "Сообщества",
+            "article": "Статьи",
+            "technical": "Технические статьи",
+        }.get(role, role) for role in row["roles"])
+        platforms.append(row)
+
+    enabled = [p for p in platforms if p["supported"] and p["enabled"]]
+    configured = [p for p in enabled if p["configured"]]
+    planned = [p for p in platforms if p["planned"]]
+    return {
+        "platforms": platforms,
+        "summary": {
+            "total": len(platforms),
+            "supported": sum(1 for p in platforms if p["supported"]),
+            "enabled": len(enabled),
+            "configured": len(configured),
+            "needs_setup": sum(1 for p in enabled if not p["configured"]),
+            "planned": len(planned),
+            "market_coverage": len({p["market"] for p in enabled}),
+        },
+        "note": (
+            "Настройки наличия ключей не являются проверкой авторизации. "
+            "Новый API подключается к реальной публикации только после отдельного адаптера и тестов."
+        ),
+    }
+
+
+def is_platform_enabled(platform_id: str) -> bool:
+    """Fail closed for unknown or not-yet-implemented publishers."""
+    item = _BY_ID.get(str(platform_id).lower())
+    if item is None or item["mode"] != "built_in":
+        return False
+    return bool(_read_state()["enabled"].get(item["id"], False))
+
+
+def enabled_crosspost_platforms() -> list[str]:
+    """Supported crosspost adapters whose global switches are on."""
+    return [
+        item["id"]
+        for item in CATALOG
+        if item["mode"] == "built_in"
+        and "crosspost" in item["roles"]
+        and is_platform_enabled(item["id"])
+    ]
+
+
+def set_platform_enabled(platform_id: str, enabled: bool) -> dict[str, Any]:
+    """Persist a supported platform switch; planned networks cannot be activated yet."""
+    platform_id = str(platform_id).lower()
+    item = _BY_ID.get(platform_id)
+    if item is None:
+        raise ValueError("Неизвестная площадка.")
+    if item["mode"] != "built_in":
+        raise ValueError("Для этой площадки ещё нет рабочего адаптера. Добавь её в план интеграций.")
+    with _STATE_LOCK:
+        state = _read_state()
+        state["enabled"][platform_id] = bool(enabled)
+        _write_state(state)
+    return next(
+        p for p in get_platform_catalog()["platforms"]
+        if p["id"] == platform_id
+    )
+
+
+def set_platform_planned(platform_id: str, planned: bool) -> dict[str, Any]:
+    """Add/remove an unsupported platform from the owner's integration priorities."""
+    platform_id = str(platform_id).lower()
+    item = _BY_ID.get(platform_id)
+    if item is None:
+        raise ValueError("Неизвестная площадка.")
+    if item["mode"] == "built_in":
+        raise ValueError("Рабочие площадки включаются переключателем «Публикация», а не списком планов.")
+    with _STATE_LOCK:
+        state = _read_state()
+        selected = list(state["planned"])
+        if planned and platform_id not in selected:
+            selected.append(platform_id)
+        elif not planned:
+            selected = [value for value in selected if value != platform_id]
+        state["planned"] = selected
+        _write_state(state)
+    return next(
+        p for p in get_platform_catalog()["platforms"]
+        if p["id"] == platform_id
+    )
+
+
+__all__ = [
+    "CATALOG",
+    "enabled_crosspost_platforms",
+    "get_platform_catalog",
+    "is_platform_enabled",
+    "set_platform_enabled",
+    "set_platform_planned",
+]
