@@ -26,7 +26,7 @@ from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem
+from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem, Source
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -246,6 +246,41 @@ def _backup_freshness_alert(
     }
 
 
+def _source_health_alert(enabled_source_rows) -> dict | None:
+    """Raise a bounded alert when enabled sources have entered repeated-failure cooldown."""
+    total = len(enabled_source_rows)
+    if total == 0:
+        return None
+
+    unhealthy = [
+        row
+        for row in enabled_source_rows
+        if int(getattr(row, "failures", 0) or 0) >= 3
+        or str(getattr(row, "last_status", "") or "").lower() == "cooldown"
+    ]
+    if not unhealthy:
+        return None
+
+    count = len(unhealthy)
+    if count == total:
+        return {
+            "level": "error",
+            "code": "source_fleet_down",
+            "message": (
+                f"Все {total} включённых источника находятся в состоянии повторных ошибок "
+                "или cooldown. Проверь сеть и доступность источников; коллекция новостей может остановиться."
+            ),
+        }
+    return {
+        "level": "warning",
+        "code": "source_fleet_degraded",
+        "message": (
+            f"{count} из {total} включённых источников не прошли несколько попыток и находятся "
+            "в cooldown/повторных ошибках. Остальные источники продолжают работать."
+        ),
+    }
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -348,6 +383,9 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).scalar_one_or_none()
+        enabled_source_health = session.execute(
+            select(Source.failures, Source.last_status).where(Source.enabled.is_(True))
+        ).all()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -510,6 +548,9 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     )
     if backup_freshness:
         alerts.append(backup_freshness)
+    source_alert = _source_health_alert(enabled_source_health)
+    if source_alert:
+        alerts.append(source_alert)
     return alerts
 
 
