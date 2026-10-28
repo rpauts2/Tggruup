@@ -10,6 +10,7 @@
     tgfarm show <post_id>       print one post with its quality report
     tgfarm render <post_id>     (re)render the cover
     tgfarm publish <post_id>    force-publish one post now
+    tgfarm reddit-test <post_id> preview or explicitly live-test Reddit crossposting
     tgfarm channels             channel inventory + today's load
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
@@ -384,6 +385,67 @@ def cmd_publish(args) -> int:
     return 0 if result.get("failed", 0) == 0 else 1
 
 
+def cmd_reddit_test(args) -> int:
+    """Dry-run or explicitly confirmed live crosspost of one published post."""
+    from sqlalchemy import select
+
+    from tgfarm import s9_growth
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.platforms import is_platform_enabled
+
+    _bootstrap()
+    settings = get_settings()
+    if settings.live and not args.confirm_live:
+        _print({
+            "error": "live mode requires explicit --confirm-live for Reddit",
+            "hint": "Check subreddit rules and OAuth access before the one-post smoke test.",
+        })
+        return 2
+    if not is_platform_enabled("reddit"):
+        _print({
+            "error": "Reddit is disabled in the global platform center",
+            "hint": "Enable Reddit only after OAuth settings and subreddit rules are checked.",
+        })
+        return 2
+
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == args.post_id)
+        ).scalar_one_or_none()
+        if post is None:
+            _print({"error": "post not found", "post_id": args.post_id})
+            return 1
+        if post.status != "published":
+            _print({
+                "error": "Reddit test requires a primary post already marked published",
+                "post_id": args.post_id,
+                "status": post.status,
+            })
+            return 2
+        post_pk = post.id
+
+    results = asyncio.run(s9_growth.crosspost_post(post_pk, ["reddit"]))
+    if not results:
+        _print({
+            "post_id": args.post_id,
+            "mode": "live" if settings.live else "dry_run",
+            "results": [],
+            "note": (
+                "No new attempt was created. Check the global switch, adapter credentials, "
+                "and existing crosspost history before trying again."
+            ),
+        })
+        return 0
+
+    _print({
+        "post_id": args.post_id,
+        "mode": "live" if settings.live else "dry_run",
+        "results": [result.model_dump() for result in results],
+    })
+    return 0 if all(result.status in {"posted", "dry_run"} for result in results) else 1
+
+
 def cmd_channels(_args) -> int:
     from tgfarm import s8_analytics
 
@@ -647,6 +709,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish = sub.add_parser("publish", help="force-publish one post")
     p_publish.add_argument("post_id")
     p_publish.set_defaults(func=cmd_publish)
+
+    p_reddit_test = sub.add_parser(
+        "reddit-test", help="dry-run or explicitly confirmed live test of one Reddit crosspost"
+    )
+    p_reddit_test.add_argument("post_id", help="public id of an already-published farm post")
+    p_reddit_test.add_argument(
+        "--confirm-live",
+        action="store_true",
+        help="required when TGFARM_MODE=live; this can create a real Reddit submission",
+    )
+    p_reddit_test.set_defaults(func=cmd_reddit_test)
 
     sub.add_parser("channels", help="channel inventory").set_defaults(func=cmd_channels)
 
