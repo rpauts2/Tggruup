@@ -83,3 +83,25 @@ async def test_bluesky_adapter_skips_without_credentials(monkeypatch):
         platform="bluesky", title="Hello", text="Body"
     ))
     assert result.status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_bluesky_adapter_enforces_combined_post_length(monkeypatch):
+    from tgfarm.s9_growth import adapters
+    import httpx
+
+    FakeClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        bluesky_handle="demo.bsky.social", bluesky_app_password="app-password"
+    ))
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    result = await adapters.BlueskyAdapter().publish(CrosspostPayload(
+        platform="bluesky", title="T" * 200, text="B" * 250
+    ))
+
+    assert result.status == "posted"
+    _, post_kwargs = FakeClient.calls[1]
+    posted_text = post_kwargs["json"]["record"]["text"]
+    assert len(posted_text) <= 300
+    assert posted_text.startswith("T" * 120)
