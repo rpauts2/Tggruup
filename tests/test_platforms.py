@@ -72,7 +72,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
-    assert catalog["summary"]["supported"] == 12
+    assert catalog["summary"]["supported"] == 13
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -134,11 +134,11 @@ def test_future_vk_clips_can_be_added_to_the_integration_plan(tmp_path, monkeypa
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("instagram", True)
+    item = platforms.set_platform_planned("facebook", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("instagram", False)
+    item = platforms.set_platform_planned("facebook", False)
     assert item["planned"] is False
     assert platforms.is_platform_enabled("tiktok") is False
 
@@ -166,7 +166,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 12
+    assert payload["summary"]["supported"] == 13
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
@@ -177,7 +177,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/instagram",
+        "/api/platforms/facebook",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )
