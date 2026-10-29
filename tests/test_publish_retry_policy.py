@@ -124,4 +124,4 @@ def test_watchdog_alerts_on_terminal_primary_publish_failures():
 
     alert = next(item for item in alerts if item["code"] == "publish_terminal_failure")
     assert alert["level"] == "error"
-    assert "исправь причину" in alert["message"]
+    assert "исправь причину" in alert["message"].lower()
