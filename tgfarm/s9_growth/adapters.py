@@ -1274,8 +1274,35 @@ class YouTubeAdapter:
         )
 
 
+class TikTokAdapter:
+    """Auth/state adapter only; background crossposting is deliberately disabled.
+
+    Direct Post is exposed through a separate endpoint that first queries current
+    creator privacy options and requires explicit consent for each specific video.
+    """
+
+    platform = "tiktok"
+
+    def configured(self) -> bool:
+        settings = get_settings()
+        return bool(
+            settings.tiktok_client_key
+            and settings.tiktok_client_secret
+            and settings.tiktok_refresh_token
+            and settings.tiktok_open_id
+        )
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        return CrosspostResult(
+            platform=self.platform,
+            status="skipped",
+            error="TikTok requires explicit per-video confirmation in the dashboard.",
+        )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "youtube": YouTubeAdapter(),
+    "tiktok": TikTokAdapter(),
     "mastodon": MastodonAdapter(),
     "bluesky": BlueskyAdapter(),
     "threads": ThreadsAdapter(),
