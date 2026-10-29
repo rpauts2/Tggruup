@@ -217,6 +217,9 @@ class Settings(BaseSettings):
     image_model: str = Field(default="", alias="IMAGE_MODEL")
     image_size: str = Field(default="1280x720", alias="IMAGE_SIZE")
     image_enabled: bool = Field(default=False, alias="IMAGE_ENABLED")
+    # Maximum image-provider requests per UTC day. A request attempt consumes
+    # one slot even if its outcome is ambiguous, to avoid surprise spend.
+    image_daily_budget: int = Field(default=20, alias="IMAGE_DAILY_BUDGET")
     image_quality: str = Field(default="standard", alias="IMAGE_QUALITY")
     image_timeout_s: float = Field(default=90.0, alias="IMAGE_TIMEOUT_S")
 
