@@ -85,6 +85,11 @@ class PlatformPlanRequest(BaseModel):
 class PlatformCredentialsRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
+class TikTokPublishRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=5000)
+    privacy_level: str = Field(min_length=1, max_length=40)
+    consent: bool = False
+
 
 class MastodonOAuthStartRequest(BaseModel):
     instance: str = Field(min_length=1, max_length=300)
@@ -2033,6 +2038,193 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
                 "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
                 "<h1>Не удалось подключить LinkedIn</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/youtube/auth/start")
+    async def youtube_oauth_start(request: Request) -> dict:
+        from tgfarm.youtube_oauth import begin_youtube_oauth
+
+        settings_now = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/youtube/auth/callback"
+        try:
+            return await begin_youtube_oauth(
+                settings_now.youtube_client_id,
+                settings_now.youtube_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/youtube/auth/callback")
+    async def youtube_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.youtube_oauth import cancel_youtube_oauth, complete_youtube_oauth
+
+        params = request.scope.get("tgfarm_youtube_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_youtube_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение YouTube не завершено</h1><p>Авторизация отменена или ответ Google неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_youtube_oauth(state_value, code)
+            await io(save_credentials, "youtube", {
+                "YOUTUBE_CLIENT_ID": credentials["client_id"],
+                "YOUTUBE_CLIENT_SECRET": credentials["client_secret"],
+                "YOUTUBE_REFRESH_TOKEN": credentials["refresh_token"],
+                "YOUTUBE_CHANNEL_ID": credentials["channel_id"],
+                "YOUTUBE_CHANNEL_TITLE": credentials["channel_title"],
+            })
+            await io(
+                record_auth_check,
+                "youtube",
+                True,
+                account=credentials["account"],
+                detail="Google OAuth подтверждён, YouTube вернул ID канала. Загрузка требует разрешения youtube.upload.",
+            )
+            _operator("platform-oauth-complete", "youtube", "YouTube channel OAuth completed")
+            account = html.escape(credentials["account"] or credentials["channel_id"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>YouTube подключён</h1><p>Google OAuth подтвердил канал <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Загрузка остаётся выключенной, пока ты не включишь YouTube в разделе «Площадки». "
+                "Новые ролики по умолчанию загружаются как unlisted.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить YouTube</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить YouTube</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/tiktok/auth/start")
+    async def tiktok_oauth_start(request: Request) -> dict:
+        from tgfarm.tiktok_oauth import begin_tiktok_oauth
+
+        settings_now = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/tiktok/auth/callback"
+        try:
+            return await begin_tiktok_oauth(
+                settings_now.tiktok_client_key,
+                settings_now.tiktok_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/tiktok/auth/callback")
+    async def tiktok_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.tiktok_oauth import cancel_tiktok_oauth, complete_tiktok_oauth
+
+        params = request.scope.get("tgfarm_tiktok_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_tiktok_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение TikTok не завершено</h1><p>Авторизация отменена или ответ TikTok неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_tiktok_oauth(state_value, code)
+            await io(save_credentials, "tiktok", {
+                "TIKTOK_CLIENT_KEY": credentials["client_key"],
+                "TIKTOK_CLIENT_SECRET": credentials["client_secret"],
+                "TIKTOK_ACCESS_TOKEN": credentials["access_token"],
+                "TIKTOK_REFRESH_TOKEN": credentials["refresh_token"],
+                "TIKTOK_TOKEN_EXPIRES_AT": credentials["token_expires_at"],
+                "TIKTOK_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+                "TIKTOK_OPEN_ID": credentials["open_id"],
+                "TIKTOK_USERNAME": credentials["username"],
+            })
+            await io(
+                record_auth_check,
+                "tiktok",
+                True,
+                account=credentials["account"],
+                detail="TikTok OAuth подтверждён. Creator info и права video.publish проверяются перед каждой прямой публикацией.",
+            )
+            _operator("platform-oauth-complete", "tiktok", "TikTok account OAuth completed")
+            account = html.escape(credentials["account"] or "TikTok creator")
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>TikTok подключён</h1><p>OAuth подтвердил аккаунт <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально. Публикация ролика будет запускаться только после твоего подтверждения для каждого видео. "
+                "Без аудита приложения TikTok может ограничить видимость API-публикаций приватным режимом.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
