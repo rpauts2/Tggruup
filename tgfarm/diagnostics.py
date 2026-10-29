@@ -22,6 +22,11 @@ def _directory_has_entries(path) -> bool:
         return False
 
 
+def _network_probes_allowed(settings) -> bool:
+    """Honor the global off mode before any diagnostic makes an external call."""
+    return bool(getattr(settings, "online", str(getattr(settings, "mode", "off")) != "off"))
+
+
 def _operational_alert_summary(alerts: list[dict]) -> dict:
     """Summarize the shared watchdog alerts without exposing raw messages or secrets."""
     errors = [alert for alert in alerts if alert.get("level") == "error"]
@@ -73,11 +78,13 @@ def run_doctor() -> dict:
     check("embedder", True, f"{embedder.name} dim={embedder.dim}")
 
     llm = get_llm()
-    # A key in .env is not a working provider: this probe makes one real call,
-    # because "configured" and "answering" are different states and only the
-    # second one keeps the farm writing.
-    probe = asyncio.run(llm.probe())
-    check("llm", bool(probe["ok"]), str(probe["detail"]))
+    if _network_probes_allowed(settings):
+        # A key in .env is not a working provider: this probe makes one real
+        # call, because "configured" and "answering" are different states.
+        probe = asyncio.run(llm.probe())
+        check("llm", bool(probe["ok"]), str(probe["detail"]))
+    else:
+        check("llm", True, "network probe skipped (TGFARM_MODE=off)")
 
     if not settings.image_enabled:
         check("images", True, "disabled; Pillow templates")
@@ -92,11 +99,13 @@ def run_doctor() -> dict:
     else:
         check("images", settings.images_configured, settings.image_model or "IMAGE_MODEL missing")
 
-    if settings.telegram_bot_token:
+    if settings.telegram_bot_token and _network_probes_allowed(settings):
         from tgfarm.s7_publish import PUBLISHER
 
         health = asyncio.run(PUBLISHER.health())
         check("telegram", bool(health.get("username")), json.dumps(health)[:200])
+    elif settings.telegram_bot_token:
+        check("telegram", True, "network probe skipped (TGFARM_MODE=off)")
     else:
         check("telegram", False, "TELEGRAM_BOT_TOKEN not set — publishing is dry-run")
 
