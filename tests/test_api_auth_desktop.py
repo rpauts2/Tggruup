@@ -102,9 +102,23 @@ def test_api_accepts_the_real_token(client):
     assert client.get("/api/status", headers={apiauth.HEADER: token}).status_code == 200
 
 
-def test_api_accepts_the_token_as_a_query_parameter(client):
+def test_api_rejects_token_supplied_in_query_string(client):
     token = ensure_token()
-    assert client.get(f"/api/status?token={token}").status_code == 200
+    response = client.get(f"/api/status?token={token}")
+    assert response.status_code == 401
+
+
+def test_api_accepts_the_token_from_httponly_cookie(client):
+    from tgfarm.core.apiauth import COOKIE
+
+    token = ensure_token()
+    response = client.get("/api/status", cookies={COOKIE: token})
+    assert response.status_code == 200
+
+
+def test_token_is_removed_from_query_before_downstream_processing():
+    assert apiauth.strip_token_from_query(b"token=secret&days=7") == b"days=7"
+    assert apiauth.strip_token_from_query(b"days=7") == b"days=7"
 
 
 def test_destructive_endpoints_are_protected(client):
