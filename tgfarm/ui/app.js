@@ -416,7 +416,7 @@
     const budget = Math.max(0, Number(data.daily_budget) || 0);
     const remaining = Math.max(0, Number(today.remaining) || 0);
     const charged = Math.max(0, Number(today.charged) || 0);
-    const stale = Math.max(0, Number(today.stale_reservations) || 0);
+    const stale = Math.max(0, Number(today.stale_reservations) || 0, Number(totals.stale_reservations) || 0);
     const remainingTone = budget === 0 || remaining === 0 ? "k-err"
       : remaining / budget <= 0.2 ? "k-warn" : "k-ok";
     const cards = [
