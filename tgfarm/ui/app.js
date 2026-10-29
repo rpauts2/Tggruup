@@ -1852,7 +1852,809 @@
       <div id="preview-slot"></div>`;
   }
 
+  function setTikTokPublishStatus(message, kind = "") {
+    const element = $("#tiktok-publish-status");
+    if (!element) return;
+    element.textContent = message || "";
+    element.className = "platform-auth-message" + (kind ? " is-" + kind : "");
+  }
+
+  const TIKTOK_PRIVACY_LABELS = {
+    PUBLIC_TO_EVERYONE: "Все",
+    MUTUAL_FOLLOW_FRIENDS: "Взаимные подписчики",
+    FOLLOWER_OF_CREATOR: "Подписчики",
+    SELF_ONLY: "Только я",
+  };
+
+  function updateTikTokPublishControls() {
+    const consent = $("#tiktok-publish-consent")?.checked === true;
+    const caption = $("#tiktok-publish-caption")?.value || "";
+    const privacy = $("#tiktok-publish-privacy")?.value || "";
+    const count = $("#tiktok-caption-count");
+    if (count) {
+      count.textContent = `${caption.length} / 2200 UTF-16`;
+      count.classList.toggle("is-over-limit", caption.length > 2200);
+    }
+    const submit = $("#tiktok-publish-submit");
+    if (submit) {
+      const frozen = ["posted", "unknown", "permanent", "failed"].includes(state.tiktokResultStatus);
+      submit.disabled = state.tiktokBusy || frozen || !consent || caption.length === 0 || caption.length > 2200
+        || !privacy || state.tiktokPrepared?.live !== true;
+      submit.textContent = state.tiktokBusy ? "Отправляю…" : frozen
+        ? (state.tiktokResultStatus === "posted" ? "Публикация подтверждена" : "Проверить результат вручную")
+        : "Опубликовать сейчас";
+    }
+  }
+
+  function closeTikTokPublishDialog() {
+    const dialog = $("#tiktok-publish-dialog");
+    if (state.tiktokBusy) {
+      setTikTokPublishStatus("Отправка выполняется. Не запускай повторную публикацию; дождись результата.", "warn");
+      return;
+    }
+    if (dialog?.open) dialog.close();
+    const video = $("#tiktok-publish-video");
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+    state.tiktokPostId = "";
+    state.tiktokPrepared = null;
+    state.tiktokResultStatus = "";
+  }
+
+  window.tgfarmRenderShort = async (postId) => {
+    if (!postId || state.shortVideoBusy.has(postId)) return;
+    state.shortVideoBusy.add(postId);
+    try {
+      const result = await post(`/api/posts/${encodeURIComponent(postId)}/video/render`, {});
+      toast(
+        `Вертикальный MP4 готов: ${Math.round(result.artifact.duration_s)} с · ${n(result.artifact.bytes)} байт`,
+        "ok",
+      );
+      await openDrawer(postId);
+      await refresh();
+    } catch (error) {
+      toast("Не удалось создать видео: " + (error?.message || error), "err");
+    } finally {
+      state.shortVideoBusy.delete(postId);
+      // Re-render the drawer after clearing the busy flag so the primary
+      // action is immediately usable again without requiring a page refresh.
+      if (!$("#drawer").hidden) await openDrawer(postId);
+    }
+  };
+
+  window.tgfarmPrepareTikTok = async (postId) => {
+    if (!postId || state.tiktokBusy) return;
+    state.tiktokPostId = postId;
+    state.tiktokPrepared = null;
+    state.tiktokResultStatus = "";
+    const dialog = $("#tiktok-publish-dialog");
+    $("#tiktok-publish-title").textContent = "Подготовка TikTok · " + postId;
+    $("#tiktok-publish-account").textContent = "Проверяю OAuth, видео и свежие настройки приватности…";
+    $("#tiktok-publish-warning").textContent = "";
+    $("#tiktok-publish-permissions").textContent = "";
+    $("#tiktok-publish-caption").value = "";
+    $("#tiktok-publish-consent").checked = false;
+    $("#tiktok-publish-privacy").innerHTML = "";
+    $("#tiktok-publish-download").hidden = true;
+    $("#tiktok-publish-video-fallback").hidden = true;
+    setTikTokPublishStatus("Подготавливаю видео. Публикация не начнётся без отдельного подтверждения.");
+    updateTikTokPublishControls();
+    if (!dialog.open) dialog.showModal();
+    try {
+      const prepared = await post(`/api/posts/${encodeURIComponent(postId)}/tiktok/prepare`, {});
+      state.tiktokPrepared = prepared;
+      const creator = prepared.creator || {};
+      const username = creator.username ? "@" + creator.username : (creator.nickname || "TikTok creator");
+      $("#tiktok-publish-account").textContent = "Аккаунт: " + username;
+      $("#tiktok-publish-warning").textContent = prepared.warning || "";
+      const video = $("#tiktok-publish-video");
+      const mediaUrl = typeof prepared.download_url === "string" && prepared.download_url.startsWith("/api/media/")
+        ? prepared.download_url : "";
+      if (video && mediaUrl) {
+        video.src = mediaUrl;
+        video.load();
+      } else {
+        $("#tiktok-publish-video-fallback").hidden = false;
+      }
+      const download = $("#tiktok-publish-download");
+      if (download && mediaUrl) {
+        download.href = mediaUrl;
+        download.hidden = false;
+      }
+      const select = $("#tiktok-publish-privacy");
+      const options = Array.isArray(creator.privacy_level_options) ? creator.privacy_level_options : [];
+      select.innerHTML = options.map((value) =>
+        `<option value="${esc(value)}">${esc(TIKTOK_PRIVACY_LABELS[value] || value)}</option>`
+      ).join("");
+      if (options.includes("SELF_ONLY") && !prepared.live) select.value = "SELF_ONLY";
+      else if (options.includes("SELF_ONLY")) select.value = "SELF_ONLY";
+      else if (options.length) select.value = options[0];
+      const controls = [];
+      if (creator.comment_disabled) controls.push("Комментарии закрыты настройками аккаунта.");
+      if (creator.duet_disabled) controls.push("Duet недоступен.");
+      if (creator.stitch_disabled) controls.push("Stitch недоступен.");
+      if (creator.max_video_post_duration_sec) controls.push("Максимальная длительность аккаунта: " + creator.max_video_post_duration_sec + " с.");
+      $("#tiktok-publish-permissions").textContent = controls.join(" ");
+      $("#tiktok-publish-caption").value = prepared.caption || "";
+      $("#tiktok-publish-consent").checked = false;
+      setTikTokPublishStatus(
+        prepared.live
+          ? "Проверь превью, подпись и приватность. Только после отметки подтверждения начнётся отправка."
+          : "Режим не live: можно подготовить и просмотреть видео, но публикация заблокирована.",
+        prepared.live ? "" : "warn",
+      );
+      updateTikTokPublishControls();
+    } catch (error) {
+      state.tiktokPrepared = null;
+      setTikTokPublishStatus("Подготовка не удалась: " + (error?.message || error), "err");
+      updateTikTokPublishControls();
+    }
+  };
+
+  async function submitTikTokPublish(event) {
+    event?.preventDefault();
+    if (state.tiktokBusy || !state.tiktokPostId || !state.tiktokPrepared) return;
+    if (!$("#tiktok-publish-consent")?.checked) {
+      setTikTokPublishStatus("Поставь отметку подтверждения именно для этого видео.", "err");
+      return;
+    }
+    const caption = $("#tiktok-publish-caption").value || "";
+    const privacy = $("#tiktok-publish-privacy").value || "";
+    if (!caption.trim() || caption.length > 2200 || !privacy) {
+      setTikTokPublishStatus("Проверь подпись (не больше 2200 UTF-16 units) и приватность.", "err");
+      return;
+    }
+    const postId = state.tiktokPostId;
+    state.tiktokBusy = true;
+    const close = $("#tiktok-publish-close");
+    const cancel = $("#tiktok-publish-cancel");
+    if (close) close.disabled = true;
+    if (cancel) cancel.disabled = true;
+    setTikTokPublishStatus("Отправляю видео через TikTok Content Posting API…");
+    updateTikTokPublishControls();
+    try {
+      const result = await post(`/api/posts/${encodeURIComponent(postId)}/tiktok/publish`, {
+        caption,
+        privacy_level: privacy,
+        consent: true,
+      });
+      state.tiktokResultStatus = result.status || "unknown";
+      if (result.status === "posted") {
+        const url = safeExternalUrl(result.url);
+        setTikTokPublishStatus(
+          (result.detail || "TikTok подтвердил публикацию.")
+          + (url ? " Ссылка: " + url : " ID: " + (result.remote_id || "не предоставлен")),
+          "ok",
+        );
+        toast("TikTok подтвердил публикацию", "ok");
+      } else if (result.status === "unknown") {
+        setTikTokPublishStatus(
+          "Результат не подтверждён. Не запускай повтор. Проверь профиль TikTok; запись доставки сохранена для сверки.",
+          "warn",
+        );
+        toast("TikTok: результат требует сверки, автоматический повтор заблокирован", "err");
+      } else {
+        setTikTokPublishStatus(result.error || result.detail || "TikTok не подтвердил публикацию.", "err");
+        toast("TikTok не подтвердил публикацию", "err");
+      }
+      await refresh();
+      updateTikTokPublishControls();
+    } catch (error) {
+      setTikTokPublishStatus("Ошибка запроса: " + (error?.message || error), "err");
+    } finally {
+      state.tiktokBusy = false;
+      if (close) close.disabled = false;
+      if (cancel) cancel.disabled = false;
+      updateTikTokPublishControls();
+    }
+  }
+
   const EDITABLE = new Set(["draft", "gated", "scheduled", "rejected"]);
+
+  window.tgfarmEditStart = async (id) => {
+    const slot = $("#editor-slot");
+    if (!slot) return;
+    slot.innerHTML = `<div class="drawer-block"><div class="empty">Загрузка…</div></div>`;
+    let p;
+    try {
+      p = await api(`/api/posts/${encodeURIComponent(id)}`);
+    } catch (e) {
+      slot.innerHTML = "";
+      return;
+    }
+    slot.innerHTML = `
+      <div class="drawer-block">
+        <h4>Редактор</h4>
+        <label class="field"><span>Заголовок</span>
+          <textarea id="ed-hook" rows="2">${esc(p.hook)}</textarea></label>
+        <label class="field"><span>Текст</span>
+          <textarea id="ed-body" rows="8">${esc(p.body || "")}</textarea></label>
+        <label class="field"><span>Призыв к действию</span>
+          <input id="ed-cta" value="${esc(p.cta || "")}" placeholder="необязательно"></label>
+        <div id="ed-count" class="drawer-meta"></div>
+        <div class="drawer-block" style="display:flex;gap:8px;padding:0;border:0;margin-top:10px">
+          <button class="btn btn-primary btn-sm" onclick="tgfarmEditSave('${esc(p.id)}')">Сохранить и проверить</button>
+          <button class="btn btn-ghost btn-sm" onclick="tgfarmPreview('${esc(p.id)}')">Предпросмотр</button>
+          <button class="btn btn-ghost btn-sm" onclick="tgfarmPolish('${esc(p.id)}','shorter')">Короче</button>
+          <button class="btn btn-ghost btn-sm" onclick="tgfarmPolish('${esc(p.id)}','funnier')">Смешнее</button>
+          <button class="btn btn-ghost btn-sm" onclick="tgfarmPolish('${esc(p.id)}','stricter')">Строже</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('editor-slot').innerHTML=''">Свернуть</button>
+        </div>
+        <div id="ed-result"></div>
+      </div>`;
+    const count = () => {
+      const hook = ($("#ed-hook") || {}).value || "";
+      const body = ($("#ed-body") || {}).value || "";
+      const el = $("#ed-count");
+      if (el) el.textContent = `${hook.length + body.length} симв. редакционного текста`;
+    };
+    ["ed-hook", "ed-body"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("input", count);
+    });
+    count();
+  };
+
+  window.tgfarmEditSave = async (id) => {
+    const body = {
+      hook: ($("#ed-hook") || {}).value || "",
+      body: ($("#ed-body") || {}).value || "",
+      cta: ($("#ed-cta") || {}).value || "",
+    };
+    try {
+      const r = await fetch(`/api/posts/${encodeURIComponent(id)}/draft`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || r.status);
+      const ok = data.passed;
+      $("#ed-result").innerHTML = `<div class="field-result ${ok ? "ok" : "bad"}">
+        ${ok ? "Проверки пройдены" : "Проверки не пройдены"}${data.gate ? ` · ${esc(data.gate)}` : ""}
+        — статус: ${esc(STATUS_RU[data.status] || data.status)}</div>`;
+      toast(ok ? "Сохранено" : "Правка не прошла гейты", ok ? "ok" : "err");
+      refresh();
+      if (ok) openDrawer(id);
+    } catch (e) {
+      $("#ed-result").innerHTML = `<div class="field-result bad">${esc(e.message)}</div>`;
+    }
+  };
+
+  window.tgfarmTrace = async (id) => {
+    const slot = $("#preview-slot");
+    if (!slot) return;
+    slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Загрузка…</div></div>`;
+    try {
+      const t = await api(`/api/posts/${encodeURIComponent(id)}/trace`);
+      const rows = t.events.map((e) =>
+        `<div class="trace-row"><span class="trace-at">${e.at || "—"}</span> <b>${esc(e.kind)}</b> <span>${esc(e.detail || "")}</span></div>`).join("");
+      slot.innerHTML = `<div class="drawer-block"><h4>Трейс · ${esc(t.status)} · медиа: ${t.media}</h4>${rows}</div>`;
+    } catch (e) {
+      slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Не удалось: ${esc(e.message)}</div></div>`;
+    }
+  };
+
+  window.tgfarmPolish = async (id, mode) => {
+    if (!confirm("Переписать пост? Гейты запустятся заново.")) return;
+    try {
+      const res = await fetch(`/api/posts/${encodeURIComponent(id)}/polish`, {
+        method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || String(res.status));
+      if (!data.ok) { toast(data.message || "Не удалось", "err"); return; }
+      toast(data.passed ? "Переписано, гейты пройдены" : "Переписано, но гейты не пропустили", data.passed ? "ok" : "err");
+      refresh();
+      openDrawer(id);
+    } catch (e) {
+      toast("Ошибка полировки: " + e.message, "err");
+    }
+  };
+
+  window.tgfarmPreview = async (id) => {
+    const slot = $("#preview-slot");
+    if (!slot) return;
+    slot.innerHTML = `<div class="drawer-block"><h4>Предпросмотр</h4><div class="empty">Готовим…</div></div>`;
+    try {
+      const res = await fetch(`/api/posts/${encodeURIComponent(id)}/preview`, {
+        method: "POST", headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const p = await res.json();
+      slot.innerHTML = `
+        <div class="drawer-block">
+          <h4>Предпросмотр · ${esc(PLATFORM_RU[p.platform] || p.platform || "Telegram")} · ${n(p.chars)} / ${p.limit} симв.</h4>
+          ${p.cover ? `<img class="preview-cover" src="${esc(p.cover)}" alt="">` : ""}
+          <div class="tg-post">
+            ${p.channel_title ? `<div class="tg-channel">${esc(p.channel_title)}</div>` : ""}
+            <div class="tg-text">${p.preview}</div>
+            ${p.disclaimer ? `<div class="tg-note">${esc(p.disclaimer)}</div>` : ""}
+          </div>
+          ${p.over_limit ? `<div class="field-result bad">Текст длиннее лимита ${esc(PLATFORM_RU[p.platform] || "Telegram")}</div>` : ""}
+        </div>`;
+    } catch (e) {
+      slot.innerHTML = `<div class="drawer-block"><h4>Предпросмотр</h4><div class="empty">Не удалось: ${esc(e.message)}</div></div>`;
+    }
+  };
+
+  /* ---------------------------------------------------------------- data */
+  function renderDzen(dz) {
+    const farmPill = $("#farm-pill");
+    if (!farmPill) return;
+    let pill = $("#dzen-pill");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.id = "dzen-pill";
+      farmPill.parentElement.insertBefore(pill, farmPill.nextSibling);
+    }
+    if (dz.authorized === true) {
+      pill.className = "pill pill-ok";
+      pill.textContent = "Дзен: авторизован";
+      pill.onclick = null;
+      pill.style.cursor = "default";
+    } else if (dz.authorized === false) {
+      pill.className = "pill pill-err";
+      pill.textContent = "Дзен: войти";
+      pill.style.cursor = "pointer";
+      pill.onclick = window.tgfarmDzenLogin;
+    } else {
+      pill.className = "pill";
+      pill.textContent = "Дзен: …";
+      pill.style.cursor = "pointer";
+      pill.onclick = window.tgfarmDzenLogin;
+    }
+  }
+
+  window.tgfarmDzenLogin = async () => {
+    if (!confirm("Откроется окно Дзена. Войди в Яндекс там — ферма подождёт до 7 минут.")) return;
+    toast("Открываю окно входа в Дзен…");
+    try {
+      const res = await fetch("/api/dzen/login?timeout=420", { method: "POST", headers: authHeaders() });
+      const data = await res.json();
+      toast(data.ok ? "Дзен: сессия сохранена" : "Вход не завершён: " + (data.error || ""), data.ok ? "ok" : "err");
+      refresh();
+    } catch (e) {
+      toast("Вход не удался: " + e.message, "err");
+    }
+  };
+
+  function renderAlerts(alerts) {
+    const kpis = $("#kpis");
+    if (!kpis) return;
+    let box = $("#alert-banner");
+    if (!alerts.length) {
+      if (box) box.remove();
+      return;
+    }
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "alert-banner";
+      kpis.parentElement.insertBefore(box, kpis);
+    }
+    box.className = "alert-banner";
+    box.innerHTML = alerts.map((a) =>
+      `<div class="alert alert-${a.level === "error" ? "err" : "warn"}">
+         <b>${esc(a.code)}</b> — ${esc(a.message)}</div>`).join("");
+  }
+
+  async function refresh() {
+    if (state.inFlight) return;
+    state.inFlight = true;
+    try {
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage] = await Promise.all([
+        api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
+        api("/api/trends?limit=25"),
+        api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
+        api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
+        api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
+        api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
+        api("/api/platforms"), api("/api/reddit/metrics"), api("/api/ai/usage?days=7"),
+      ]);
+
+      const mode = status.mode || "?";
+      const pill = $("#mode-pill");
+      pill.textContent = mode === "live" ? "LIVE" : mode === "dry" ? "DRY-RUN" : "OFF";
+      pill.className = "pill " + (mode === "live" ? "pill-ok" : mode === "dry" ? "pill-warn" : "pill-err");
+      const farmPill = $("#farm-pill");
+      if (farmPill) {
+        farmPill.textContent = status.scheduler_running ? "Ферма: работает" : "Ферма: остановлена";
+        farmPill.className = "pill " + (status.scheduler_running ? "pill-ok" : "pill-err");
+      }
+      $("#brand-sub").textContent =
+        `${status.channels} каналов · ${status.sources} источников · ${status.embedder}`;
+
+      renderAlerts(status.alerts || []);
+      state.dzenStatus = dzen || {};
+      renderDzen(dzen || {});
+      renderKPIs(status.kpis || status);
+      renderReport(report);
+      renderPipeline(runs.runs || []);
+      renderTrends(trends.trends || []);
+      renderPosts(posts.posts || []);
+      renderChannels(channels.channels || []);
+      renderSources(sources.sources || []);
+      state.data.crossposts = crossposts;
+      renderCrosspostHealth(deliveryHealth || {});
+      renderCrossposts(crossposts.crossposts || []);
+      renderRuns(runs.runs || []);
+      renderMemory(memory || {});
+      renderTopicDossier(state.topicDossier);
+      renderPlatforms(platforms || {});
+      renderRedditMetrics(redditMetrics || {});
+      renderAIUsage(aiUsage || {});
+    } catch (e) {
+      toast("Не удалось обновить данные: " + e.message, "err");
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  async function runCycle() {
+    const btn = $("#run-cycle");
+    btn.classList.add("is-busy");
+    btn.disabled = true;
+    toast("Запущен цикл конвейера…");
+    try {
+      const res = await api("/api/cycle?collect=true&max_clusters=8");
+      const ok = Object.values(res.stages || {}).filter((s) => s.ok).length;
+      const bad = (res.errors || []).length;
+      toast(bad ? `Цикл завершён с ошибками (${bad}) за ${res.duration_ms} мс`
+                 : `Цикл завершён: ${ok} стадий за ${res.duration_ms} мс`, bad ? "err" : "ok");
+      await refresh();
+    } catch (e) {
+      toast("Цикл не запустился: " + e.message, "err");
+    } finally {
+      btn.classList.remove("is-busy");
+      btn.disabled = false;
+    }
+  }
+
+  async function post(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = payload.detail;
+      throw new Error(typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : String(res.status)));
+    }
+    return payload;
+  }
+
+  async function put(url, body) {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = payload.detail;
+      throw new Error(typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : String(res.status)));
+    }
+    return payload;
+  }
+
+  window.tgfarmReconcileCrosspost = async (postId, platform, action) => {
+    if (!postId || !platform) return;
+    const body = { action };
+    if (action === "confirm_posted") {
+      if (!confirm("Подтверждаете, что пост уже появился на целевой площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили целевую площадку и не нашли там этот пост?")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+
+    try {
+      const result = await post(
+        `/api/crossposts/${encodeURIComponent(postId)}/${encodeURIComponent(platform)}/reconcile`,
+        body,
+      );
+      const outcome = (result.outcomes || [])[0];
+      if (outcome && outcome.status === "unknown") {
+        toast("Результат снова не подтверждён. Проверьте целевую площадку вручную.", "err");
+      } else if (action === "confirm_posted") {
+        toast("Кросспост отмечен как опубликованный", "ok");
+      } else {
+        toast("Повтор выполнен: " + ((outcome && outcome.status) || "статус не получен"), "ok");
+      }
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить кросспост: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmReconcile = async (id, action) => {
+    if (!id) return;
+    const body = { action };
+    if (action === "confirm_published") {
+      if (!confirm("Подтверждаете, что пост уже появился на площадке?")) return;
+    } else if (action === "retry_after_check") {
+      if (!confirm("Вы лично проверили площадку и не нашли этот пост? Только тогда безопаснее повторять.")) return;
+      body.confirm_not_published = true;
+    } else {
+      return;
+    }
+    try {
+      await post(`/api/posts/${encodeURIComponent(id)}/reconcile`, body);
+      toast(action === "confirm_published" ? "Публикация отмечена как подтверждённая" : "Пост возвращён в очередь", "ok");
+      $("#drawer").hidden = true;
+      refresh();
+    } catch (e) {
+      toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmPublish = async (id) => {
+    let proceed = true;
+    try { proceed = confirm("Опубликовать пост прямо сейчас?"); } catch (e) { proceed = true; }
+    if (!proceed) return;
+    try {
+      const res = await post("/api/posts/publish", { post_public_ids: [id] });
+      if (res && Number(res.failed || 0) > 0) {
+        const detail = (res.errors && res.errors.length) ? res.errors[0] : (res.failed + " ошибок");
+        toast("Не удалось опубликовать: " + detail, "err");
+      } else {
+        toast("Опубликовано", "ok");
+        $("#drawer").hidden = true;
+        refresh();
+      }
+    } catch (e) {
+      toast("Ошибка публикации: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmRetryFailed = async (id) => {
+    if (!confirm("Причина ошибки исправлена (например, доступ или настройки площадки)? Вернуть пост в очередь с новым лимитом попыток?")) return;
+    try {
+      await post(`/api/posts/${encodeURIComponent(id)}/retry`, {});
+      toast("Пост возвращён в очередь", "ok");
+      await refresh();
+      openDrawer(id);
+    } catch (e) {
+      toast("Не удалось вернуть пост в очередь: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmReject = async (id) => {
+    if (!confirm("Отклонить пост?")) return;
+    try {
+      await post("/api/posts/reject", { post_public_ids: [id], reason: "manual" });
+      toast("Отклонено", "ok");
+      $("#drawer").hidden = true;
+      refresh();
+    } catch (e) { toast("Ошибка", "err"); }
+  };
+
+  window.tgfarmCopyText = async (id) => {
+    try {
+      const p = await api(`/api/posts/${encodeURIComponent(id)}`);
+      await navigator.clipboard.writeText(p.text || "");
+      toast("Текст скопирован", "ok");
+    } catch (e) { toast("Не удалось скопировать", "err"); }
+  };
+
+  window.tgfarmSetPostFilter = (status) => {
+    state.postFilter = status || "";
+    $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x.dataset.status === state.postFilter));
+    refresh();
+  };
+
+  window.tgfarmSyncChannels = async () => {
+    toast("Синхронизация каналов…");
+    try { await refresh(); toast("Каналы обновлены", "ok"); }
+    catch (e) { toast("Ошибка синхронизации", "err"); }
+  };
+
+  window.tgfarmToggleTheme = () => {
+    const html = document.documentElement;
+    const dark = html.getAttribute("data-theme") !== "light";
+    html.setAttribute("data-theme", dark ? "light" : "dark");
+  };
+
+  window.tgfarmToggleFullscreen = () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  };
+
+  /* ---------------------------------------------------------------- wiring */
+  function switchView(view) {
+    state.view = view;
+    $(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
+    $(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+  }
+
+  // Hooks the native application menu calls. They exist in the browser too, so
+  // the page never has to know whether it is running inside a window.
+  window.tgfarmGoto = (view) => switchView(view);
+  window.tgfarmRefresh = () => refresh();
+
+  // Inside the desktop build the native "Старт цикла" drives the host process
+  // directly, which keeps publishing independent of this window.
+  window.tgfarmHostCycle = () => {
+    if (window.pywebview && window.pywebview.api) return window.pywebview.api.launch_cycle();
+    return runCycle();
+  };
+  $("#run-cycle")[0].addEventListener("click", window.tgfarmHostCycle);
+
+  $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
+
+  $("#crosspost-filter")?.addEventListener("change", (event) => {
+    state.crosspostFilter = event.target.value || "all";
+    renderCrossposts((state.data.crossposts && state.data.crossposts.crossposts) || []);
+  });
+
+  $("#crosspost-export")?.addEventListener("click", async () => {
+    const button = $("#crosspost-export");
+    if (button) button.disabled = true;
+    try {
+      const report = await api("/api/crossposts/export?limit=300");
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `tgfarm-delivery-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+      toast("Отчёт доставки экспортирован без текста ошибок и секретов", "ok");
+    } catch (error) {
+      toast("Не удалось экспортировать отчёт: " + error.message, "err");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+
+  $("#post-filters button").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.postFilter = b.dataset.status;
+      $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
+      refresh();
+    }));
+
+  $("#reddit-scout-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitRedditScout();
+  });
+  $("#reddit-scout-results")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-reddit-tailor]");
+    if (button) await tailorRedditCandidate(button.dataset.redditTailor);
+  });
+  $("#reddit-publish-button")?.addEventListener("click", publishRedditDraft);
+  $("#reddit-metrics-refresh")?.addEventListener("click", refreshRedditMetrics);
+  $("#platform-auth-form")?.addEventListener("submit", savePlatformCredentials);
+  $("#platform-auth-close")?.addEventListener("click", closePlatformAuthDialog);
+  $("#platform-auth-cancel")?.addEventListener("click", closePlatformAuthDialog);
+  $("#platform-auth-check")?.addEventListener("click", async () => {
+    if (state.authPlatformId) await checkPlatformAuthorization(state.authPlatformId);
+  });
+  $("#platform-auth-dialog")?.addEventListener("close", () => {
+    state.authSaving = false;
+    state.authPlatformId = "";
+  });
+
+  $("#platform-search")?.addEventListener("input", (event) => {
+    state.platformQuery = event.target.value || "";
+    renderPlatformCards();
+  });
+  $("#platform-filters")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-platform-filter]");
+    if (!button) return;
+    state.platformFilter = button.dataset.platformFilter || "all";
+    $("#platform-filters [data-platform-filter]").forEach((item) =>
+      item.classList.toggle("is-active", item === button));
+    renderPlatformCards();
+  });
+  $("#platform-categories")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-platform-category]");
+    if (!button) return;
+    state.platformCategory = button.dataset.platformCategory || "Все";
+    renderPlatformCategories(state.platformData?.platforms || []);
+    renderPlatformCards();
+  });
+  $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const authConfig = event.target.closest("[data-platform-auth-config]");
+    if (authConfig) {
+      await openPlatformAuthorization(authConfig.dataset.platformAuthConfig, true);
+      return;
+    }
+    const authSetup = event.target.closest("[data-platform-auth]");
+    if (authSetup) {
+      await openPlatformAuthorization(authSetup.dataset.platformAuth);
+      return;
+    }
+    const authCheck = event.target.closest("[data-platform-auth-check]");
+    if (authCheck) {
+      await checkPlatformAuthorization(authCheck.dataset.platformAuthCheck, authCheck);
+      return;
+    }
+    const toggle = event.target.closest("[data-platform-toggle]");
+    if (toggle) {
+      const item = (state.platformData?.platforms || []).find((entry) => entry.id === toggle.dataset.platformToggle);
+      if (item) await updatePlatformSwitch(item.id, !item.enabled);
+      return;
+    }
+    const plan = event.target.closest("[data-platform-plan]");
+    if (plan) {
+      await updatePlatformPlan(plan.dataset.platformPlan);
+      return;
+    }
+    if (event.target.closest("[data-platform-reset]")) {
+      state.platformQuery = "";
+      state.platformFilter = "all";
+      state.platformCategory = "Все";
+      $("#platform-search").value = "";
+      $("#platform-filters [data-platform-filter]").forEach((item) =>
+        item.classList.toggle("is-active", item.dataset.platformFilter === "all"));
+      renderPlatformCategories(state.platformData?.platforms || []);
+      renderPlatformCards();
+    }
+  });
+
+  $("#memory-search-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitMemorySearch();
+  });
+  $("#topic-dossier-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitTopicDossier();
+  });
+  $("#topic-query")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitTopicDossier();
+    }
+  });
+  $("#memory-reindex")?.addEventListener("click", async () => {
+    const btn = $("#memory-reindex");
+    btn.disabled = true;
+    try {
+      const result = await post("/api/memory/reindex", {});
+      toast(
+        result.available
+          ? `Архив переиндексирован: ${n(result.indexed_posts)} постов`
+          : "FTS5 недоступен, используется резервный поиск",
+        result.available ? "ok" : "err",
+      );
+      const data = await api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`);
+      renderMemory(data);
+    } catch (error) {
+      toast("Не удалось обновить индекс: " + error.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") $("#drawer").hidden = true;
+    if (e.key === "/" && state.view === "platforms" && !e.ctrlKey && !e.metaKey
+      && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
+      e.preventDefault();
+      $("#platform-search")?.focus();
+    }
+  });
+
+  $("#clock").textContent = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  setInterval(() => {
+    $("#clock").textContent = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  }, 20000);
+
+  refresh();
+  state.refreshTimer = setInterval(() => {
+    if (!document.hidden) refresh();
+  }, 8000);
+})(); = new Set(["draft", "gated", "scheduled", "rejected"]);
 
   window.tgfarmEditStart = async (id) => {
     const slot = $("#editor-slot");
