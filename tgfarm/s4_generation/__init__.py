@@ -667,18 +667,18 @@ _EN_MONTHS = {
     for name in names
 }
 _DATE_PATTERNS = (
-    re.compile(r"(?<!\\d)(?P<year>(?:19|20)\\d{2})[-/.](?P<month>\\d{1,2})[-/.](?P<day>\\d{1,2})(?!\\d)"),
-    re.compile(r"(?<!\\d)(?P<day>\\d{1,2})[./-](?P<month>\\d{1,2})[./-](?P<year>(?:19|20)\\d{2})(?!\\d)"),
+    re.compile(r"(?<!\d)(?P<year>(?:19|20)\d{2})[-/.](?P<month>\d{1,2})[-/.](?P<day>\d{1,2})(?!\d)"),
+    re.compile(r"(?<!\d)(?P<day>\d{1,2})[./-](?P<month>\d{1,2})[./-](?P<year>(?:19|20)\d{2})(?!\d)"),
     re.compile(
-        r"(?P<day>\\d{1,2})\\s+(?P<month>января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\\s+(?P<year>(?:19|20)\\d{2})",
+        r"(?P<day>\d{1,2})\s+(?P<month>января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?P<year>(?:19|20)\d{2})",
         re.I,
     ),
     re.compile(
-        r"(?P<month>january|jan\\.?|february|feb\\.?|march|mar\\.?|april|apr\\.?|may|june|jun\\.?|july|jul\\.?|august|aug\\.?|september|sept?\\.?|october|oct\\.?|november|nov\\.?|december|dec\\.?)[ ]+(?P<day>\\d{1,2})(?:st|nd|rd|th)?[,]?[ ]+(?P<year>(?:19|20)\\d{2})",
+        r"(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[ ]+(?P<day>\d{1,2})(?:st|nd|rd|th)?[,]?[ ]+(?P<year>(?:19|20)\d{2})",
         re.I,
     ),
     re.compile(
-        r"(?P<day>\\d{1,2})[ ]+(?P<month>january|jan\\.?|february|feb\\.?|march|mar\\.?|april|apr\\.?|may|june|jun\\.?|july|jul\\.?|august|aug\\.?|september|sept?\\.?|october|oct\\.?|november|nov\\.?|december|dec\\.?)[,]?[ ]+(?P<year>(?:19|20)\\d{2})",
+        r"(?P<day>\d{1,2})[ ]+(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[,]?[ ]+(?P<year>(?:19|20)\d{2})",
         re.I,
     ),
 )
@@ -713,8 +713,8 @@ def _date_claim_sentences(draft: DraftPost) -> list[str]:
     parts = [draft.hook, draft.body]
     if draft.cta:
         parts.append(draft.cta)
-    text = "\\n".join(part for part in parts if part)
-    candidates = re.split(r"(?<=[.!?…])\\s+|\\n+", text)
+    text = "\n".join(part for part in parts if part)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
     out: list[str] = []
     seen: set[str] = set()
     for sentence in candidates:
