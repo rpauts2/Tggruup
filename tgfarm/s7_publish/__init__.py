@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import random
 from contextlib import suppress
+from email.utils import parsedate_to_datetime
 import uuid
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 
 from sqlalchemy import func, select, update
@@ -657,6 +659,48 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
     return True
 
 
+def _publish_retry_after_seconds(
+    exc: BaseException,
+    *,
+    now: datetime | None = None,
+    max_seconds: int = 86_400,
+) -> int | None:
+    """Read a platform retry-after hint without trusting unbounded values."""
+    raw = getattr(exc, "retry_after", None)
+    if raw is not None:
+        if isinstance(raw, timedelta):
+            seconds = ceil(raw.total_seconds())
+        else:
+            try:
+                seconds = ceil(float(raw))
+            except (TypeError, ValueError, OverflowError):
+                seconds = -1
+        if seconds >= 0:
+            return min(seconds, max(0, int(max_seconds)))
+
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    headers = getattr(response, "headers", {}) or {}
+    raw_header = headers.get("Retry-After") or headers.get("retry-after")
+    if raw_header is None:
+        return None
+    value = str(raw_header).strip()
+    try:
+        seconds = ceil(float(value))
+    except (TypeError, ValueError, OverflowError):
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        current = now or datetime.now(UTC)
+        current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+        seconds = ceil((retry_at.astimezone(UTC) - current).total_seconds())
+    return min(max(0, seconds), max(0, int(max_seconds)))
+
+
 def _is_permanent_publish_error(exc: BaseException) -> bool:
     """Explicit client rejections are terminal; rate limits remain retryable."""
     response = getattr(exc, "response", None)
@@ -802,6 +846,7 @@ async def _publish_one(
         # A timeout/reset after sending may mean the platform already accepted it.
         ambiguous = _is_ambiguous_publish_error(exc)
         permanent = _is_permanent_publish_error(exc)
+        retry_after_seconds = _publish_retry_after_seconds(exc)
         lower_error = raw_error_text.lower()
         transport = any(
             marker in lower_error
@@ -829,10 +874,14 @@ async def _publish_one(
                     post.scheduled_at = None
                     terminal_failure = True
                 else:
-                    if transport:
-                        retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
+                    if retry_after_seconds is not None:
+                        next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+                    else:
+                        if transport:
+                            retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
+                        next_attempt_at = datetime.now(UTC) + timedelta(minutes=retry_min)
                     post.status = "scheduled"
-                    post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
+                    post.scheduled_at = next_attempt_at
         if ambiguous:
             log.error(
                 "publish outcome unknown for %s (%s): %s; operator reconciliation required",
@@ -845,9 +894,14 @@ async def _publish_one(
                 post_id, platform, attempts, reason,
             )
         else:
+            delay_label = (
+                f"{retry_after_seconds}s (Retry-After)"
+                if retry_after_seconds is not None
+                else f"{retry_min} min"
+            )
             log.warning(
-                "publish failed for %s (%s): %s (retry in %s min; attempt %s/%s)",
-                post_id, platform, error_text, retry_min, attempts, max_attempts,
+                "publish failed for %s (%s): %s (retry in %s; attempt %s/%s)",
+                post_id, platform, error_text, delay_label, attempts, max_attempts,
             )
         return {
             "ok": False,
