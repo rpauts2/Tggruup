@@ -115,10 +115,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "tiktok", "name": "TikTok", "symbol": "TT", "color": "#25F4EE",
         "category": "Видео", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["video"],
-        "description": "Короткие вертикальные ролики. Потребуется подготовка видео, субтитров и отдельный сценарий публикации.",
-        "requirements": "OAuth и допуск Content Posting API; отдельные настройки аудитории/публикации.",
-        "docs_url": "https://developers.tiktok.com/products/content-posting-api/",
+        "mode": "built_in", "roles": ["video"],
+        "description": "Оригинальный вертикальный MP4 через Content Posting API. Каждое видео требует отдельного просмотра и подтверждения перед Direct Post.",
+        "requirements": "TikTok App с Content Posting API, scopes user.info.basic + video.publish и разрешённым callback URL. До аудита API-публикации могут оставаться приватными.",
+        "docs_url": "https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post",
     },
     {
         "id": "instagram", "name": "Instagram", "symbol": "IG", "color": "#E4405F",
@@ -333,6 +333,16 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "YOUTUBE_CHANNEL_ID", "attribute": "youtube_channel_id", "label": "Channel ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID канала, подтверждённого через Google OAuth."},
         {"key": "YOUTUBE_CHANNEL_TITLE", "attribute": "youtube_channel_title", "label": "Channel title", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Название подтверждённого канала."},
     ],
+    "tiktok": [
+        {"key": "TIKTOK_CLIENT_KEY", "attribute": "tiktok_client_key", "label": "TikTok Client Key", "secret": False, "placeholder": "Client Key", "help": "Приложение должно иметь Content Posting API и scope video.publish."},
+        {"key": "TIKTOK_CLIENT_SECRET", "attribute": "tiktok_client_secret", "label": "TikTok Client Secret", "secret": True, "placeholder": "Client Secret", "help": "Хранится только локально в .env."},
+        {"key": "TIKTOK_ACCESS_TOKEN", "attribute": "tiktok_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
+        {"key": "TIKTOK_REFRESH_TOKEN", "attribute": "tiktok_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний refresh token."},
+        {"key": "TIKTOK_TOKEN_EXPIRES_AT", "attribute": "tiktok_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "TIKTOK_REFRESH_TOKEN_EXPIRES_AT", "attribute": "tiktok_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+        {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
+        {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
     "threads": [
         {"key": "THREADS_APP_ID", "attribute": "threads_app_id", "label": "Threads App ID", "secret": False, "placeholder": "Meta App ID", "help": "Идентификатор Meta-приложения с добавленным продуктом Threads API."},
         {"key": "THREADS_APP_SECRET", "attribute": "threads_app_secret", "label": "Threads App Secret", "secret": True, "placeholder": "Meta App Secret", "help": "Секрет приложения. Хранится локально и не показывается повторно."},
@@ -487,7 +497,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -513,6 +523,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if not supported else
             "Для YouTube настрой OAuth Web Client в Google Cloud, включи YouTube Data API v3 и добавь callback URI панели. Загрузка по умолчанию остаётся Private; для публикаций нужна квота Google и доступ к youtube.upload."
             if platform_id == "youtube" else
+            "Для TikTok требуется одобренный Content Posting API и video.publish. Перед каждой прямой публикацией TgFarm показывает актуальные privacy options и ждёт отдельного подтверждения оператора."
+            if platform_id == "tiktok" else
             ("Для X, Threads или LinkedIn сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
             if platform_id in {"x", "threads", "linkedin"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
@@ -710,6 +722,17 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.youtube_client_id and settings.youtube_client_secret:
             return False, "OAuth-приложение настроено; нажми «Подключить через OAuth» и подтверди канал."
         return False, "Нужны YOUTUBE_CLIENT_ID и YOUTUBE_CLIENT_SECRET из Google Cloud."
+    if platform_id == "tiktok":
+        if (
+            settings.tiktok_client_key
+            and settings.tiktok_client_secret
+            and settings.tiktok_refresh_token
+            and settings.tiktok_open_id
+        ):
+            return True, "TikTok OAuth сохранён; перед каждой публикацией будут заново проверяться настройки автора и приватность."
+        if settings.tiktok_client_key and settings.tiktok_client_secret:
+            return False, "TikTok App настроено; подключи аккаунт через OAuth и проверь scope video.publish."
+        return False, "Нужны TIKTOK_CLIENT_KEY и TIKTOK_CLIENT_SECRET из Developer Portal."
     if platform_id == "max":
         if settings.max_access_token and settings.max_channel_id:
             return True, "Данные MAX заданы; реальную публикацию нужно проверить."
