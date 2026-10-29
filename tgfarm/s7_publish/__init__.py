@@ -738,11 +738,11 @@ async def _publish_one(
     if platform not in {"telegram", "dzen", "vk"}:
         # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
         return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
+    settings = get_settings()
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
     heartbeat_task = asyncio.create_task(_publish_heartbeat_loop(post_id))
-    settings = get_settings()
     message_id = None
     try:
         if platform == "dzen":
