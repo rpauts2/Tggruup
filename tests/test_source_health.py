@@ -114,18 +114,20 @@ def test_source_freshness_alert_escalates_when_all_sources_are_stale():
     assert "Все включённые источники (2)" in alert["message"]
 
 
-def test_source_freshness_alert_respects_long_source_intervals_and_naive_timestamps():
+def test_source_freshness_alert_respects_long_interval_when_adaptive_cadence_is_disabled():
     from datetime import UTC, datetime, timedelta
 
     from tgfarm.pipeline import _source_freshness_alert
 
     now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
     long_interval_recent = (now - timedelta(hours=24)).replace(tzinfo=None)
+    from types import SimpleNamespace as Namespace
+
     assert _source_freshness_alert([
         SimpleNamespace(
             last_fetched_at=long_interval_recent,
             created_at=now - timedelta(days=3),
             min_interval_s=24 * 60 * 60, idle_streak=0, failures=0,
         ),
-    ], now) is None
+    ], now, Namespace(source_adaptive_cadence=False)) is None
 
