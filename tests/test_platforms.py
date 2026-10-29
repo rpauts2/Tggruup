@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -50,14 +50,25 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"
     }
     assert entries["reddit"]["planned"] is False
-    assert entries["youtube"]["supported"] is False
-    assert entries["youtube"]["planned"] is True
-    assert entries["tiktok"]["supported"] is False
-    assert entries["tiktok"]["planned"] is True
+    assert entries["youtube"]["supported"] is True
+    assert entries["youtube"]["planned"] is False
+    assert entries["youtube"]["auth"]["method"] == "oauth"
+    assert entries["youtube"]["roles"] == ["video", "crosspost"]
+    assert {"YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"} == {
+        field["key"] for field in entries["youtube"]["auth"]["fields"]
+    }
+    assert entries["tiktok"]["supported"] is True
+    assert entries["tiktok"]["planned"] is False
+    assert entries["tiktok"]["auth"]["method"] == "oauth"
+    assert entries["tiktok"]["roles"] == ["video"]
+    assert {"TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"} == {
+        field["key"] for field in entries["tiktok"]["auth"]["fields"]
+    }
     assert entries["vk_clips"]["supported"] is False
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
+    assert catalog["summary"]["supported"] == 12
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -81,13 +92,18 @@ def test_disabling_a_supported_network_persists_and_fails_closed(tmp_path, monke
     assert "vk: false" in raw
 
 
-def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monkeypatch):
+def test_youtube_and_tiktok_switches_only_toggle_registered_adapters(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
-        platforms.set_platform_enabled("youtube", True)
-    assert platforms.is_platform_enabled("youtube") is False
+    for platform_id in ("youtube", "tiktok"):
+        enabled = platforms.set_platform_enabled(platform_id, True)
+        assert enabled["enabled"] is True
+        assert enabled["configured"] is False
+        assert platforms.is_platform_enabled(platform_id) is True
+        disabled = platforms.set_platform_enabled(platform_id, False)
+        assert disabled["enabled"] is False
+        assert platforms.is_platform_enabled(platform_id) is False
 
 
 def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_path, monkeypatch):
@@ -103,17 +119,17 @@ def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_p
     assert platforms.is_platform_enabled("vk_clips") is False
 
 
-def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
+def test_future_vk_clips_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("youtube", True)
+    item = platforms.set_platform_planned("vk_clips", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("youtube", False)
+    item = platforms.set_platform_planned("vk_clips", False)
     assert item["planned"] is False
-    assert platforms.is_platform_enabled("youtube") is False
+    assert platforms.is_platform_enabled("vk_clips") is False
 
 
 def test_disabled_crosspost_network_never_reaches_the_post_loader(monkeypatch, tmp_path):
