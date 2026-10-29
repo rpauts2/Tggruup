@@ -1099,10 +1099,16 @@ class YouTubeAdapter:
         ).strip()
         path = Path(video_path) if video_path else None
         if path is None or not path.is_file():
+            render_error = str((payload.meta or {}).get("video_render_error") or "").strip()
+            detail = (
+                f"Automatic short rendering failed: {render_error}"
+                if render_error
+                else "No rendered video asset is attached to this post. Render a short before enabling YouTube delivery."
+            )
             return CrosspostResult(
                 platform=self.platform,
                 status="permanent",
-                error="No rendered video asset is attached to this post. Render a short before enabling YouTube delivery.",
+                error=redact_sensitive_text(detail, limit=300),
             )
         try:
             byte_count = path.stat().st_size
@@ -1193,7 +1199,9 @@ class YouTubeAdapter:
                     )
                 # The renderer keeps short-form videos small. One resumable PUT
                 # sends the entire local MP4; ambiguous failures are never retried blindly.
-                video_bytes = await to_thread(path.read_bytes)
+                import asyncio
+
+                video_bytes = await asyncio.to_thread(path.read_bytes)
                 upload_response = await client.put(
                     session_uri,
                     content=video_bytes,
