@@ -518,7 +518,7 @@
     flash: "картинка + коротко", stat: "цифра", news: "новость",
     analysis: "разбор", article: "статья", video: "видео",
   };
-  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X" };
+  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X", youtube: "YouTube", tiktok: "TikTok", vk_clips: "VK Клипы" };
 
   function postCard(p) {
     const cover = p.cover
@@ -752,7 +752,7 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads", "linkedin"].includes(item.id) && auth.method === "oauth"
+      const authConfig = supported && ["x", "threads", "linkedin", "youtube", "tiktok"].includes(item.id) && auth.method === "oauth"
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
@@ -891,6 +891,41 @@
         window.location.assign(authorizeUrl);
       } catch (error) {
         toast("Не удалось начать LinkedIn OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
+    if (auth.method === "oauth" && ["youtube", "tiktok"].includes(platformId) && !forceCredentials) {
+      const clientIdKey = platformId === "youtube" ? "YOUTUBE_CLIENT_ID" : "TIKTOK_CLIENT_KEY";
+      const clientSecretKey = platformId === "youtube" ? "YOUTUBE_CLIENT_SECRET" : "TIKTOK_CLIENT_SECRET";
+      const clientId = (auth.fields || []).find((field) => field.key === clientIdKey);
+      const clientSecret = (auth.fields || []).find((field) => field.key === clientSecretKey);
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast(
+          platformId === "youtube"
+            ? "Сначала нажми «Настроить приложение» и сохрани Google OAuth Client ID/Secret."
+            : "Сначала нажми «Настроить приложение» и сохрани TikTok Client Key/Secret.",
+          "err",
+        );
+        return;
+      }
+      const callbackSuffix = "/api/platforms/" + platformId + "/auth/callback";
+      const callbackUri = window.location.origin.replace(/\/$/, "") + callbackSuffix;
+      const explanation = platformId === "youtube"
+        ? "В Google Cloud создай OAuth Web application, включи YouTube Data API v3 и добавь redirect URI ниже. Нужны scopes youtube.upload и youtube.readonly. По умолчанию TgFarm загружает Shorts как unlisted."
+        : "В TikTok Developer Portal добавь Content Posting API, allow-list этот redirect URI и получи approval для user.info.basic и video.publish. TikTok требует отдельное подтверждение каждой публикации; до аудита приложения API-посты могут быть видны только автору.";
+      const proceed = window.confirm(explanation + "\n\nCallback URL:\n" + callbackUri + "\n\nПродолжить подключение?");
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/" + platformId + "/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL в ответе сервера отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Площадка вернула некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать OAuth: " + (error?.message || error), "err");
       }
       return;
     }
@@ -1040,16 +1075,18 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (["x", "threads", "linkedin"].includes(platformId)) {
+      if (["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId)) {
         closePlatformAuthDialog();
-        toast(
-          platformId === "x"
-            ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-            : platformId === "threads"
-              ? "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-              : "LinkedIn App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
-          "ok",
-        );
+        const savedMessage = platformId === "x"
+          ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
+          : platformId === "threads"
+            ? "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
+            : platformId === "linkedin"
+              ? "LinkedIn App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
+              : platformId === "youtube"
+                ? "Google OAuth-приложение сохранено. Нажми «Подключить через OAuth» для выбора YouTube-канала."
+                : "TikTok App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.";
+        toast(savedMessage, "ok");
         await refresh();
         return;
       }
@@ -1061,7 +1098,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+      save.textContent = ["x", "threads", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
