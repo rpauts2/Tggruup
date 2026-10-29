@@ -107,8 +107,8 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "youtube", "name": "YouTube", "symbol": "YT", "color": "#FF0033",
         "category": "Видео", "market": "Мировые", "priority": "P1",
-        "mode": "built_in", "roles": ["video"],
-        "description": "Загрузка оригинальных MP4/Shorts через YouTube Data API с resumable upload и OAuth.",
+        "mode": "built_in", "roles": ["video", "crosspost"],
+        "description": "Загрузка оригинальных MP4/Shorts через YouTube Data API с resumable upload и OAuth; live-доставка управляется общим реестром кросспостинга.",
         "requirements": "Google OAuth Web Client, YouTube Data API v3, youtube.upload и youtube.readonly scopes.",
         "docs_url": "https://developers.google.com/youtube/v3/docs/videos/insert",
     },
