@@ -752,7 +752,7 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads", "linkedin"].includes(item.id) && auth.method === "oauth"
+      const authConfig = supported && ["x", "threads", "linkedin", "youtube"].includes(item.id) && auth.method === "oauth"
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
@@ -895,6 +895,34 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "youtube" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани Google OAuth Client ID/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/youtube/auth/callback";
+      const proceed = window.confirm(
+        "В Google Cloud Console создай OAuth Client типа Web application, включи YouTube Data API v3 и добавь этот Authorized redirect URI:\n\n"
+        + callbackUri
+        + "\n\nTgFarm запросит youtube.upload и youtube.readonly. Новые загрузки по умолчанию будут Private. Продолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/youtube/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Адрес callback отличается от текущего адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Google вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать YouTube OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "x" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_SECRET");
@@ -937,7 +965,9 @@
     state.authPlatformId = platformId;
     const dialog = $("#platform-auth-dialog");
     $("#platform-auth-title").textContent = item.name + " · подключение";
-    $("#platform-auth-description").textContent = platformId === "x"
+    $("#platform-auth-description").textContent = platformId === "youtube"
+      ? "Введи Google OAuth Client ID и Client Secret из Google Cloud Console. Создай Web application client, включи YouTube Data API v3 и добавь callback URI панели. После сохранения нажми «Подключить через OAuth»."
+      : platformId === "x"
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
       : platformId === "threads"
         ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
@@ -967,8 +997,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads", "linkedin"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = ["x", "threads", "linkedin"].includes(platformId);
+    save.textContent = ["x", "threads", "linkedin", "youtube"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
