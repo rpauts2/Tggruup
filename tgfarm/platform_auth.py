@@ -243,6 +243,20 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + str(user.get("username") or user_id or user.get("id"))
             authorized = True
             detail = "X подтвердил пользовательский OAuth-токен и профиль; публикация использует права tweet.write."
+        elif platform_id == "tiktok":
+            from tgfarm.tiktok_oauth import get_tiktok_creator_info
+
+            if not settings.tiktok_open_id or not settings.tiktok_refresh_token:
+                raise RuntimeError("Сначала подключи TikTok через OAuth.")
+            creator = await get_tiktok_creator_info()
+            username = str(creator.get("username") or settings.tiktok_username or "").strip()
+            account = ("@" + username) if username else "TikTok creator"
+            authorized = True
+            detail = (
+                "TikTok OAuth подтверждён живым creator-info запросом. "
+                "Настройки приватности обновляются перед каждой публикацией; "
+                "отправка запускается только вручную из карточки поста."
+            )
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 
