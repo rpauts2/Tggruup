@@ -357,6 +357,28 @@ class AIUsage(Base):
     __table_args__ = (Index("ix_ai_usage_day_charged", "created_at", "charged"),)
 
 
+class ImageUsage(Base):
+    """One persisted row per image-provider request attempt.
+
+    Attempts count against the daily cap even when the provider returns an
+    error, because a timeout does not prove the remote service did not bill it.
+    """
+
+    __tablename__ = "image_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    charged: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", index=True)
+    reason: Mapped[str] = mapped_column(String(80), default="")
+    error_kind: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_image_usage_day_charged", "created_at", "charged"),)
+
+
 class BlocklistEntry(Base):
     """Domain / channel level negative memory.
 
