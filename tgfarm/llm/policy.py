@@ -203,6 +203,7 @@ def record_skip(
 def usage_report(days: int = 7, now: datetime | None = None) -> dict:
     """Safe dashboard report of call-budget use, fallbacks, and persistent reservations."""
     current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
     days = min(30, max(1, int(days)))
     start = _start_of_day(current) - timedelta(days=days - 1)
     today_start = _start_of_day(current)
