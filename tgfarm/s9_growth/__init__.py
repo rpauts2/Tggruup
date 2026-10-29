@@ -191,6 +191,21 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if any(name in video_targets for name in platforms)
         else None
     )
+    if "youtube" in platforms and settings.live and not video_path:
+        # YouTube is an opt-in scheduler target. If it is enabled but no short
+        # exists yet, render one from the already-published post before upload.
+        # A renderer failure is logged without inventing a dummy video.
+        try:
+            from tgfarm.s11_video.renderer import render_post_short
+
+            await to_thread(render_post_short, post.public_id)
+            video_path = await to_thread(primary_video_path, post_pk)
+        except Exception as exc:  # noqa: BLE001 - a media failure must not crash other platforms
+            log.warning(
+                "youtube short render failed for %s (%s)",
+                post.public_id,
+                redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=180),
+            )
     results: list[CrosspostResult] = []
     for name in platforms:
         adapter = ADAPTERS.get(name)
