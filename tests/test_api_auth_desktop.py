@@ -216,6 +216,18 @@ def test_desktop_module_imports_without_a_display():
     assert "webview" not in {name for name in dir(desktop) if name == "webview"}
 
 
+def test_video_oauth_callbacks_are_public_but_do_not_echo_provider_codes(client):
+    for platform_id in ("youtube", "tiktok"):
+        marker = f"secret-{platform_id}-authorization-code"
+        response = client.get(
+            f"/api/platforms/{platform_id}/auth/callback?code={marker}&state=expired-state"
+        )
+        assert response.status_code == 400
+        assert marker not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_admin_api_rejects_untrusted_host_even_with_valid_token(client):
     response = client.get(
         "/api/status",
