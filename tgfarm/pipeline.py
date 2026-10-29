@@ -736,7 +736,7 @@ async def backup_job() -> dict:
 
     A same-directory backup protects against operator mistakes and bad
     migrations, but is not an off-machine disaster-recovery plan. The file is
-    never added to retention until SQLite's integrity check succeeds.
+    never added to retention until integrity and disposable-restore checks pass.
     """
     import os
     import sqlite3
@@ -768,6 +768,7 @@ async def backup_job() -> dict:
                 "local_verified": local_verified,
                 "mirror_configured": bool(mirror_config),
                 "mirror_verified": mirror.get("verified"),
+                "restore_tested": bool(report.get("restore_tested")),
             },
         )
         return report
@@ -830,6 +831,20 @@ async def backup_job() -> dict:
         # Only a verified, fully closed snapshot receives the public .db name.
         os.replace(temp, dest)
 
+        # Integrity alone proves the file is readable, not that the snapshot can
+        # be restored with its schema and data intact. Test the disposable restore
+        # before pruning any previous known-good backups or copying the mirror.
+        from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+        restore_report = verify_sqlite_backup_restore(dest)
+        if not restore_report.get("verified"):
+            dest.unlink(missing_ok=True)
+            reason = redact_sensitive_text(
+                restore_report.get("reason") or "restore verification failed",
+                limit=200,
+            )
+            raise sqlite3.DatabaseError(f"backup restore verification failed: {reason}")
+
         backups = sorted(dest_dir.glob("tgfarm-*.db"), key=lambda path: path.name)
         for old in backups[: max(0, len(backups) - keep)]:
             old.unlink(missing_ok=True)
@@ -865,6 +880,8 @@ async def backup_job() -> dict:
                     "verified": False,
                     "local_verified": True,
                     "integrity_check": "ok",
+                    "restore_tested": True,
+                    "restore_verification": restore_report,
                     "size_bytes": size_bytes,
                     "kept": kept,
                     "mirror": mirror_report,
@@ -877,6 +894,8 @@ async def backup_job() -> dict:
             "verified": True,
             "local_verified": True,
             "integrity_check": "ok",
+            "restore_tested": True,
+            "restore_verification": restore_report,
             "size_bytes": size_bytes,
             "kept": kept,
             "mirror": mirror_report,
