@@ -324,6 +324,28 @@ class Settings(BaseSettings):
     linkedin_member_id: str = Field(default="", alias="LINKEDIN_MEMBER_ID")
     linkedin_member_name: str = Field(default="", alias="LINKEDIN_MEMBER_NAME")
 
+    # YouTube Data API upload and metadata.
+    youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
+    youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
+    youtube_refresh_token: str = Field(default="", alias="YOUTUBE_REFRESH_TOKEN")
+    youtube_channel_id: str = Field(default="", alias="YOUTUBE_CHANNEL_ID")
+    youtube_channel_title: str = Field(default="", alias="YOUTUBE_CHANNEL_TITLE")
+    youtube_privacy_status: Literal["private", "unlisted", "public"] = Field(
+        default="unlisted", alias="YOUTUBE_PRIVACY_STATUS"
+    )
+    youtube_category_id: str = Field(default="28", alias="YOUTUBE_CATEGORY_ID")
+
+    # TikTok Content Posting API. Video direct-post is invoked only from an
+    # explicit per-post confirmation in the dashboard, never by the scheduler.
+    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
+    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
+    tiktok_access_token: str = Field(default="", alias="TIKTOK_ACCESS_TOKEN")
+    tiktok_refresh_token: str = Field(default="", alias="TIKTOK_REFRESH_TOKEN")
+    tiktok_token_expires_at: int = Field(default=0, alias="TIKTOK_TOKEN_EXPIRES_AT")
+    tiktok_refresh_token_expires_at: int = Field(default=0, alias="TIKTOK_REFRESH_TOKEN_EXPIRES_AT")
+    tiktok_open_id: str = Field(default="", alias="TIKTOK_OPEN_ID")
+    tiktok_username: str = Field(default="", alias="TIKTOK_USERNAME")
+
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
     # collector when a source of that kind is configured.
