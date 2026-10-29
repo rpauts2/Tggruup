@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import random
+from contextlib import suppress
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from tgfarm.config import get_config
 from tgfarm.core.errors import PublishError
@@ -591,6 +592,7 @@ def _claim_post(post_id: int) -> bool:
                 # detector measures from here, not from queue time, or a slow
                 # browser publish gets murdered mid-flight
                 scheduled_at=datetime.now(UTC),
+                publish_heartbeat_at=datetime.now(UTC),
             )
         )
         return result.rowcount == 1
@@ -665,15 +667,54 @@ def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
     """
     cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
     with session_scope() as session:
+        # Existing rows from before the heartbeat migration have NULL heartbeat,
+        # so fall back to their original publishing timestamp.
+        last_activity = func.coalesce(PostRow.publish_heartbeat_at, PostRow.scheduled_at)
         result = session.execute(
             update(PostRow)
-            .where(PostRow.status == "publishing", PostRow.scheduled_at <= cutoff)
+            .where(
+                PostRow.status == "publishing",
+                last_activity <= cutoff,
+            )
             .values(
                 status="publish_unknown",
-                publish_error=f"outcome unknown after {minutes} min in publishing; verify platform before retry",
+                publish_heartbeat_at=None,
+                publish_error=f"outcome unknown after {minutes} min without heartbeat; verify platform before retry",
             )
         )
         return result.rowcount or 0
+
+
+def _touch_publish_heartbeat(post_id: int) -> bool:
+    """Refresh liveness only while this worker still owns the publishing state."""
+    with session_scope() as session:
+        result = session.execute(
+            update(PostRow)
+            .where(PostRow.id == post_id, PostRow.status == "publishing")
+            .values(publish_heartbeat_at=datetime.now(UTC))
+        )
+        return result.rowcount == 1
+
+
+async def _publish_heartbeat_loop(post_id: int, interval_s: float = 30.0) -> None:
+    """Keep long browser/API publishes alive without masking an abandoned worker."""
+    while True:
+        await asyncio.sleep(max(1.0, interval_s))
+        try:
+            still_publishing = await to_thread(_touch_publish_heartbeat, post_id)
+        except Exception as exc:  # noqa: BLE001 - telemetry must not cancel a live publish
+            log.warning("publish heartbeat update failed for post %s (%s)", post_id, type(exc).__name__)
+            continue
+        if not still_publishing:
+            return
+
+
+async def _stop_publish_heartbeat(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 async def _publish_one(
@@ -697,10 +738,11 @@ async def _publish_one(
     if platform not in {"telegram", "dzen", "vk"}:
         # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
         return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
+    settings = get_settings()
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
-    settings = get_settings()
+    heartbeat_task = asyncio.create_task(_publish_heartbeat_loop(post_id))
     message_id = None
     try:
         if platform == "dzen":
@@ -722,6 +764,7 @@ async def _publish_one(
         else:
             log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
     except Exception as exc:  # noqa: BLE001 - retry later
+        await _stop_publish_heartbeat(heartbeat_task)
         retry_min = 5
         if platform == "dzen":
             from tgfarm.dzen_web import DzenCaptcha, DzenNotLoggedIn
@@ -741,6 +784,7 @@ async def _publish_one(
             post = session.get(PostRow, post_id)
             if post:
                 post.publish_error = error_text[:400]
+                post.publish_heartbeat_at = None
                 if ambiguous:
                     post.status = "publish_unknown"
                     # Keep scheduled_at as the start timestamp for this attempt.
@@ -761,12 +805,14 @@ async def _publish_one(
             )
         return {"ok": False, "error": error_text, "outcome_unknown": ambiguous}
 
+    await _stop_publish_heartbeat(heartbeat_task)
     with session_scope() as session:
         post = session.get(PostRow, post_id)
         if post:
             post.status = "published"
             post.published_at = datetime.now(UTC)
             post.tg_message_id = message_id
+            post.publish_heartbeat_at = None
             if platform == "telegram":
                 post.tg_chat_id = int(target)
             post.publish_error = None

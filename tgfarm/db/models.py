@@ -176,6 +176,10 @@ class Post(Base):
     variant: Mapped[str] = mapped_column(String(8), default="a")
 
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Refreshed while a worker is actively waiting on a platform/browser. The
+    # stuck detector uses this heartbeat so slow but live uploads are not
+    # incorrectly marked outcome-unknown just because they exceed the timeout.
+    publish_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tg_message_id: Mapped[int | None] = mapped_column(Integer)
     tg_chat_id: Mapped[int | None] = mapped_column(Integer)
