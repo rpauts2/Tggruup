@@ -907,7 +907,7 @@
         toast("Сначала нажми «Настроить приложение» и сохрани TikTok Client Key/Secret.", "err");
         return;
       }
-      const callbackUri = window.location.origin.replace(/\\/$/, "") + "/api/platforms/tiktok/auth/callback";
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/tiktok/auth/callback";
       const proceed = window.confirm(
         "В TikTok Developer Portal включи Content Posting API, добавь redirect URI ниже и запроси scopes user.info.basic + video.publish. До аудита приложения публикации могут быть ограничены приватными.\n\n"
         + callbackUri + "\n\nПродолжить подключение?",
