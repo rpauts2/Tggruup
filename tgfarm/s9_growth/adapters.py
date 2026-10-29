@@ -1552,6 +1552,101 @@ class RedditAdapter:
         )
 
 
+# ------------------------------------------------------------------- Threads
+class ThreadsAdapter:
+    """Publish a native text post via the Threads two-step container API."""
+
+    platform = "threads"
+    max_title = 500
+    max_body = 500
+    graph_url = "https://graph.threads.net/v1.0"
+
+    def _credentials(self) -> tuple[str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.threads_user_id or "").strip(),
+            str(settings.threads_access_token or "").strip(),
+            str(settings.threads_username or "").strip(),
+        )
+
+    def configured(self) -> bool:
+        user_id, token, _username = self._credentials()
+        return bool(user_id and token)
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        user_id, saved_token, _username = self._credentials()
+        if not user_id or not saved_token:
+            return CrosspostResult(platform=self.platform, status="skipped")
+        import httpx
+        from tgfarm.threads_oauth import get_valid_threads_access_token
+
+        try:
+            token = await get_valid_threads_access_token()
+        except Exception as exc:  # noqa: BLE001 - no publish request has been made yet
+            log.warning("threads token refresh failed (%s)", type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status="permanent",
+                error="Threads OAuth expired or could not be refreshed; reconnect the account.",
+            )
+
+        body = f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip()[:self.max_body]
+        if not body:
+            return CrosspostResult(
+                platform=self.platform, status="permanent",
+                error="Threads text posts require a non-empty body.",
+            )
+        try:
+            async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+                container_response = await client.post(
+                    f"{self.graph_url}/{user_id}/threads",
+                    data={"media_type": "TEXT", "text": body, "access_token": token},
+                )
+                container_response.raise_for_status()
+                container_payload = container_response.json()
+                creation_id = str(container_payload.get("id") or "")
+                if not creation_id:
+                    raise RuntimeError("Threads did not return a container identifier.")
+
+                publish_response = await client.post(
+                    f"{self.graph_url}/{user_id}/threads_publish",
+                    data={"creation_id": creation_id, "access_token": token},
+                )
+                publish_response.raise_for_status()
+                published_payload = publish_response.json()
+                remote_id = str(published_payload.get("id") or "")
+                if not remote_id:
+                    # A success-shaped response without an ID cannot safely be retried.
+                    return CrosspostResult(
+                        platform=self.platform, status="unknown",
+                        error="Threads accepted publish request but returned no post ID; reconcile before retrying.",
+                    )
+
+                permalink = None
+                try:
+                    permalink_response = await client.get(
+                        f"{self.graph_url}/{remote_id}",
+                        params={"fields": "id,permalink", "access_token": token},
+                    )
+                    if permalink_response.status_code < 400:
+                        permalink = permalink_response.json().get("permalink")
+                except Exception:  # noqa: BLE001 - lookup is best effort after confirmed publish
+                    permalink = None
+                url = (
+                    str(permalink) if isinstance(permalink, str) and permalink.startswith("https://")
+                    else None
+                )
+                return CrosspostResult(
+                    platform=self.platform, status="posted", remote_id=remote_id, url=url,
+                )
+        except Exception as exc:  # noqa: BLE001 - no blind retry after a possible publish
+            status = crosspost_error_status(exc)
+            log.warning("threads crosspost %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform, status=status,
+                error=f"Threads request failed ({type(exc).__name__}).",
+            )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "youtube": YouTubeAdapter(),
     "tiktok": TikTokAdapter(),
