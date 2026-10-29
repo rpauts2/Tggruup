@@ -871,11 +871,19 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     delivery_alert = _alert_delivery_failure_alert(last_alert_delivery)
     if delivery_alert:
         alerts.append(delivery_alert)
-    alerts.extend(_disk_space_alerts(
-        _configured_disk_mounts(settings),
-        warn_free_gb=getattr(settings, "disk_free_warn_gb", 10.0),
-        critical_free_gb=getattr(settings, "disk_free_critical_gb", 3.0),
-    ))
+    try:
+        alerts.extend(_disk_space_alerts(
+            _configured_disk_mounts(settings),
+            warn_free_gb=getattr(settings, "disk_free_warn_gb", 10.0),
+            critical_free_gb=getattr(settings, "disk_free_critical_gb", 3.0),
+        ))
+    except Exception as exc:  # noqa: BLE001 - disk monitoring must never stop the watchdog
+        log.debug("disk-space alert projection failed (%s)", type(exc).__name__)
+        alerts.append({
+            "level": "warning",
+            "code": "disk_space_check_failed",
+            "message": "Не удалось проверить свободное место. Проверь доступность каталогов данных и резервных копий.",
+        })
     return alerts
 
 
