@@ -8,7 +8,7 @@ This guide is for the Windows bundle produced by the repository's **Windows CI**
 2. Open the latest successful **CI** run for the commit you want.
 3. Under **Artifacts**, download `TgFarm-Windows-<commit-sha>`.
 4. Extract the ZIP as a whole folder. Do not move only `TgFarm.exe`: the runtime files next to it are required.
-5. Put the folder somewhere your Windows user can write to, for example `C:\\Users\\<you>\\Apps\\TgFarm`. Avoid `Program Files` because the app writes its data next to the executable.
+5. Put the folder somewhere your Windows user can write to, for example `C:\Users\<you>\Apps\TgFarm`. Avoid `Program Files` because the app writes its data next to the executable.
 
 The app stores its `data` folder next to the executable. Keep that folder and back it up: it contains the local database, API token, logs, media, browser profiles and other runtime state.
 
