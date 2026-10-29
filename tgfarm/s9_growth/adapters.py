@@ -1170,7 +1170,6 @@ class YouTubeAdapter:
             "snippet": snippet,
             "status": {
                 "privacyStatus": privacy,
-                "selfDeclaredMadeForKids": False,
             },
         }
         headers = {
@@ -1191,11 +1190,32 @@ class YouTubeAdapter:
                 if init_response.status_code >= 400:
                     return self._safe_error(init_response, "upload initialization")
                 session_uri = str(init_response.headers.get("Location") or "").strip()
-                if not session_uri.startswith("https://"):
+                from urllib.parse import urlsplit
+
+                parsed_session_uri = urlsplit(session_uri)
+                upload_host = (parsed_session_uri.hostname or "").lower()
+                allowed_upload_host = (
+                    upload_host == "www.googleapis.com"
+                    or upload_host.endswith(".googleapis.com")
+                    or upload_host == "upload.youtube.com"
+                    or upload_host.endswith(".youtube.com")
+                )
+                try:
+                    upload_port = parsed_session_uri.port
+                except ValueError:
+                    upload_port = -1
+                if (
+                    parsed_session_uri.scheme != "https"
+                    or not allowed_upload_host
+                    or parsed_session_uri.username
+                    or parsed_session_uri.password
+                    or parsed_session_uri.fragment
+                    or upload_port not in (None, 443)
+                ):
                     return CrosspostResult(
                         platform=self.platform,
                         status="failed",
-                        error="YouTube did not return a secure resumable-upload URL.",
+                        error="YouTube returned an invalid resumable-upload destination; the video was not sent.",
                     )
                 # The renderer keeps short-form videos small. One resumable PUT
                 # sends the entire local MP4; ambiguous failures are never retried blindly.
