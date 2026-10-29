@@ -105,7 +105,15 @@ def test_tiktok_switch_can_be_enabled_only_after_its_adapter_is_registered(tmp_p
     assert platforms.is_platform_enabled("tiktok") is True
     item = platforms.set_platform_enabled("tiktok", False)
     assert item["enabled"] is False
-    assert platforms.is_platform_enabled("instagram") is False
+    assert platforms.is_platform_enabled("tiktok") is False
+
+
+def test_tiktok_direct_post_is_never_a_background_crosspost_target(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    platforms.set_platform_enabled("tiktok", True)
+    assert "tiktok" not in platforms.enabled_crosspost_platforms()
 
 
 def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_path, monkeypatch):
