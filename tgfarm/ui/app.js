@@ -473,7 +473,7 @@
   };
   const STATUS_RU = {
     published: "опубликован", scheduled: "в очереди", gated: "прошёл гейты",
-    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка", draft: "черновик",
+    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка публикации", draft: "черновик",
   };
   const FORMAT_RU = {
     flash: "картинка + коротко", stat: "цифра", news: "новость",
