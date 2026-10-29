@@ -37,6 +37,7 @@ from tgfarm.s9_growth.adapters import (
     latest_crosspost,
     log_result,
     primary_image_path,
+    primary_video_path,
 )
 
 log = get_logger(__name__)
@@ -184,6 +185,12 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if "vk" in platforms
         else None
     )
+    video_targets = {"youtube", "tiktok", "vk_clips"}
+    video_path = (
+        await to_thread(primary_video_path, post_pk)
+        if any(name in video_targets for name in platforms)
+        else None
+    )
     results: list[CrosspostResult] = []
     for name in platforms:
         adapter = ADAPTERS.get(name)
@@ -205,7 +212,11 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         attempt = await to_thread(begin_crosspost, post.public_id, name)
         if attempt is None:
             continue
-        payload = build_payload(post, image_path=image_path if name == "vk" else None)
+        payload = build_payload(
+            post,
+            image_path=image_path if name == "vk" else None,
+            video_path=video_path if name in video_targets else None,
+        )
         payload.platform = name
         if settings.live:
             try:
