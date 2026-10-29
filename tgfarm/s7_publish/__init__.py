@@ -657,6 +657,15 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
     return True
 
 
+def _is_permanent_publish_error(exc: BaseException) -> bool:
+    """Explicit client rejections are terminal; rate limits remain retryable."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int):
+        return False
+    return 400 <= status_code < 500 and status_code not in (408, 425, 429)
+
+
 def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
     """Move interrupted attempts to manual reconciliation, never auto-retry.
 
@@ -790,24 +799,38 @@ async def _publish_one(
                 retry_min = 60
         raw_error_text = str(exc)
         error_text = redact_sensitive_text(raw_error_text, limit=400)
-        # Retry failures known to happen before the request reaches the platform.
         # A timeout/reset after sending may mean the platform already accepted it.
         ambiguous = _is_ambiguous_publish_error(exc)
+        permanent = _is_permanent_publish_error(exc)
+        lower_error = raw_error_text.lower()
         transport = any(
-            marker in raw_error_text
-            for marker in ("getaddrinfo", "Network is unreachable", "connection refused", "ConnectTimeout")
+            marker in lower_error
+            for marker in ("getaddrinfo", "network is unreachable", "connection refused", "connecttimeout", "connecterror")
         )
+        try:
+            max_attempts = max(1, int(getattr(settings, "primary_publish_max_attempts", 5)))
+        except (TypeError, ValueError):
+            max_attempts = 5
+        terminal_failure = False
+        attempts = 1
         with session_scope() as session:
             post = session.get(PostRow, post_id)
             if post:
+                attempts = max(1, int(post.attempts or 1))
                 post.publish_error = error_text[:400]
                 post.publish_heartbeat_at = None
                 if ambiguous:
                     post.status = "publish_unknown"
                     # Keep scheduled_at as the start timestamp for this attempt.
+                elif permanent or attempts >= max_attempts:
+                    # Stop retrying a definite failure after the configured cap.
+                    # The operator can explicitly requeue it after fixing the cause.
+                    post.status = "failed"
+                    post.scheduled_at = None
+                    terminal_failure = True
                 else:
                     if transport:
-                        retry_min = min(360, 10 * 2 ** min(max(1, post.attempts) - 1, 5))
+                        retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
                     post.status = "scheduled"
                     post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
         if ambiguous:
@@ -815,12 +838,23 @@ async def _publish_one(
                 "publish outcome unknown for %s (%s): %s; operator reconciliation required",
                 post_id, platform, error_text,
             )
+        elif terminal_failure:
+            reason = "permanent rejection" if permanent else f"attempt limit {max_attempts} reached"
+            log.error(
+                "publish stopped for %s (%s) after %s attempt(s): %s; operator retry required",
+                post_id, platform, attempts, reason,
+            )
         else:
             log.warning(
-                "publish failed for %s (%s): %s (retry in %s min)",
-                post_id, platform, error_text, retry_min,
+                "publish failed for %s (%s): %s (retry in %s min; attempt %s/%s)",
+                post_id, platform, error_text, retry_min, attempts, max_attempts,
             )
-        return {"ok": False, "error": error_text, "outcome_unknown": ambiguous}
+        return {
+            "ok": False,
+            "error": error_text,
+            "outcome_unknown": ambiguous,
+            "terminal_failure": terminal_failure,
+        }
 
     await _stop_publish_heartbeat(heartbeat_task)
     with session_scope() as session:
