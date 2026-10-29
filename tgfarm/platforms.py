@@ -867,21 +867,18 @@ def is_platform_enabled(platform_id: str) -> bool:
 
 
 def enabled_crosspost_platforms() -> list[str]:
-    """Supported background delivery targets whose global switches are on.
+    """Return explicitly designated background-delivery platforms only.
 
-    Most platforms opt in with the crosspost role. YouTube is the explicit
-    video exception: Shorts uploads can run through the durable delivery queue.
-    TikTok's Content Posting API requires per-video preview and creator consent,
-    so its video role alone must never place it in background automation.
+    A video-capable adapter is not automatically a background publisher.
+    TikTok, for example, requires a per-video preview and creator consent, and
+    remains video-only in the catalogue. YouTube Shorts opts in explicitly via
+    the crosspost role after its OAuth upload flow has been implemented.
     """
     return [
         item["id"]
         for item in CATALOG
         if item["mode"] == "built_in"
-        and (
-            "crosspost" in item["roles"]
-            or (item["id"] == "youtube" and "video" in item["roles"])
-        )
+        and "crosspost" in item["roles"]
         and is_platform_enabled(item["id"])
     ]
 
