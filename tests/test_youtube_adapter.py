@@ -20,6 +20,7 @@ class FakeResponse:
 class FakeYouTubeClient:
     calls = []
     put_error = None
+    location = "https://upload.youtube.com/session/123"
 
     def __init__(self, *args, **kwargs):
         pass
@@ -34,7 +35,7 @@ class FakeYouTubeClient:
         self.calls.append(("POST", url, kwargs))
         return FakeResponse(
             status_code=200,
-            headers={"Location": "https://upload.youtube.com/session/123"},
+            headers={"Location": self.location},
         )
 
     async def put(self, url, **kwargs):
@@ -76,6 +77,7 @@ async def test_youtube_adapter_uses_resumable_upload_private_by_default(
 
     FakeYouTubeClient.calls = []
     FakeYouTubeClient.put_error = None
+    FakeYouTubeClient.location = "https://upload.youtube.com/session/123"
     monkeypatch.setattr(adapters, "get_settings", lambda: settings())
     monkeypatch.setattr(httpx, "AsyncClient", FakeYouTubeClient)
 
@@ -106,6 +108,7 @@ async def test_youtube_adapter_uses_resumable_upload_private_by_default(
     assert metadata["snippet"]["categoryId"] == "25"
     assert metadata["snippet"]["tags"] == ["Новости", "AI"]
     assert metadata["status"]["privacyStatus"] == "private"
+    assert "selfDeclaredMadeForKids" not in metadata["status"]
 
     upload = next(call for call in FakeYouTubeClient.calls if call[0] == "PUT")
     assert upload[1] == "https://upload.youtube.test/session/123"
@@ -160,3 +163,36 @@ async def test_youtube_adapter_marks_ambiguous_upload_timeout_unknown(
     assert result.status == "unknown"
     assert "verify Studio" in result.error
     assert len([call for call in FakeYouTubeClient.calls if call[0] == "PUT"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_youtube_adapter_rejects_untrusted_resumable_upload_destination(
+    monkeypatch, video_file
+):
+    from tgfarm import youtube_oauth
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth import adapters
+
+    FakeYouTubeClient.calls = []
+    FakeYouTubeClient.put_error = None
+    FakeYouTubeClient.location = "https://evil.example/exfiltrate"
+    monkeypatch.setattr(adapters, "get_settings", lambda: settings())
+    monkeypatch.setattr(httpx, "AsyncClient", FakeYouTubeClient)
+
+    async def token():
+        return "private-access-token"
+
+    monkeypatch.setattr(youtube_oauth, "get_valid_youtube_access_token", token)
+    result = await adapters.ADAPTERS["youtube"].publish(
+        CrosspostPayload(
+            platform="youtube",
+            title="Security test",
+            text="Details",
+            video_path=str(video_file),
+        )
+    )
+
+    assert result.status == "failed"
+    assert "invalid resumable-upload destination" in result.error
+    assert not [call for call in FakeYouTubeClient.calls if call[0] == "PUT"]
+
