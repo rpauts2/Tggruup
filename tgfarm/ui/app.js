@@ -2544,6 +2544,25 @@
     state.authPlatformId = "";
   });
 
+  $("#tiktok-publish-form")?.addEventListener("submit", submitTikTokPublish);
+  $("#tiktok-publish-close")?.addEventListener("click", closeTikTokPublishDialog);
+  $("#tiktok-publish-cancel")?.addEventListener("click", closeTikTokPublishDialog);
+  $("#tiktok-publish-dialog")?.addEventListener("cancel", (event) => {
+    if (state.tiktokBusy) {
+      event.preventDefault();
+      setTikTokPublishStatus("Отправка выполняется. Дождись результата, чтобы не потерять статус.", "warn");
+    }
+  });
+  $("#tiktok-publish-dialog")?.addEventListener("close", () => {
+    if (!state.tiktokBusy) {
+      state.tiktokPostId = "";
+      state.tiktokPrepared = null;
+    }
+  });
+  $("#tiktok-publish-caption")?.addEventListener("input", updateTikTokPublishControls);
+  $("#tiktok-publish-privacy")?.addEventListener("change", updateTikTokPublishControls);
+  $("#tiktok-publish-consent")?.addEventListener("change", updateTikTokPublishControls);
+
   $("#platform-search")?.addEventListener("input", (event) => {
     state.platformQuery = event.target.value || "";
     renderPlatformCards();
