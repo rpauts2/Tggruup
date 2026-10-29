@@ -439,10 +439,10 @@
     const providers = (data.by_provider || []).slice(0, 4);
     const stages = (data.by_stage || []).slice(0, 4);
     const providerLine = providers.length
-      ? providers.map((item) => `${esc(item.name)}: ${n(item.used)} онлайн, ${n(item.fallbacks)} fallback`).join(" · ")
+      ? providers.map((item) => `${item.name}: ${n(item.used)} онлайн, ${n(item.fallbacks)} fallback`).join(" · ")
       : "пока нет вызовов";
     const stageLine = stages.length
-      ? stages.map((item) => `${esc(item.name)}: ${n(item.calls)}`).join(" · ")
+      ? stages.map((item) => `${item.name}: ${n(item.calls)}`).join(" · ")
       : "пока нет вызовов";
     $("#ai-usage-breakdown").innerHTML =
       kv("Провайдеры", providerLine) + kv("Этапы", stageLine) +
