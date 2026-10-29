@@ -399,6 +399,20 @@ def _platform_auth_monitor_freshness_alert(
     }
 
 
+def _alert_delivery_failure_alert(last_delivery) -> dict | None:
+    """Expose failed Telegram alert delivery in status/API without echoing raw errors."""
+    if last_delivery is None or str(getattr(last_delivery, "status", "")) != "error":
+        return None
+    return {
+        "level": "warning",
+        "code": "alert_delivery_failed",
+        "message": (
+            "Последняя попытка отправки уведомлений в Telegram завершилась ошибкой. "
+            "Проверь токен бота, ALERT_CHAT_ID и сетевое соединение; состояние видно в панели."
+        ),
+    }
+
+
 def _platform_auth_alert(platform_rows) -> dict | None:
     """Alert only for explicitly failed auth checks on enabled, configured adapters."""
     failed = [
@@ -548,6 +562,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).scalar_one_or_none()
+        last_alert_delivery = session.execute(
+            select(PipelineRun.status, PipelineRun.error)
+            .where(PipelineRun.stage == "alert_delivery")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).first()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -755,6 +775,9 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 alerts.append(freshness_alert)
     except Exception as exc:  # noqa: BLE001 - health reporting must not break the dashboard
         log.debug("platform auth alert projection failed (%s)", type(exc).__name__)
+    delivery_alert = _alert_delivery_failure_alert(last_alert_delivery)
+    if delivery_alert:
+        alerts.append(delivery_alert)
     return alerts
 
 
@@ -1063,20 +1086,17 @@ async def weekly_report() -> dict:
 
 
 async def deliver_alerts() -> int:
-    """Push fresh alerts to the operator's Telegram chat.
+    """Push fresh alerts to Telegram and persist delivery health for the dashboard.
 
-    Requires ALERT_CHAT_ID and the bot token; without them alerts stay in the
-    logs and the status API. A per-code cooldown keeps a persistent problem
-    from becoming spam: the watchdog re-emits it every tick, the chat sees it
-    once per cooldown window.
+    A per-code cooldown prevents spam. Failed sends are not cooled down, and the
+    failure state stays visible in /api/status until a later delivery succeeds.
     """
     import httpx
 
     settings = get_settings()
     alerts = await to_thread(collect_alerts)
+    heartbeat = False
     if not alerts:
-        # Heartbeat: daily "everything is fine", so silence stops being
-        # ambiguous. Shares the cooldown map with real alerts.
         heartbeat_hours = max(1, settings.alert_heartbeat_hours) * 3600
         if time.monotonic() - _alert_last_sent.get("heartbeat", 0.0) >= heartbeat_hours:
             alerts = [{
@@ -1087,40 +1107,65 @@ async def deliver_alerts() -> int:
             heartbeat = True
         else:
             return 0
-    else:
-        heartbeat = False
     if not (settings.telegram_bot_token and settings.alert_chat_id):
         log.debug("alerts pending but delivery not configured: %d", len(alerts))
         return 0
 
     now = time.monotonic()
     cooldown = max(1, settings.alert_cooldown_min) * 60
+    pending = [
+        alert for alert in alerts
+        if _alert_last_sent.get(alert["code"]) is None
+        or now - _alert_last_sent[alert["code"]] >= cooldown
+    ]
+    if not pending:
+        return 0
+
     sent = 0
-    async with httpx.AsyncClient(timeout=15) as client:
-        for alert in alerts:
-            code = alert["code"]
-            last_sent = _alert_last_sent.get(code)
-            if last_sent is not None and now - last_sent < cooldown:
-                continue
-            resp = await client.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": settings.alert_chat_id,
-                    "text": f"[tgfarm] {code}: {alert['message']}",
-                },
-            )
-            if resp.status_code == 200:
-                _alert_last_sent[code] = now
-                sent += 1
-                if heartbeat:
-                    break
-            else:
-                log.warning(
-                    "alert delivery failed for %s: %s %s",
-                    code, resp.status_code, resp.text[:120],
-                )
-                if heartbeat:
-                    break
+    failures: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for alert in pending:
+                code = str(alert.get("code") or "unknown")
+                try:
+                    resp = await client.post(
+                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
+                        json={
+                            "chat_id": settings.alert_chat_id,
+                            "text": f"[tgfarm] {code}: {alert['message']}",
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 - notification failures must remain observable
+                    failures.append(f"{code}:{type(exc).__name__}")
+                    log.warning("alert delivery failed for %s (%s)", code, type(exc).__name__)
+                    if heartbeat:
+                        break
+                    continue
+
+                if resp.status_code == 200:
+                    _alert_last_sent[code] = now
+                    sent += 1
+                    if heartbeat:
+                        break
+                else:
+                    failures.append(f"{code}:HTTP{int(resp.status_code)}")
+                    log.warning("alert delivery failed for %s (HTTP %s)", code, resp.status_code)
+                    if heartbeat:
+                        break
+    except Exception as exc:  # noqa: BLE001 - client setup/teardown can also fail
+        failures.append(f"client:{type(exc).__name__}")
+        log.warning("alert delivery client failed (%s)", type(exc).__name__)
+
+    await to_thread(
+        _record,
+        f"alert-{uuid.uuid4().hex[:8]}",
+        "alert_delivery",
+        "error" if failures else "ok",
+        items_in=len(pending),
+        items_out=sent,
+        error=("Telegram alert delivery failed: " + ", ".join(failures[:5])) if failures else None,
+        meta={"attempted": len(pending), "sent": sent, "failed": len(failures)},
+    )
     if heartbeat and sent:
         log.info("heartbeat delivered")
     return sent
