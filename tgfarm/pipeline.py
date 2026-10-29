@@ -665,8 +665,8 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "level": "error",
                 "code": "publish_terminal_failure",
                 "message": (
-                    f"{terminal_publish_failures} публикаций остановлены после постоянной ошибки "
-                    "или исчерпания попыток. Исправь причину и используй «Повторить» в карточке поста."
+                    f"Остановлено публикаций: {terminal_publish_failures}. Причина: постоянная ошибка "
+                    "или исчерпан лимит попыток. Исправь причину и используй «Повторить» в карточке поста."
                 ),
             }
         )
