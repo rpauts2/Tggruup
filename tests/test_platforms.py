@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -50,8 +50,15 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"
     }
     assert entries["reddit"]["planned"] is False
-    assert entries["youtube"]["supported"] is False
-    assert entries["youtube"]["planned"] is True
+    assert entries["youtube"]["supported"] is True
+    assert entries["youtube"]["planned"] is False
+    assert entries["youtube"]["enabled"] is False
+    assert entries["youtube"]["roles"] == ["video"]
+    assert entries["youtube"]["auth"]["method"] == "oauth"
+    assert entries["youtube"]["auth"]["integration_ready"] is True
+    assert {field["key"] for field in entries["youtube"]["auth"]["fields"]} == {
+        "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"
+    }
     assert entries["tiktok"]["supported"] is False
     assert entries["tiktok"]["planned"] is True
     assert entries["vk_clips"]["supported"] is False
@@ -86,8 +93,8 @@ def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monk
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
-        platforms.set_platform_enabled("youtube", True)
-    assert platforms.is_platform_enabled("youtube") is False
+        platforms.set_platform_enabled("tiktok", True)
+    assert platforms.is_platform_enabled("tiktok") is False
 
 
 def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_path, monkeypatch):
@@ -107,13 +114,13 @@ def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypat
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("youtube", True)
+    item = platforms.set_platform_planned("tiktok", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("youtube", False)
+    item = platforms.set_platform_planned("tiktok", False)
     assert item["planned"] is False
-    assert platforms.is_platform_enabled("youtube") is False
+    assert platforms.is_platform_enabled("tiktok") is False
 
 
 def test_disabled_crosspost_network_never_reaches_the_post_loader(monkeypatch, tmp_path):
@@ -139,7 +146,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 10
+    assert payload["summary"]["supported"] == 11
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
@@ -150,7 +157,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/youtube",
+        "/api/platforms/tiktok",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )
