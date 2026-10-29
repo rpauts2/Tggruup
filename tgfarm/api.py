@@ -262,9 +262,11 @@ def _sources() -> list[dict]:
 def _post_view(session, row: Post, *, detail: bool) -> dict:
     """Shared projection for the list and the detail endpoints."""
     channel = session.get(Channel, row.channel_id)
+    # Include every media row so non-primary vertical videos remain visible
+    # to the post drawer and platform-specific publishing actions.
     media = session.execute(
         select(Media)
-        .where(Media.post_id == row.id, Media.is_primary.is_(True))
+        .where(Media.post_id == row.id)
         .order_by(Media.created_at.asc())
     ).scalars().all()
     stat = session.execute(
@@ -282,14 +284,21 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
         if stat and stat.impressions
         else 0.0
     )
-    # prefer a media row whose file is actually on disk
+    # Prefer the explicit primary cover, but choose video independently.
+    # The renderer intentionally marks MP4 as non-primary so it cannot replace
+    # the article cover; filtering to primary rows would hide it from the UI.
     alive = [m for m in media if Path(m.path).exists()]
-    cover = next((m for m in alive if m.kind != "video"), None) or next(
-        (m for m in media if m.kind != "video"), None
+    cover_rows = [m for m in media if m.kind != "video"]
+    alive_covers = [m for m in alive if m.kind != "video"]
+    alive_videos = [m for m in alive if m.kind == "video"]
+    video_rows = [m for m in media if m.kind == "video"]
+    cover = (
+        next((m for m in alive_covers if m.is_primary), None)
+        or next(iter(alive_covers), None)
+        or next((m for m in cover_rows if m.is_primary), None)
+        or next(iter(cover_rows), None)
     )
-    video = next((m for m in alive if m.kind == "video"), None) or next(
-        (m for m in media if m.kind == "video"), None
-    )
+    video = alive_videos[-1] if alive_videos else (video_rows[-1] if video_rows else None)
 
     platform = ((channel.platform if channel else None) or "telegram").lower()
     payload = {
