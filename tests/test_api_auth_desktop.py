@@ -71,6 +71,12 @@ def test_authorisation_can_be_disabled_for_trusted_environments(monkeypatch):
         ("/api/status", False),
         ("/api/posts", False),
         ("/api/memory/topic", False),
+        ("/api/platforms/mastodon/auth/callback", True),
+        ("/api/platforms/x/auth/callback", True),
+        ("/api/platforms/threads/auth/callback", True),
+        ("/api/platforms/linkedin/auth/callback", True),
+        ("/api/platforms/youtube/auth/callback", True),
+        ("/api/platforms/tiktok/auth/callback", True),
     ],
 )
 def test_public_paths(path, public):
