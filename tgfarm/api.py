@@ -1138,6 +1138,42 @@ def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
         return list(rows)
 
 
+def _retry_failed_publish(public_id: str) -> dict:
+    """Manually requeue a terminal, definite publish failure after the cause is fixed."""
+    from tgfarm.platforms import is_platform_enabled
+
+    with session_scope() as session:
+        row = session.execute(
+            select(Post).where(Post.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "error": "not_found"}
+        if row.status != "failed":
+            return {"ok": False, "error": "not_failed", "status": row.status}
+        if row.tg_message_id is not None:
+            return {"ok": False, "error": "already_published"}
+        channel = session.get(Channel, row.channel_id)
+        platform = ((channel.platform if channel else None) or "telegram").lower()
+        if not is_platform_enabled(platform):
+            return {
+                "ok": False,
+                "error": "platform_disabled",
+                "platform": platform,
+            }
+
+        row.status = "scheduled"
+        row.scheduled_at = datetime.now(UTC)
+        row.attempts = 0
+        row.publish_error = None
+        row.publish_heartbeat_at = None
+        return {
+            "ok": True,
+            "public_id": public_id,
+            "platform": platform,
+            "scheduled_at": row.scheduled_at,
+        }
+
+
 def _blocked_publish_now_ids(public_ids: list[str]) -> list[dict]:
     """Reject forced publishing if a post is ineligible or its platform is paused."""
     from tgfarm.platforms import is_platform_enabled
@@ -2247,6 +2283,19 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             f"rescheduled={updated} published={published.get('published')} failed={published.get('failed')}",
         )
         return {"rescheduled": updated, **published}
+
+    @app.post("/api/posts/{post_public_id}/retry")
+    async def retry_failed_publish(post_public_id: str) -> dict:
+        result = await io(_retry_failed_publish, post_public_id)
+        if not result.get("ok"):
+            code = 404 if result.get("error") == "not_found" else 409
+            raise HTTPException(code, result.get("error", "retry failed"))
+        _operator(
+            "publish-retry",
+            post_public_id,
+            f"manually requeued after definite failure on {result['platform']}",
+        )
+        return result
 
     @app.post("/api/posts/{post_public_id}/reconcile")
     async def reconcile_publish(
