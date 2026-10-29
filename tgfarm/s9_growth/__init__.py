@@ -198,16 +198,25 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
     # FFmpeg. If rendering fails, each video target receives a clear permanent
     # result rather than silently publishing text as if it were a video.
     if video_requested and settings.live and not video_path:
-        try:
-            from tgfarm.s11_video.renderer import render_post_short
+        # Don't generate large files for a platform whose OAuth/credentials
+        # haven't been configured yet. The target will remain a skipped delivery
+        # until its connection is ready; rendering starts only when upload could run.
+        video_adapter_ready = any(
+            ADAPTERS.get(name) is not None and ADAPTERS[name].configured()
+            for name in platforms
+            if name in video_targets
+        )
+        if video_adapter_ready:
+            try:
+                from tgfarm.s11_video.renderer import render_post_short
 
-            artifact = await to_thread(render_post_short, post.public_id)
-            video_path = artifact.path
-        except Exception as exc:  # noqa: BLE001 - fail the media stage transparently
-            video_render_error = redact_sensitive_text(
-                f"{type(exc).__name__}: {exc}", limit=240
-            ) or "video rendering failed"
-            log.error("video render failed for post %s (%s)", post.public_id, type(exc).__name__)
+                artifact = await to_thread(render_post_short, post.public_id)
+                video_path = artifact.path
+            except Exception as exc:  # noqa: BLE001 - fail the media stage transparently
+                video_render_error = redact_sensitive_text(
+                    f"{type(exc).__name__}: {exc}", limit=240
+                ) or "video rendering failed"
+                log.error("video render failed for post %s (%s)", post.public_id, type(exc).__name__)
     results: list[CrosspostResult] = []
     for name in platforms:
         adapter = ADAPTERS.get(name)
