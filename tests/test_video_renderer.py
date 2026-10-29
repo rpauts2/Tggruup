@@ -229,3 +229,11 @@ def test_render_post_short_attaches_video_without_replacing_primary_cover(
     assert video.is_primary is False
     assert video.width == 1080 and video.height == 1920
 
+    # API consumers need both records: the non-primary MP4 must not vanish
+    # from the post drawer or replace the primary landscape cover.
+    from tgfarm.api import _post_detail
+
+    detail = _post_detail(public_id)
+    assert detail["cover"]["id"] == primary.sha
+    assert detail["video"]["id"] == video.sha
+
