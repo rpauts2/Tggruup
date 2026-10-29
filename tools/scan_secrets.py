@@ -18,7 +18,7 @@ SKIP_DIRS = {
     "__pycache__", ".serena", ".pytest_cache", ".ruff_cache", "node_modules",
     ".playwright-mcp", ".specstory",
 }
-SKIP_SUFFIX = {".db", ".png", ".jpg", ".jpeg", ".gif", ".exe", ".dll", ".log",
+SKIP_SUFFIX = {".db", ".db-wal", ".db-shm", ".png", ".jpg", ".jpeg", ".gif", ".exe", ".dll", ".log",
                ".session", ".session-journal", ".woff", ".woff2"}
 
 

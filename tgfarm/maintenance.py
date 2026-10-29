@@ -92,13 +92,19 @@ def prune_crosspost_logs(days: int | None = None) -> int:
         return result.rowcount or 0
 
 
-def checkpoint() -> bool:
-    """Checkpoint the SQLite WAL so the -wal file does not grow unbounded."""
+def checkpoint(mode: str = "PASSIVE") -> bool:
+    """Checkpoint the SQLite WAL so the -wal file does not grow unbounded.
+
+    PASSIVE never blocks writers — it checkpoints what it can and returns.
+    TRUNCATE (which compacts the -wal file to zero) waits for every reader and
+    writer to finish and used to hold the database against the publisher for
+    seconds; it now belongs only to the weekly backup job.
+    """
     engine = get_engine()
     if not str(engine.url).startswith("sqlite"):
         return False
     with engine.connect() as connection:
-        connection.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        connection.execute(text(f"PRAGMA wal_checkpoint({mode})"))
     return True
 
 
@@ -117,7 +123,7 @@ def run_maintenance() -> dict[str, int | bool]:
             log.warning("maintenance: %s failed: %s", name, exc)
             out[name] = -1
     try:
-        out["checkpoint"] = checkpoint()
+        out["checkpoint"] = checkpoint("PASSIVE")
     except Exception as exc:  # noqa: BLE001
         log.debug("maintenance: checkpoint failed: %s", exc)
         out["checkpoint"] = False

@@ -160,8 +160,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         gated = session.execute(
             select(func.count()).select_from(Post).where(Post.status == "gated")
         ).scalar_one()
+        # A future slot is not a stall: only posts that are already due
+        # count towards "the farm stopped shipping".
         scheduled = session.execute(
-            select(func.count()).select_from(Post).where(Post.status == "scheduled")
+            select(func.count()).select_from(Post).where(
+                Post.status == "scheduled", Post.scheduled_at <= current
+            )
         ).scalar_one()
         stuck = session.execute(
             select(func.count()).select_from(Post).where(
@@ -333,6 +337,10 @@ async def backup_job() -> dict:
     src.backup(dst)
     dst.close()
     src.close()
+    # the database is momentarily quiet after a backup copy: safe to compact
+    from tgfarm.maintenance import checkpoint
+
+    checkpoint("TRUNCATE")
 
     backups = sorted(dest_dir.glob("tgfarm-*.db"))
     kept = 0
