@@ -86,9 +86,9 @@ def test_source_freshness_alert_warns_for_partial_staleness():
 
     now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
     alert = _source_freshness_alert([
-        SimpleNamespace(last_fetched_at=now - timedelta(minutes=20), created_at=now, min_interval_s=600),
-        SimpleNamespace(last_fetched_at=now - timedelta(hours=4), created_at=now, min_interval_s=600),
-        SimpleNamespace(last_fetched_at=now - timedelta(minutes=30), created_at=now, min_interval_s=600),
+        SimpleNamespace(last_fetched_at=now - timedelta(minutes=20), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=now - timedelta(hours=4), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=now - timedelta(minutes=30), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
     ], now)
 
     assert alert is not None
@@ -104,8 +104,8 @@ def test_source_freshness_alert_escalates_when_all_sources_are_stale():
 
     now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
     alert = _source_freshness_alert([
-        SimpleNamespace(last_fetched_at=now - timedelta(hours=5), created_at=now, min_interval_s=600),
-        SimpleNamespace(last_fetched_at=None, created_at=now - timedelta(hours=5), min_interval_s=600),
+        SimpleNamespace(last_fetched_at=now - timedelta(hours=5), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=None, created_at=now - timedelta(hours=5), min_interval_s=600, idle_streak=0, failures=0),
     ], now)
 
     assert alert is not None
