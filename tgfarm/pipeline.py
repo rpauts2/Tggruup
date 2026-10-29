@@ -13,6 +13,7 @@ dead source or a rate-limited LLM must never stop the other channels.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -444,6 +445,80 @@ def _platform_auth_alert(platform_rows) -> dict | None:
     }
 
 
+def _disk_space_alerts(
+    mounts: list[tuple[str, str | Path]],
+    *,
+    warn_free_gb: float,
+    critical_free_gb: float,
+) -> list[dict]:
+    """Check configured storage locations once per filesystem without exposing paths."""
+    warn = max(0.0, float(warn_free_gb))
+    critical = max(0.0, float(critical_free_gb))
+    if warn <= 0 and critical <= 0:
+        return []
+    if warn > 0 and critical > 0:
+        warn = max(warn, critical)
+
+    grouped: dict[int, dict] = {}
+    inaccessible: list[str] = []
+    for role, raw_path in mounts:
+        path = Path(raw_path).expanduser()
+        probe = path
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        try:
+            device = probe.stat().st_dev
+            entry = grouped.setdefault(device, {"roles": [], "probe": probe})
+            if role not in entry["roles"]:
+                entry["roles"].append(role)
+        except OSError:
+            if role not in inaccessible:
+                inaccessible.append(role)
+
+    alerts: list[dict] = []
+    for entry in grouped.values():
+        try:
+            free_gb = shutil.disk_usage(entry["probe"]).free / (1024**3)
+        except OSError:
+            inaccessible.extend(role for role in entry["roles"] if role not in inaccessible)
+            continue
+        roles = ", ".join(entry["roles"])
+        if critical > 0 and free_gb < critical:
+            alerts.append({
+                "level": "error",
+                "code": "disk_space_critical",
+                "message": f"Критически мало свободного места ({free_gb:.1f} ГБ) для: {roles}. Освободи место или перенеси данные.",
+            })
+        elif warn > 0 and free_gb < warn:
+            alerts.append({
+                "level": "warning",
+                "code": "disk_space_low",
+                "message": f"Свободного места осталось {free_gb:.1f} ГБ для: {roles}; порог предупреждения {warn:.1f} ГБ.",
+            })
+    if inaccessible:
+        alerts.append({
+            "level": "warning",
+            "code": "disk_space_check_failed",
+            "message": "Не удалось проверить свободное место для: " + ", ".join(inaccessible) + ". Проверь доступность каталога.",
+        })
+    return alerts
+
+
+def _configured_disk_mounts(settings) -> list[tuple[str, str | Path]]:
+    """Resolve only storage roles that TgFarm actually uses."""
+    data_root = settings.data_root()
+    backup_dir = str(getattr(settings, "backup_dir", "") or "").strip()
+    mirror_dir = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
+    root = Path(__file__).resolve().parents[1]
+    mounts: list[tuple[str, str | Path]] = [
+        ("данных фермы", data_root),
+        ("резервных копий", Path(backup_dir) if backup_dir else root / "backup"),
+    ]
+    if mirror_dir:
+        mounts.append(("зеркала резервных копий", mirror_dir))
+    return mounts
+
+
 def collect_alerts(now: datetime | None = None) -> list[dict]:
     """Operator-facing problems: cheap SQL, no network.
 
@@ -796,6 +871,11 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     delivery_alert = _alert_delivery_failure_alert(last_alert_delivery)
     if delivery_alert:
         alerts.append(delivery_alert)
+    alerts.extend(_disk_space_alerts(
+        _configured_disk_mounts(settings),
+        warn_free_gb=getattr(settings, "disk_free_warn_gb", 10.0),
+        critical_free_gb=getattr(settings, "disk_free_critical_gb", 3.0),
+    ))
     return alerts
 
 
