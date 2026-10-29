@@ -367,6 +367,8 @@ class Settings(BaseSettings):
 
     # --- always-on supervision ---------------------------------------------
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
+    # News drafts with known publication dates are rejected when every attached source is older than this.
+    source_max_age_hours: int = Field(default=72, alias="SOURCE_MAX_AGE_HOURS")
     # Operational alerts: the farm must say out loud when it stops shipping.
     alert_no_publish_hours: int = Field(default=3, alias="ALERT_NO_PUBLISH_HOURS")
     # Warn when scheduled publication or editorial review queues grow beyond these limits.
