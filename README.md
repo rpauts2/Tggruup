@@ -709,3 +709,7 @@ Watchdog отдельно предупреждает при достижении
 
 Подробный разбор ниш, рынка и юнит-экономики: `TG-CHANNEL-FARM.md`.
 Эксплуатация и аварийные процедуры: `RUNBOOK.md`.
+
+### Video-platform acceptance
+
+For controlled OAuth and one-post live checks of YouTube Shorts and TikTok, see [the video-platform acceptance runbook](docs/VIDEO_PLATFORMS_ACCEPTANCE.md). Live platform access must be verified with owner-controlled accounts; CI alone does not prove production access.
