@@ -246,6 +246,51 @@ def _backup_freshness_alert(
     }
 
 
+def _source_freshness_alert(enabled_source_rows, current: datetime, settings=None) -> dict | None:
+    """Warn when enabled sources are not being polled within their adaptive cadence."""
+    from tgfarm.s1_sources import effective_interval
+
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    overdue = 0
+    total = len(enabled_source_rows)
+    for row in enabled_source_rows:
+        last_fetched = getattr(row, "last_fetched_at", None)
+        created_at = getattr(row, "created_at", None)
+        stamp = last_fetched or created_at
+        if stamp is None:
+            overdue += 1
+            continue
+        stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+        # Honor the collector's adaptive backoff for idle feeds and repeated
+        # failures; otherwise a deliberately backed-off source looks falsely stale.
+        interval_s = effective_interval(row, settings)
+        # Allow three effective intervals, but never flag a source for less
+        # than two hours of silence. Long-interval sources retain their cadence.
+        threshold_s = max(2 * 60 * 60, interval_s * 3)
+        if (current - stamp).total_seconds() >= threshold_s:
+            overdue += 1
+
+    if total == 0 or overdue == 0:
+        return None
+    if overdue == total:
+        return {
+            "level": "error",
+            "code": "source_collection_stale",
+            "message": (
+                f"Все включённые источники ({total}) давно не проверялись по своему расписанию. "
+                "Проверь цикл сбора, scheduler и доступность базы."
+            ),
+        }
+    return {
+        "level": "warning",
+        "code": "source_collection_degraded",
+        "message": (
+            f"{overdue} из {total} включённых источников проверялись позже ожидаемого срока. "
+            "Часть новостей может поступать с задержкой."
+        ),
+    }
+
+
 def _source_health_alert(enabled_source_rows) -> dict | None:
     """Raise a bounded alert when enabled sources have entered repeated-failure cooldown."""
     total = len(enabled_source_rows)
@@ -450,7 +495,14 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             .limit(1)
         ).scalar_one_or_none()
         enabled_source_health = session.execute(
-            select(Source.failures, Source.last_status).where(Source.enabled.is_(True))
+            select(
+                Source.failures,
+                Source.last_status,
+                Source.last_fetched_at,
+                Source.min_interval_s,
+                Source.idle_streak,
+                Source.created_at,
+            ).where(Source.enabled.is_(True))
         ).all()
         last_platform_auth_check_at = session.execute(
             select(PipelineRun.created_at)
@@ -620,6 +672,10 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     )
     if backup_freshness:
         alerts.append(backup_freshness)
+    if getattr(settings, "online", False):
+        source_freshness = _source_freshness_alert(enabled_source_health, current, settings)
+        if source_freshness:
+            alerts.append(source_freshness)
     source_alert = _source_health_alert(enabled_source_health)
     if source_alert:
         alerts.append(source_alert)

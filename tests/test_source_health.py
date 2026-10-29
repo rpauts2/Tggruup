@@ -61,3 +61,73 @@ def test_source_health_alert_does_not_expose_source_errors_or_urls():
     assert alert is not None
     assert "top-secret" not in repr(alert)
     assert "private.example" not in repr(alert)
+
+
+def test_source_freshness_alert_ignores_recent_sources_and_empty_catalog():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _source_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    assert _source_freshness_alert([], now) is None
+    assert _source_freshness_alert([
+        SimpleNamespace(
+            last_fetched_at=now - timedelta(minutes=15),
+            created_at=now - timedelta(days=2),
+            min_interval_s=600, idle_streak=0, failures=0,
+        ),
+    ], now) is None
+
+
+def test_source_freshness_alert_warns_for_partial_staleness():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _source_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    alert = _source_freshness_alert([
+        SimpleNamespace(last_fetched_at=now - timedelta(minutes=20), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=now - timedelta(hours=4), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=now - timedelta(minutes=30), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+    ], now)
+
+    assert alert is not None
+    assert alert["level"] == "warning"
+    assert alert["code"] == "source_collection_degraded"
+    assert "1 из 3" in alert["message"]
+
+
+def test_source_freshness_alert_escalates_when_all_sources_are_stale():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _source_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    alert = _source_freshness_alert([
+        SimpleNamespace(last_fetched_at=now - timedelta(hours=5), created_at=now, min_interval_s=600, idle_streak=0, failures=0),
+        SimpleNamespace(last_fetched_at=None, created_at=now - timedelta(hours=5), min_interval_s=600, idle_streak=0, failures=0),
+    ], now)
+
+    assert alert is not None
+    assert alert["level"] == "error"
+    assert alert["code"] == "source_collection_stale"
+    assert "Все включённые источники (2)" in alert["message"]
+
+
+def test_source_freshness_alert_respects_long_interval_when_adaptive_cadence_is_disabled():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _source_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    long_interval_recent = (now - timedelta(hours=24)).replace(tzinfo=None)
+    from types import SimpleNamespace as Namespace
+
+    assert _source_freshness_alert([
+        SimpleNamespace(
+            last_fetched_at=long_interval_recent,
+            created_at=now - timedelta(days=3),
+            min_interval_s=24 * 60 * 60, idle_streak=0, failures=0,
+        ),
+    ], now, Namespace(source_adaptive_cadence=False)) is None
+
