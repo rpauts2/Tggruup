@@ -174,6 +174,35 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + acct
             authorized = True
             detail = "Mastodon OAuth подтверждён; профиль доступен. Текстовая публикация использует API с защитой от повторной отправки."
+        elif platform_id == "youtube":
+            from tgfarm.youtube_oauth import get_valid_youtube_access_token
+
+            expected_channel_id = str(settings.youtube_channel_id or "").strip()
+            if not expected_channel_id or not settings.youtube_refresh_token:
+                raise RuntimeError("Сначала подключи YouTube через Google OAuth в панели.")
+            token = await get_valid_youtube_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                payload = await _response_json(
+                    client,
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "mine": "true"},
+                )
+            items = payload.get("items") or []
+            channel = items[0] if items and isinstance(items[0], dict) else {}
+            returned_id = str(channel.get("id") or "")
+            snippet = channel.get("snippet") or {}
+            title = str(snippet.get("title") or "")
+            if not returned_id or returned_id != expected_channel_id or not title:
+                raise RuntimeError("YouTube не подтвердил ожидаемый канал. Переподключи аккаунт.")
+            account = title
+            authorized = True
+            detail = (
+                "Google OAuth и YouTube Data API подтвердили доступ к каналу. "
+                "Новый видеозагрузчик остаётся выключен, пока его не включат в панели."
+            )
         elif platform_id == "linkedin":
             from tgfarm.linkedin_oauth import get_valid_linkedin_access_token
 
