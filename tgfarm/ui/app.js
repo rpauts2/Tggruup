@@ -28,6 +28,11 @@
     redditCandidates: [],
     redditPreview: null,
     redditBusy: false,
+    tiktokPostId: "",
+    tiktokPrepared: null,
+    tiktokBusy: false,
+    tiktokResultStatus: "",
+    shortVideoBusy: new Set(),
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -518,7 +523,7 @@
     flash: "картинка + коротко", stat: "цифра", news: "новость",
     analysis: "разбор", article: "статья", video: "видео",
   };
-  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X" };
+  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X", youtube: "YouTube", tiktok: "TikTok", vk_clips: "VK Клипы" };
 
   function postCard(p) {
     const cover = p.cover
@@ -752,7 +757,7 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads", "linkedin", "youtube"].includes(item.id) && auth.method === "oauth"
+      const authConfig = supported && ["x", "threads", "linkedin", "youtube", "tiktok"].includes(item.id) && auth.method === "oauth"
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
@@ -895,6 +900,33 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "tiktok" && !forceCredentials) {
+      const clientKey = (auth.fields || []).find((field) => field.key === "TIKTOK_CLIENT_KEY");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "TIKTOK_CLIENT_SECRET");
+      if (!clientKey?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани TikTok Client Key/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\\/$/, "") + "/api/platforms/tiktok/auth/callback";
+      const proceed = window.confirm(
+        "В TikTok Developer Portal включи Content Posting API, добавь redirect URI ниже и запроси scopes user.info.basic + video.publish. До аудита приложения публикации могут быть ограничены приватными.\n\n"
+        + callbackUri + "\n\nПродолжить подключение?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/tiktok/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("TikTok вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать TikTok OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "youtube" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_SECRET");
@@ -997,7 +1029,7 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads", "linkedin", "youtube"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
     $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
@@ -1077,6 +1109,7 @@
           threads: "Threads App",
           linkedin: "LinkedIn App",
           youtube: "Google OAuth-приложение",
+          tiktok: "TikTok Developer App",
         }[platformId] || "OAuth-приложение";
         toast(
           platformLabel + " сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
@@ -1093,7 +1126,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = ["x", "threads", "linkedin", "youtube"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+      save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
