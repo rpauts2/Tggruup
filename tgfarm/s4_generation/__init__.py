@@ -15,6 +15,7 @@ from __future__ import annotations
 import random
 import re
 import uuid
+from datetime import date
 
 from sqlalchemy import select
 
@@ -534,6 +535,7 @@ async def verify(
     # Independently audit every numeric sentence, even when the model omitted
     # it from its claim list. This also runs in offline/budget-limited mode.
     claims.extend(_numeric_audit_claims(draft, items))
+    claims.extend(_date_audit_claims(draft, items))
     return _dedupe_claims(claims)
 
 
@@ -649,6 +651,109 @@ def _numeric_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Cla
     return audits
 
 
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+_EN_MONTHS = {
+    name: month
+    for month, names in enumerate((
+        ("jan", "january"), ("feb", "february"), ("mar", "march"),
+        ("apr", "april"), ("may",), ("jun", "june"), ("jul", "july"),
+        ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
+        ("nov", "november"), ("dec", "december"),
+    ), start=1)
+    for name in names
+}
+_DATE_PATTERNS = (
+    re.compile(r"(?<!\d)(?P<year>(?:19|20)\d{2})[-/.](?P<month>\d{1,2})[-/.](?P<day>\d{1,2})(?!\d)"),
+    re.compile(r"(?<!\d)(?P<day>\d{1,2})[./-](?P<month>\d{1,2})[./-](?P<year>(?:19|20)\d{2})(?!\d)"),
+    re.compile(
+        r"(?P<day>\d{1,2})\s+(?P<month>января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[ ]+(?P<day>\d{1,2})(?:st|nd|rd|th)?[,]?[ ]+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<day>\d{1,2})[ ]+(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[,]?[ ]+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+)
+
+
+def _canonical_date(year: str, month: str | int, day: str) -> date | None:
+    try:
+        month_number = int(month) if str(month).isdigit() else (
+            _RU_MONTHS.get(str(month).lower())
+            or _EN_MONTHS.get(str(month).lower().rstrip("."))
+        )
+        if month_number is None:
+            return None
+        return date(int(year), month_number, int(day))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _explicit_dates(text: str) -> set[date]:
+    """Extract unambiguous full calendar dates and normalize formatting variants."""
+    dates: set[date] = set()
+    for pattern in _DATE_PATTERNS:
+        for match in pattern.finditer(text or ""):
+            groups = match.groupdict()
+            parsed = _canonical_date(groups["year"], groups["month"], groups["day"])
+            if parsed is not None:
+                dates.add(parsed)
+    return dates
+
+
+def _date_claim_sentences(draft: DraftPost) -> list[str]:
+    parts = [draft.hook, draft.body]
+    if draft.cta:
+        parts.append(draft.cta)
+    text = "\n".join(part for part in parts if part)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in candidates:
+        sentence = " ".join(sentence.split()).strip()
+        if not sentence or not _explicit_dates(sentence):
+            continue
+        key = sentence.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(sentence)
+    return out
+
+
+def _date_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Require every explicit calendar date in a sentence to appear in one cited source."""
+    if not items:
+        return []
+    source_dates = [
+        (item, _explicit_dates(f"{item.title} {item.text}"))
+        for item in items
+    ]
+    audits: list[Claim] = []
+    for sentence in _date_claim_sentences(draft):
+        dates = _explicit_dates(sentence)
+        source = next(
+            (item for item, dates_in_source in source_dates if dates.issubset(dates_in_source)),
+            None,
+        )
+        audits.append(
+            Claim(
+                claim=sentence[:400],
+                source_url=(source or items[0]).url,
+                verified=source is not None,
+                note="date_audit",
+            )
+        )
+    return audits
+
+
 def _fallback_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
     """Deterministic claim set for offline mode and exhausted AI budget."""
     if not items:
@@ -658,7 +763,11 @@ def _fallback_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
         source_url=items[0].url,
         verified=_lexically_supported(draft.hook, items[0]),
     )
-    return _dedupe_claims([base, *_numeric_audit_claims(draft, items)])
+    return _dedupe_claims([
+        base,
+        *_numeric_audit_claims(draft, items),
+        *_date_audit_claims(draft, items),
+    ])
 
 
 def _dedupe_claims(claims: list[Claim]) -> list[Claim]:
