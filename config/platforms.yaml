@@ -12,10 +12,10 @@ enabled:
   mastodon: false
   threads: false
   linkedin: false
+  youtube: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
-  - youtube
   - tiktok
   - vk_clips
   - instagram
