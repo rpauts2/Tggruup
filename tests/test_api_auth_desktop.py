@@ -71,6 +71,12 @@ def test_authorisation_can_be_disabled_for_trusted_environments(monkeypatch):
         ("/api/status", False),
         ("/api/posts", False),
         ("/api/memory/topic", False),
+        ("/api/platforms/mastodon/auth/callback", True),
+        ("/api/platforms/x/auth/callback", True),
+        ("/api/platforms/threads/auth/callback", True),
+        ("/api/platforms/linkedin/auth/callback", True),
+        ("/api/platforms/youtube/auth/callback", True),
+        ("/api/platforms/tiktok/auth/callback", True),
     ],
 )
 def test_public_paths(path, public):
@@ -128,8 +134,32 @@ def test_destructive_endpoints_are_protected(client):
         ("/api/posts/publish", {"post_public_ids": ["x"]}),
         ("/api/posts/reject", {"post_public_ids": ["x"]}),
         ("/api/crossposts/post-id/vk/reconcile", {"action": "confirm_posted"}),
+        ("/api/posts/post-id/video/render", {}),
+        ("/api/posts/post-id/tiktok/prepare", {}),
+        ("/api/posts/post-id/tiktok/publish", {"caption": "body", "privacy_level": "SELF_ONLY", "consent": True}),
     ):
         assert client.post(path, json=payload).status_code == 401, path
+
+
+def test_tiktok_oauth_callback_does_not_echo_code_and_is_not_cached(client):
+    marker = "secret-tiktok-oauth-code"
+    response = client.get(
+        f"/api/platforms/tiktok/auth/callback?code={marker}&state=expired-state"
+    )
+    assert response.status_code == 400
+    assert marker not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_short_form_ui_is_wired_and_vk_clips_is_an_explicit_manual_handoff(client):
+    script = client.get("/ui/app.js").text
+    html = client.get("/").text
+    assert "tgfarmRenderShort" in script
+    assert "tgfarmPrepareTikTok" in script
+    assert "/tiktok/publish" in script
+    assert 'id="tiktok-publish-consent"' in html
+    assert "https://vk.com/clips" in script
 
 
 def test_the_dashboard_embeds_the_token(client):
