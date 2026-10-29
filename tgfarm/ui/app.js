@@ -410,6 +410,45 @@
 
   const kv = (k, v) => `<div class="kv-item"><div class="kv-key">${esc(k)}</div><div class="kv-val">${esc(v)}</div></div>`;
 
+  function renderAIUsage(data) {
+    const today = data.today || {};
+    const totals = data.totals || {};
+    const budget = Math.max(0, Number(data.daily_budget) || 0);
+    const remaining = Math.max(0, Number(today.remaining) || 0);
+    const charged = Math.max(0, Number(today.charged) || 0);
+    const stale = Math.max(0, Number(today.stale_reservations) || 0);
+    const remainingTone = budget === 0 || remaining === 0 ? "k-err"
+      : remaining / budget <= 0.2 ? "k-warn" : "k-ok";
+    const cards = [
+      { label: "Лимит сегодня", value: `${n(charged)} / ${n(budget)}`, hint: "учтённые и активные резервы", tone: remainingTone },
+      { label: "Осталось вызовов", value: n(remaining), hint: "до дневного лимита", tone: remainingTone },
+      { label: "Онлайн за период", value: n(totals.used), hint: `вызовов за ${n(data.period_days || 7)} дн.`, tone: "k-ok" },
+      { label: "Офлайн-фолбэки", value: n(today.fallbacks), hint: `всего за период: ${n(totals.fallbacks)}`, tone: today.fallbacks ? "k-warn" : "k-ok" },
+      { label: "Зависшие резервы", value: n(stale), hint: "старше 15 минут", tone: stale ? "k-err" : "k-ok" },
+      { label: "Средняя задержка", value: `${n(totals.average_latency_ms)} мс`, hint: "только успешные онлайн-вызовы", tone: "" },
+    ];
+    $("#ai-usage-kpis").innerHTML = cards.map((item) => `
+      <div class="kpi ${item.tone}">
+        <div class="kpi-label">${esc(item.label)}</div>
+        <div class="kpi-value">${esc(item.value)}</div>
+        <div class="kpi-hint">${esc(item.hint)}</div>
+      </div>`).join("");
+    $("#ai-usage-meta").textContent =
+      `За последние ${n(data.period_days || 7)} дней · лимит считает онлайн-вызовы, не деньги`;
+
+    const providers = (data.by_provider || []).slice(0, 4);
+    const stages = (data.by_stage || []).slice(0, 4);
+    const providerLine = providers.length
+      ? providers.map((item) => `${item.name}: ${n(item.used)} онлайн, ${n(item.fallbacks)} fallback`).join(" · ")
+      : "пока нет вызовов";
+    const stageLine = stages.length
+      ? stages.map((item) => `${item.name}: ${n(item.calls)}`).join(" · ")
+      : "пока нет вызовов";
+    $("#ai-usage-breakdown").innerHTML =
+      kv("Провайдеры", providerLine) + kv("Этапы", stageLine) +
+      (stale ? kv("Требует внимания", `${n(stale)} резерв(ов) не завершены больше 15 минут. Проверь зависший процесс.`) : "");
+  }
+
   function renderPipeline(runs) {
     const byRun = new Map();
     for (const r of runs) {
@@ -1930,14 +1969,14 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
         api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
         api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
-        api("/api/platforms"), api("/api/reddit/metrics"),
+        api("/api/platforms"), api("/api/reddit/metrics"), api("/api/ai/usage?days=7"),
       ]);
 
       const mode = status.mode || "?";
@@ -1970,6 +2009,7 @@
       renderTopicDossier(state.topicDossier);
       renderPlatforms(platforms || {});
       renderRedditMetrics(redditMetrics || {});
+      renderAIUsage(aiUsage || {});
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
