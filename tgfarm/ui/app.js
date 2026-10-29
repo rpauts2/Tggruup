@@ -473,7 +473,7 @@
   };
   const STATUS_RU = {
     published: "опубликован", scheduled: "в очереди", gated: "прошёл гейты",
-    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка", draft: "черновик",
+    publish_unknown: "нужна сверка", rejected: "отклонён", failed: "ошибка публикации", draft: "черновик",
   };
   const FORMAT_RU = {
     flash: "картинка + коротко", stat: "цифра", news: "новость",
@@ -513,7 +513,7 @@
       ? posts.map(postCard).join("")
       : `<div class="empty">Постов нет</div>`;
 
-    const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated"].includes(p.status)).slice(0, 6);
+    const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
     // to the most recent posts so the card always reflects the last real output.
     const title = $("#overview-queue-title");
@@ -523,7 +523,7 @@
       <div class="item" data-post="${esc(p.id)}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
-          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
+          <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : p.status === "failed" ? "исправьте причину и повторите вручную" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
         </div>
         <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || FORMAT_RU[p.post_format] || p.post_format)}</span></div>
       </div>`).join("");
@@ -1720,6 +1720,7 @@
         <button class="btn btn-ghost btn-sm" onclick="tgfarmReconcile('${esc(p.id)}','retry_after_check')">Проверил: поста нет</button>
       </div>` : `<div class="drawer-block" style="display:flex;gap:8px;flex-wrap:wrap">
         ${["scheduled", "gated"].includes(p.status) ? `<button class="btn btn-primary btn-sm" onclick="tgfarmPublish('${esc(p.id)}')">Опубликовать сейчас</button>` : ""}
+        ${p.status === "failed" && !p.tg_message_id ? `<button class="btn btn-primary btn-sm" onclick="tgfarmRetryFailed('${esc(p.id)}')">Повторить после исправления</button>` : ""}
         ${["draft", "gated", "scheduled", "rejected", "failed"].includes(p.status) ? `<button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="tgfarmCopyText('${esc(p.id)}')">Копировать текст</button>
         <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Трейс</button>
@@ -2092,6 +2093,18 @@
       }
     } catch (e) {
       toast("Ошибка публикации: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmRetryFailed = async (id) => {
+    if (!confirm("Причина ошибки исправлена (например, доступ или настройки площадки)? Вернуть пост в очередь с новым лимитом попыток?")) return;
+    try {
+      await post(`/api/posts/${encodeURIComponent(id)}/retry`, {});
+      toast("Пост возвращён в очередь", "ok");
+      await refresh();
+      openDrawer(id);
+    } catch (e) {
+      toast("Не удалось вернуть пост в очередь: " + (e && e.message ? e.message : e), "err");
     }
   };
 

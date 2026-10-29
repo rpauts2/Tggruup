@@ -493,6 +493,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         publish_unknown = session.execute(
             select(func.count()).select_from(Post).where(Post.status == "publish_unknown")
         ).scalar_one()
+        terminal_publish_failures = session.execute(
+            select(func.count()).select_from(Post).where(
+                Post.status == "failed",
+                Post.attempts > 0,
+            )
+        ).scalar_one()
         latest_crosspost_ids = (
             select(func.max(CrosspostLog.id).label("latest_id"))
             .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
@@ -649,6 +655,18 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "message": (
                     f"{crosspost_failures} кросспост(ов) требуют исправления подключения "
                     "или ручного повторного разрешения после проверки целевой площадки"
+                ),
+            }
+        )
+
+    if terminal_publish_failures:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "publish_terminal_failure",
+                "message": (
+                    f"Остановлено публикаций: {terminal_publish_failures}. Причина: постоянная ошибка "
+                    "или исчерпан лимит попыток. Исправь причину и используй «Повторить» в карточке поста."
                 ),
             }
         )
