@@ -1011,6 +1011,38 @@ class LinkedInAdapter:
             )
 
 
+class TikTokAdapter:
+    """Connection-health adapter only; publishing requires the explicit dashboard flow.
+
+    It intentionally has no background posting behavior. The Content Posting
+    API requires a per-video consent screen that shows fresh creator privacy
+    settings before the upload is initiated.
+    """
+
+    platform = "tiktok"
+
+    def _credentials(self) -> tuple[str, str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.tiktok_client_key or "").strip(),
+            str(settings.tiktok_client_secret or "").strip(),
+            str(settings.tiktok_refresh_token or "").strip(),
+            str(settings.tiktok_open_id or "").strip(),
+        )
+
+    def configured(self) -> bool:
+        return all(self._credentials())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        # Never allow a future scheduler refactor to silently bypass TikTok's
+        # consent/creator-info UX. The explicit API endpoint owns direct posts.
+        return CrosspostResult(
+            platform=self.platform,
+            status="skipped",
+            error="TikTok requires explicit per-video confirmation in the dashboard.",
+        )
+
+
 class YouTubeAdapter:
     """Upload original TgFarm vertical video as a YouTube Short via the official API.
 
@@ -1205,6 +1237,7 @@ ADAPTERS: dict[str, Adapter] = {
     "threads": ThreadsAdapter(),
     "linkedin": LinkedInAdapter(),
     "youtube": YouTubeAdapter(),
+    "tiktok": TikTokAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),
