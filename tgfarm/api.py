@@ -2417,6 +2417,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         return {"entries": await io(_load)}
 
+    @app.get("/api/ai/usage")
+    async def ai_usage(days: int = Query(7, ge=1, le=30)) -> dict:
+        """Persisted AI call-budget use, including offline fallbacks and stale reservations."""
+        from tgfarm.llm.policy import usage_report
+
+        return await io(usage_report, days)
+
     @app.get("/api/metrics")
     async def metrics() -> dict:
         """Counters the operator (or a dashboard) can watch over time."""
