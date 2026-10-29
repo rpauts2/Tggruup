@@ -69,6 +69,7 @@ def video_file(tmp_path):
 async def test_youtube_adapter_uses_resumable_upload_private_by_default(
     monkeypatch, video_file
 ):
+    import httpx
     from tgfarm import youtube_oauth
     from tgfarm.core.schemas import CrosspostPayload
     from tgfarm.s9_growth import adapters
@@ -76,7 +77,7 @@ async def test_youtube_adapter_uses_resumable_upload_private_by_default(
     FakeYouTubeClient.calls = []
     FakeYouTubeClient.put_error = None
     monkeypatch.setattr(adapters, "get_settings", lambda: settings())
-    monkeypatch.setattr(adapters.httpx, "AsyncClient", FakeYouTubeClient)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeYouTubeClient)
 
     async def token():
         return "private-access-token"
