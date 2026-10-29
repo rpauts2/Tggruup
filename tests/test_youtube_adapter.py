@@ -143,7 +143,7 @@ async def test_youtube_adapter_marks_ambiguous_upload_timeout_unknown(
     FakeYouTubeClient.put_error = httpx.ReadTimeout("upload timed out")
 
     monkeypatch.setattr(adapters, "get_settings", lambda: settings())
-    monkeypatch.setattr(adapters.httpx, "AsyncClient", FakeYouTubeClient)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeYouTubeClient)
 
     async def token():
         return "private-access-token"
