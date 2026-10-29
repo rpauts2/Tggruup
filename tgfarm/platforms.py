@@ -849,7 +849,7 @@ def enabled_crosspost_platforms() -> list[str]:
         item["id"]
         for item in CATALOG
         if item["mode"] == "built_in"
-        and "crosspost" in item["roles"]
+        and ({"crosspost", "video"} & set(item["roles"]))
         and is_platform_enabled(item["id"])
     ]
 
