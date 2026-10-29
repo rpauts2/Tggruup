@@ -44,6 +44,7 @@ PUBLIC_PATHS = (
     "/api/platforms/threads/auth/callback",
     "/api/platforms/linkedin/auth/callback",
     "/api/platforms/youtube/auth/callback",
+    "/api/platforms/tiktok/auth/callback",
 )
 PUBLIC_PREFIXES = ("/ui/",)
 
