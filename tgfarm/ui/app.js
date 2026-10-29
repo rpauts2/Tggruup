@@ -1070,14 +1070,16 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (["x", "threads", "linkedin"].includes(platformId)) {
+      if (["x", "threads", "linkedin", "youtube"].includes(platformId)) {
         closePlatformAuthDialog();
+        const platformLabel = {
+          x: "OAuth-приложение X",
+          threads: "Threads App",
+          linkedin: "LinkedIn App",
+          youtube: "Google OAuth-приложение",
+        }[platformId] || "OAuth-приложение";
         toast(
-          platformId === "x"
-            ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-            : platformId === "threads"
-              ? "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-              : "LinkedIn App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
+          platformLabel + " сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
           "ok",
         );
         await refresh();
@@ -1091,7 +1093,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+      save.textContent = ["x", "threads", "linkedin", "youtube"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
