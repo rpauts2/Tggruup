@@ -348,6 +348,14 @@ class Settings(BaseSettings):
     linkedin_refresh_token_expires_at: int = Field(default=0, alias="LINKEDIN_REFRESH_TOKEN_EXPIRES_AT")
     linkedin_member_id: str = Field(default="", alias="LINKEDIN_MEMBER_ID")
     linkedin_member_name: str = Field(default="", alias="LINKEDIN_MEMBER_NAME")
+    # Instagram Login for professional accounts and public media delivery.
+    instagram_app_id: str = Field(default="", alias="INSTAGRAM_APP_ID")
+    instagram_app_secret: str = Field(default="", alias="INSTAGRAM_APP_SECRET")
+    instagram_access_token: str = Field(default="", alias="INSTAGRAM_ACCESS_TOKEN")
+    instagram_token_expires_at: int = Field(default=0, alias="INSTAGRAM_TOKEN_EXPIRES_AT")
+    instagram_user_id: str = Field(default="", alias="INSTAGRAM_USER_ID")
+    instagram_username: str = Field(default="", alias="INSTAGRAM_USERNAME")
+    public_base_url: str = Field(default="", alias="TGFARM_PUBLIC_BASE_URL")
 
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
