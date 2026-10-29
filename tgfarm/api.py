@@ -2229,6 +2229,167 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
 
+    @app.post("/api/posts/{post_public_id}/video/render")
+    async def render_post_video(post_public_id: str) -> dict:
+        """Render an original vertical MP4 and attach it without replacing the cover."""
+        from tgfarm.s11_video.renderer import render_post_short
+
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Короткое видео для площадок можно готовить после подтверждённой основной публикации.")
+        try:
+            artifact = await io(render_post_short, post_public_id)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=redact_sensitive_text(exc, limit=300)) from exc
+        refreshed = await io(_post_detail, post_public_id)
+        _operator("short-video-render", post_public_id, f"{artifact.width}x{artifact.height} {artifact.duration_s:.1f}s")
+        return {
+            "ok": True,
+            "artifact": artifact.as_dict(),
+            "video": refreshed.get("video"),
+            "download_url": (
+                f"/api/media/{refreshed['video']['id']}"
+                if refreshed.get("video") and refreshed["video"].get("id")
+                else None
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/prepare")
+    async def prepare_tiktok_post(post_public_id: str) -> dict:
+        """Render if necessary and return current TikTok creator/publishing options."""
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, primary_video_path
+        from tgfarm.tiktok_oauth import get_tiktok_creator_info
+        from tgfarm.tiktok_publish import _truncate_utf16
+
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "Сначала включи TikTok в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "Сначала подключи TikTok через OAuth и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "TikTok direct post доступен после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        artifact = None
+        if not video_path:
+            from tgfarm.s11_video.renderer import render_post_short
+
+            try:
+                artifact = await io(render_post_short, post_public_id)
+                video_path = artifact.path
+            except (ValueError, RuntimeError) as exc:
+                raise HTTPException(status_code=422, detail=redact_sensitive_text(exc, limit=300)) from exc
+            detail = await io(_post_detail, post_public_id)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(410, "Видео не найдено после подготовки.")
+        try:
+            creator = await get_tiktok_creator_info()
+        except Exception as exc:  # noqa: BLE001 - keep provider diagnostics bounded
+            raise HTTPException(
+                status_code=502,
+                detail=redact_sensitive_text(exc, limit=300) or "Не удалось получить текущие настройки TikTok.",
+            ) from exc
+
+        default_caption = _truncate_utf16(
+            "\n\n".join(part for part in (str(detail.get("hook") or ""), str(detail.get("body") or "")) if part),
+            2200,
+        )
+        return {
+            "ok": True,
+            "post": post_public_id,
+            "caption": default_caption,
+            "video": detail.get("video"),
+            "download_url": (
+                f"/api/media/{detail['video']['id']}"
+                if detail.get("video") and detail["video"].get("id")
+                else None
+            ),
+            "artifact": artifact.as_dict() if artifact else None,
+            "creator": creator,
+            "live": get_settings().live,
+            "warning": (
+                "Перед отправкой проверь подпись и приватность. У неподтверждённых приложений TikTok "
+                "может ограничить видимость публикации; это правило площадки, а не ошибка TgFarm."
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/publish")
+    async def publish_tiktok_post(post_public_id: str, request: TikTokPublishRequest) -> dict:
+        """Direct-post one video after explicit consent, guarded by a durable claim."""
+        from tgfarm.core.schemas import CrosspostResult
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, begin_crosspost, log_result, primary_video_path
+        from tgfarm.tiktok_publish import publish_tiktok_video
+
+        if not request.consent:
+            raise HTTPException(400, "Подтверди отправку этого конкретного видео в TikTok.")
+        if not get_settings().live:
+            raise HTTPException(409, "TGFARM_MODE не live. Проверь настройки и повтори после контролируемого перехода в live.")
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "TikTok выключен в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "TikTok OAuth не настроен. Подключи аккаунт и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Direct post TikTok доступен только после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(409, "Сначала нажми «Подготовить видео для TikTok» и дождись готового MP4.")
+
+        attempt = await io(begin_crosspost, post_public_id, "tiktok")
+        if attempt is None:
+            raise HTTPException(
+                409,
+                "Для этого поста уже есть доставка или активная блокировка. Проверь историю TikTok перед повтором.",
+            )
+        try:
+            result = await publish_tiktok_video(
+                video_path,
+                caption=request.caption,
+                privacy_level=request.privacy_level,
+            )
+        except Exception as exc:  # noqa: BLE001 - once an upload begins, a duplicate is unsafe
+            log.warning("TikTok direct post failed unexpectedly (%s)", type(exc).__name__)
+            result = CrosspostResult(
+                platform="tiktok",
+                status="unknown",
+                error="Результат отправки не подтверждён. Проверь TikTok перед повтором.",
+            )
+        await io(log_result, post_public_id, result, attempt)
+        _operator(
+            "tiktok-direct-publish",
+            post_public_id,
+            f"status={result.status} privacy={request.privacy_level}",
+        )
+        return {
+            "ok": result.status == "posted",
+            "status": result.status,
+            "remote_id": result.remote_id,
+            "url": result.url,
+            "error": result.error,
+            "detail": (
+                "TikTok подтвердил публикацию."
+                if result.status == "posted"
+                else "Результат не подтверждён. Проверь TikTok вручную и не повторяй отправку, пока не убедишься, что видео отсутствует."
+                if result.status == "unknown"
+                else "TikTok не подтвердил публикацию. Исправь показанную причину перед повтором."
+            ),
+        }
+
     @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:
         from tgfarm.s9_growth.reddit_metrics import get_reddit_metrics_report
