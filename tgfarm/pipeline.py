@@ -170,6 +170,44 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
         return None
 
 
+def _queue_backlog_alerts(
+    scheduled_count: int,
+    gated_count: int,
+    *,
+    live: bool,
+    scheduled_threshold: int,
+    gated_threshold: int,
+) -> list[dict]:
+    """Report a growing publication queue without leaking post content."""
+    if not live:
+        return []
+    alerts: list[dict] = []
+    scheduled_limit = max(1, int(scheduled_threshold))
+    gated_limit = max(1, int(gated_threshold))
+    scheduled = max(0, int(scheduled_count))
+    gated = max(0, int(gated_count))
+    if scheduled >= scheduled_limit:
+        level = "error" if scheduled >= scheduled_limit * 2 else "warning"
+        alerts.append({
+            "level": level,
+            "code": "scheduled_queue_backlog",
+            "message": (
+                f"В очереди публикации {scheduled} постов (порог {scheduled_limit}). "
+                "Проверьте доступность площадок, расписание и причины повторных ошибок."
+            ),
+        })
+    if gated >= gated_limit:
+        alerts.append({
+            "level": "warning",
+            "code": "editorial_review_backlog",
+            "message": (
+                f"{gated} постов ожидают редакционного одобрения (порог {gated_limit}). "
+                "Проверьте очередь проверки и качество черновиков."
+            ),
+        })
+    return alerts
+
+
 def _publication_liveness_alert(
     last_published: datetime | None,
     oldest_waiting: datetime | None,
@@ -545,6 +583,13 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         )
         if liveness:
             alerts.append(liveness)
+    alerts.extend(_queue_backlog_alerts(
+        int(scheduled or 0),
+        int(gated or 0),
+        live=bool(getattr(settings, "live", False)),
+        scheduled_threshold=getattr(settings, "queue_backlog_alert_threshold", 100),
+        gated_threshold=getattr(settings, "editorial_backlog_alert_threshold", 50),
+    ))
     if stuck:
         alerts.append(
             {
