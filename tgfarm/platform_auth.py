@@ -214,6 +214,49 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + str(user.get("username") or user_id or user.get("id"))
             authorized = True
             detail = "X подтвердил пользовательский OAuth-токен и профиль; публикация использует права tweet.write."
+        elif platform_id == "youtube":
+            from tgfarm.youtube_oauth import get_youtube_access_token
+
+            expected_channel = str(settings.youtube_channel_id or "").strip()
+            if not expected_channel or not settings.youtube_refresh_token:
+                raise RuntimeError("Сначала подключи канал YouTube через OAuth.")
+            token = await get_youtube_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                payload = await _response_json(
+                    client,
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "id,snippet", "mine": "true"},
+                )
+            channels = payload.get("items") or []
+            channel = next(
+                (item for item in channels if str(item.get("id") or "") == expected_channel),
+                None,
+            )
+            if not channel:
+                raise RuntimeError("Google OAuth не подтвердил ожидаемый YouTube канал. Переподключи аккаунт.")
+            account = str((channel.get("snippet") or {}).get("title") or settings.youtube_channel_title or expected_channel)
+            authorized = True
+            detail = (
+                "YouTube OAuth подтверждён запросом Data API к ожидаемому каналу. "
+                "Перед live-загрузкой проверь youtube.upload и лимиты проекта."
+            )
+        elif platform_id == "tiktok":
+            from tgfarm.tiktok_oauth import get_tiktok_creator_info
+
+            if not settings.tiktok_open_id or not settings.tiktok_refresh_token:
+                raise RuntimeError("Сначала подключи TikTok через OAuth.")
+            creator = await get_tiktok_creator_info()
+            username = str(creator.get("username") or settings.tiktok_username or "").strip()
+            account = ("@" + username) if username else "TikTok creator"
+            authorized = True
+            detail = (
+                "TikTok OAuth подтверждён живым creator-info запросом. "
+                "Настройки приватности обновляются перед каждой публикацией; "
+                "публикация запускается только вручную из карточки поста."
+            )
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 
