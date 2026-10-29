@@ -134,8 +134,28 @@ def test_destructive_endpoints_are_protected(client):
         ("/api/posts/publish", {"post_public_ids": ["x"]}),
         ("/api/posts/reject", {"post_public_ids": ["x"]}),
         ("/api/crossposts/post-id/vk/reconcile", {"action": "confirm_posted"}),
+        ("/api/posts/post-id/video/render", {}),
+        ("/api/posts/post-id/tiktok/prepare", {}),
+        ("/api/posts/post-id/tiktok/publish", {"caption": "body", "privacy_level": "SELF_ONLY", "consent": True}),
     ):
         assert client.post(path, json=payload).status_code == 401, path
+
+
+def test_short_form_endpoints_are_protected_and_dashboard_offers_manual_handoff(client):
+    assert client.post("/api/posts/post-id/video/render").status_code == 401
+    assert client.post("/api/posts/post-id/tiktok/prepare").status_code == 401
+    assert client.post(
+        "/api/posts/post-id/tiktok/publish",
+        json={"caption": "body", "privacy_level": "SELF_ONLY", "consent": True},
+    ).status_code == 401
+
+    script = client.get("/ui/app.js").text
+    html = client.get("/").text
+    assert "tgfarmRenderShort" in script
+    assert "tgfarmPrepareTikTok" in script
+    assert "/tiktok/publish" in script
+    assert 'id="tiktok-publish-consent"' in html
+    assert "https://vk.com/clips" in script
 
 
 def test_the_dashboard_embeds_the_token(client):
