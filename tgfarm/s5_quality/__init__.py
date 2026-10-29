@@ -344,6 +344,19 @@ def gate_facts(draft: DraftPost, persona: Persona) -> GateOutcome:
             scores={"facts": 0.0},
         )
 
+    unsupported_dates = [
+        claim for claim in draft.claims
+        if claim.note == "date_audit" and not claim.verified
+    ]
+    if unsupported_dates:
+        examples = "; ".join(claim.claim[:90] for claim in unsupported_dates[:2])
+        return GateOutcome(
+            False,
+            "facts",
+            f"{len(unsupported_dates)} explicit date claim(s) not grounded in sources: {examples}",
+            scores={"facts": 0.0},
+        )
+
     verified = sum(1 for c in draft.claims if c.verified)
     ratio = verified / len(draft.claims)
     if ratio < MIN_VERIFIED_RATIO:
