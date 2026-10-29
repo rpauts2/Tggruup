@@ -219,6 +219,7 @@ class CrosspostPayload(Strict):
     text: str
     link: str | None = None
     image_path: str | None = None
+    video_path: str | None = None
     hashtags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
 
