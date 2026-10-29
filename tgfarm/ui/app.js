@@ -687,6 +687,13 @@
              ${item.planned ? "✓ В плане" : "+ В план"}
            </button>`;
       const auth = item.auth || {};
+      const authCheckedDate = auth.checked_at ? new Date(auth.checked_at) : null;
+      const authCheckedLabel = authCheckedDate && !Number.isNaN(authCheckedDate.getTime())
+        ? `Проверено: ${authCheckedDate.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
+        : "";
+      const authCheckedMarkup = supported && authCheckedLabel
+        ? `<small class="platform-auth-checked">${esc(authCheckedLabel)}</small>`
+        : "";
       let authStatus = auth.status || (supported ? "needs_setup" : "not_integrated");
       let authLabel = auth.status_label || (supported ? "Не настроено" : "Интеграция не готова");
       if (item.id === "dzen" && state.dzenStatus) {
@@ -741,7 +748,7 @@
           <div class="platform-auth-block ${authStyle}">
             <div class="platform-auth-copy">
               <span class="platform-auth-dot" aria-hidden="true"></span>
-              <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p></div>
+              <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p>${authCheckedMarkup}</div>
             </div>
             <div class="platform-auth-actions">${authConfig}${authSetup}${authCheck}</div>
           </div>
