@@ -111,7 +111,7 @@ def test_source_freshness_alert_escalates_when_all_sources_are_stale():
     assert alert is not None
     assert alert["level"] == "error"
     assert alert["code"] == "source_collection_stale"
-    assert "Все 2 включённых источников" in alert["message"]
+    assert "Все включённые источники (2)" in alert["message"]
 
 
 def test_source_freshness_alert_respects_long_source_intervals_and_naive_timestamps():
