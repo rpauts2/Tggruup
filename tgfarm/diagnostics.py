@@ -22,6 +22,25 @@ def _directory_has_entries(path) -> bool:
         return False
 
 
+def _operational_alert_summary(alerts: list[dict]) -> dict:
+    """Summarize the shared watchdog alerts without exposing raw messages or secrets."""
+    errors = [alert for alert in alerts if alert.get("level") == "error"]
+    warnings = [alert for alert in alerts if alert.get("level") == "warning"]
+    codes = sorted({
+        str(alert.get("code") or "unknown")
+        for alert in [*errors, *warnings]
+    })
+    if not errors and not warnings:
+        detail = "нет активных проблем по watchdog"
+    else:
+        detail = f"{len(errors)} критических, {len(warnings)} предупреждений"
+        if codes:
+            detail += "; коды: " + ", ".join(codes[:8])
+            if len(codes) > 8:
+                detail += f" и ещё {len(codes) - 8}"
+    return {"ok": not errors, "detail": detail, "errors": len(errors), "warnings": len(warnings)}
+
+
 def run_doctor() -> dict:
     """Check everything that has to be true before the farm can work."""
     from tgfarm.config import get_config
@@ -111,6 +130,20 @@ def run_doctor() -> dict:
         check("dzen-metrics", True, detail)
 
     check("mode", settings.mode in ("live", "dry", "off"), settings.mode)
+
+    # Reuse the exact watchdog projection used by /api/status and Telegram
+    # alerts, so CLI/desktop diagnostics cannot disagree with the dashboard.
+    try:
+        from tgfarm.pipeline import collect_alerts
+
+        operational = _operational_alert_summary(collect_alerts())
+        check("operational-watchdog", operational["ok"], operational["detail"])
+    except Exception as exc:  # noqa: BLE001 - diagnostics should report, not crash
+        check(
+            "operational-watchdog",
+            False,
+            f"не удалось прочитать watchdog ({type(exc).__name__})",
+        )
 
     return {"checks": checks, "llm_stats": get_stats()}
 
