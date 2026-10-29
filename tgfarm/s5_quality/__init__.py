@@ -24,7 +24,7 @@ from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.schemas import Claim, DraftPost, QualityReport
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import detect_lang, tokens
-from tgfarm.db.models import BlocklistEntry
+from tgfarm.db.models import BlocklistEntry, RawItem
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.llm import policy
@@ -132,6 +132,68 @@ def gate_links(draft: DraftPost, persona: Persona) -> GateOutcome:
         if any(host == b or host.endswith("." + b) for b in blocked):
             return GateOutcome(False, "links", f"blocked domain {host}")
     return GateOutcome(True, scores={"links": 1.0})
+
+
+def gate_source_freshness(draft: DraftPost, persona: Persona) -> GateOutcome:
+    """Reject a news draft only when every attached source is known and stale.
+
+    Unknown publication dates are not evidence of staleness. Analysis and
+    evergreen formats may intentionally use older sources, so this gate is
+    limited to the explicit news angle.
+    """
+    del persona  # the gate shares the common signature used by the evaluator
+    if draft.angle != "news":
+        return GateOutcome(True)
+
+    urls = list(dict.fromkeys(
+        str(source.get("url") or "").strip()
+        for source in draft.sources
+        if isinstance(source, dict) and str(source.get("url") or "").strip()
+    ))
+    if not urls:
+        return GateOutcome(True)
+
+    try:
+        max_age_hours = int(get_settings().source_max_age_hours)
+    except (AttributeError, TypeError, ValueError):
+        max_age_hours = 72
+    if max_age_hours <= 0:
+        return GateOutcome(True)
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(RawItem.url, RawItem.published_at).where(RawItem.url.in_(urls))
+        ).all()
+
+    by_url = {url: published_at for url, published_at in rows}
+    # Missing archive metadata is unknown, not proof that a source is stale.
+    if any(url not in by_url or by_url[url] is None for url in urls):
+        return GateOutcome(True)
+
+    now = datetime.now(UTC)
+    ages: list[float] = []
+    for url in urls:
+        published_at = by_url[url]
+        published_at = (
+            published_at.replace(tzinfo=UTC)
+            if published_at.tzinfo is None
+            else published_at.astimezone(UTC)
+        )
+        ages.append(max(0.0, (now - published_at).total_seconds() / 3600))
+
+    if any(age <= max_age_hours for age in ages):
+        return GateOutcome(True, scores={"source_freshness": 1.0})
+
+    oldest_hours = int(max(ages))
+    return GateOutcome(
+        False,
+        "source_freshness",
+        (
+            f"all {len(ages)} dated source(s) are older than {max_age_hours} hours "
+            f"(oldest {oldest_hours} hours); refresh the source coverage before publishing"
+        ),
+        scores={"source_freshness": 0.0},
+    )
 
 
 def gate_vocabulary(draft: DraftPost, persona: Persona) -> GateOutcome:
@@ -584,6 +646,7 @@ def gate_structure(draft: DraftPost, persona: Persona) -> GateOutcome:
 CHEAP_GATES = (gate_structure, gate_language, gate_length, gate_vocabulary)
 MEDIUM_GATES = (
     gate_links,
+    gate_source_freshness,
     gate_copyright,
     gate_facts,
     gate_disclaimer,
@@ -801,6 +864,10 @@ async def gate_post(public_id: str) -> QualityReport:
     )
     rewrites = 0
     while not report.passed and rewrites < MAX_REWRITES:
+        # A rewrite cannot make the underlying source newer. Avoid spending
+        # tokens repeating the same freshness failure without new evidence.
+        if report.gate == "source_freshness":
+            break
         rewrites += 1
         log.info("rewrite %d for %s (%s: %s)", rewrites, public_id, report.gate, report.reason)
         better = await rewrite(
