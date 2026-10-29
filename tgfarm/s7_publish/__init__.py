@@ -685,6 +685,38 @@ def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
         return result.rowcount or 0
 
 
+def _touch_publish_heartbeat(post_id: int) -> bool:
+    """Refresh liveness only while this worker still owns the publishing state."""
+    with session_scope() as session:
+        result = session.execute(
+            update(PostRow)
+            .where(PostRow.id == post_id, PostRow.status == "publishing")
+            .values(publish_heartbeat_at=datetime.now(UTC))
+        )
+        return result.rowcount == 1
+
+
+async def _publish_heartbeat_loop(post_id: int, interval_s: float = 30.0) -> None:
+    """Keep long browser/API publishes alive without masking an abandoned worker."""
+    while True:
+        await asyncio.sleep(max(1.0, interval_s))
+        try:
+            still_publishing = await to_thread(_touch_publish_heartbeat, post_id)
+        except Exception as exc:  # noqa: BLE001 - telemetry must not cancel a live publish
+            log.warning("publish heartbeat update failed for post %s (%s)", post_id, type(exc).__name__)
+            continue
+        if not still_publishing:
+            return
+
+
+async def _stop_publish_heartbeat(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
 async def _publish_one(
     post_id: int,
     target: int | str,
