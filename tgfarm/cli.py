@@ -9,6 +9,7 @@
     tgfarm posts [--status X]   list generated posts
     tgfarm show <post_id>       print one post with its quality report
     tgfarm render <post_id>     (re)render the cover
+    tgfarm video-render <id>    render an original silent 9:16 MP4 from a post
     tgfarm publish <post_id>    force-publish one post now
     tgfarm reddit-test <post_id> preview or explicitly live-test Reddit crossposting
     tgfarm channels             channel inventory + today's load
