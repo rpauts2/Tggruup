@@ -747,7 +747,7 @@ def test_vk_crosspost_payload_attaches_existing_primary_cover_and_skips_video(tm
     cover = tmp_path / "cover.png"
     cover.write_bytes(b"placeholder image bytes")
     video = tmp_path / "video.mp4"
-    video.write_bytes(b"\\x00\\x00\\x00\\x18ftypisommock-video")
+    video.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"mock-video")
 
     with session_scope() as session:
         session.add(Channel(id=channel_id, title="VK cover test", niche="tech", platform="telegram"))
