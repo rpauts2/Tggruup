@@ -395,6 +395,8 @@ class Settings(BaseSettings):
     retention_runs_days: int = Field(default=30, alias="RETENTION_RUNS_DAYS")
     cycle_stale_min: int = Field(default=45, alias="CYCLE_STALE_MIN")
     watchdog_interval_min: int = Field(default=5, alias="WATCHDOG_INTERVAL_MIN")
+    # Alert if scheduled read-only auth checks stop running for this long.
+    platform_auth_max_age_hours: int = Field(default=12, alias="PLATFORM_AUTH_MAX_AGE_HOURS")
     watchdog_recovery_base_min: int = Field(
         default=5, alias="WATCHDOG_RECOVERY_BASE_MIN"
     )
