@@ -140,3 +140,75 @@ def test_scheduler_registers_periodic_and_startup_auth_checks():
     assert recurring.name == "read-only platform auth health"
     assert startup is not None
     assert startup.name == "initial read-only platform auth check"
+
+
+def test_platform_auth_monitor_freshness_alert_ignores_unconfigured_farm():
+    from datetime import UTC, datetime
+
+    from tgfarm.pipeline import _platform_auth_monitor_freshness_alert
+
+    assert _platform_auth_monitor_freshness_alert(
+        None,
+        datetime(2026, 10, 29, 12, 0, tzinfo=UTC),
+        12,
+        has_configured_platforms=False,
+    ) is None
+
+
+def test_platform_auth_monitor_freshness_alert_warns_when_no_check_was_recorded():
+    from datetime import UTC, datetime
+
+    from tgfarm.pipeline import _platform_auth_monitor_freshness_alert
+
+    alert = _platform_auth_monitor_freshness_alert(
+        None,
+        datetime(2026, 10, 29, 12, 0, tzinfo=UTC),
+        12,
+        has_configured_platforms=True,
+    )
+
+    assert alert is not None
+    assert alert["level"] == "warning"
+    assert alert["code"] == "platform_auth_monitor_missing"
+    assert "scheduler" in alert["message"]
+
+
+def test_platform_auth_monitor_freshness_alert_warns_only_after_threshold():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _platform_auth_monitor_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    assert _platform_auth_monitor_freshness_alert(
+        now - timedelta(hours=11),
+        now,
+        12,
+        has_configured_platforms=True,
+    ) is None
+
+    stale = _platform_auth_monitor_freshness_alert(
+        now - timedelta(hours=15),
+        now,
+        12,
+        has_configured_platforms=True,
+    )
+    assert stale is not None
+    assert stale["level"] == "warning"
+    assert stale["code"] == "platform_auth_monitor_stale"
+    assert "15.0 ч" in stale["message"]
+
+
+def test_platform_auth_monitor_freshness_alert_handles_naive_sqlite_timestamp():
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.pipeline import _platform_auth_monitor_freshness_alert
+
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    recent_naive = (now - timedelta(hours=2)).replace(tzinfo=None)
+    assert _platform_auth_monitor_freshness_alert(
+        recent_naive,
+        now,
+        12,
+        has_configured_platforms=True,
+    ) is None
+
