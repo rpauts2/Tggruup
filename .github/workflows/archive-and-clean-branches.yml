@@ -1,0 +1,77 @@
+name: Archive and clean non-main branches
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: archive-and-clean-branches
+  cancel-in-progress: false
+
+jobs:
+  archive-and-delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive every non-main branch and delete its branch ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Snapshot branch heads before deleting anything.
+          gh api --paginate "repos/${GH_REPO}/branches?per_page=100" \
+            --jq '.[] | [.name, .commit.sha] | @tsv' > /tmp/branches.tsv
+
+          # Existing archive tags are only accepted if they point to the same commit.
+          gh api --paginate "repos/${GH_REPO}/git/matching-refs/tags/archive/" \
+            --jq '.[] | [.ref, .object.sha] | @tsv' > /tmp/archive-tags.tsv
+
+          declare -A archived=()
+          while IFS=$'\t' read -r ref sha; do
+            [[ -n "${ref:-}" ]] || continue
+            archived["$ref"]="$sha"
+          done < /tmp/archive-tags.tsv
+
+          deleted=0
+          skipped=0
+          while IFS=$'\t' read -r branch sha; do
+            [[ -n "${branch:-}" ]] || continue
+            [[ "$branch" == "main" ]] && continue
+
+            tag_ref="refs/tags/archive/$branch"
+            tag_sha="${archived[$tag_ref]:-}"
+
+            if [[ -n "$tag_sha" && "$tag_sha" != "$sha" ]]; then
+              echo "::warning::Keeping branch '$branch': archive tag exists at a different commit."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            if [[ -z "$tag_sha" ]]; then
+              if ! gh api --method POST "repos/${GH_REPO}/git/refs" \
+                -f "ref=$tag_ref" -f "sha=$sha" >/dev/null; then
+                echo "::warning::Keeping branch '$branch': could not create archive tag."
+                skipped=$((skipped + 1))
+                continue
+              fi
+            fi
+
+            # Delete only after a matching archive tag is confirmed or created.
+            if gh api --method DELETE "repos/${GH_REPO}/git/refs/heads/$branch" >/dev/null; then
+              echo "Archived and deleted branch: $branch ($sha)"
+              deleted=$((deleted + 1))
+            else
+              echo "::warning::Archive exists, but GitHub refused to delete branch '$branch'."
+              skipped=$((skipped + 1))
+            fi
+          done < /tmp/branches.tsv
+
+          echo "Cleanup complete. Deleted: $deleted; skipped: $skipped."
+          echo "The main branch is never deleted. Branch snapshots are preserved as archive/* tags."
