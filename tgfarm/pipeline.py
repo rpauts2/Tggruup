@@ -273,7 +273,7 @@ def _source_freshness_alert(enabled_source_rows, current: datetime) -> dict | No
             "level": "error",
             "code": "source_collection_stale",
             "message": (
-                f"Все {total} включённых источников давно не проверялись по своему расписанию. "
+                f"Все включённые источники ({total}) давно не проверялись по своему расписанию. "
                 "Проверь цикл сбора, scheduler и доступность базы."
             ),
         }
