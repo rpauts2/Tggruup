@@ -246,8 +246,10 @@ def _backup_freshness_alert(
     }
 
 
-def _source_freshness_alert(enabled_source_rows, current: datetime) -> dict | None:
-    """Warn when enabled sources are not being polled within their expected cadence."""
+def _source_freshness_alert(enabled_source_rows, current: datetime, settings=None) -> dict | None:
+    """Warn when enabled sources are not being polled within their adaptive cadence."""
+    from tgfarm.s1_sources import effective_interval
+
     current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
     overdue = 0
     total = len(enabled_source_rows)
@@ -259,8 +261,10 @@ def _source_freshness_alert(enabled_source_rows, current: datetime) -> dict | No
             overdue += 1
             continue
         stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
-        interval_s = max(60, int(getattr(row, "min_interval_s", 600) or 600))
-        # Allow three configured intervals, but never flag a source for less
+        # Honor the collector's adaptive backoff for idle feeds and repeated
+        # failures; otherwise a deliberately backed-off source looks falsely stale.
+        interval_s = effective_interval(row, settings)
+        # Allow three effective intervals, but never flag a source for less
         # than two hours of silence. Long-interval sources retain their cadence.
         threshold_s = max(2 * 60 * 60, interval_s * 3)
         if (current - stamp).total_seconds() >= threshold_s:
@@ -496,6 +500,7 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 Source.last_status,
                 Source.last_fetched_at,
                 Source.min_interval_s,
+                Source.idle_streak,
                 Source.created_at,
             ).where(Source.enabled.is_(True))
         ).all()
@@ -668,7 +673,7 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     if backup_freshness:
         alerts.append(backup_freshness)
     if settings.online:
-        source_freshness = _source_freshness_alert(enabled_source_health, current)
+        source_freshness = _source_freshness_alert(enabled_source_health, current, settings)
         if source_freshness:
             alerts.append(source_freshness)
     source_alert = _source_health_alert(enabled_source_health)
