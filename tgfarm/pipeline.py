@@ -736,7 +736,7 @@ async def backup_job() -> dict:
 
     A same-directory backup protects against operator mistakes and bad
     migrations, but is not an off-machine disaster-recovery plan. The file is
-    never added to retention until SQLite's integrity check succeeds.
+    never added to retention until integrity and disposable-restore checks pass.
     """
     import os
     import sqlite3
@@ -768,6 +768,7 @@ async def backup_job() -> dict:
                 "local_verified": local_verified,
                 "mirror_configured": bool(mirror_config),
                 "mirror_verified": mirror.get("verified"),
+                "restore_tested": bool(report.get("restore_tested")),
             },
         )
         return report
