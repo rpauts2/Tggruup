@@ -355,7 +355,7 @@ def test_reddit_metrics_report_api_is_authenticated_and_read_only(client):
     assert "просмотры" in payload["note"].lower() or "показы" in payload["note"].lower()
 
 
-def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network(client, monkeypatch):
+def test_platform_auth_check_api_requires_auth_and_supports_youtube_tiktok(client, monkeypatch):
     import tgfarm.platform_auth as auth_module
     from tgfarm.core.apiauth import HEADER, ensure_token
 
@@ -375,12 +375,11 @@ def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network
     monkeypatch.setattr(auth_module, "check_platform_auth", fake_check)
     assert client.post("/api/platforms/vk/auth/check").status_code == 401
     headers = {HEADER: ensure_token()}
-    success = client.post("/api/platforms/vk/auth/check", headers=headers)
-    assert success.status_code == 200
-    assert success.json()["authorized"] is True
-    blocked = client.post("/api/platforms/youtube/auth/check", headers=headers)
-    assert blocked.status_code == 409
-    assert calls == ["vk"]
+    for platform_id in ("vk", "youtube", "tiktok"):
+        response = client.post(f"/api/platforms/{platform_id}/auth/check", headers=headers)
+        assert response.status_code == 200
+        assert response.json()["authorized"] is True
+    assert calls == ["vk", "youtube", "tiktok"]
 
 
 def test_platform_credentials_api_never_echoes_submitted_secret(client, monkeypatch):
