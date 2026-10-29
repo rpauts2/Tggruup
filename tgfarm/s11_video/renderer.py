@@ -262,8 +262,13 @@ def render_short_video(
     settings = get_settings()
     scenes = build_storyboard(title, body, max_scenes=max_scenes)
     duration_limit = max(1, int(settings.video_max_duration_s))
-    scene_seconds = max(1.0, min(float(scene_seconds), duration_limit / len(scenes)))
-    frames_per_scene = max(30, int(round(scene_seconds * FPS)))
+    if duration_limit < len(scenes):
+        raise ValueError(
+            "VIDEO_MAX_DURATION_S слишком мал: нужно минимум по 1 секунде на каждую сцену."
+        )
+    max_frames_per_scene = max(30, int(duration_limit * FPS / len(scenes)))
+    requested_frames = max(30, int(round(float(scene_seconds) * FPS)))
+    frames_per_scene = min(requested_frames, max_frames_per_scene)
     scene_seconds = frames_per_scene / FPS
     duration = round(len(scenes) * scene_seconds, 2)
 
@@ -277,10 +282,15 @@ def render_short_video(
         raise ValueError("Видео нужно сохранять в формате MP4.")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file() and target.stat().st_size > 0 and not force:
-        return ShortVideoArtifact(
-            str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
-            len(scenes), target.stat().st_size, _sha256(target), True,
-        )
+        with target.open("rb") as handle:
+            existing_header = handle.read(12)
+        if len(existing_header) >= 8 and existing_header[4:8] == b"ftyp":
+            return ShortVideoArtifact(
+                str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
+                len(scenes), target.stat().st_size, _sha256(target), True,
+            )
+        # Don't treat a leftover partial/corrupt file as a completed render.
+        target.unlink(missing_ok=True)
 
     binary = ffmpeg_bin or shutil.which("ffmpeg")
     if not binary:
