@@ -763,6 +763,23 @@ async def _publish_one(
             message_id = await PUBLISHER.send(int(target), text, media)
         else:
             log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
+    except asyncio.CancelledError:
+        # Cancellation can happen during shutdown or a watchdog recovery. The
+        # remote side effect may already have happened, so never leave a live
+        # heartbeat behind and never put this post straight back in the queue.
+        await _stop_publish_heartbeat(heartbeat_task)
+        with session_scope() as session:
+            post = session.get(PostRow, post_id)
+            if post and post.status == "publishing":
+                post.status = "publish_unknown"
+                post.publish_heartbeat_at = None
+                post.publish_error = "publisher task cancelled; verify platform before retry"
+        log.error(
+            "publish task cancelled for %s (%s); reconciliation required",
+            post_id,
+            platform,
+        )
+        raise
     except Exception as exc:  # noqa: BLE001 - retry later
         await _stop_publish_heartbeat(heartbeat_task)
         retry_min = 5
