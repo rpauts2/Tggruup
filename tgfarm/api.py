@@ -356,6 +356,22 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
                 {"kind": m.kind, "path": m.path, "sha": m.sha, "width": m.width, "height": m.height}
                 for m in media
             ],
+            "crossposts": [
+                {
+                    "platform": entry.platform,
+                    "status": entry.status,
+                    "at": entry.created_at,
+                    "attempt": entry.attempt,
+                    "url": entry.url if str(entry.url or "").startswith("https://") else None,
+                    "message": _crosspost_status_message(entry.status),
+                }
+                for entry in session.execute(
+                    select(CrosspostLog)
+                    .where(CrosspostLog.post_public_id == row.public_id)
+                    .order_by(CrosspostLog.id.desc())
+                    .limit(30)
+                ).scalars().all()
+            ],
         }
     return payload
 
@@ -827,6 +843,72 @@ def _runs(limit: int) -> list[dict]:
             }
             for r in rows
         ]
+
+
+def _crosspost_status_message(status: str) -> str:
+    """Safe operator hint: never leak the raw exception/provider response."""
+    return {
+        "posted": "Публикация подтверждена площадкой.",
+        "dry_run": "Это был тестовый прогон; публикация в сеть не отправлялась.",
+        "skipped": "Отправка пропущена: проверь переключатель и настройки площадки.",
+        "failed": "Временная ошибка запроса. Перед повтором проверь, не появился ли пост.",
+        "permanent": "Площадка отклонила запрос. Проверь разрешения, формат и настройки.",
+        "permanent_failure": "Площадка отклонила запрос. Проверь разрешения, формат и настройки.",
+        "unknown": "Результат неоднозначен. Сначала проверь аккаунт площадки вручную.",
+        "publishing": "Отправка началась, но не подтверждена. Проверь результат перед повтором.",
+        "retry_authorized": "Повтор разрешён оператором после ручной сверки.",
+    }.get(str(status or "").lower(), "Статус доставки сохранён. Проверь журнал площадки.")
+
+
+def _crosspost_incident(post_public_id: str, platform: str) -> dict:
+    """Create a minimal incident export without raw provider errors, tokens or post text."""
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    platform = str(platform or "").strip().lower()
+    if platform not in ADAPTERS:
+        raise HTTPException(404, "unknown platform")
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == post_public_id)
+        ).scalar_one_or_none()
+        if post is None:
+            raise HTTPException(404, "post not found")
+        rows = session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(25)
+        ).scalars().all()
+        history = [
+            {
+                "status": str(row.status or "unknown"),
+                "at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
+                "attempt": int(row.attempt or 1),
+                "url": row.url[:500] if isinstance(row.url, str) and row.url.startswith("https://") else None,
+                "message": _crosspost_status_message(row.status),
+            }
+            for row in rows
+        ]
+        return {
+            "schema": "tgfarm.delivery-incident.v1",
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "post_id": post_public_id,
+            "post_status": str(post.status or "unknown"),
+            "platform": platform,
+            "latest_status": history[0]["status"] if history else "not_attempted",
+            "latest_message": history[0]["message"] if history else "В журнале нет попыток отправки для этой площадки.",
+            "attempt_count": len(history),
+            "history": history,
+            "privacy": {
+                "includes_post_text": False,
+                "includes_raw_provider_errors": False,
+                "includes_credentials_or_tokens": False,
+                "includes_account_profile": False,
+            },
+        }
 
 
 def _crossposts(limit: int) -> list[dict]:
