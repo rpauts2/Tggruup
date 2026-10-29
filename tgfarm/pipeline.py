@@ -965,7 +965,7 @@ def _weekly_portfolio_insight_lines(report: dict, limit: int = 3) -> list[str]:
     for item in candidates[:max(0, int(limit))]:
         lift_pct = float(item.get("lift") or 0) * 100
         dimension = dimensions.get(str(item.get("dimension") or ""), str(item.get("dimension") or "параметр"))
-        key = str(item.get("key") or "без названия").replace("\\n", " ").strip()[:55]
+        key = " ".join(str(item.get("key") or "без названия").split())[:55]
         lines.append(
             f"• {item['channel_title']}: {dimension} «{key}» → "
             f"{labels[item['decision']]} ({lift_pct:+.1f} п.п., n={int(item.get('sample_size') or 0)})"
