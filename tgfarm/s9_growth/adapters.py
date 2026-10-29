@@ -1300,6 +1300,258 @@ class TikTokAdapter:
         )
 
 
+
+# --------------------------------------------------------------------- Reddit
+class RedditAuthError(RuntimeError):
+    """OAuth credentials were rejected before a post could be submitted."""
+
+
+class RedditAdapter:
+    """Publish native self/link posts through Reddit's OAuth Data API.
+
+    A permanent refresh token is required; Reddit usernames/passwords are never
+    stored or sent by this adapter. The default target is one configured
+    subreddit, with an optional per-payload override for controlled workflows.
+    """
+
+    platform = "reddit"
+    max_title = 300
+    max_body = 40_000
+    token_url = "https://www.reddit.com/api/v1/access_token"
+    submit_url = "https://oauth.reddit.com/api/submit"
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self._token = ""
+        self._token_expires_at = 0.0
+        self._token_lock = asyncio.Lock()
+
+    def _credentials(self) -> tuple[str, str, str, str, str]:
+        settings = get_settings()
+        return (
+            settings.reddit_client_id.strip(),
+            settings.reddit_client_secret.strip(),
+            settings.reddit_refresh_token.strip(),
+            settings.reddit_subreddit.strip(),
+            settings.reddit_user_agent.strip(),
+        )
+
+    def configured(self) -> bool:
+        client_id, client_secret, refresh_token, subreddit, user_agent = self._credentials()
+        return bool(
+            client_id
+            and client_secret
+            and refresh_token
+            and subreddit
+            and user_agent
+            and "/u/YOUR_REDDIT_USERNAME" not in user_agent
+        )
+
+    async def _access_token(self) -> str:
+        import time
+
+        import httpx
+
+        client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
+        if not (client_id and client_secret and refresh_token and user_agent):
+            raise RedditAuthError("Reddit OAuth credentials are incomplete.")
+
+        now = time.monotonic()
+        if self._token and self._token_expires_at > now + 30:
+            return self._token
+
+        async with self._token_lock:
+            now = time.monotonic()
+            if self._token and self._token_expires_at > now + 30:
+                return self._token
+
+            async with httpx.AsyncClient(
+                timeout=20.0,
+                headers={"User-Agent": user_agent},
+                auth=(client_id, client_secret),
+            ) as client:
+                response = await client.post(
+                    self.token_url,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                )
+                response.raise_for_status()
+                body = response.json()
+
+            token = str(body.get("access_token") or "")
+            if body.get("error") or not token:
+                # This request only refreshes credentials; no submission has
+                # happened, so classify it as a permanent setup/auth issue.
+                raise RedditAuthError("Reddit OAuth rejected the refresh token.")
+            try:
+                lifetime = max(60, int(body.get("expires_in") or 3600))
+            except (TypeError, ValueError):
+                lifetime = 3600
+            self._token = token
+            self._token_expires_at = time.monotonic() + max(1, lifetime - 60)
+            return self._token
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        import re
+
+        import httpx
+
+        if not self.configured():
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        _client_id, _client_secret, _refresh_token, default_subreddit, user_agent = self._credentials()
+        meta = payload.meta or {}
+        subreddit = str(meta.get("subreddit") or default_subreddit).strip()
+        if subreddit.lower().startswith("r/"):
+            subreddit = subreddit[2:]
+        if not re.fullmatch(r"[A-Za-z0-9_]{2,21}", subreddit):
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="Invalid Reddit subreddit name; use the name without r/.",
+            )
+
+        title = str(payload.title or "").strip()
+        if not title:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="Reddit posts require a non-empty title.",
+            )
+        payload = _clip(payload, self.max_title, self.max_body)
+        title = payload.title.strip()
+        kind = str(meta.get("reddit_kind") or "self").strip().lower()
+        if kind not in {"self", "link"}:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="Unsupported Reddit post kind; choose 'self' or 'link'.",
+            )
+
+        form: dict[str, str] = {
+            "api_type": "json",
+            "sr": subreddit,
+            "kind": kind,
+            "title": title,
+            "resubmit": "false",
+            "sendreplies": "true",
+            "nsfw": "false",
+            "spoiler": "false",
+        }
+        if kind == "link":
+            from urllib.parse import urlparse
+
+            link = str(payload.link or "").strip()
+            parsed = urlparse(link)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="permanent",
+                    error="Reddit link posts require a valid http(s) URL.",
+                )
+            form["url"] = link
+        else:
+            body = payload.text.strip()
+            if not body:
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="permanent",
+                    error="Reddit text posts require a body.",
+                )
+            form["text"] = body
+
+        try:
+            token = await self._access_token()
+        except Exception as exc:  # noqa: BLE001 - no post request has been made yet
+            status = "permanent" if isinstance(exc, RedditAuthError) else crosspost_error_status(exc)
+            # OAuth refresh has no publishing side effect. A timeout here is
+            # retryable, unlike an ambiguous timeout during the submit request.
+            if status == "unknown":
+                status = "failed"
+            log.warning("reddit OAuth refresh %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=(
+                    "Reddit OAuth setup was rejected."
+                    if isinstance(exc, RedditAuthError)
+                    else str(exc)[:300]
+                ),
+            )
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                headers={
+                    "User-Agent": user_agent,
+                    "Authorization": f"Bearer {token}",
+                },
+            ) as client:
+                response = await client.post(self.submit_url, data=form)
+                response.raise_for_status()
+                response_body = response.json() or {}
+        except Exception as exc:  # noqa: BLE001 - no automatic duplicate on ambiguity
+            status = crosspost_error_status(exc)
+            log.warning("reddit crosspost %s (%s)", status, type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=str(exc)[:300],
+            )
+
+        result_body = response_body.get("json") if isinstance(response_body, dict) else None
+        if not isinstance(result_body, dict):
+            result_body = response_body if isinstance(response_body, dict) else {}
+        errors = result_body.get("errors") or []
+        if errors:
+            first = errors[0]
+            if isinstance(first, (list, tuple)):
+                error_code = str(first[0] or "REDDIT_ERROR")
+                detail = str(first[1] or "Reddit rejected the submission.")
+            else:
+                error_code = "REDDIT_ERROR"
+                detail = str(first)
+            transient_codes = {"RATELIMIT", "TOO_MANY_REQUESTS", "TEMPORARY_ERROR"}
+            status = "failed" if error_code.upper() in transient_codes else "permanent"
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=f"{error_code}: {detail}"[:300],
+            )
+
+        data = result_body.get("data") or {}
+        things = data.get("things") or []
+        submitted = things[0].get("data") if things and isinstance(things[0], dict) else {}
+        submitted = submitted if isinstance(submitted, dict) else {}
+        remote_id = str(submitted.get("id") or submitted.get("name") or data.get("id") or "") or None
+        permalink = submitted.get("permalink") or data.get("url")
+        if isinstance(permalink, str) and permalink.startswith("/"):
+            permalink = f"https://www.reddit.com{permalink}"
+        url = (
+            permalink
+            if isinstance(permalink, str) and permalink.startswith(("https://", "http://"))
+            else None
+        )
+
+        if not remote_id and not url:
+            # A success-shaped but unidentifiable response is not proof that
+            # nothing was posted. S9 will mark it unknown and block auto-retry.
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Reddit returned no post identifier; verify the subreddit before retrying.",
+            )
+        return CrosspostResult(
+            platform=self.platform,
+            status="posted",
+            remote_id=remote_id,
+            url=url,
+        )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "youtube": YouTubeAdapter(),
     "tiktok": TikTokAdapter(),
