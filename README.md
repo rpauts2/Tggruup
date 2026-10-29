@@ -77,6 +77,11 @@ python -m PyInstaller packaging\tgfarm.spec --noconfirm
 # -> dist\TgFarm\TgFarm.exe
 ```
 
+### Скачать и запустить Windows portable build
+
+Сборка автоматически проверяется на Windows и прикладывается к успешному запуску CI как GitHub Actions artifact. Инструкция по скачиванию, безопасному первому запуску, настройке `.env` и включению live-публикаций: [`docs/INSTALL_WINDOWS.md`](docs/INSTALL_WINDOWS.md).
+
+
 ---
 
 ## Desktop-приложение
