@@ -28,6 +28,11 @@
     redditCandidates: [],
     redditPreview: null,
     redditBusy: false,
+    tiktokPostId: "",
+    tiktokPrepared: null,
+    tiktokBusy: false,
+    tiktokResultStatus: "",
+    shortVideoBusy: new Set(),
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -518,7 +523,7 @@
     flash: "картинка + коротко", stat: "цифра", news: "новость",
     analysis: "разбор", article: "статья", video: "видео",
   };
-  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X" };
+  const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X", youtube: "YouTube", tiktok: "TikTok", vk_clips: "VK Клипы" };
 
   function postCard(p) {
     const cover = p.cover
@@ -752,7 +757,7 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads", "linkedin"].includes(item.id) && auth.method === "oauth"
+      const authConfig = supported && ["x", "threads", "linkedin", "youtube", "tiktok"].includes(item.id) && auth.method === "oauth"
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
@@ -895,6 +900,61 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "tiktok" && !forceCredentials) {
+      const clientKey = (auth.fields || []).find((field) => field.key === "TIKTOK_CLIENT_KEY");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "TIKTOK_CLIENT_SECRET");
+      if (!clientKey?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани TikTok Client Key/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/tiktok/auth/callback";
+      const proceed = window.confirm(
+        "В TikTok Developer Portal включи Content Posting API, добавь redirect URI ниже и запроси scopes user.info.basic + video.publish. До аудита приложения публикации могут быть ограничены приватными.\n\n"
+        + callbackUri + "\n\nПродолжить подключение?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/tiktok/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("TikTok вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать TikTok OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
+    if (auth.method === "oauth" && platformId === "youtube" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала нажми «Настроить приложение» и сохрани Google OAuth Client ID/Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/youtube/auth/callback";
+      const proceed = window.confirm(
+        "В Google Cloud Console создай OAuth Client типа Web application, включи YouTube Data API v3 и добавь этот Authorized redirect URI:\n\n"
+        + callbackUri
+        + "\n\nTgFarm запросит youtube.upload и youtube.readonly. Новые загрузки по умолчанию будут Private. Продолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/youtube/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Адрес callback отличается от текущего адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Google вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать YouTube OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "x" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "X_OAUTH_CLIENT_SECRET");
@@ -937,7 +997,9 @@
     state.authPlatformId = platformId;
     const dialog = $("#platform-auth-dialog");
     $("#platform-auth-title").textContent = item.name + " · подключение";
-    $("#platform-auth-description").textContent = platformId === "x"
+    $("#platform-auth-description").textContent = platformId === "youtube"
+      ? "Введи Google OAuth Client ID и Client Secret из Google Cloud Console. Создай Web application client, включи YouTube Data API v3 и добавь callback URI панели. После сохранения нажми «Подключить через OAuth»."
+      : platformId === "x"
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
       : platformId === "threads"
         ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
@@ -967,8 +1029,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads", "linkedin"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = ["x", "threads", "linkedin"].includes(platformId);
+    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
@@ -1040,14 +1102,17 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (["x", "threads", "linkedin"].includes(platformId)) {
+      if (["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId)) {
         closePlatformAuthDialog();
+        const platformLabel = {
+          x: "OAuth-приложение X",
+          threads: "Threads App",
+          linkedin: "LinkedIn App",
+          youtube: "Google OAuth-приложение",
+          tiktok: "TikTok Developer App",
+        }[platformId] || "OAuth-приложение";
         toast(
-          platformId === "x"
-            ? "OAuth-приложение X сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-            : platformId === "threads"
-              ? "Threads App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта."
-              : "LinkedIn App сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
+          platformLabel + " сохранено. Нажми «Подключить через OAuth» для авторизации аккаунта.",
           "ok",
         );
         await refresh();
@@ -1061,7 +1126,7 @@
     } finally {
       state.authSaving = false;
       save.disabled = false;
-      save.textContent = ["x", "threads"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+      save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
       renderPlatformCards();
     }
   }
@@ -1725,6 +1790,18 @@
         <video src="/api/media/${encodeURIComponent(p.video.id)}" controls style="width:100%;border-radius:12px"></video>
       </div>` : ""}
 
+      ${p.status === "published" ? `<div class="drawer-block short-video-tools">
+        <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
+        <p class="drawer-meta">Ферма собирает оригинальный вертикальный MP4 из текста публикации. YouTube Shorts могут уходить через настроенный live-конвейер. TikTok требует отдельного просмотра и подтверждения для каждого видео.</p>
+        <div class="short-video-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(p.id)}')" ${state.shortVideoBusy.has(p.id) ? "disabled" : ""}>${p.video ? "Пересобрать MP4" : "Создать вертикальное видео"}</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareTikTok('${esc(p.id)}')">Подготовить TikTok</button>
+          ${p.video ? `<a class="btn btn-ghost btn-sm" href="/api/media/${encodeURIComponent(p.video.id)}" download="tgfarm-short-${esc(p.id)}.mp4">Скачать MP4 для VK Клипов</a>` : ""}
+          <a class="btn btn-ghost btn-sm" href="https://vk.com/clips" target="_blank" rel="noopener noreferrer">Открыть VK Клипы ↗</a>
+        </div>
+        <p class="drawer-meta">VK Клипы: TgFarm подготавливает MP4 и передаёт его для ручной загрузки. Не выдаём обычный пост VK за публикацию в ленте Клипов.</p>
+      </div>` : ""}
+
       <div class="drawer-block"><h4>Текст</h4><div class="drawer-text">${esc(p.text)}</div></div>
 
       ${p.format_reason ? `<div class="drawer-block"><h4>Почему такой формат</h4>
@@ -1773,6 +1850,210 @@
 
       <div id="editor-slot"></div>
       <div id="preview-slot"></div>`;
+  }
+
+  function setTikTokPublishStatus(message, kind = "") {
+    const element = $("#tiktok-publish-status");
+    if (!element) return;
+    element.textContent = message || "";
+    element.className = "platform-auth-message" + (kind ? " is-" + kind : "");
+  }
+
+  const TIKTOK_PRIVACY_LABELS = {
+    PUBLIC_TO_EVERYONE: "Все",
+    MUTUAL_FOLLOW_FRIENDS: "Взаимные подписчики",
+    FOLLOWER_OF_CREATOR: "Подписчики",
+    SELF_ONLY: "Только я",
+  };
+
+  function updateTikTokPublishControls() {
+    const consent = $("#tiktok-publish-consent")?.checked === true;
+    const caption = $("#tiktok-publish-caption")?.value || "";
+    const privacy = $("#tiktok-publish-privacy")?.value || "";
+    const count = $("#tiktok-caption-count");
+    if (count) {
+      count.textContent = `${caption.length} / 2200 UTF-16`;
+      count.classList.toggle("is-over-limit", caption.length > 2200);
+    }
+    const submit = $("#tiktok-publish-submit");
+    if (submit) {
+      const frozen = ["posted", "unknown", "permanent", "failed"].includes(state.tiktokResultStatus);
+      submit.disabled = state.tiktokBusy || frozen || !consent || caption.length === 0 || caption.length > 2200
+        || !privacy || state.tiktokPrepared?.live !== true;
+      submit.textContent = state.tiktokBusy ? "Отправляю…" : frozen
+        ? (state.tiktokResultStatus === "posted" ? "Публикация подтверждена" : "Проверить результат вручную")
+        : "Опубликовать сейчас";
+    }
+  }
+
+  function closeTikTokPublishDialog() {
+    const dialog = $("#tiktok-publish-dialog");
+    if (state.tiktokBusy) {
+      setTikTokPublishStatus("Отправка выполняется. Не запускай повторную публикацию; дождись результата.", "warn");
+      return;
+    }
+    if (dialog?.open) dialog.close();
+    const video = $("#tiktok-publish-video");
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+    state.tiktokPostId = "";
+    state.tiktokPrepared = null;
+    state.tiktokResultStatus = "";
+  }
+
+  window.tgfarmRenderShort = async (postId) => {
+    if (!postId || state.shortVideoBusy.has(postId)) return;
+    state.shortVideoBusy.add(postId);
+    try {
+      const result = await post(`/api/posts/${encodeURIComponent(postId)}/video/render`, {});
+      toast(
+        `Вертикальный MP4 готов: ${Math.round(result.artifact.duration_s)} с · ${n(result.artifact.bytes)} байт`,
+        "ok",
+      );
+      await openDrawer(postId);
+      await refresh();
+    } catch (error) {
+      toast("Не удалось создать видео: " + (error?.message || error), "err");
+    } finally {
+      state.shortVideoBusy.delete(postId);
+      // Re-render the drawer after clearing the busy flag so the primary
+      // action is immediately usable again without requiring a page refresh.
+      if (!$("#drawer").hidden) await openDrawer(postId);
+    }
+  };
+
+  window.tgfarmPrepareTikTok = async (postId) => {
+    if (!postId || state.tiktokBusy) return;
+    state.tiktokPostId = postId;
+    state.tiktokPrepared = null;
+    state.tiktokResultStatus = "";
+    const dialog = $("#tiktok-publish-dialog");
+    $("#tiktok-publish-title").textContent = "Подготовка TikTok · " + postId;
+    $("#tiktok-publish-account").textContent = "Проверяю OAuth, видео и свежие настройки приватности…";
+    $("#tiktok-publish-warning").textContent = "";
+    $("#tiktok-publish-permissions").textContent = "";
+    $("#tiktok-publish-caption").value = "";
+    $("#tiktok-publish-consent").checked = false;
+    $("#tiktok-publish-privacy").innerHTML = "";
+    $("#tiktok-publish-download").hidden = true;
+    $("#tiktok-publish-video-fallback").hidden = true;
+    setTikTokPublishStatus("Подготавливаю видео. Публикация не начнётся без отдельного подтверждения.");
+    updateTikTokPublishControls();
+    if (!dialog.open) dialog.showModal();
+    try {
+      const prepared = await post(`/api/posts/${encodeURIComponent(postId)}/tiktok/prepare`, {});
+      state.tiktokPrepared = prepared;
+      const creator = prepared.creator || {};
+      const username = creator.username ? "@" + creator.username : (creator.nickname || "TikTok creator");
+      $("#tiktok-publish-account").textContent = "Аккаунт: " + username;
+      $("#tiktok-publish-warning").textContent = prepared.warning || "";
+      const video = $("#tiktok-publish-video");
+      const mediaUrl = typeof prepared.download_url === "string" && prepared.download_url.startsWith("/api/media/")
+        ? prepared.download_url : "";
+      if (video && mediaUrl) {
+        video.src = mediaUrl;
+        video.load();
+      } else {
+        $("#tiktok-publish-video-fallback").hidden = false;
+      }
+      const download = $("#tiktok-publish-download");
+      if (download && mediaUrl) {
+        download.href = mediaUrl;
+        download.hidden = false;
+      }
+      const select = $("#tiktok-publish-privacy");
+      const options = Array.isArray(creator.privacy_level_options) ? creator.privacy_level_options : [];
+      select.innerHTML = options.map((value) =>
+        `<option value="${esc(value)}">${esc(TIKTOK_PRIVACY_LABELS[value] || value)}</option>`
+      ).join("");
+      if (prepared.live && options.includes("PUBLIC_TO_EVERYONE")) {
+        select.value = "PUBLIC_TO_EVERYONE";
+      } else if (options.includes("SELF_ONLY")) {
+        select.value = "SELF_ONLY";
+      } else if (options.length) {
+        select.value = options[0];
+      }
+      const controls = [];
+      if (creator.comment_disabled) controls.push("Комментарии закрыты настройками аккаунта.");
+      if (creator.duet_disabled) controls.push("Duet недоступен.");
+      if (creator.stitch_disabled) controls.push("Stitch недоступен.");
+      if (creator.max_video_post_duration_sec) controls.push("Максимальная длительность аккаунта: " + creator.max_video_post_duration_sec + " с.");
+      $("#tiktok-publish-permissions").textContent = controls.join(" ");
+      $("#tiktok-publish-caption").value = prepared.caption || "";
+      $("#tiktok-publish-consent").checked = false;
+      setTikTokPublishStatus(
+        prepared.live
+          ? "Проверь превью, подпись и приватность. Только после отметки подтверждения начнётся отправка."
+          : "Режим не live: можно подготовить и просмотреть видео, но публикация заблокирована.",
+        prepared.live ? "" : "warn",
+      );
+      updateTikTokPublishControls();
+    } catch (error) {
+      state.tiktokPrepared = null;
+      setTikTokPublishStatus("Подготовка не удалась: " + (error?.message || error), "err");
+      updateTikTokPublishControls();
+    }
+  };
+
+  async function submitTikTokPublish(event) {
+    event?.preventDefault();
+    if (state.tiktokBusy || !state.tiktokPostId || !state.tiktokPrepared) return;
+    if (!$("#tiktok-publish-consent")?.checked) {
+      setTikTokPublishStatus("Поставь отметку подтверждения именно для этого видео.", "err");
+      return;
+    }
+    const caption = $("#tiktok-publish-caption").value || "";
+    const privacy = $("#tiktok-publish-privacy").value || "";
+    if (!caption.trim() || caption.length > 2200 || !privacy) {
+      setTikTokPublishStatus("Проверь подпись (не больше 2200 UTF-16 units) и приватность.", "err");
+      return;
+    }
+    const postId = state.tiktokPostId;
+    state.tiktokBusy = true;
+    const close = $("#tiktok-publish-close");
+    const cancel = $("#tiktok-publish-cancel");
+    if (close) close.disabled = true;
+    if (cancel) cancel.disabled = true;
+    setTikTokPublishStatus("Отправляю видео через TikTok Content Posting API…");
+    updateTikTokPublishControls();
+    try {
+      const result = await post(`/api/posts/${encodeURIComponent(postId)}/tiktok/publish`, {
+        caption,
+        privacy_level: privacy,
+        consent: true,
+      });
+      state.tiktokResultStatus = result.status || "unknown";
+      if (result.status === "posted") {
+        const url = safeExternalUrl(result.url);
+        setTikTokPublishStatus(
+          (result.detail || "TikTok подтвердил публикацию.")
+          + (url ? " Ссылка: " + url : " ID: " + (result.remote_id || "не предоставлен")),
+          "ok",
+        );
+        toast("TikTok подтвердил публикацию", "ok");
+      } else if (result.status === "unknown") {
+        setTikTokPublishStatus(
+          "Результат не подтверждён. Не запускай повтор. Проверь профиль TikTok; запись доставки сохранена для сверки.",
+          "warn",
+        );
+        toast("TikTok: результат требует сверки, автоматический повтор заблокирован", "err");
+      } else {
+        setTikTokPublishStatus(result.error || result.detail || "TikTok не подтвердил публикацию.", "err");
+        toast("TikTok не подтвердил публикацию", "err");
+      }
+      await refresh();
+      updateTikTokPublishControls();
+    } catch (error) {
+      setTikTokPublishStatus("Ошибка запроса: " + (error?.message || error), "err");
+    } finally {
+      state.tiktokBusy = false;
+      if (close) close.disabled = false;
+      if (cancel) cancel.disabled = false;
+      updateTikTokPublishControls();
+    }
   }
 
   const EDITABLE = new Set(["draft", "gated", "scheduled", "rejected"]);
@@ -2168,7 +2449,7 @@
 
   window.tgfarmSetPostFilter = (status) => {
     state.postFilter = status || "";
-    $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x.dataset.status === state.postFilter));
+    $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x.dataset.status === state.postFilter));
     refresh();
   };
 
@@ -2192,8 +2473,8 @@
   /* ---------------------------------------------------------------- wiring */
   function switchView(view) {
     state.view = view;
-    $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
-    $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    $(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
+    $(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so
@@ -2207,10 +2488,10 @@
     if (window.pywebview && window.pywebview.api) return window.pywebview.api.launch_cycle();
     return runCycle();
   };
-  $$("#run-cycle")[0].addEventListener("click", window.tgfarmHostCycle);
+  $("#run-cycle")[0].addEventListener("click", window.tgfarmHostCycle);
 
-  $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
-  $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
+  $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
   $("#crosspost-filter")?.addEventListener("change", (event) => {
     state.crosspostFilter = event.target.value || "all";
@@ -2239,10 +2520,10 @@
     }
   });
 
-  $$("#post-filters button").forEach((b) =>
+  $("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
       state.postFilter = b.dataset.status;
-      $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
+      $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
 
@@ -2266,6 +2547,25 @@
     state.authSaving = false;
     state.authPlatformId = "";
   });
+
+  $("#tiktok-publish-form")?.addEventListener("submit", submitTikTokPublish);
+  $("#tiktok-publish-close")?.addEventListener("click", closeTikTokPublishDialog);
+  $("#tiktok-publish-cancel")?.addEventListener("click", closeTikTokPublishDialog);
+  $("#tiktok-publish-dialog")?.addEventListener("cancel", (event) => {
+    if (state.tiktokBusy) {
+      event.preventDefault();
+      setTikTokPublishStatus("Отправка выполняется. Дождись результата, чтобы не потерять статус.", "warn");
+    }
+  });
+  $("#tiktok-publish-dialog")?.addEventListener("close", () => {
+    if (!state.tiktokBusy) {
+      state.tiktokPostId = "";
+      state.tiktokPrepared = null;
+    }
+  });
+  $("#tiktok-publish-caption")?.addEventListener("input", updateTikTokPublishControls);
+  $("#tiktok-publish-privacy")?.addEventListener("change", updateTikTokPublishControls);
+  $("#tiktok-publish-consent")?.addEventListener("change", updateTikTokPublishControls);
 
   $("#platform-search")?.addEventListener("input", (event) => {
     state.platformQuery = event.target.value || "";

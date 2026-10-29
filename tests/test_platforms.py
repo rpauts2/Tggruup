@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -50,10 +50,24 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"
     }
     assert entries["reddit"]["planned"] is False
-    assert entries["youtube"]["supported"] is False
-    assert entries["youtube"]["planned"] is True
-    assert entries["tiktok"]["supported"] is False
-    assert entries["tiktok"]["planned"] is True
+    assert entries["youtube"]["supported"] is True
+    assert entries["youtube"]["planned"] is False
+    assert entries["youtube"]["enabled"] is False
+    assert entries["youtube"]["roles"] == ["video", "crosspost"]
+    assert entries["youtube"]["auth"]["method"] == "oauth"
+    assert entries["youtube"]["auth"]["integration_ready"] is True
+    assert {field["key"] for field in entries["youtube"]["auth"]["fields"]} == {
+        "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"
+    }
+    assert entries["tiktok"]["supported"] is True
+    assert entries["tiktok"]["planned"] is False
+    assert entries["tiktok"]["enabled"] is False
+    assert entries["tiktok"]["roles"] == ["video"]
+    assert entries["tiktok"]["auth"]["method"] == "oauth"
+    assert entries["tiktok"]["auth"]["integration_ready"] is True
+    assert {"TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"} == {
+        field["key"] for field in entries["tiktok"]["auth"]["fields"]
+    }
     assert entries["vk_clips"]["supported"] is False
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
@@ -81,13 +95,25 @@ def test_disabling_a_supported_network_persists_and_fails_closed(tmp_path, monke
     assert "vk: false" in raw
 
 
-def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monkeypatch):
+def test_tiktok_switch_can_be_enabled_only_after_its_adapter_is_registered(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
-        platforms.set_platform_enabled("youtube", True)
-    assert platforms.is_platform_enabled("youtube") is False
+    item = platforms.set_platform_enabled("tiktok", True)
+    assert item["enabled"] is True
+    assert item["configured"] is False
+    assert platforms.is_platform_enabled("tiktok") is True
+    item = platforms.set_platform_enabled("tiktok", False)
+    assert item["enabled"] is False
+    assert platforms.is_platform_enabled("tiktok") is False
+
+
+def test_tiktok_direct_post_is_never_a_background_crosspost_target(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    platforms.set_platform_enabled("tiktok", True)
+    assert "tiktok" not in platforms.enabled_crosspost_platforms()
 
 
 def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_path, monkeypatch):
@@ -107,13 +133,13 @@ def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypat
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
-    item = platforms.set_platform_planned("youtube", True)
+    item = platforms.set_platform_planned("instagram", True)
     assert item["planned"] is True
     assert item["supported"] is False
 
-    item = platforms.set_platform_planned("youtube", False)
+    item = platforms.set_platform_planned("instagram", False)
     assert item["planned"] is False
-    assert platforms.is_platform_enabled("youtube") is False
+    assert platforms.is_platform_enabled("tiktok") is False
 
 
 def test_disabled_crosspost_network_never_reaches_the_post_loader(monkeypatch, tmp_path):
@@ -139,7 +165,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 10
+    assert payload["summary"]["supported"] == 12
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
@@ -150,7 +176,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/youtube",
+        "/api/platforms/instagram",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )
@@ -284,9 +310,11 @@ def test_platform_auth_metadata_distinguishes_saved_keys_from_real_access(tmp_pa
     assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
 
     assert entries["dzen"]["auth"]["method"] == "browser"
-    assert entries["youtube"]["auth"]["method"] == "external"
-    assert entries["youtube"]["auth"]["integration_ready"] is False
-    assert entries["youtube"]["auth"]["status"] == "not_integrated"
+    assert entries["youtube"]["auth"]["method"] == "oauth"
+    assert entries["youtube"]["auth"]["integration_ready"] is True
+    assert {field["key"] for field in entries["youtube"]["auth"]["fields"]} == {
+        "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"
+    }
 
 
 def test_save_platform_credentials_keeps_existing_values_and_removes_duplicate_key_lines(tmp_path, monkeypatch):
@@ -339,7 +367,7 @@ def test_reddit_metrics_report_api_is_authenticated_and_read_only(client):
     assert "просмотры" in payload["note"].lower() or "показы" in payload["note"].lower()
 
 
-def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network(client, monkeypatch):
+def test_platform_auth_check_api_requires_auth_and_supports_video_platforms(client, monkeypatch):
     import tgfarm.platform_auth as auth_module
     from tgfarm.core.apiauth import HEADER, ensure_token
 
@@ -359,12 +387,11 @@ def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network
     monkeypatch.setattr(auth_module, "check_platform_auth", fake_check)
     assert client.post("/api/platforms/vk/auth/check").status_code == 401
     headers = {HEADER: ensure_token()}
-    success = client.post("/api/platforms/vk/auth/check", headers=headers)
-    assert success.status_code == 200
-    assert success.json()["authorized"] is True
-    blocked = client.post("/api/platforms/youtube/auth/check", headers=headers)
-    assert blocked.status_code == 409
-    assert calls == ["vk"]
+    for platform_id in ("vk", "youtube", "tiktok"):
+        response = client.post(f"/api/platforms/{platform_id}/auth/check", headers=headers)
+        assert response.status_code == 200
+        assert response.json()["authorized"] is True
+    assert calls == ["vk", "youtube", "tiktok"]
 
 
 def test_platform_credentials_api_never_echoes_submitted_secret(client, monkeypatch):

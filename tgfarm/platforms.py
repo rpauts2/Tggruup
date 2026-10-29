@@ -107,18 +107,18 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "youtube", "name": "YouTube", "symbol": "YT", "color": "#FF0033",
         "category": "Видео", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["video"],
-        "description": "Видео, Shorts, заголовки, описания и обложки. Нужен отдельный видеопайплайн.",
-        "requirements": "Google OAuth, YouTube Data API и квота загрузок.",
+        "mode": "built_in", "roles": ["video", "crosspost"],
+        "description": "Загрузка оригинальных MP4/Shorts через YouTube Data API с resumable upload и OAuth; live-доставка управляется общим реестром кросспостинга.",
+        "requirements": "Google OAuth Web Client, YouTube Data API v3, youtube.upload и youtube.readonly scopes.",
         "docs_url": "https://developers.google.com/youtube/v3/docs/videos/insert",
     },
     {
         "id": "tiktok", "name": "TikTok", "symbol": "TT", "color": "#25F4EE",
         "category": "Видео", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["video"],
-        "description": "Короткие вертикальные ролики. Потребуется подготовка видео, субтитров и отдельный сценарий публикации.",
-        "requirements": "OAuth и допуск Content Posting API; отдельные настройки аудитории/публикации.",
-        "docs_url": "https://developers.tiktok.com/products/content-posting-api/",
+        "mode": "built_in", "roles": ["video"],
+        "description": "Оригинальный вертикальный MP4 через Content Posting API. Каждое видео требует отдельного просмотра и подтверждения перед Direct Post.",
+        "requirements": "TikTok App с Content Posting API, scopes user.info.basic + video.publish и разрешённым callback URL. До аудита API-публикации могут оставаться приватными.",
+        "docs_url": "https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post",
     },
     {
         "id": "instagram", "name": "Instagram", "symbol": "IG", "color": "#E4405F",
@@ -324,6 +324,25 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "X_TOKEN_EXPIRES_AT", "attribute": "x_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия токена."},
         {"key": "X_USER_ID", "attribute": "x_user_id", "label": "User ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого аккаунта."},
     ],
+    "youtube": [
+        {"key": "YOUTUBE_CLIENT_ID", "attribute": "youtube_client_id", "label": "Google OAuth Client ID", "secret": False, "placeholder": "Client ID из Google Cloud", "help": "Создай OAuth Client типа Web application, включи YouTube Data API v3 и добавь callback URI панели."},
+        {"key": "YOUTUBE_CLIENT_SECRET", "attribute": "youtube_client_secret", "label": "Google OAuth Client Secret", "secret": True, "placeholder": "Client Secret из Google Cloud", "help": "Секрет хранится в локальном .env и не показывается повторно."},
+        {"key": "YOUTUBE_ACCESS_TOKEN", "attribute": "youtube_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний OAuth access token."},
+        {"key": "YOUTUBE_REFRESH_TOKEN", "attribute": "youtube_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Долговременный токен обновления пользователя."},
+        {"key": "YOUTUBE_TOKEN_EXPIRES_AT", "attribute": "youtube_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "YOUTUBE_CHANNEL_ID", "attribute": "youtube_channel_id", "label": "Channel ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID канала, подтверждённого через Google OAuth."},
+        {"key": "YOUTUBE_CHANNEL_TITLE", "attribute": "youtube_channel_title", "label": "Channel title", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Название подтверждённого канала."},
+    ],
+    "tiktok": [
+        {"key": "TIKTOK_CLIENT_KEY", "attribute": "tiktok_client_key", "label": "TikTok Client Key", "secret": False, "placeholder": "Client Key", "help": "Приложение должно иметь Content Posting API и scope video.publish."},
+        {"key": "TIKTOK_CLIENT_SECRET", "attribute": "tiktok_client_secret", "label": "TikTok Client Secret", "secret": True, "placeholder": "Client Secret", "help": "Хранится только локально в .env."},
+        {"key": "TIKTOK_ACCESS_TOKEN", "attribute": "tiktok_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
+        {"key": "TIKTOK_REFRESH_TOKEN", "attribute": "tiktok_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний refresh token."},
+        {"key": "TIKTOK_TOKEN_EXPIRES_AT", "attribute": "tiktok_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "TIKTOK_REFRESH_TOKEN_EXPIRES_AT", "attribute": "tiktok_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+        {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
+        {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
     "threads": [
         {"key": "THREADS_APP_ID", "attribute": "threads_app_id", "label": "Threads App ID", "secret": False, "placeholder": "Meta App ID", "help": "Идентификатор Meta-приложения с добавленным продуктом Threads API."},
         {"key": "THREADS_APP_SECRET", "attribute": "threads_app_secret", "label": "Threads App Secret", "secret": True, "placeholder": "Meta App Secret", "help": "Секрет приложения. Хранится локально и не показывается повторно."},
@@ -478,7 +497,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -502,6 +521,10 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "dzen" else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
+            "Для YouTube настрой OAuth Web Client в Google Cloud, включи YouTube Data API v3 и добавь callback URI панели. Загрузка по умолчанию остаётся Private; для публикаций нужна квота Google и доступ к youtube.upload."
+            if platform_id == "youtube" else
+            "Для TikTok требуется одобренный Content Posting API и video.publish. Перед каждой прямой публикацией TgFarm показывает актуальные privacy options и ждёт отдельного подтверждения оператора."
+            if platform_id == "tiktok" else
             ("Для X, Threads или LinkedIn сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
             if platform_id in {"x", "threads", "linkedin"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
@@ -588,7 +611,7 @@ def save_platform_credentials(platform_id: str, values: dict[str, str]) -> dict[
 _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
-    "reddit", "youtube", "tiktok", "vk_clips", "instagram", "threads",
+    "reddit", "tiktok", "vk_clips", "instagram", "threads",
     "odnoklassniki", "rutube", "linkedin", "pinterest",
 ]
 
@@ -684,6 +707,32 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.vk_access_token and settings.vk_group_id:
             return True, "Данные VK заданы; реальную публикацию нужно проверить smoke-тестом."
         return False, "Нужны VK_ACCESS_TOKEN и VK_GROUP_ID."
+    if platform_id == "youtube":
+        if (
+            settings.youtube_client_id
+            and settings.youtube_client_secret
+            and settings.youtube_refresh_token
+            and settings.youtube_channel_id
+        ):
+            return True, (
+                "YouTube OAuth подтверждён для канала "
+                + (settings.youtube_channel_title or settings.youtube_channel_id)
+                + "; перед включением проверь приватность и тестовую загрузку."
+            )
+        if settings.youtube_client_id and settings.youtube_client_secret:
+            return False, "OAuth-приложение настроено; нажми «Подключить через OAuth» и подтверди канал."
+        return False, "Нужны YOUTUBE_CLIENT_ID и YOUTUBE_CLIENT_SECRET из Google Cloud."
+    if platform_id == "tiktok":
+        if (
+            settings.tiktok_client_key
+            and settings.tiktok_client_secret
+            and settings.tiktok_refresh_token
+            and settings.tiktok_open_id
+        ):
+            return True, "TikTok OAuth сохранён; перед каждой публикацией будут заново проверяться настройки автора и приватность."
+        if settings.tiktok_client_key and settings.tiktok_client_secret:
+            return False, "TikTok App настроено; подключи аккаунт через OAuth и проверь scope video.publish."
+        return False, "Нужны TIKTOK_CLIENT_KEY и TIKTOK_CLIENT_SECRET из Developer Portal."
     if platform_id == "max":
         if settings.max_access_token and settings.max_channel_id:
             return True, "Данные MAX заданы; реальную публикацию нужно проверить."
@@ -818,7 +867,13 @@ def is_platform_enabled(platform_id: str) -> bool:
 
 
 def enabled_crosspost_platforms() -> list[str]:
-    """Supported crosspost adapters whose global switches are on."""
+    """Return explicitly designated background-delivery platforms only.
+
+    A video-capable adapter is not automatically a background publisher.
+    TikTok, for example, requires a per-video preview and creator consent, and
+    remains video-only in the catalogue. YouTube Shorts opts in explicitly via
+    the crosspost role after its OAuth upload flow has been implemented.
+    """
     return [
         item["id"]
         for item in CATALOG

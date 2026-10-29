@@ -174,6 +174,35 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + acct
             authorized = True
             detail = "Mastodon OAuth подтверждён; профиль доступен. Текстовая публикация использует API с защитой от повторной отправки."
+        elif platform_id == "youtube":
+            from tgfarm.youtube_oauth import get_valid_youtube_access_token
+
+            expected_channel_id = str(settings.youtube_channel_id or "").strip()
+            if not expected_channel_id or not settings.youtube_refresh_token:
+                raise RuntimeError("Сначала подключи YouTube через Google OAuth в панели.")
+            token = await get_valid_youtube_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                payload = await _response_json(
+                    client,
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "mine": "true"},
+                )
+            items = payload.get("items") or []
+            channel = items[0] if items and isinstance(items[0], dict) else {}
+            returned_id = str(channel.get("id") or "")
+            snippet = channel.get("snippet") or {}
+            title = str(snippet.get("title") or "")
+            if not returned_id or returned_id != expected_channel_id or not title:
+                raise RuntimeError("YouTube не подтвердил ожидаемый канал. Переподключи аккаунт.")
+            account = title
+            authorized = True
+            detail = (
+                "Google OAuth и YouTube Data API подтвердили доступ к каналу. "
+                "Новый видеозагрузчик остаётся выключен, пока его не включат в панели."
+            )
         elif platform_id == "linkedin":
             from tgfarm.linkedin_oauth import get_valid_linkedin_access_token
 
@@ -214,6 +243,20 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = "@" + str(user.get("username") or user_id or user.get("id"))
             authorized = True
             detail = "X подтвердил пользовательский OAuth-токен и профиль; публикация использует права tweet.write."
+        elif platform_id == "tiktok":
+            from tgfarm.tiktok_oauth import get_tiktok_creator_info
+
+            if not settings.tiktok_open_id or not settings.tiktok_refresh_token:
+                raise RuntimeError("Сначала подключи TikTok через OAuth.")
+            creator = await get_tiktok_creator_info()
+            username = str(creator.get("username") or settings.tiktok_username or "").strip()
+            account = ("@" + username) if username else "TikTok creator"
+            authorized = True
+            detail = (
+                "TikTok OAuth подтверждён живым creator-info запросом. "
+                "Настройки приватности обновляются перед каждой публикацией; "
+                "отправка запускается только вручную из карточки поста."
+            )
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 

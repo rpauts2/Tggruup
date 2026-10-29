@@ -30,7 +30,7 @@ def test_platform_auth_alert_only_flags_enabled_configured_failures():
         _platform("telegram", auth_status="failed"),
         _platform("vk", enabled=False, auth_status="failed"),
         _platform("reddit", configured=False, auth_status="failed"),
-        _platform("youtube", supported=False, auth_status="failed"),
+        _platform("youtube", configured=False, auth_status="failed"),
     ])
 
     assert alert is not None
@@ -71,7 +71,7 @@ async def test_platform_auth_tick_checks_only_enabled_configured_supported_adapt
                 _platform("vk", auth_status="failed"),
                 _platform("vk", enabled=False),
                 _platform("dzen"),  # browser session has a separate health tick
-                _platform("youtube", supported=False),
+                _platform("youtube", configured=False),
                 _platform("bluesky", configured=False),
             ]
         },

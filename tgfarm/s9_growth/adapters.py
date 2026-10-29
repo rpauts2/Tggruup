@@ -1009,7 +1009,300 @@ class LinkedInAdapter:
             )
 
 
+# ------------------------------------------------------------------- YouTube
+class YouTubeAdapter:
+    """Resumable upload of an original MP4 to the OAuth-connected YouTube channel."""
+
+    platform = "youtube"
+    max_title = 100
+    max_body = 5000
+    upload_url = "https://www.googleapis.com/upload/youtube/v3/videos"
+
+    def _credentials(self) -> tuple[str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.youtube_refresh_token or "").strip(),
+            str(settings.youtube_client_id or "").strip(),
+            str(settings.youtube_client_secret or "").strip(),
+        )
+
+    def configured(self) -> bool:
+        settings = get_settings()
+        refresh_token, client_id, client_secret = self._credentials()
+        return bool(
+            refresh_token
+            and client_id
+            and client_secret
+            and str(settings.youtube_channel_id or "").strip()
+        )
+
+    @staticmethod
+    def _tags(title: str, text: str) -> list[str]:
+        import re
+
+        seen: set[str] = set()
+        tags: list[str] = []
+        for raw in re.findall(r"(?<!\w)#([\w\d_]{1,50})", f"{title}\n{text}", flags=re.UNICODE):
+            tag = raw.strip()
+            key = tag.casefold()
+            if not tag or key in seen:
+                continue
+            # YouTube limits the total serialized tag value to about 500 characters.
+            candidate = tags + [tag]
+            if len(",".join(candidate)) > 480:
+                break
+            seen.add(key)
+            tags.append(tag)
+            if len(tags) >= 15:
+                break
+        return tags
+
+    @staticmethod
+    def _safe_error(response, operation: str) -> CrosspostResult:
+        status = crosspost_error_status(
+            type("HTTPResponseError", (Exception,), {
+                "response": response,
+            })(f"HTTP {response.status_code}")
+        )
+        if status == "unknown":
+            error = f"YouTube {operation} returned HTTP {response.status_code}; verify the channel before retrying."
+        elif response.status_code == 429:
+            error = "YouTube rate limit reached; retry will follow the provider cooldown."
+        elif response.status_code in (401, 403):
+            error = (
+                "YouTube rejected the request. Check OAuth scopes, channel permissions, "
+                "API enablement, or upload quota."
+            )
+        else:
+            error = f"YouTube {operation} failed with HTTP {response.status_code}."
+        return CrosspostResult(
+            platform="youtube",
+            status=status,
+            error=error,
+            retry_after_seconds=crosspost_retry_after_seconds(
+                type("HTTPResponseError", (Exception,), {
+                    "response": response,
+                })(f"HTTP {response.status_code}")
+            ),
+        )
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        import httpx
+
+        from tgfarm.youtube_oauth import get_valid_youtube_access_token
+
+        if not self.configured():
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        video_path = str(
+            payload.video_path or (payload.meta or {}).get("video_path") or ""
+        ).strip()
+        path = Path(video_path) if video_path else None
+        if path is None or not path.is_file():
+            render_error = str((payload.meta or {}).get("video_render_error") or "").strip()
+            detail = (
+                f"Automatic short rendering failed: {render_error}"
+                if render_error
+                else "No rendered video asset is attached to this post. Render a short before enabling YouTube delivery."
+            )
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=redact_sensitive_text(detail, limit=300),
+            )
+        try:
+            byte_count = path.stat().st_size
+        except OSError:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="The rendered video file is no longer available.",
+            )
+        max_bytes = max(1, int(get_settings().video_max_mb)) * 1024 * 1024
+        if byte_count <= 0:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="The rendered video file is empty.",
+            )
+        if byte_count > max_bytes:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=f"Video is larger than the configured VIDEO_MAX_MB limit ({max_bytes // (1024 * 1024)} MB).",
+            )
+
+        try:
+            token = await get_valid_youtube_access_token()
+        except Exception as exc:  # noqa: BLE001 - no upload session was created yet
+            message = str(exc).lower()
+            transient = any(word in message for word in ("network", "connect", "timeout", "не удалось подключиться"))
+            return CrosspostResult(
+                platform=self.platform,
+                status="failed" if transient else "permanent",
+                error=(
+                    "YouTube OAuth refresh failed; check network and reconnect the channel if needed."
+                ),
+            )
+
+        settings = get_settings()
+        title = truncate(str(payload.title or "").strip(), self.max_title)
+        if not title:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="YouTube videos require a non-empty title.",
+            )
+        description = truncate(str(payload.text or "").strip(), self.max_body)
+        if payload.link and payload.link not in description:
+            description = truncate(f"{description}\n\nПодробнее: {payload.link}".strip(), self.max_body)
+        snippet = {
+            "title": title,
+            "description": description,
+            "categoryId": str(settings.youtube_category_id or "25"),
+            "defaultLanguage": "ru",
+            "tags": self._tags(title, description),
+        }
+        privacy = str(settings.youtube_privacy_status or "private").lower()
+        if privacy not in {"private", "unlisted", "public"}:
+            privacy = "private"
+        metadata = {
+            "snippet": snippet,
+            "status": {
+                "privacyStatus": privacy,
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Length": str(byte_count),
+            "X-Upload-Content-Type": "video/mp4",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=45.0, follow_redirects=False) as client:
+                init_response = await client.post(
+                    self.upload_url,
+                    params={"uploadType": "resumable", "part": "snippet,status"},
+                    headers=headers,
+                    json=metadata,
+                )
+                if init_response.status_code >= 400:
+                    return self._safe_error(init_response, "upload initialization")
+                session_uri = str(init_response.headers.get("Location") or "").strip()
+                from urllib.parse import urlsplit
+
+                parsed_session_uri = urlsplit(session_uri)
+                upload_host = (parsed_session_uri.hostname or "").lower()
+                allowed_upload_host = (
+                    upload_host == "www.googleapis.com"
+                    or upload_host.endswith(".googleapis.com")
+                    or upload_host == "upload.youtube.com"
+                    or upload_host.endswith(".youtube.com")
+                )
+                try:
+                    upload_port = parsed_session_uri.port
+                except ValueError:
+                    upload_port = -1
+                if (
+                    parsed_session_uri.scheme != "https"
+                    or not allowed_upload_host
+                    or parsed_session_uri.username
+                    or parsed_session_uri.password
+                    or parsed_session_uri.fragment
+                    or upload_port not in (None, 443)
+                ):
+                    return CrosspostResult(
+                        platform=self.platform,
+                        status="failed",
+                        error="YouTube returned an invalid resumable-upload destination; the video was not sent.",
+                    )
+                # The renderer keeps short-form videos small. One resumable PUT
+                # sends the entire local MP4; ambiguous failures are never retried blindly.
+                import asyncio
+
+                video_bytes = await asyncio.to_thread(path.read_bytes)
+                upload_response = await client.put(
+                    session_uri,
+                    content=video_bytes,
+                    headers={
+                        "Content-Length": str(len(video_bytes)),
+                        "Content-Type": "video/mp4",
+                    },
+                )
+                if upload_response.status_code >= 400:
+                    return self._safe_error(upload_response, "media upload")
+                try:
+                    body = upload_response.json()
+                except ValueError:
+                    body = {}
+        except httpx.RequestError as exc:
+            status = crosspost_error_status(exc)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=(
+                    "YouTube upload connection failed before confirmation; verify Studio before retrying."
+                    if status == "unknown"
+                    else "YouTube could not be reached; the upload can be retried."
+                ),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve ambiguity after an upload request
+            status = crosspost_error_status(exc)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=f"YouTube upload failed ({type(exc).__name__}); verify Studio before retrying."
+                if status == "unknown"
+                else "YouTube upload failed; review diagnostics before retrying.",
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
+            )
+
+        video_id = str(body.get("id") or "") if isinstance(body, dict) else ""
+        if not video_id:
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="YouTube returned no video ID after upload; reconcile in YouTube Studio before retrying.",
+            )
+        return CrosspostResult(
+            platform=self.platform,
+            status="posted",
+            remote_id=video_id,
+            url=f"https://www.youtube.com/watch?v={video_id}",
+        )
+
+
+class TikTokAdapter:
+    """Auth/state adapter only; background crossposting is deliberately disabled.
+
+    Direct Post is exposed through a separate endpoint that first queries current
+    creator privacy options and requires explicit consent for each specific video.
+    """
+
+    platform = "tiktok"
+
+    def configured(self) -> bool:
+        settings = get_settings()
+        return bool(
+            settings.tiktok_client_key
+            and settings.tiktok_client_secret
+            and settings.tiktok_refresh_token
+            and settings.tiktok_open_id
+        )
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        return CrosspostResult(
+            platform=self.platform,
+            status="skipped",
+            error="TikTok requires explicit per-video confirmation in the dashboard.",
+        )
+
+
 ADAPTERS: dict[str, Adapter] = {
+    "youtube": YouTubeAdapter(),
+    "tiktok": TikTokAdapter(),
     "mastodon": MastodonAdapter(),
     "bluesky": BlueskyAdapter(),
     "threads": ThreadsAdapter(),

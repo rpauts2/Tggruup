@@ -629,3 +629,20 @@
 - [ ] Проверить полный CI и offline end-to-end smoke.
 - [ ] Проверить настоящий FFmpeg encode на Windows/VPS и открыть результат глазами; CI проверяет интерфейс рендера через mock FFmpeg.
 - [ ] Следующий отдельный этап: YouTube OAuth/resumable upload, TikTok Content Posting API с разрешениями и подтверждением владельца, затем отдельный clip-specific VK workflow после подтверждения официального API-пути.
+
+
+
+### YouTube Shorts: OAuth и upload-адаптер
+
+- [x] YouTube переведён из planned в built_in, но выключен по умолчанию в config/platforms.yaml.
+- [x] Добавлен Google OAuth authorization-code flow с одноразовым state, разрешениями youtube.upload + youtube.readonly, проверкой выбранного канала и сохранением refresh token в локальный .env.
+- [x] Access token обновляется по refresh token и сохраняет ротацию локально; token values не возвращаются в карточку панели.
+- [x] Добавлен resumable video upload через YouTube Data API v3 с заголовком, описанием, тегами, категорией, remote_id и URL результата.
+- [x] Начальная приватность YouTube: private; канал не включается автоматически после OAuth.
+- [x] При включённой live-видеодоставке ферма попробует создать оригинальный Short из текста поста, если существующего видео ещё нет.
+- [x] Неоднозначный ответ/тайм-аут после запроса загрузки получает статус unknown, поэтому автоматическая система не создаёт дубль повторной отправкой.
+- [x] Добавлены тесты OAuth state/redirect, channel verification, refresh token, callback без утечки секретов, приватной загрузки, отсутствующего видео и неоднозначного upload-тайм-аута.
+- [ ] Прогнать полный CI, включая Windows build, и исправить все найденные ошибки до merge.
+- [ ] Провести контролируемую реальную загрузку на аккаунт владельца: проверить YouTube Studio, приватность, обработку и итоговый watch URL.
+- [ ] TikTok остаётся planned: следующий этап должен включать creator-info/private-level query, явное подтверждение каждого прямого поста и официальные Content Posting API scopes.
+- [ ] VK Клипы остаются planned, пока не подтверждён отдельный clip-specific publishing flow. VK wall.post не является заменой.

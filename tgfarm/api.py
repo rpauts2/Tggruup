@@ -85,6 +85,11 @@ class PlatformPlanRequest(BaseModel):
 class PlatformCredentialsRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
+class TikTokPublishRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=5000)
+    privacy_level: str = Field(min_length=1, max_length=40)
+    consent: bool = False
+
 
 class MastodonOAuthStartRequest(BaseModel):
     instance: str = Field(min_length=1, max_length=300)
@@ -262,9 +267,11 @@ def _sources() -> list[dict]:
 def _post_view(session, row: Post, *, detail: bool) -> dict:
     """Shared projection for the list and the detail endpoints."""
     channel = session.get(Channel, row.channel_id)
+    # Load all attached media: the original vertical MP4 is deliberately
+    # non-primary so it never replaces the post's cover image.
     media = session.execute(
         select(Media)
-        .where(Media.post_id == row.id, Media.is_primary.is_(True))
+        .where(Media.post_id == row.id)
         .order_by(Media.created_at.asc())
     ).scalars().all()
     stat = session.execute(
@@ -284,12 +291,17 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
     )
     # prefer a media row whose file is actually on disk
     alive = [m for m in media if Path(m.path).exists()]
-    cover = next((m for m in alive if m.kind != "video"), None) or next(
-        (m for m in media if m.kind != "video"), None
+    cover_rows = [m for m in media if m.kind != "video"]
+    alive_covers = [m for m in alive if m.kind != "video"]
+    video_rows = [m for m in media if m.kind == "video"]
+    alive_videos = [m for m in alive if m.kind == "video"]
+    cover = (
+        next((m for m in alive_covers if m.is_primary), None)
+        or next(iter(alive_covers), None)
+        or next((m for m in cover_rows if m.is_primary), None)
+        or next(iter(cover_rows), None)
     )
-    video = next((m for m in alive if m.kind == "video"), None) or next(
-        (m for m in media if m.kind == "video"), None
-    )
+    video = alive_videos[-1] if alive_videos else (video_rows[-1] if video_rows else None)
 
     platform = ((channel.platform if channel else None) or "telegram").lower()
     payload = {
@@ -1345,6 +1357,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
             "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
+            "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
+            "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1370,6 +1384,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/x/auth/callback",
             "/api/platforms/threads/auth/callback",
             "/api/platforms/linkedin/auth/callback",
+            "/api/platforms/youtube/auth/callback",
+            "/api/platforms/tiktok/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -1640,6 +1656,104 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "authorized" if result["authorized"] else "check failed",
         )
         return result
+
+    @app.post("/api/platforms/youtube/auth/start")
+    async def youtube_oauth_start(request: Request) -> dict:
+        from tgfarm.youtube_oauth import begin_youtube_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/youtube/auth/callback"
+        try:
+            return await begin_youtube_oauth(
+                settings.youtube_client_id,
+                settings.youtube_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/youtube/auth/callback")
+    async def youtube_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.youtube_oauth import cancel_youtube_oauth, complete_youtube_oauth
+
+        params = request.scope.get("tgfarm_youtube_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_youtube_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение YouTube не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_youtube_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "youtube",
+                {
+                    "YOUTUBE_CLIENT_ID": credentials["client_id"],
+                    "YOUTUBE_CLIENT_SECRET": credentials["client_secret"],
+                    "YOUTUBE_ACCESS_TOKEN": credentials["access_token"],
+                    "YOUTUBE_REFRESH_TOKEN": credentials["refresh_token"],
+                    "YOUTUBE_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "YOUTUBE_CHANNEL_ID": credentials["channel_id"],
+                    "YOUTUBE_CHANNEL_TITLE": credentials["channel_title"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "youtube",
+                True,
+                account=credentials["account"],
+                detail="YouTube OAuth подтверждён: канал проверен через YouTube Data API и токены сохранены локально.",
+            )
+            _operator("platform-auth-check", "youtube", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>YouTube подключён</h1><p>Доступ подтверждён для канала <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально и обновляются автоматически. Новые видео по умолчанию загружаются как Private. "
+                "Включай YouTube в панели только после тестовой загрузки и проверки настроек Google Cloud.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить YouTube</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001 - callback must return a safe operator-facing page
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения YouTube</h1><p>Не удалось проверить доступ. Проверь журнал диагностики и настройки OAuth.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
 
     @app.post("/api/platforms/mastodon/auth/start")
     async def mastodon_oauth_start(payload: MastodonOAuthStartRequest, request: Request) -> dict:
@@ -2023,6 +2137,261 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/tiktok/auth/start")
+    async def tiktok_oauth_start(request: Request) -> dict:
+        from tgfarm.tiktok_oauth import begin_tiktok_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/tiktok/auth/callback"
+        try:
+            return await begin_tiktok_oauth(
+                settings.tiktok_client_key,
+                settings.tiktok_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/tiktok/auth/callback")
+    async def tiktok_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials
+        from tgfarm.tiktok_oauth import cancel_tiktok_oauth, complete_tiktok_oauth
+
+        params = request.scope.get("tgfarm_tiktok_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_tiktok_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение TikTok не завершено</h1><p>Ответ OAuth неполный или авторизация отменена.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        try:
+            credentials = await complete_tiktok_oauth(state_value, code)
+            await io(save_platform_credentials, "tiktok", {
+                "TIKTOK_CLIENT_KEY": credentials["client_key"],
+                "TIKTOK_CLIENT_SECRET": credentials["client_secret"],
+                "TIKTOK_ACCESS_TOKEN": credentials["access_token"],
+                "TIKTOK_REFRESH_TOKEN": credentials["refresh_token"],
+                "TIKTOK_TOKEN_EXPIRES_AT": credentials["token_expires_at"],
+                "TIKTOK_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+                "TIKTOK_OPEN_ID": credentials["open_id"],
+                "TIKTOK_USERNAME": credentials["username"],
+            })
+            await io(
+                record_auth_check,
+                "tiktok",
+                True,
+                account=credentials["account"],
+                detail="TikTok OAuth подтверждён; creator-info будет проверяться перед каждой прямой публикацией.",
+            )
+            _operator("platform-oauth-complete", "tiktok", "TikTok account OAuth completed")
+            account = html.escape(credentials["account"] or "TikTok creator")
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>TikTok подключён</h1><p>OAuth подтвердил аккаунт <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально. Публикация запускается только после просмотра видео, настройки подписи и отдельного подтверждения.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, headers=headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>Внутренняя ошибка. Проверь конфигурацию и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=headers,
+            )
+
+    @app.post("/api/posts/{post_public_id}/video/render")
+    async def render_post_video(post_public_id: str) -> dict:
+        """Render an original vertical MP4 from an already-published post."""
+        from tgfarm.s11_video.renderer import render_post_short
+
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Короткое видео доступно после подтверждённой основной публикации.")
+        try:
+            artifact = await io(render_post_short, post_public_id)
+        except Exception as exc:  # noqa: BLE001 - no fake MP4 or fake success
+            log.warning("short video render failed (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+            ) from exc
+        refreshed = await io(_post_detail, post_public_id)
+        _operator("short-video-render", post_public_id, f"{artifact.width}x{artifact.height} {artifact.duration_s:.1f}s")
+        return {
+            "ok": True,
+            "artifact": artifact.as_dict(),
+            "video": refreshed.get("video"),
+            "download_url": (
+                f"/api/media/{refreshed['video']['id']}"
+                if refreshed.get("video") and refreshed["video"].get("id")
+                else None
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/prepare")
+    async def prepare_tiktok_post(post_public_id: str) -> dict:
+        """Prepare/preview a video and fetch the current creator privacy options."""
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, primary_video_path
+        from tgfarm.tiktok_oauth import get_tiktok_creator_info
+        from tgfarm.tiktok_publish import _truncate_utf16
+
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "Сначала включи TikTok в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "Сначала подключи TikTok через OAuth и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "TikTok Direct Post доступен после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        artifact = None
+        if not video_path:
+            from tgfarm.s11_video.renderer import render_post_short
+
+            try:
+                artifact = await io(render_post_short, post_public_id)
+                video_path = artifact.path
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=422,
+                    detail=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+                ) from exc
+            detail = await io(_post_detail, post_public_id)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(410, "Видео не найдено после подготовки.")
+        try:
+            creator = await get_tiktok_creator_info()
+        except Exception as exc:  # noqa: BLE001 - provider errors are bounded for the dashboard
+            raise HTTPException(
+                status_code=502,
+                detail=redact_sensitive_text(exc, limit=300) or "Не удалось получить настройки TikTok.",
+            ) from exc
+        caption = _truncate_utf16(
+            "\n\n".join(part for part in (str(detail.get("hook") or ""), str(detail.get("body") or "")) if part),
+            2200,
+        )
+        return {
+            "ok": True,
+            "post": post_public_id,
+            "caption": caption,
+            "video": detail.get("video"),
+            "download_url": (
+                f"/api/media/{detail['video']['id']}"
+                if detail.get("video") and detail["video"].get("id")
+                else None
+            ),
+            "artifact": artifact.as_dict() if artifact else None,
+            "creator": creator,
+            "live": get_settings().live,
+            "warning": (
+                "Проверь видео, подпись и приватность. До аудита приложения TikTok может ограничить видимость API-публикаций."
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/publish")
+    async def publish_tiktok_post(post_public_id: str, request: TikTokPublishRequest) -> dict:
+        """Submit one video after explicit consent and durable crosspost claim."""
+        from tgfarm.core.schemas import CrosspostResult
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, begin_crosspost, log_result, primary_video_path
+        from tgfarm.tiktok_publish import publish_tiktok_video
+
+        if not request.consent:
+            raise HTTPException(400, "Подтверди отправку именно этого видео в TikTok.")
+        if not get_settings().live:
+            raise HTTPException(409, "TGFARM_MODE не live. Сначала выполни контролируемый запуск в режиме live.")
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "TikTok выключен в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "TikTok OAuth не настроен. Подключи аккаунт и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Direct Post доступен только для подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(409, "Сначала подготовь видео и дождись готового MP4.")
+        attempt = await io(begin_crosspost, post_public_id, "tiktok")
+        if attempt is None:
+            raise HTTPException(409, "Для этого поста уже есть доставка/блокировка. Проверь историю TikTok перед повтором.")
+        try:
+            result = await publish_tiktok_video(
+                video_path,
+                caption=request.caption,
+                privacy_level=request.privacy_level,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unexpected failure after claim is conservatively unknown
+            log.warning("TikTok Direct Post failed unexpectedly (%s)", type(exc).__name__)
+            result = CrosspostResult(
+                platform="tiktok",
+                status="unknown",
+                error="Результат отправки не подтверждён. Проверь TikTok перед повтором.",
+            )
+        await io(log_result, post_public_id, result, attempt)
+        _operator("tiktok-direct-publish", post_public_id, f"status={result.status} privacy={request.privacy_level}")
+        return {
+            "ok": result.status == "posted",
+            "status": result.status,
+            "remote_id": result.remote_id,
+            "url": result.url,
+            "error": result.error,
+            "detail": (
+                "TikTok подтвердил публикацию."
+                if result.status == "posted"
+                else "Результат не подтверждён. Проверь TikTok вручную и не повторяй отправку, пока не убедишься, что видео отсутствует."
+                if result.status == "unknown"
+                else "TikTok не подтвердил публикацию. Исправь причину перед повтором."
+            ),
+        }
 
     @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:

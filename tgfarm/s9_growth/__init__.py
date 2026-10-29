@@ -186,11 +186,37 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         else None
     )
     video_targets = {"youtube", "tiktok", "vk_clips"}
+    video_render_error = None
+    video_requested = any(name in video_targets for name in platforms)
     video_path = (
         await to_thread(primary_video_path, post_pk)
-        if any(name in video_targets for name in platforms)
+        if video_requested
         else None
     )
+    # Once the operator enables a live video publisher, produce an original
+    # text-led short on demand. Dry-run never spends time rendering or invoking
+    # FFmpeg. If rendering fails, each video target receives a clear permanent
+    # result rather than silently publishing text as if it were a video.
+    if video_requested and settings.live and not video_path:
+        # Don't generate large files for a platform whose OAuth/credentials
+        # haven't been configured yet. The target will remain a skipped delivery
+        # until its connection is ready; rendering starts only when upload could run.
+        video_adapter_ready = any(
+            ADAPTERS.get(name) is not None and ADAPTERS[name].configured()
+            for name in platforms
+            if name in video_targets
+        )
+        if video_adapter_ready:
+            try:
+                from tgfarm.s11_video.renderer import render_post_short
+
+                artifact = await to_thread(render_post_short, post.public_id)
+                video_path = artifact.path
+            except Exception as exc:  # noqa: BLE001 - fail the media stage transparently
+                video_render_error = redact_sensitive_text(
+                    f"{type(exc).__name__}: {exc}", limit=240
+                ) or "video rendering failed"
+                log.error("video render failed for post %s (%s)", post.public_id, type(exc).__name__)
     results: list[CrosspostResult] = []
     for name in platforms:
         adapter = ADAPTERS.get(name)
@@ -218,6 +244,11 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             video_path=video_path if name in video_targets else None,
         )
         payload.platform = name
+        if name in video_targets and video_render_error:
+            payload.meta = {
+                **(payload.meta or {}),
+                "video_render_error": video_render_error,
+            }
         if settings.live:
             try:
                 result = await adapter.publish(payload)
