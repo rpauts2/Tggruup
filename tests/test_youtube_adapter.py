@@ -111,7 +111,7 @@ async def test_youtube_adapter_uses_resumable_upload_private_by_default(
     assert "selfDeclaredMadeForKids" not in metadata["status"]
 
     upload = next(call for call in FakeYouTubeClient.calls if call[0] == "PUT")
-    assert upload[1] == "https://upload.youtube.test/session/123"
+    assert upload[1] == "https://upload.youtube.com/session/123"
     assert upload[2]["content"] == video_file.read_bytes()
     assert upload[2]["headers"]["Content-Type"] == "video/mp4"
 
