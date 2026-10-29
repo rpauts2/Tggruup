@@ -275,6 +275,8 @@ class Settings(BaseSettings):
     dzen_browser: str = Field(default="chrome", alias="DZEN_BROWSER")
     dzen_headless: bool = Field(default=False, alias="DZEN_HEADLESS")
     dzen_publish_timeout_s: int = Field(default=600, alias="DZEN_PUBLISH_TIMEOUT_S")
+    # Stop retrying a primary publication after this many definite failures.
+    primary_publish_max_attempts: int = Field(default=5, alias="PRIMARY_PUBLISH_MAX_ATTEMPTS")
     dzen_login_timeout_s: int = Field(default=600, alias="DZEN_LOGIN_TIMEOUT_S")
     dzen_human_delay_ms: int = Field(default=70, alias="DZEN_HUMAN_DELAY_MS")
     # Dzen's editor is a browser session, not an API: publishing faster than one
