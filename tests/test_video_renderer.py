@@ -162,6 +162,7 @@ def test_renderer_rejects_duration_limit_shorter_than_minimum_storyboard(monkeyp
 def test_render_post_short_attaches_video_without_replacing_primary_cover(
     tmp_path, monkeypatch
 ):
+    import hashlib
     import uuid
     from types import SimpleNamespace
 
@@ -194,6 +195,7 @@ def test_render_post_short_attaches_video_without_replacing_primary_cover(
                 path=str(cover),
                 width=1280,
                 height=720,
+                sha=hashlib.sha256(cover.read_bytes()).hexdigest(),
                 is_primary=True,
             )
         )
