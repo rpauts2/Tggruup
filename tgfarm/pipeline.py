@@ -672,7 +672,7 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     )
     if backup_freshness:
         alerts.append(backup_freshness)
-    if settings.online:
+    if getattr(settings, "online", False):
         source_freshness = _source_freshness_alert(enabled_source_health, current, settings)
         if source_freshness:
             alerts.append(source_freshness)
