@@ -180,7 +180,7 @@ class QualityReport(Strict):
 
 class MediaAsset(Strict):
     kind: Literal[
-        "template", "infographic", "quote", "ai_art", "article_image", "none"
+        "template", "infographic", "quote", "ai_art", "article_image", "video", "none"
     ] = "template"
     path: str | None = None
     width: int = 0
@@ -219,6 +219,7 @@ class CrosspostPayload(Strict):
     text: str
     link: str | None = None
     image_path: str | None = None
+    video_path: str | None = None
     hashtags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
 

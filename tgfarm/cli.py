@@ -9,6 +9,7 @@
     tgfarm posts [--status X]   list generated posts
     tgfarm show <post_id>       print one post with its quality report
     tgfarm render <post_id>     (re)render the cover
+    tgfarm video-render <id>    render an original silent 9:16 MP4 from a post
     tgfarm publish <post_id>    force-publish one post now
     tgfarm reddit-test <post_id> preview or explicitly live-test Reddit crossposting
     tgfarm channels             channel inventory + today's load
@@ -345,6 +346,20 @@ def cmd_render(args) -> int:
     asset = render_for_post(draft, persona)
     persist_media(args.post_id, asset)
     _print(asset.model_dump())
+    return 0
+
+
+def cmd_video_render(args) -> int:
+    """Render an original silent vertical MP4 from a saved post."""
+    from tgfarm.s11_video.renderer import render_post_short
+
+    _bootstrap()
+    artifact = render_post_short(
+        args.post_id,
+        force=bool(args.force),
+        output_path=args.output or None,
+    )
+    _print(artifact.as_dict())
     return 0
 
 
@@ -715,6 +730,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_render = sub.add_parser("render", help="render a cover image")
     p_render.add_argument("post_id")
     p_render.set_defaults(func=cmd_render)
+
+    p_video = sub.add_parser(
+        "video-render",
+        help="render an original silent 9:16 MP4 from a saved post (requires FFmpeg)",
+    )
+    p_video.add_argument("post_id", help="public ID of a saved post")
+    p_video.add_argument("--output", default="", help="optional output .mp4 path")
+    p_video.add_argument("--force", action="store_true", help="replace an existing output file")
+    p_video.set_defaults(func=cmd_video_render)
 
     p_publish = sub.add_parser("publish", help="force-publish one post")
     p_publish.add_argument("post_id")

@@ -51,7 +51,13 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     }
     assert entries["reddit"]["planned"] is False
     assert entries["youtube"]["supported"] is False
+    assert entries["youtube"]["planned"] is True
     assert entries["tiktok"]["supported"] is False
+    assert entries["tiktok"]["planned"] is True
+    assert entries["vk_clips"]["supported"] is False
+    assert entries["vk_clips"]["planned"] is True
+    assert entries["vk_clips"]["roles"] == ["video"]
+    assert "не реализована" in entries["vk_clips"]["requirements"]
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -82,6 +88,19 @@ def test_unimplemented_network_cannot_be_activated_as_a_publisher(tmp_path, monk
     with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
         platforms.set_platform_enabled("youtube", True)
     assert platforms.is_platform_enabled("youtube") is False
+
+
+def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    catalog = {item["id"]: item for item in platforms.get_platform_catalog()["platforms"]}
+    assert catalog["vk_clips"]["planned"] is True
+    assert catalog["vk_clips"]["supported"] is False
+
+    with pytest.raises(ValueError, match="ещё нет рабочего адаптера"):
+        platforms.set_platform_enabled("vk_clips", True)
+    assert platforms.is_platform_enabled("vk_clips") is False
 
 
 def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):

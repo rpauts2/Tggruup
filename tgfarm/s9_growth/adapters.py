@@ -1045,7 +1045,35 @@ def primary_image_path(post_id: int) -> str | None:
     return None
 
 
-def build_payload(post, *, image_path: str | None = None) -> CrosspostPayload:
+def primary_video_path(post_id: int) -> str | None:
+    """Find the newest existing vertical video attached to a post."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Media as MediaRow
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        paths = session.execute(
+            select(MediaRow.path)
+            .where(
+                MediaRow.post_id == post_id,
+                MediaRow.kind == "video",
+            )
+            .order_by(MediaRow.id.desc())
+        ).scalars().all()
+
+    for raw_path in paths:
+        if raw_path and Path(raw_path).is_file():
+            return str(Path(raw_path))
+    return None
+
+
+def build_payload(
+    post,
+    *,
+    image_path: str | None = None,
+    video_path: str | None = None,
+) -> CrosspostPayload:
     """Translate a published post into a per-platform payload."""
     body = post.body.strip()
     link = _first_source_url(post.sources or [])
@@ -1055,11 +1083,15 @@ def build_payload(post, *, image_path: str | None = None) -> CrosspostPayload:
     meta = {"cta": post.cta, "post_public_id": post.public_id}
     if image_path:
         meta["image_path"] = image_path
+    if video_path:
+        meta["video_path"] = video_path
     return CrosspostPayload(
         platform="",
         title=post.hook.strip(),
         text=f"{body}\n\n{tags}".strip() if tags else body,
         link=link,
+        image_path=image_path,
+        video_path=video_path,
         meta=meta,
     )
 
