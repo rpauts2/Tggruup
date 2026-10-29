@@ -2334,6 +2334,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.post("/api/posts/{post_public_id}/tiktok/publish")
     async def publish_tiktok_post(post_public_id: str, request: TikTokPublishRequest) -> dict:
         """Submit one video after explicit consent and durable crosspost claim."""
+        from tgfarm.core.schemas import CrosspostResult
         from tgfarm.platforms import is_platform_enabled
         from tgfarm.s9_growth.adapters import ADAPTERS, begin_crosspost, log_result, primary_video_path
         from tgfarm.tiktok_publish import publish_tiktok_video
