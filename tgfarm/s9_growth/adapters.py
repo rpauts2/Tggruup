@@ -1009,11 +1009,200 @@ class LinkedInAdapter:
             )
 
 
+class YouTubeAdapter:
+    """Upload original TgFarm vertical video as a YouTube Short via the official API.
+
+    The scheduler only considers YouTube after the owner enables the built-in
+    platform. Uploads default to unlisted; changing to public is an explicit
+    operator setting in YOUTUBE_PRIVACY_STATUS.
+    """
+
+    platform = "youtube"
+    max_title = 100
+    max_body = 5000
+
+    def _credentials(self) -> tuple[str, str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.youtube_client_id or "").strip(),
+            str(settings.youtube_client_secret or "").strip(),
+            str(settings.youtube_refresh_token or "").strip(),
+            str(settings.youtube_channel_id or "").strip(),
+        )
+
+    def configured(self) -> bool:
+        return all(self._credentials())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        client_id, client_secret, refresh_token, channel_id = self._credentials()
+        if not all((client_id, client_secret, refresh_token, channel_id)):
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        raw_video = str(payload.video_path or (payload.meta or {}).get("video_path") or "").strip()
+        path = Path(raw_video).expanduser() if raw_video else None
+        if path is None or not path.is_file():
+            return CrosspostResult(
+                platform=self.platform,
+                status="failed",
+                error="Оригинальное вертикальное видео отсутствует. Повтори создание видео и затем доставку.",
+            )
+
+        settings = get_settings()
+        max_bytes = max(1, int(settings.video_max_mb)) * 1024 * 1024
+        size = path.stat().st_size
+        if size <= 0:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="YouTube upload отклонён: видеофайл пуст.",
+            )
+        if size > max_bytes:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=f"Видео больше лимита TgFarm ({settings.video_max_mb} MiB). Уменьши размер и создай ролик повторно.",
+            )
+
+        from tgfarm.youtube_oauth import get_youtube_access_token
+
+        try:
+            token = await get_youtube_access_token()
+        except Exception as exc:  # noqa: BLE001 - no media upload was started
+            log.warning("youtube token refresh failed (%s)", type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="YouTube OAuth истёк или недоступен. Переподключи канал в разделе «Площадки».",
+            )
+
+        title = truncate(str(payload.title or "").replace("\n", " ").strip(), self.max_title)
+        if not title:
+            title = truncate(path.stem.replace("_", " "), self.max_title)
+        description = truncate(str(payload.text or "").strip(), self.max_body)
+        tags: list[str] = []
+        total_tag_chars = 0
+        for raw_tag in payload.hashtags or []:
+            tag = re.sub(r"[^\w-]", "", str(raw_tag or "").lstrip("#"), flags=re.UNICODE)[:50]
+            if not tag or tag.lower() in {x.lower() for x in tags}:
+                continue
+            cost = len(tag) + (1 if tags else 0)
+            if len(tags) >= 15 or total_tag_chars + cost > 450:
+                break
+            tags.append(tag)
+            total_tag_chars += cost
+
+        privacy = str(settings.youtube_privacy_status or "unlisted").lower()
+        if privacy not in {"private", "unlisted", "public"}:
+            privacy = "unlisted"
+        snippet = {
+            "title": title,
+            "description": description,
+            "categoryId": str(settings.youtube_category_id or "28"),
+        }
+        if tags:
+            snippet["tags"] = tags
+        request_body = {
+            "snippet": snippet,
+            "status": {
+                "privacyStatus": privacy,
+                "containsSyntheticMedia": True,
+            },
+        }
+
+        import httpx
+
+        init_url = "https://www.googleapis.com/upload/youtube/v3/videos"
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+                try:
+                    init = await client.post(
+                        init_url,
+                        params={"uploadType": "resumable", "part": "snippet,status"},
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json; charset=UTF-8",
+                            "X-Upload-Content-Length": str(size),
+                            "X-Upload-Content-Type": "video/mp4",
+                        },
+                        json=request_body,
+                    )
+                    init.raise_for_status()
+                except Exception as exc:  # noqa: BLE001 - init does not send media bytes
+                    status = crosspost_error_status(exc)
+                    return CrosspostResult(
+                        platform=self.platform,
+                        status=status,
+                        error=f"YouTube upload initialization failed ({type(exc).__name__}).",
+                        retry_after_seconds=crosspost_retry_after_seconds(exc),
+                    )
+
+                upload_url = str(init.headers.get("location") or "").strip()
+                if not upload_url:
+                    return CrosspostResult(
+                        platform=self.platform,
+                        status="failed",
+                        error="YouTube не вернул URL для resumable upload. Повтори доставку.",
+                    )
+
+                # The media transfer is the irreversible step. A timeout/5xx
+                # is treated as unknown, never as permission to blindly upload twice.
+                try:
+                    video_bytes = await asyncio.to_thread(path.read_bytes)
+                    uploaded = await client.put(
+                        upload_url,
+                        content=video_bytes,
+                        headers={
+                            "Content-Length": str(size),
+                            "Content-Type": "video/mp4",
+                        },
+                    )
+                    uploaded.raise_for_status()
+                    result = uploaded.json()
+                except Exception as exc:  # noqa: BLE001 - upload completion may be ambiguous
+                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status_code is not None and 400 <= int(status_code) < 500 and int(status_code) not in {408, 425, 429}:
+                        status = "permanent"
+                    else:
+                        status = "unknown"
+                    return CrosspostResult(
+                        platform=self.platform,
+                        status=status,
+                        error=(
+                            "YouTube ответил ошибкой при передаче файла. Проверь Studio перед повтором."
+                            if status == "unknown"
+                            else f"YouTube отклонил видео (HTTP {status_code}). Исправь причину перед повтором."
+                        ),
+                        retry_after_seconds=crosspost_retry_after_seconds(exc),
+                    )
+
+            video_id = str(result.get("id") or "").strip()
+            if not video_id:
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="unknown",
+                    error="YouTube завершил upload без video ID. Проверь YouTube Studio перед повтором.",
+                )
+            return CrosspostResult(
+                platform=self.platform,
+                status="posted",
+                remote_id=video_id,
+                url=f"https://www.youtube.com/watch?v={video_id}",
+            )
+        except httpx.RequestError as exc:
+            log.warning("youtube crosspost network failure (%s)", type(exc).__name__)
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Связь с YouTube оборвалась во время загрузки. Проверь YouTube Studio перед повтором.",
+            )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "mastodon": MastodonAdapter(),
     "bluesky": BlueskyAdapter(),
     "threads": ThreadsAdapter(),
     "linkedin": LinkedInAdapter(),
+    "youtube": YouTubeAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),
