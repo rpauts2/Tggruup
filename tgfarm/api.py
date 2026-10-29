@@ -1345,6 +1345,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
             "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
+            "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1370,6 +1371,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/x/auth/callback",
             "/api/platforms/threads/auth/callback",
             "/api/platforms/linkedin/auth/callback",
+            "/api/platforms/youtube/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -1640,6 +1642,104 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "authorized" if result["authorized"] else "check failed",
         )
         return result
+
+    @app.post("/api/platforms/youtube/auth/start")
+    async def youtube_oauth_start(request: Request) -> dict:
+        from tgfarm.youtube_oauth import begin_youtube_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/youtube/auth/callback"
+        try:
+            return await begin_youtube_oauth(
+                settings.youtube_client_id,
+                settings.youtube_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/youtube/auth/callback")
+    async def youtube_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.youtube_oauth import cancel_youtube_oauth, complete_youtube_oauth
+
+        params = request.scope.get("tgfarm_youtube_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_youtube_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение YouTube не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_youtube_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "youtube",
+                {
+                    "YOUTUBE_CLIENT_ID": credentials["client_id"],
+                    "YOUTUBE_CLIENT_SECRET": credentials["client_secret"],
+                    "YOUTUBE_ACCESS_TOKEN": credentials["access_token"],
+                    "YOUTUBE_REFRESH_TOKEN": credentials["refresh_token"],
+                    "YOUTUBE_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "YOUTUBE_CHANNEL_ID": credentials["channel_id"],
+                    "YOUTUBE_CHANNEL_TITLE": credentials["channel_title"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "youtube",
+                True,
+                account=credentials["account"],
+                detail="YouTube OAuth подтверждён: канал проверен через YouTube Data API и токены сохранены локально.",
+            )
+            _operator("platform-auth-check", "youtube", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>YouTube подключён</h1><p>Доступ подтверждён для канала <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально и обновляются автоматически. Новые видео по умолчанию загружаются как Private. "
+                "Включай YouTube в панели только после тестовой загрузки и проверки настроек Google Cloud.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить YouTube</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001 - callback must return a safe operator-facing page
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения YouTube</h1><p>Не удалось проверить доступ. Проверь журнал диагностики и настройки OAuth.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
 
     @app.post("/api/platforms/mastodon/auth/start")
     async def mastodon_oauth_start(payload: MastodonOAuthStartRequest, request: Request) -> dict:
