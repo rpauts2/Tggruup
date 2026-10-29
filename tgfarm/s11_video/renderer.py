@@ -309,7 +309,7 @@ def render_short_video(
         )
         command = [
             binary, "-hide_banner", "-loglevel", "error", "-y",
-            "-framerate", f"1/{scene_seconds:g}", "-start_number", "0",
+            "-framerate", f"{FPS}/{frames_per_scene}", "-start_number", "0",
             "-i", str(input_pattern), "-vf", vf, "-an", "-c:v", "libx264",
             "-preset", "medium", "-crf", "23", "-r", str(FPS),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(target),
