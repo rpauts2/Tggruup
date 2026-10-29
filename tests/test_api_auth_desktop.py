@@ -141,6 +141,18 @@ def test_destructive_endpoints_are_protected(client):
         assert client.post(path, json=payload).status_code == 401, path
 
 
+def test_tiktok_direct_post_requires_explicit_consent(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    response = client.post(
+        "/api/posts/this-post/tiktok/publish",
+        json={"caption": "A real short", "privacy_level": "SELF_ONLY", "consent": False},
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 400
+    assert "Подтверди отправку" in response.json()["detail"]
+
+
 def test_tiktok_oauth_callback_does_not_echo_code_and_is_not_cached(client):
     marker = "secret-tiktok-oauth-code"
     response = client.get(
