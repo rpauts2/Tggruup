@@ -931,6 +931,50 @@ def get_engine_url() -> str:
     return str(get_engine().url)
 
 
+def _weekly_portfolio_insight_lines(report: dict, limit: int = 3) -> list[str]:
+    """Format only confidence-gated portfolio recommendations for the weekly digest."""
+    labels = {
+        "promote": "усилить",
+        "reduce": "сократить",
+        "test": "проверить экспериментом",
+    }
+    dimensions = {
+        "angle": "угол подачи",
+        "hook_style": "стиль захода",
+        "format": "формат",
+    }
+    candidates = []
+    for channel in report.get("channels") or []:
+        for recommendation in channel.get("recommendations") or []:
+            decision = recommendation.get("decision")
+            if not recommendation.get("actionable") or decision not in labels:
+                continue
+            candidates.append({
+                **recommendation,
+                "channel_title": str(channel.get("title") or channel.get("channel_id") or "канал"),
+            })
+    priority = {"promote": 0, "reduce": 1, "test": 2}
+    candidates.sort(
+        key=lambda item: (
+            priority.get(item.get("decision"), 9),
+            -abs(float(item.get("lift") or 0)),
+            -int(item.get("sample_size") or 0),
+        )
+    )
+    lines = []
+    for item in candidates[:max(0, int(limit))]:
+        lift_pct = float(item.get("lift") or 0) * 100
+        dimension = dimensions.get(str(item.get("dimension") or ""), str(item.get("dimension") or "параметр"))
+        key = str(item.get("key") or "без названия").replace("\\n", " ").strip()[:55]
+        lines.append(
+            f"• {item['channel_title']}: {dimension} «{key}» → "
+            f"{labels[item['decision']]} ({lift_pct:+.1f} п.п., n={int(item.get('sample_size') or 0)})"
+        )
+    if not lines:
+        lines.append("• Пока недостаточно зрелых данных для надёжных рекомендаций; стратегия не менялась.")
+    return lines
+
+
 async def weekly_report() -> dict:
     """Sunday digest: what shipped and what looked best."""
     settings = get_settings()
@@ -939,6 +983,7 @@ async def weekly_report() -> dict:
 
     def _summary() -> dict:
         from tgfarm.s8_analytics import fleet_summary
+        from tgfarm.s8_analytics.portfolio import portfolio_report
 
         cutoff = datetime.now(UTC) - timedelta(days=7)
         with session_scope() as session:
@@ -948,17 +993,26 @@ async def weekly_report() -> dict:
                 .order_by(Post.published_at.desc())
                 .limit(3)
             ).scalars().all()
-        return {"fleet": fleet_summary(7), "recent": list(rows)}
+        try:
+            portfolio = portfolio_report(30)
+        except Exception as exc:  # noqa: BLE001 - digest should survive an analytics failure
+            log.warning("weekly portfolio report unavailable (%s)", type(exc).__name__)
+            portfolio = {}
+        return {"fleet": fleet_summary(7), "recent": list(rows), "portfolio": portfolio}
 
     data = await to_thread(_summary)
     fleet = data.get("fleet") or {}
+    portfolio = data.get("portfolio") or {}
     lines = [
         "📊 Недельный отчёт фермы",
         f"Постов: {fleet.get('posts', 0)} · просмотров: {fleet.get('views_total', 0)}"
         f" · ER: {fleet.get('avg_er', 0)}",
+        f"Данные для аналитики: {portfolio.get('measured_posts', 0)} измеренных постов за окно до 30 дней.",
+        "Рекомендации по результатам (автоматически настройки не меняются):",
+        *_weekly_portfolio_insight_lines(portfolio, limit=3),
     ]
     for hook in data.get("recent") or []:
-        lines.append(f"• {hook[:90]}")
+        lines.append(f"• Недавний пост: {hook[:90]}")
     ok = await _tg_send_text("\n".join(lines))
     return {"sent": ok}
 
