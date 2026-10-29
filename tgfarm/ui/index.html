@@ -380,6 +380,43 @@
   </form>
 </dialog>
 
+<dialog id="tiktok-publish-dialog" class="tiktok-publish-dialog platform-auth-dialog" aria-labelledby="tiktok-publish-title">
+  <form id="tiktok-publish-form" method="dialog">
+    <div class="platform-auth-dialog-head">
+      <div>
+        <span class="auth-dialog-kicker">DIRECT POST · TIKTOK</span>
+        <h2 id="tiktok-publish-title">Подготовить публикацию</h2>
+        <p id="tiktok-publish-account">Загружаем текущие настройки аккаунта…</p>
+      </div>
+      <button type="button" id="tiktok-publish-close" class="platform-auth-close" aria-label="Закрыть">×</button>
+    </div>
+    <div class="tiktok-publish-preview">
+      <video id="tiktok-publish-video" controls playsinline preload="metadata"></video>
+      <div id="tiktok-publish-video-fallback" class="empty" hidden>Видео не найдено. Закрой окно и повтори подготовку.</div>
+      <div class="tiktok-publish-warning" id="tiktok-publish-warning" role="note"></div>
+    </div>
+    <label class="field tiktok-caption-field">
+      <span>Подпись TikTok <small id="tiktok-caption-count">0 / 2200</small></span>
+      <textarea id="tiktok-publish-caption" rows="7" maxlength="5000" required></textarea>
+    </label>
+    <label class="field">
+      <span>Приватность аккаунта</span>
+      <select id="tiktok-publish-privacy" required></select>
+    </label>
+    <div class="tiktok-publish-permissions" id="tiktok-publish-permissions"></div>
+    <label class="tiktok-publish-consent">
+      <input type="checkbox" id="tiktok-publish-consent">
+      <span>Я просмотрел именно это видео, проверил подпись и приватность и подтверждаю отправку в TikTok.</span>
+    </label>
+    <div id="tiktok-publish-status" class="platform-auth-message" role="status" aria-live="polite"></div>
+    <div class="platform-auth-dialog-actions">
+      <button type="button" id="tiktok-publish-cancel" class="btn btn-ghost">Отмена</button>
+      <a id="tiktok-publish-download" class="btn btn-ghost" href="#" download="tgfarm-short.mp4" hidden>Скачать MP4</a>
+      <button type="submit" id="tiktok-publish-submit" class="btn btn-primary" disabled>Опубликовать сейчас</button>
+    </div>
+  </form>
+</dialog>
+
 <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 
 <aside class="drawer" id="drawer" hidden>
