@@ -53,7 +53,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["youtube"]["supported"] is True
     assert entries["youtube"]["planned"] is False
     assert entries["youtube"]["enabled"] is False
-    assert entries["youtube"]["roles"] == ["video"]
+    assert entries["youtube"]["roles"] == ["video", "crosspost"]
     assert entries["youtube"]["auth"]["method"] == "oauth"
     assert entries["youtube"]["auth"]["integration_ready"] is True
     assert {field["key"] for field in entries["youtube"]["auth"]["fields"]} == {
