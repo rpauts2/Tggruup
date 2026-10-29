@@ -1346,6 +1346,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
             "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
+            "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1372,6 +1373,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/threads/auth/callback",
             "/api/platforms/linkedin/auth/callback",
             "/api/platforms/youtube/auth/callback",
+            "/api/platforms/tiktok/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
