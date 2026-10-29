@@ -172,6 +172,39 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
         return None
 
 
+def _ai_budget_alert(
+    charged_calls: int,
+    daily_budget: int,
+    *,
+    online_provider_enabled: bool,
+) -> dict | None:
+    """Warn only after the configured online pipeline has actually reserved calls."""
+    if not online_provider_enabled or int(charged_calls) <= 0:
+        return None
+    used = max(0, int(charged_calls))
+    budget = max(0, int(daily_budget))
+    if budget == 0 or used >= budget:
+        return {
+            "level": "warning",
+            "code": "ai_daily_budget_exhausted",
+            "message": (
+                f"Дневной лимит онлайн-вызовов ИИ исчерпан ({used}/{budget}). "
+                "Ферма продолжит доступные офлайн-сценарии; увеличь AI_DAILY_BUDGET "
+                "или дождись следующего дня."
+            ),
+        }
+    if used / budget >= 0.8:
+        return {
+            "level": "warning",
+            "code": "ai_daily_budget_near_limit",
+            "message": (
+                f"Использовано {used} из {budget} дневных онлайн-вызовов ИИ "
+                f"({used / budget:.0%}). Проверь лимит до следующего цикла."
+            ),
+        }
+    return None
+
+
 def _queue_backlog_alerts(
     scheduled_count: int,
     gated_count: int,
@@ -872,6 +905,18 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     delivery_alert = _alert_delivery_failure_alert(last_alert_delivery)
     if delivery_alert:
         alerts.append(delivery_alert)
+    try:
+        from tgfarm.llm.policy import charged_today, has_online_provider
+
+        budget_alert = _ai_budget_alert(
+            charged_today(),
+            getattr(settings, "ai_daily_budget", 30),
+            online_provider_enabled=bool(settings.online and has_online_provider()),
+        )
+        if budget_alert:
+            alerts.append(budget_alert)
+    except Exception as exc:  # noqa: BLE001 - usage telemetry must not stop the watchdog
+        log.debug("AI budget alert projection failed (%s)", type(exc).__name__)
     try:
         alerts.extend(_disk_space_alerts(
             _configured_disk_mounts(settings),
