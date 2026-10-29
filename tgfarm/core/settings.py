@@ -369,6 +369,9 @@ class Settings(BaseSettings):
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
     # Operational alerts: the farm must say out loud when it stops shipping.
     alert_no_publish_hours: int = Field(default=3, alias="ALERT_NO_PUBLISH_HOURS")
+    # Warn when scheduled publication or editorial review queues grow beyond these limits.
+    queue_backlog_alert_threshold: int = Field(default=100, alias="QUEUE_BACKLOG_ALERT_THRESHOLD")
+    editorial_backlog_alert_threshold: int = Field(default=50, alias="EDITORIAL_BACKLOG_ALERT_THRESHOLD")
     # Where alerts go. Empty chat id = alerts stay in logs and /api/status.
     alert_chat_id: str = Field(default="", alias="ALERT_CHAT_ID")
     alert_cooldown_min: int = Field(default=30, alias="ALERT_COOLDOWN_MIN")
