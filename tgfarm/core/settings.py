@@ -396,6 +396,9 @@ class Settings(BaseSettings):
     keep_backups: int = Field(default=8, alias="KEEP_BACKUPS")
     # Warn when no successful verified snapshot exists within this window.
     backup_max_age_hours: int = Field(default=36, alias="BACKUP_MAX_AGE_HOURS")
+    # Disk free-space alerts are evaluated by the watchdog; zero disables a threshold.
+    disk_free_warn_gb: float = Field(default=10.0, alias="DISK_FREE_WARN_GB")
+    disk_free_critical_gb: float = Field(default=3.0, alias="DISK_FREE_CRITICAL_GB")
     # Cluster and data hygiene: forming clusters age out, old raw rows leave.
     stale_cluster_hours: int = Field(default=72, alias="STALE_CLUSTER_HOURS")
     retention_raw_days: int = Field(default=90, alias="RETENTION_RAW_DAYS")
