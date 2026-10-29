@@ -1790,6 +1790,18 @@
         <video src="/api/media/${encodeURIComponent(p.video.id)}" controls style="width:100%;border-radius:12px"></video>
       </div>` : ""}
 
+      ${p.status === "published" ? `<div class="drawer-block short-video-tools">
+        <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
+        <p class="drawer-meta">Ферма собирает оригинальный вертикальный MP4 из текста публикации. YouTube Shorts могут уходить через настроенный live-конвейер. TikTok требует отдельного просмотра и подтверждения для каждого видео.</p>
+        <div class="short-video-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(p.id)}')" ${state.shortVideoBusy.has(p.id) ? "disabled" : ""}>${p.video ? "Пересобрать MP4" : "Создать вертикальное видео"}</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareTikTok('${esc(p.id)}')">Подготовить TikTok</button>
+          ${p.video ? `<a class="btn btn-ghost btn-sm" href="/api/media/${encodeURIComponent(p.video.id)}" download="tgfarm-short-${esc(p.id)}.mp4">Скачать MP4 для VK Клипов</a>` : ""}
+          <a class="btn btn-ghost btn-sm" href="https://vk.com/clips" target="_blank" rel="noopener noreferrer">Открыть VK Клипы ↗</a>
+        </div>
+        <p class="drawer-meta">VK Клипы: TgFarm подготавливает MP4 и передаёт его для ручной загрузки. Не выдаём обычный пост VK за публикацию в ленте Клипов.</p>
+      </div>` : ""}
+
       <div class="drawer-block"><h4>Текст</h4><div class="drawer-text">${esc(p.text)}</div></div>
 
       ${p.format_reason ? `<div class="drawer-block"><h4>Почему такой формат</h4>
