@@ -13,10 +13,10 @@ enabled:
   threads: false
   linkedin: false
   youtube: false
+  tiktok: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
-  - tiktok
   - vk_clips
   - instagram
   - odnoklassniki
