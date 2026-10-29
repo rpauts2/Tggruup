@@ -166,3 +166,61 @@ def test_portfolio_explains_recommendation_and_confidence_semantics_after_two_we
     assert "выборка 10 постов" in angle["reason"]
     assert angle["confidence_kind"] == "shrinkage_weight_not_probability"
     assert "rather than a probability" in report["confidence_definition"]
+
+
+def test_weekly_portfolio_insights_include_only_actionable_confidence_gated_items():
+    from tgfarm.pipeline import _weekly_portfolio_insight_lines
+
+    report = {
+        "channels": [
+            {
+                "title": "Техно",
+                "recommendations": [
+                    {
+                        "dimension": "angle",
+                        "key": "общая тема",
+                        "decision": "hold",
+                        "actionable": False,
+                        "lift": 0.2,
+                        "sample_size": 2,
+                    },
+                    {
+                        "dimension": "hook_style",
+                        "key": "вопрос в начале",
+                        "decision": "test",
+                        "actionable": True,
+                        "lift": 0.03,
+                        "sample_size": 4,
+                    },
+                    {
+                        "dimension": "format",
+                        "key": "длинный разбор",
+                        "decision": "promote",
+                        "actionable": True,
+                        "lift": 0.04,
+                        "sample_size": 12,
+                    },
+                ],
+            },
+        ],
+    }
+
+    lines = _weekly_portfolio_insight_lines(report, limit=2)
+
+    assert len(lines) == 2
+    assert "усилить" in lines[0]
+    assert "длинный разбор" in lines[0]
+    assert "n=12" in lines[0]
+    assert "проверить экспериментом" in lines[1]
+    assert "вопрос в начале" in lines[1]
+    assert all("общая тема" not in line for line in lines)
+
+
+def test_weekly_portfolio_insights_fall_back_when_no_recommendation_is_actionable():
+    from tgfarm.pipeline import _weekly_portfolio_insight_lines
+
+    assert "недостаточно зрелых данных" in _weekly_portfolio_insight_lines({})[0]
+    assert "стратегия не менялась" in _weekly_portfolio_insight_lines(
+        {"channels": [{"recommendations": [{"decision": "promote", "actionable": False}]}]}
+    )[0]
+
