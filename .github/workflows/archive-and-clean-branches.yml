@@ -1,9 +1,6 @@
 name: Archive and clean non-main branches
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
