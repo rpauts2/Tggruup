@@ -108,15 +108,16 @@ def strip_token_from_query(raw_query: bytes) -> bytes:
 
 def presented_token(
     header_value: str | None,
-    query_value: str | None = None,
     cookie_value: str | None = None,
 ) -> str:
-    """Accept the token from a header, the query string, or the session cookie.
+    """Accept credentials only from the custom header or the HttpOnly session cookie.
 
-    All three exist for a reason: fetch() can set a header, a bookmarked link
-    needs the query string, and `<img src>` can do neither.
+    Query-string credentials are deliberately rejected because URLs can be copied,
+    stored in browser history, or exposed through referrer/access telemetry.
+    The dashboard uses a header for fetch(); media elements use a SameSite=Strict,
+    HttpOnly cookie because an image/video request cannot set custom headers.
     """
-    for candidate in (header_value, query_value, cookie_value):
+    for candidate in (header_value, cookie_value):
         if candidate and candidate.strip():
             return candidate.strip()
     return ""
@@ -124,7 +125,6 @@ def presented_token(
 
 def is_authorised(
     header_value: str | None,
-    query_value: str | None = None,
     cookie_value: str | None = None,
 ) -> bool:
     """Constant-time comparison so the token cannot be recovered by timing."""
@@ -132,7 +132,7 @@ def is_authorised(
     if not settings.require_api_token:
         return True
     expected = ensure_token()
-    candidate = presented_token(header_value, query_value, cookie_value)
+    candidate = presented_token(header_value, cookie_value)
     if not candidate:
         return False
     return hmac.compare_digest(candidate, expected)
