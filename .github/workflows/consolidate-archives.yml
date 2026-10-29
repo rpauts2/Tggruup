@@ -46,7 +46,7 @@ jobs:
               continue
             fi
             echo "Attempting merge: $tag"
-            if git merge --no-edit --no-ff "$tag" -m "merge: consolidate archived functionality from $tag"; then
+            if git merge -X ours --no-edit --no-ff "$tag" -m "merge: consolidate archived functionality from $tag"; then
               merged=$((merged + 1))
               echo "- Merged: `$tag`" >> "$GITHUB_STEP_SUMMARY"
             else
