@@ -132,3 +132,100 @@ def test_video_render_cli_is_registered():
     assert args.command == "video-render"
     assert args.post_id == "post-123"
     assert args.force is True
+
+
+def test_corrupt_cached_mp4_is_not_reported_as_reused(tmp_path, monkeypatch):
+    from tgfarm.s11_video import renderer
+
+    target = tmp_path / "corrupt.mp4"
+    target.write_bytes(b"not an mp4")
+    monkeypatch.setattr(renderer.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="FFmpeg не найден"):
+        renderer.render_short_video(TITLE, BODY, output_path=target)
+
+    assert not target.exists()
+
+
+def test_renderer_rejects_duration_limit_shorter_than_minimum_storyboard(monkeypatch, tmp_path):
+    from tgfarm.s11_video import renderer
+
+    monkeypatch.setattr(
+        renderer,
+        "get_settings",
+        lambda: SimpleNamespace(video_max_duration_s=2, font_path="", video_root=lambda: tmp_path),
+    )
+    with pytest.raises(ValueError, match="VIDEO_MAX_DURATION_S"):
+        renderer.render_short_video(TITLE, BODY, output_path=tmp_path / "too-short.mp4")
+
+
+def test_render_post_short_attaches_video_without_replacing_primary_cover(
+    tmp_path, monkeypatch
+):
+    import uuid
+    from types import SimpleNamespace
+
+    from tgfarm.db.models import Channel, Media, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s11_video import renderer
+
+    suffix = uuid.uuid4().hex[:8]
+    channel_id = "video_attach_" + suffix
+    public_id = "video_post_" + suffix
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"cover")
+
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="Video attach", niche="tech", platform="telegram"))
+        post = Post(
+            public_id=public_id,
+            channel_id=channel_id,
+            hook=TITLE,
+            body=BODY,
+            status="published",
+        )
+        session.add(post)
+        session.flush()
+        post_id = post.id
+        session.add(
+            Media(
+                post_id=post_id,
+                kind="template",
+                path=str(cover),
+                width=1280,
+                height=720,
+                is_primary=True,
+            )
+        )
+
+    output = tmp_path / "rendered.mp4"
+
+    def fake_render(title, body, *, output_path=None, force=False, **_kwargs):
+        output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"mock-video")
+        return renderer.ShortVideoArtifact(
+            path=str(output.resolve()),
+            title=title,
+            width=1080,
+            height=1920,
+            fps=30,
+            duration_s=10.5,
+            scene_count=3,
+            bytes=output.stat().st_size,
+            sha256="a" * 64,
+        )
+
+    monkeypatch.setattr(renderer, "render_short_video", fake_render)
+    artifact = renderer.render_post_short(public_id, output_path=output)
+
+    assert artifact.path == str(output.resolve())
+    with session_scope() as session:
+        rows = session.query(Media).filter_by(post_id=post_id).order_by(Media.id.asc()).all()
+
+    assert len(rows) == 2
+    primary = next(row for row in rows if row.is_primary)
+    video = next(row for row in rows if row.kind == "video")
+    assert primary.path == str(cover)
+    assert video.path == str(output.resolve())
+    assert video.is_primary is False
+    assert video.width == 1080 and video.height == 1920
+
