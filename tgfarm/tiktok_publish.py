@@ -51,6 +51,13 @@ def _error_code(payload: dict) -> str:
     return str(value.get("code") or "").lower() if isinstance(value, dict) else ""
 
 
+class TikTokProviderError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False, retry_after_seconds: int | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+
+
 async def _provider_json(response: httpx.Response, label: str) -> dict:
     try:
         data = response.json()
@@ -58,10 +65,23 @@ async def _provider_json(response: httpx.Response, label: str) -> dict:
         data = {}
     if response.status_code >= 400:
         if response.status_code in (401, 403):
-            raise RuntimeError(f"TikTok отклонил доступ во время {label}. Проверь токен, scope video.publish и статус приложения.")
-        if response.status_code == 429:
-            raise RuntimeError(f"TikTok ограничил частоту запросов во время {label}. Повтори позже.")
-        raise RuntimeError(f"TikTok ответил HTTP {response.status_code} во время {label}.")
+            raise TikTokProviderError(
+                f"TikTok отклонил доступ во время {label}. Проверь токен, scope video.publish и статус приложения."
+            )
+        if response.status_code in (408, 425, 429) or response.status_code >= 500:
+            retry_after = None
+            raw_retry_after = response.headers.get("Retry-After")
+            if raw_retry_after:
+                try:
+                    retry_after = min(86_400, max(1, int(float(raw_retry_after))))
+                except (TypeError, ValueError):
+                    retry_after = None
+            raise TikTokProviderError(
+                f"TikTok временно недоступен во время {label} (HTTP {response.status_code}).",
+                retryable=True,
+                retry_after_seconds=retry_after,
+            )
+        raise TikTokProviderError(f"TikTok ответил HTTP {response.status_code} во время {label}.")
     if not isinstance(data, dict):
         raise RuntimeError(f"TikTok вернул неожиданный ответ во время {label}.")
     code = _error_code(data)
@@ -73,7 +93,11 @@ async def _provider_json(response: httpx.Response, label: str) -> dict:
             "spam_risk_user_banned_from_posting": "TikTok запретил новые публикации для этого аккаунта.",
             "privacy_level_option_mismatch": "Выбранная приватность больше не доступна. Обнови параметры публикации.",
         }.get(code, f"TikTok отклонил {label} (код {code}).")
-        raise RuntimeError(message)
+        raise TikTokProviderError(
+            message,
+            retryable=code == "spam_risk_too_many_pending_share",
+            retry_after_seconds=300 if code == "spam_risk_too_many_pending_share" else None,
+        )
     return data
 
 
@@ -280,6 +304,14 @@ async def publish_tiktok_video(
                 if upload_started or publish_id
                 else "TikTok не ответил до начала передачи видео. Повтори позднее."
             ),
+            remote_id=publish_id or None,
+        )
+    except TikTokProviderError as exc:
+        return CrosspostResult(
+            platform="tiktok",
+            status="unknown" if upload_started else ("failed" if exc.retryable else "permanent"),
+            error=str(exc)[:300],
+            retry_after_seconds=None if upload_started else exc.retry_after_seconds,
             remote_id=publish_id or None,
         )
     except RuntimeError as exc:
