@@ -74,7 +74,7 @@ def test_source_freshness_alert_ignores_recent_sources_and_empty_catalog():
         SimpleNamespace(
             last_fetched_at=now - timedelta(minutes=15),
             created_at=now - timedelta(days=2),
-            min_interval_s=600,
+            min_interval_s=600, idle_streak=0, failures=0,
         ),
     ], now) is None
 
@@ -125,7 +125,7 @@ def test_source_freshness_alert_respects_long_source_intervals_and_naive_timesta
         SimpleNamespace(
             last_fetched_at=long_interval_recent,
             created_at=now - timedelta(days=3),
-            min_interval_s=24 * 60 * 60,
+            min_interval_s=24 * 60 * 60, idle_streak=0, failures=0,
         ),
     ], now) is None
 
