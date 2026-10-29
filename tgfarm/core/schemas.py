@@ -180,7 +180,7 @@ class QualityReport(Strict):
 
 class MediaAsset(Strict):
     kind: Literal[
-        "template", "infographic", "quote", "ai_art", "article_image", "none"
+        "template", "infographic", "quote", "ai_art", "article_image", "video", "none"
     ] = "template"
     path: str | None = None
     width: int = 0
