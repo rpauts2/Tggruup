@@ -45,6 +45,20 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "docs_url": "https://dev.vk.com/",
     },
     {
+        "id": "vk_clips", "name": "VK Клипы", "symbol": "VK▶", "color": "#0077FF",
+        "category": "Российские", "market": "Россия", "priority": "P1",
+        "mode": "planned", "roles": ["video"],
+        "description": (
+            "Отдельная интеграция коротких вертикальных видео. Обычный wall.post или "
+            "generic video.save не считается подтверждённой публикацией в ленту Клипов."
+        ),
+        "requirements": (
+            "Проверить официальный clip-specific upload/publish flow и права сообщества; "
+            "пока загрузка в VK Клипы не реализована."
+        ),
+        "docs_url": "https://dev.vk.com/",
+    },
+    {
         "id": "dzen", "name": "Дзен", "symbol": "Д", "color": "#F44336",
         "category": "Российские", "market": "Россия", "priority": "core",
         "mode": "built_in", "roles": ["primary"],
