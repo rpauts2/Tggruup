@@ -58,3 +58,20 @@ def test_operational_alert_summary_does_not_fail_doctor_for_warnings_only():
     assert result["errors"] == 0
     assert result["warnings"] == 1
 
+def test_doctor_network_probe_guard_respects_global_off_mode():
+    from types import SimpleNamespace
+
+    from tgfarm.diagnostics import _network_probes_allowed
+
+    assert _network_probes_allowed(SimpleNamespace(mode="off")) is False
+    assert _network_probes_allowed(SimpleNamespace(mode="off", online=False)) is False
+    assert _network_probes_allowed(SimpleNamespace(mode="dry", online=True)) is True
+    assert _network_probes_allowed(SimpleNamespace(mode="live", online=True)) is True
+
+
+def test_doctor_network_probe_guard_respects_explicit_online_flag():
+    from types import SimpleNamespace
+
+    from tgfarm.diagnostics import _network_probes_allowed
+
+    assert _network_probes_allowed(SimpleNamespace(mode="live", online=False)) is False
