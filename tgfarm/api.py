@@ -85,6 +85,11 @@ class PlatformPlanRequest(BaseModel):
 class PlatformCredentialsRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
+class TikTokPublishRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=5000)
+    privacy_level: str = Field(min_length=1, max_length=40)
+    consent: bool = False
+
 
 class MastodonOAuthStartRequest(BaseModel):
     instance: str = Field(min_length=1, max_length=300)
