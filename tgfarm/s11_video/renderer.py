@@ -323,6 +323,11 @@ def render_short_video(
         if not target.is_file() or target.stat().st_size == 0:
             target.unlink(missing_ok=True)
             raise RuntimeError("FFmpeg завершился без ошибки, но MP4 не появился.")
+        with target.open("rb") as handle:
+            header = handle.read(12)
+        if len(header) < 8 or header[4:8] != b"ftyp":
+            target.unlink(missing_ok=True)
+            raise RuntimeError("FFmpeg создал файл, который не похож на MP4.")
 
     artifact = ShortVideoArtifact(
         str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
