@@ -144,3 +144,56 @@ async def test_youtube_token_refresh_rotates_access_token_and_persists_it(monkey
     assert saved[0][1]["YOUTUBE_REFRESH_TOKEN"] == "refresh-before"
     assert int(saved[0][1]["YOUTUBE_TOKEN_EXPIRES_AT"]) > 1
     assert "private-youtube-refresh" not in repr(saved)
+
+
+def test_youtube_oauth_callback_persists_tokens_without_echoing_secrets(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tgfarm import platforms, youtube_oauth
+    from tgfarm.api import create_app
+
+    saved = []
+    checked = []
+    seen = {}
+
+    async def complete(state, code):
+        seen.update(state=state, code=code)
+        return {
+            "client_id": "google-client",
+            "client_secret": "google-secret",
+            "access_token": "private-access-token",
+            "refresh_token": "private-refresh-token",
+            "expires_at": "9999999999",
+            "channel_id": "UC-demo-channel",
+            "channel_title": "TgFarm Demo Channel",
+            "account": "TgFarm Demo Channel",
+        }
+
+    monkeypatch.setattr(youtube_oauth, "complete_youtube_oauth", complete)
+    monkeypatch.setattr(
+        platforms,
+        "save_platform_credentials",
+        lambda platform_id, values: saved.append((platform_id, values)) or {"status": "authorized"},
+    )
+    monkeypatch.setattr(
+        platforms,
+        "record_auth_check",
+        lambda *args, **kwargs: checked.append((args, kwargs)) or {"status": "authorized"},
+    )
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1:8000") as client:
+        response = client.get(
+            "/api/platforms/youtube/auth/callback?code=private-one-time-code&state=valid-state"
+        )
+
+    assert response.status_code == 200
+    assert "TgFarm Demo Channel" in response.text
+    assert "private-one-time-code" not in response.text
+    assert "private-access-token" not in response.text
+    assert "private-refresh-token" not in response.text
+    assert "google-secret" not in response.text
+    assert seen == {"state": "valid-state", "code": "private-one-time-code"}
+    assert saved[0][0] == "youtube"
+    assert saved[0][1]["YOUTUBE_CHANNEL_ID"] == "UC-demo-channel"
+    assert saved[0][1]["YOUTUBE_REFRESH_TOKEN"] == "private-refresh-token"
+    assert checked[0][0] == ("youtube", True)
+
