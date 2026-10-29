@@ -1804,6 +1804,18 @@
 
       <div class="drawer-block"><h4>Текст</h4><div class="drawer-text">${esc(p.text)}</div></div>
 
+      ${p.status === "published" ? `<div class="drawer-block short-video-tools">
+        <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
+        <p class="drawer-meta">Из текущего поста можно собрать оригинальный вертикальный MP4. YouTube загружает Shorts автоматически только при включённой площадке и live-режиме. TikTok всегда просит подтверждение перед каждой отправкой.</p>
+        <div class="short-video-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(p.id)}')" ${state.shortVideoBusy.has(p.id) ? "disabled" : ""}>${p.video ? "Пересобрать MP4" : "Создать вертикальное видео"}</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareTikTok('${esc(p.id)}')">Подготовить TikTok</button>
+          ${p.video ? `<a class="btn btn-ghost btn-sm" href="/api/media/${encodeURIComponent(p.video.id)}" download="tgfarm-short-${esc(p.id)}.mp4">Скачать MP4 для VK Клипов</a>` : ""}
+          <a class="btn btn-ghost btn-sm" href="https://vk.com/clips" target="_blank" rel="noopener noreferrer">Открыть VK Клипы ↗</a>
+        </div>
+        <p class="drawer-meta">VK Клипы: TgFarm готовит MP4 и открывает официальный экран загрузки. Прямую API-публикацию именно в ленту Клипов не заявляем, пока не подтверждён отдельный поддерживаемый endpoint.</p>
+      </div>` : ""}
+
       ${p.format_reason ? `<div class="drawer-block"><h4>Почему такой формат</h4>
         <div class="drawer-text">${esc(p.format_reason)}</div></div>` : ""}
 

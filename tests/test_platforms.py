@@ -72,6 +72,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
+    assert catalog["summary"]["supported"] == 12
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -129,7 +130,7 @@ def test_vk_clips_is_visible_as_planned_but_cannot_be_enabled_as_publisher(tmp_p
     assert platforms.is_platform_enabled("vk_clips") is False
 
 
-def test_future_network_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
+def test_future_vk_clips_can_be_added_to_the_integration_plan(tmp_path, monkeypatch):
     from tgfarm import platforms
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")

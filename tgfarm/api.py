@@ -289,7 +289,9 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
         if stat and stat.impressions
         else 0.0
     )
-    # prefer a media row whose file is actually on disk
+    # Prefer the explicit primary cover, but choose video independently.
+    # The renderer intentionally marks MP4 as non-primary so it cannot replace
+    # the article cover; filtering to primary rows would hide it from the UI.
     alive = [m for m in media if Path(m.path).exists()]
     cover_rows = [m for m in media if m.kind != "video"]
     alive_covers = [m for m in alive if m.kind != "video"]

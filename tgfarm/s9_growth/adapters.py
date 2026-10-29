@@ -13,6 +13,8 @@ Every adapter:
 
 from __future__ import annotations
 
+import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from math import ceil
@@ -1654,6 +1656,8 @@ ADAPTERS: dict[str, Adapter] = {
     "bluesky": BlueskyAdapter(),
     "threads": ThreadsAdapter(),
     "linkedin": LinkedInAdapter(),
+    "youtube": YouTubeAdapter(),
+    "tiktok": TikTokAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),
