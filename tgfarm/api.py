@@ -1317,9 +1317,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 request.scope["query_string"] = apiauth.strip_token_from_query(
                     request.scope.get("query_string", b"")
                 )
-            if not is_authorised(header, query, cookie):
+            if not is_authorised(header, cookie):
                 log.info(
-                    "401 %s header=%s query=%s cookie=%s",
+                    "401 %s header=%s query_token_rejected=%s cookie=%s",
                     path,
                     bool(header),
                     bool(query),
