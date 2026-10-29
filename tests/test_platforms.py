@@ -291,9 +291,11 @@ def test_platform_auth_metadata_distinguishes_saved_keys_from_real_access(tmp_pa
     assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
 
     assert entries["dzen"]["auth"]["method"] == "browser"
-    assert entries["youtube"]["auth"]["method"] == "external"
-    assert entries["youtube"]["auth"]["integration_ready"] is False
-    assert entries["youtube"]["auth"]["status"] == "not_integrated"
+    assert entries["youtube"]["auth"]["method"] == "oauth"
+    assert entries["youtube"]["auth"]["integration_ready"] is True
+    assert {field["key"] for field in entries["youtube"]["auth"]["fields"]} == {
+        "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"
+    }
 
 
 def test_save_platform_credentials_keeps_existing_values_and_removes_duplicate_key_lines(tmp_path, monkeypatch):
@@ -369,9 +371,12 @@ def test_platform_auth_check_api_requires_auth_and_refuses_unimplemented_network
     success = client.post("/api/platforms/vk/auth/check", headers=headers)
     assert success.status_code == 200
     assert success.json()["authorized"] is True
-    blocked = client.post("/api/platforms/youtube/auth/check", headers=headers)
+    connected = client.post("/api/platforms/youtube/auth/check", headers=headers)
+    assert connected.status_code == 200
+    assert connected.json()["authorized"] is True
+    blocked = client.post("/api/platforms/tiktok/auth/check", headers=headers)
     assert blocked.status_code == 409
-    assert calls == ["vk"]
+    assert calls == ["vk", "youtube"]
 
 
 def test_platform_credentials_api_never_echoes_submitted_secret(client, monkeypatch):
