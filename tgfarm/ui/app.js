@@ -1102,7 +1102,7 @@
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
       });
-      if (["x", "threads", "linkedin", "youtube"].includes(platformId)) {
+      if (["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId)) {
         closePlatformAuthDialog();
         const platformLabel = {
           x: "OAuth-приложение X",
@@ -1969,9 +1969,13 @@
       select.innerHTML = options.map((value) =>
         `<option value="${esc(value)}">${esc(TIKTOK_PRIVACY_LABELS[value] || value)}</option>`
       ).join("");
-      if (options.includes("SELF_ONLY") && !prepared.live) select.value = "SELF_ONLY";
-      else if (options.includes("SELF_ONLY")) select.value = "SELF_ONLY";
-      else if (options.length) select.value = options[0];
+      if (prepared.live && options.includes("PUBLIC_TO_EVERYONE")) {
+        select.value = "PUBLIC_TO_EVERYONE";
+      } else if (options.includes("SELF_ONLY")) {
+        select.value = "SELF_ONLY";
+      } else if (options.length) {
+        select.value = options[0];
+      }
       const controls = [];
       if (creator.comment_disabled) controls.push("Комментарии закрыты настройками аккаунта.");
       if (creator.duet_disabled) controls.push("Duet недоступен.");
