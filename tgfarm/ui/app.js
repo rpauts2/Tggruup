@@ -1896,6 +1896,9 @@
       toast("Не удалось создать видео: " + (error?.message || error), "err");
     } finally {
       state.shortVideoBusy.delete(postId);
+      // Re-render the drawer after clearing the busy flag so the primary
+      // action is immediately usable again without requiring a page refresh.
+      if (!$("#drawer").hidden) await openDrawer(postId);
     }
   };
 
