@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from sqlalchemy import delete
@@ -81,3 +81,39 @@ def test_usage_report_clamps_requested_period_and_handles_empty_history(monkeypa
     assert report["totals"]["calls"] == 0
     assert report["totals"]["average_latency_ms"] == 0
     assert report["daily"] == []
+
+
+def test_ai_usage_api_requires_token_and_returns_safe_report(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tgfarm.api import create_app
+    from tgfarm.core.apiauth import HEADER, ensure_token
+    from tgfarm.llm import policy
+
+    monkeypatch.setattr(
+        policy,
+        "usage_report",
+        lambda days: {
+            "period_days": days,
+            "budget_unit": "online_call_reservations",
+            "daily_budget": 5,
+            "today": {"charged": 2, "remaining": 3},
+            "totals": {"calls": 8},
+            "by_provider": [{"name": "longcat", "calls": 8}],
+            "by_stage": [],
+            "daily": [],
+        },
+    )
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1") as client:
+        assert client.get("/api/ai/usage").status_code == 401
+        response = client.get(
+            "/api/ai/usage?days=14",
+            headers={HEADER: ensure_token()},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["period_days"] == 14
+    assert payload["today"]["remaining"] == 3
+    assert "prompt" not in repr(payload).lower()
+    assert "secret" not in repr(payload).lower()
