@@ -34,7 +34,7 @@ class FakeYouTubeClient:
         self.calls.append(("POST", url, kwargs))
         return FakeResponse(
             status_code=200,
-            headers={"Location": "https://upload.youtube.test/session/123"},
+            headers={"Location": "https://upload.youtube.com/session/123"},
         )
 
     async def put(self, url, **kwargs):
