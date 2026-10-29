@@ -29,6 +29,8 @@ async def test_backup_job_verifies_snapshot_and_keeps_only_latest_backups(tmp_pa
 
     assert all(item["verified"] is True for item in results)
     assert all(item["integrity_check"] == "ok" for item in results)
+    assert all(item["restore_tested"] is True for item in results)
+    assert all(item["restore_verification"]["verified"] is True for item in results)
     assert all(item["size_bytes"] > 0 for item in results)
     assert len({item["backup"] for item in results}) == 3, "manual backups must never overwrite each other"
     backups = sorted(backup_dir.glob("tgfarm-*.db"))
@@ -38,6 +40,47 @@ async def test_backup_job_verifies_snapshot_and_keeps_only_latest_backups(tmp_pa
         with sqlite3.connect(path) as connection:
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert connection.execute("SELECT value FROM sample").fetchone()[0] == "preserve me"
+
+
+@pytest.mark.asyncio
+async def test_backup_job_restore_verification_failure_preserves_previous_backups(tmp_path, monkeypatch):
+    from tgfarm import pipeline
+    from tgfarm.db import recovery
+
+    source = tmp_path / "farm.db"
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    previous = backup_dir / "tgfarm-2026-10-01-000000-000001.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sample(value) VALUES ('source')")
+    with sqlite3.connect(previous) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sample(value) VALUES ('known good')")
+
+    monkeypatch.setattr(pipeline, "get_engine_url", lambda: f"sqlite:///{source.as_posix()}")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(backup_dir=str(backup_dir), keep_backups=1),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "verify_sqlite_backup_restore",
+        lambda _path: {
+            "verified": False,
+            "restore_tested": True,
+            "reason": "simulated restore mismatch",
+        },
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="restore verification failed"):
+        await pipeline.backup_job()
+
+    assert previous.is_file(), "do not prune a known-good backup before restore verification"
+    assert sorted(path.name for path in backup_dir.glob("tgfarm-*.db")) == [previous.name]
+    assert not list(backup_dir.glob("*.tmp"))
+    assert not list(backup_dir.glob(".tgfarm-*.tmp"))
 
 
 @pytest.mark.asyncio
@@ -249,6 +292,8 @@ async def test_backup_job_verifies_local_and_mirror_snapshots(tmp_path, monkeypa
 
     assert result["verified"] is True
     assert result["local_verified"] is True
+    assert result["restore_tested"] is True
+    assert result["restore_verification"]["verified"] is True
     assert result["mirror"]["configured"] is True
     assert result["mirror"]["verified"] is True
     assert Path(result["backup"]).is_file()
@@ -281,6 +326,8 @@ async def test_backup_job_reports_mirror_failure_but_keeps_verified_local_snapsh
 
     assert result["verified"] is False
     assert result["local_verified"] is True
+    assert result["restore_tested"] is True
+    assert result["restore_verification"]["verified"] is True
     assert result["mirror"]["verified"] is False
     assert Path(result["backup"]).is_file()
     with sqlite3.connect(result["backup"]) as connection:
@@ -318,6 +365,8 @@ async def test_backup_job_records_mirror_failure_for_watchdog_alerts(tmp_path, m
 
     assert report["verified"] is False
     assert report["local_verified"] is True
+    assert report["restore_tested"] is True
+    assert report["restore_verification"]["verified"] is True
     assert report["mirror"]["verified"] is False
     assert len(recorded) == 1
     args, kwargs = recorded[0]
