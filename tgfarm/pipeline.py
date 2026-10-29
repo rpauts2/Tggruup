@@ -281,6 +281,41 @@ def _source_health_alert(enabled_source_rows) -> dict | None:
     }
 
 
+def _platform_auth_monitor_freshness_alert(
+    last_check_at: datetime | None,
+    current: datetime,
+    max_age_hours: int,
+    *,
+    has_configured_platforms: bool,
+) -> dict | None:
+    """Report when enabled/configured platform auth monitoring has stopped running."""
+    if not has_configured_platforms:
+        return None
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    if last_check_at is None:
+        return {
+            "level": "warning",
+            "code": "platform_auth_monitor_missing",
+            "message": (
+                "Для настроенных площадок ещё нет ни одной записи проверки авторизации. "
+                "Проверь запуск scheduler и задачу platform-auth-health."
+            ),
+        }
+    stamp = last_check_at.replace(tzinfo=UTC) if last_check_at.tzinfo is None else last_check_at.astimezone(UTC)
+    age_hours = max(0.0, (current - stamp).total_seconds() / 3600)
+    threshold = max(1, int(max_age_hours))
+    if age_hours < threshold:
+        return None
+    return {
+        "level": "warning",
+        "code": "platform_auth_monitor_stale",
+        "message": (
+            f"Проверка авторизации не запускалась {age_hours:.1f} ч "
+            f"(порог {threshold} ч). Проверь scheduler и журнал platform_auth."
+        ),
+    }
+
+
 def _platform_auth_alert(platform_rows) -> dict | None:
     """Alert only for explicitly failed auth checks on enabled, configured adapters."""
     failed = [
@@ -417,6 +452,12 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
         enabled_source_health = session.execute(
             select(Source.failures, Source.last_status).where(Source.enabled.is_(True))
         ).all()
+        last_platform_auth_check_at = session.execute(
+            select(PipelineRun.created_at)
+            .where(PipelineRun.stage == "platform_auth")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         dzen_auth_fails = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.publish_error.isnot(None),
@@ -588,9 +629,29 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
     try:
         from tgfarm.platforms import get_platform_catalog
 
-        auth_alert = _platform_auth_alert(get_platform_catalog().get("platforms", []))
+        platform_rows = get_platform_catalog().get("platforms", [])
+        auth_alert = _platform_auth_alert(platform_rows)
         if auth_alert:
             alerts.append(auth_alert)
+        configured_auth_monitoring = any(
+            row.get("supported")
+            and row.get("enabled")
+            and row.get("configured")
+            and row.get("id") in {
+                "telegram", "vk", "max", "x", "reddit", "bluesky",
+                "threads", "linkedin", "mastodon",
+            }
+            for row in platform_rows
+        )
+        if settings.online:
+            freshness_alert = _platform_auth_monitor_freshness_alert(
+                last_platform_auth_check_at,
+                current,
+                getattr(settings, "platform_auth_max_age_hours", 12),
+                has_configured_platforms=configured_auth_monitoring,
+            )
+            if freshness_alert:
+                alerts.append(freshness_alert)
     except Exception as exc:  # noqa: BLE001 - health reporting must not break the dashboard
         log.debug("platform auth alert projection failed (%s)", type(exc).__name__)
     return alerts
