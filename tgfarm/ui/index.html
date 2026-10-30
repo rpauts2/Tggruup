@@ -23,7 +23,9 @@
     <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
+    <button class="tab" data-view="memory" role="tab">Память</button>
     <button class="tab" data-view="channels" role="tab">Каналы</button>
+    <button class="tab" data-view="platforms" role="tab">Площадки <span class="tab-counter" id="platforms-nav-count">5</span></button>
     <button class="tab" data-view="sources" role="tab">Источники</button>
     <button class="tab" data-view="runs" role="tab">Прогоны</button>
   </nav>
@@ -62,6 +64,27 @@
       </article>
     </div>
 
+    <article class="card">
+      <header class="card-head">
+        <h2>Разведка портфеля</h2>
+        <span class="card-sub" id="portfolio-meta">Ожидание метрик</span>
+      </header>
+      <div id="portfolio-insights" class="list">
+        <div class="empty">Собираем измеримые результаты постов.</div>
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-head">
+        <h2>Использование ИИ</h2>
+        <span class="card-sub" id="ai-usage-meta">Счётчик онлайн-вызовов, не сумма в деньгах</span>
+      </header>
+      <div id="ai-usage-kpis" class="kpis" aria-live="polite">
+        <div class="empty">Загружаем статистику использования ИИ…</div>
+      </div>
+      <div id="ai-usage-breakdown" class="kv"></div>
+    </article>
+
     <div class="grid-2">
       <article class="card">
         <header class="card-head">
@@ -79,6 +102,26 @@
         <div id="overview-queue" class="list"></div>
       </article>
     </div>
+
+    <article class="card">
+      <header class="card-head">
+        <h2>Кросспостинг</h2>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="card-sub">состояние внешних публикаций</span>
+          <label class="sr-only" for="crosspost-filter">Фильтр доставок</label>
+          <select id="crosspost-filter" class="input input-sm" aria-label="Фильтр доставок">
+            <option value="all">Все состояния</option>
+            <option value="attention">Требуют внимания</option>
+            <option value="published">Опубликовано</option>
+            <option value="errors">Ошибки</option>
+            <option value="pending">В очереди</option>
+          </select>
+          <button id="crosspost-export" class="btn btn-ghost btn-sm" type="button">Экспорт диагностики</button>
+        </div>
+      </header>
+      <div id="crosspost-health" class="delivery-health" aria-live="polite"></div>
+      <div id="crossposts-list" class="list"></div>
+    </article>
   </section>
 
   <!-- ============================================================== TRENDS -->
@@ -99,6 +142,7 @@
         <button class="is-active" data-status="">все</button>
         <button data-status="gated">прошли</button>
         <button data-status="scheduled">в очереди</button>
+        <button data-status="publish_unknown">нужна сверка</button>
         <button data-status="published">опубликованы</button>
         <button data-status="rejected">отклонены</button>
       </div>
@@ -106,9 +150,191 @@
     <div id="posts-grid" class="cards"></div>
   </section>
 
+  <!-- ============================================================= MEMORY -->
+  <section class="view" data-view="memory">
+    <article class="card">
+      <header class="card-head">
+        <h2>Память публикаций</h2>
+        <span class="card-sub" id="memory-meta">Загружаю архив…</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub" style="white-space:normal;line-height:1.6;margin:0 0 12px">
+          Поиск идёт по всему архиву TgFarm: заголовкам, текстам, сохранённым утверждениям и источникам, а не только по последним постам.
+          Ручные публикации, которых нет в базе фермы, здесь пока не отображаются.
+        </p>
+        <form id="memory-search-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Найти в прошлых публикациях</span>
+            <input id="memory-query" type="search" placeholder="Например: Aurora-X, цена, исследование, конкретный факт" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Найти</button>
+          <button class="btn btn-ghost" type="button" id="memory-reindex">Перестроить индекс</button>
+        </form>
+        <div id="memory-count" class="card-sub" style="margin:0 0 8px"></div>
+      </div>
+      <div id="memory-results" class="list">
+        <div class="empty">Загружаю полный архив публикаций…</div>
+      </div>
+    </article>
+
+    <article class="card topic-dossier-card">
+      <header class="card-head">
+        <h2>Досье темы</h2>
+        <span class="card-sub">история → обновления → продолжение</span>
+      </header>
+      <div style="padding:16px 18px 8px">
+        <p class="card-sub topic-intro">Собирает хронологию постов, свежие материалы и старые утверждения, которые стоит перепроверить. Расхождения чисел помечаются как возможные, а не как доказанная ошибка.</p>
+        <form id="topic-dossier-form" class="toolbar">
+          <label class="field" style="flex:1;min-width:220px;margin:0">
+            <span>Тема, продукт, компания или исследование</span>
+            <input id="topic-query" type="search" placeholder="Например: Orion-X, OpenAI, цена подписки" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit">Собрать досье</button>
+        </form>
+      </div>
+      <div id="topic-dossier-results" class="topic-dossier-results">
+        <div class="empty">Введи тему и нажми «Собрать досье», чтобы соединить старые публикации со свежими источниками.</div>
+      </div>
+    </article>
+  </section>
+
   <!-- ============================================================ CHANNELS -->
   <section class="view" data-view="channels">
     <div id="channels-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================ PLATFORMS -->
+  <section class="view" data-view="platforms">
+    <div class="platform-hero">
+      <div class="platform-hero-copy">
+        <div class="platform-kicker"><span class="platform-live-dot"></span> DISTRIBUTION CONTROL</div>
+        <h2>Все площадки в одном месте</h2>
+        <p>Управляй маршрутом публикаций, не копаясь в настройках. Выключенная площадка ставится на паузу: её посты не теряются и не отправляются до повторного включения.</p>
+        <div class="platform-hero-notes">
+          <span><span class="mini-check">✓</span> переключатели связаны с доставкой</span>
+          <span><span class="mini-check">✓</span> секреты не показываются в панели</span>
+          <span><span class="mini-check">✓</span> будущие сети отмечаются отдельно</span>
+        </div>
+      </div>
+      <div class="platform-hero-aside">
+        <div class="platform-hub-orbit" aria-hidden="true">
+          <span class="orbit orbit-one"></span>
+          <span class="orbit orbit-two"></span>
+          <span class="orbit-core">TF</span>
+          <span class="orbit-node orbit-node-a">VK</span>
+          <span class="orbit-node orbit-node-b">TG</span>
+          <span class="orbit-node orbit-node-c">▶</span>
+          <span class="orbit-node orbit-node-d">r/</span>
+        </div>
+        <div class="platform-hero-aside-label">СХЕМА РАСПРОСТРАНЕНИЯ</div>
+      </div>
+    </div>
+
+    <div class="platform-summary" id="platform-summary">
+      <div class="platform-summary-card"><span>Площадок включено</span><strong>—</strong><small>загрузка состояния…</small></div>
+      <div class="platform-summary-card"><span>Настройки найдены</span><strong>—</strong><small>проверка ключей и профилей</small></div>
+      <div class="platform-summary-card"><span>В плане интеграций</span><strong>—</strong><small>выбранные следующие шаги</small></div>
+      <div class="platform-summary-card"><span>Требуют настройки</span><strong>—</strong><small>включены, но не готовы</small></div>
+    </div>
+
+    <article class="card platform-control-panel">
+      <div class="platform-control-top">
+        <div>
+          <h3>Каталог площадок</h3>
+          <p>Рабочие интеграции управляются переключателем. Для остальных можно зафиксировать приоритет, но отправки не начнутся до разработки и проверки адаптера.</p>
+        </div>
+        <span class="platform-catalog-count" id="platform-catalog-count">— сетей</span>
+      </div>
+      <div class="platform-toolbar">
+        <label class="platform-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="platform-search" type="search" placeholder="Найти сеть, например Reddit или VK…" autocomplete="off">
+          <kbd>/</kbd>
+        </label>
+        <div class="segmented platform-filter-tabs" id="platform-filters" role="group" aria-label="Фильтр площадок">
+          <button class="is-active" data-platform-filter="all">Все</button>
+          <button data-platform-filter="enabled">Включены</button>
+          <button data-platform-filter="setup">Нужна настройка</button>
+          <button data-platform-filter="planned">В плане</button>
+        </div>
+      </div>
+      <div class="platform-categories" id="platform-categories" aria-label="Категории площадок"></div>
+    </article>
+
+    <div class="platform-grid" id="platforms-grid">
+      <div class="platform-loading"><span class="platform-loading-ring"></span><strong>Подключаю каталог</strong><span>Читаю состояние интеграций и настройки площадок.</span></div>
+    </div>
+
+    <div class="platform-footer-note">
+      <span class="platform-footer-icon">i</span>
+      <p id="platform-note">Проверка ключей показывает только наличие настроек. Реальную авторизацию и публикацию нужно подтверждать отдельным тестом на каждой площадке.</p>
+    </div>
+
+    <article class="card reddit-studio">
+      <div class="reddit-studio-head">
+        <div>
+          <div class="reddit-kicker">COMMUNITY SCOUT · REDDIT</div>
+          <h2>Найти своё сообщество</h2>
+          <p>Поиск subreddit по теме, сверка доступных правил и подготовка отдельного текста под выбранное сообщество. Поиск ничего не публикует.</p>
+        </div>
+        <div class="reddit-studio-mark" aria-hidden="true">r/</div>
+      </div>
+      <form id="reddit-scout-form" class="reddit-scout-form">
+        <label>
+          <span>Тема или ниша</span>
+          <input id="reddit-scout-query" type="text" maxlength="120" placeholder="Например: local AI, Python automation, indie games" required>
+        </label>
+        <label>
+          <span>ID существующего поста (уже опубликован в TgFarm)</span>
+          <input id="reddit-post-id" type="text" maxlength="120" placeholder="public_id, можно пропустить для поиска">
+        </label>
+        <button type="submit" id="reddit-scout-submit" class="btn btn-primary">
+          <span aria-hidden="true">⌕</span> Найти сообщества
+        </button>
+      </form>
+      <div id="reddit-scout-status" class="reddit-status" role="status" aria-live="polite">Для поиска нужны настройки Reddit OAuth с правом чтения. Live-публикация здесь не запускается автоматически.</div>
+      <div id="reddit-scout-results" class="reddit-scout-results"></div>
+      <section id="reddit-tailor-panel" class="reddit-tailor-panel" hidden>
+        <div class="reddit-tailor-heading">
+          <div>
+            <div class="reddit-kicker">DRAFT WORKSHOP</div>
+            <h3 id="reddit-tailor-title">Версия для сообщества</h3>
+            <p id="reddit-tailor-subtitle"></p>
+          </div>
+          <span class="reddit-review-badge">Нужна проверка</span>
+        </div>
+        <div id="reddit-tailor-notes" class="reddit-tailor-notes"></div>
+        <div id="reddit-tailor-rules" class="reddit-tailor-rules"></div>
+        <label class="reddit-draft-field">
+          <span>Заголовок Reddit</span>
+          <input id="reddit-draft-title" type="text" maxlength="300" autocomplete="off">
+        </label>
+        <label class="reddit-draft-field">
+          <span>Текст поста</span>
+          <textarea id="reddit-draft-body" rows="9" maxlength="40000"></textarea>
+        </label>
+        <div class="reddit-publish-row">
+          <p>Отправка возможна только в live-режиме, при включённом Reddit и после подтверждения. Сначала прочитай правила и проверь текст.</p>
+          <button type="button" id="reddit-publish-button" class="btn btn-primary" disabled>Опубликовать после проверки</button>
+        </div>
+        <div id="reddit-publish-result" class="reddit-publish-result" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="reddit-metrics-panel" aria-labelledby="reddit-metrics-title">
+        <div class="reddit-metrics-head">
+          <div>
+            <div class="reddit-kicker">FEEDBACK LOOP · REDDIT</div>
+            <h3 id="reddit-metrics-title">Что реально сработало</h3>
+            <p>Собираем score, комментарии и долю голосов из доступного Reddit Data API. Рейтинг Scout постепенно учитывает фактический результат, а не только описание сообщества.</p>
+          </div>
+          <button type="button" id="reddit-metrics-refresh" class="btn btn-ghost btn-sm">↻ Обновить метрики</button>
+        </div>
+        <div id="reddit-metrics-status" class="reddit-status" role="status" aria-live="polite">Статистика ещё не загружена.</div>
+        <div id="reddit-metrics-grid" class="reddit-metrics-grid">
+          <div class="reddit-empty">Пока нет сохранённых метрик. После публикации одной записи нажми «Обновить метрики».</div>
+        </div>
+      </section>
+    </article>
   </section>
 
   <!-- ============================================================= SOURCES -->
@@ -133,6 +359,63 @@
     </article>
   </section>
 </main>
+
+<dialog id="platform-auth-dialog" class="platform-auth-dialog" aria-labelledby="platform-auth-title">
+  <form id="platform-auth-form" method="dialog">
+    <div class="platform-auth-dialog-head">
+      <div>
+        <span class="auth-dialog-kicker">PLATFORM ACCESS</span>
+        <h2 id="platform-auth-title">Подключение площадки</h2>
+        <p id="platform-auth-description">Ключи хранятся в локальном .env и не отображаются после сохранения.</p>
+      </div>
+      <button type="button" id="platform-auth-close" class="platform-auth-close" aria-label="Закрыть">×</button>
+    </div>
+    <div id="platform-auth-fields" class="platform-auth-fields"></div>
+    <div id="platform-auth-message" class="platform-auth-message" role="status" aria-live="polite"></div>
+    <div class="platform-auth-dialog-actions">
+      <button type="button" id="platform-auth-cancel" class="btn btn-ghost">Закрыть</button>
+      <button type="button" id="platform-auth-check" class="btn btn-ghost" hidden>Проверить доступ</button>
+      <button type="submit" id="platform-auth-save" class="btn btn-primary">Сохранить ключи</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tiktok-publish-dialog" class="tiktok-publish-dialog platform-auth-dialog" aria-labelledby="tiktok-publish-title">
+  <form id="tiktok-publish-form" method="dialog">
+    <div class="platform-auth-dialog-head">
+      <div>
+        <span class="auth-dialog-kicker">DIRECT POST · TIKTOK</span>
+        <h2 id="tiktok-publish-title">Подготовить публикацию</h2>
+        <p id="tiktok-publish-account">Загружаем текущие настройки аккаунта…</p>
+      </div>
+      <button type="button" id="tiktok-publish-close" class="platform-auth-close" aria-label="Закрыть">×</button>
+    </div>
+    <div class="tiktok-publish-preview">
+      <video id="tiktok-publish-video" controls playsinline preload="metadata"></video>
+      <div id="tiktok-publish-video-fallback" class="empty" hidden>Видео не найдено. Закрой окно и повтори подготовку.</div>
+      <div class="tiktok-publish-warning" id="tiktok-publish-warning" role="note"></div>
+    </div>
+    <label class="field tiktok-caption-field">
+      <span>Подпись TikTok <small id="tiktok-caption-count">0 / 2200</small></span>
+      <textarea id="tiktok-publish-caption" rows="7" maxlength="5000" required></textarea>
+    </label>
+    <label class="field">
+      <span>Приватность аккаунта</span>
+      <select id="tiktok-publish-privacy" required></select>
+    </label>
+    <div class="tiktok-publish-permissions" id="tiktok-publish-permissions"></div>
+    <label class="tiktok-publish-consent">
+      <input type="checkbox" id="tiktok-publish-consent">
+      <span>Я просмотрел именно это видео, проверил подпись и приватность и подтверждаю отправку в TikTok.</span>
+    </label>
+    <div id="tiktok-publish-status" class="platform-auth-message" role="status" aria-live="polite"></div>
+    <div class="platform-auth-dialog-actions">
+      <button type="button" id="tiktok-publish-cancel" class="btn btn-ghost">Отмена</button>
+      <a id="tiktok-publish-download" class="btn btn-ghost" href="#" download="tgfarm-short.mp4" hidden>Скачать MP4</a>
+      <button type="submit" id="tiktok-publish-submit" class="btn btn-primary" disabled>Опубликовать сейчас</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 

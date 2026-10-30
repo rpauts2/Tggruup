@@ -31,6 +31,7 @@ from tgfarm.core.errors import ProviderUnavailable
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.settings import get_settings
+from tgfarm.llm.image_budget import budgeted_image_call
 
 log = get_logger(__name__)
 
@@ -113,6 +114,7 @@ class ImageProvider:
         self._quality = quality
         self._timeout = timeout
 
+    @budgeted_image_call
     async def generate(self, prompt: str, negative: str = "") -> GeneratedImage:
         if not self._base or not self._model:
             raise ProviderUnavailable("image provider not configured")
@@ -192,6 +194,7 @@ class CloudflareImageProvider:
         self._steps = min(8, max(1, steps))
         self._timeout = timeout
 
+    @budgeted_image_call
     async def generate(self, prompt: str, negative: str = "") -> GeneratedImage:
         if not self._account or not self._key or not self._model:
             raise ProviderUnavailable("Cloudflare image provider not configured")
@@ -256,6 +259,7 @@ class PollinationsImageProvider:
         self._size = size
         self._timeout = timeout
 
+    @budgeted_image_call
     async def generate(self, prompt: str, negative: str = "") -> GeneratedImage:
         import httpx
         from urllib.parse import quote

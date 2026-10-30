@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import urlparse
@@ -152,27 +153,64 @@ def to_raw(
     )
 
 
-async def collect_all(fetchers: dict[str, Collector], specs: list[SourceSpec]) -> list[RawItem]:
-    """Fetch every source concurrently, isolating per-source failures."""
+@dataclass(slots=True)
+class SourceCollectionResult:
+    """Fetch result for one configured source, including isolated failure state."""
+
+    source_id: str
+    items: list[RawItem] = field(default_factory=list)
+    error: str | None = None
+
+
+async def collect_all_detailed(
+    fetchers: dict[str, Collector],
+    specs: list[SourceSpec],
+) -> list[SourceCollectionResult]:
+    """Fetch concurrently while retaining success/error state for every source."""
     async with build_client() as client:
 
-        async def _one(spec: SourceSpec) -> list[RawItem]:
+        async def _one(spec: SourceSpec) -> SourceCollectionResult:
             fetcher = fetchers.get(spec.kind)
             if fetcher is None:
-                log.warning("no collector for kind=%s (source %s)", spec.kind, spec.id)
-                return []
+                message = f"no collector for kind={spec.kind}"
+                log.warning("collector %s: %s", spec.id, message)
+                return SourceCollectionResult(source_id=spec.id, error=message)
             try:
                 items = await fetcher.fetch(spec, client)
                 log.info("collected %-22s %3d items", spec.id, len(items))
-                return items
+                return SourceCollectionResult(source_id=spec.id, items=items)
             except Exception as exc:  # noqa: BLE001 - one bad feed must not stop the run
-                log.warning("collector %s failed: %s", spec.id, exc)
-                return []
+                message = f"{type(exc).__name__}: {exc}"
+                log.warning("collector %s failed: %s", spec.id, message)
+                return SourceCollectionResult(source_id=spec.id, error=message)
 
-        results = await asyncio.gather(*(_one(spec) for spec in specs), return_exceptions=True)
+        raw_results = await asyncio.gather(
+            *(_one(spec) for spec in specs),
+            return_exceptions=True,
+        )
 
-    flat: list[RawItem] = []
-    for result in results:
-        if isinstance(result, list):
-            flat.extend(result)
-    return flat
+    results: list[SourceCollectionResult] = []
+    for spec, result in zip(specs, raw_results):
+        if isinstance(result, SourceCollectionResult):
+            results.append(result)
+        elif isinstance(result, BaseException):
+            results.append(
+                SourceCollectionResult(
+                    source_id=spec.id,
+                    error=f"{type(result).__name__}: {result}",
+                )
+            )
+        else:
+            results.append(
+                SourceCollectionResult(
+                    source_id=spec.id,
+                    error=f"unexpected collector result: {type(result).__name__}",
+                )
+            )
+    return results
+
+
+async def collect_all(fetchers: dict[str, Collector], specs: list[SourceSpec]) -> list[RawItem]:
+    """Backward-compatible flattened view of per-source collection results."""
+    results = await collect_all_detailed(fetchers, specs)
+    return [item for result in results for item in result.items]

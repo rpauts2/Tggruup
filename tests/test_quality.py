@@ -149,6 +149,28 @@ def test_facts_gate_passes_at_the_boundary():
     assert gate_facts(draft(claims=claims), BASE_PERSONA).passed
 
 
+
+def test_facts_gate_rejects_verified_claim_from_unattached_source():
+    claim = Claim(
+        claim="Требования подтверждены",
+        source_url="https://unattached.example/story",
+        verified=True,
+    )
+    outcome = gate_facts(draft(claims=[claim]), BASE_PERSONA)
+    assert not outcome.passed
+    assert outcome.gate == "facts"
+    assert "not attached" in outcome.reason
+
+
+def test_facts_gate_accepts_same_attached_source_with_fragment_or_trailing_slash():
+    claim = Claim(
+        claim="Требования подтверждены",
+        source_url="https://t.me/example/#headline",
+        verified=True,
+    )
+    outcome = gate_facts(draft(claims=[claim]), BASE_PERSONA)
+    assert outcome.passed
+
 def test_links_gate_blocks_blacklisted_domain(db):
     from tgfarm.db.models import BlocklistEntry
     from tgfarm.db.session import session_scope

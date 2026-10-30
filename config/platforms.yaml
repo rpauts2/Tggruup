@@ -1,0 +1,24 @@
+# Глобальное управление площадками TgFarm.
+# Секреты и токены здесь не хранятся. Для каждой площадки они остаются в .env.
+# Переключатель действует на доставку; отключённые публикации остаются в очереди.
+enabled:
+  telegram: true
+  dzen: true
+  vk: true
+  max: true
+  x: true
+  reddit: false
+  bluesky: false
+  mastodon: false
+  threads: false
+  linkedin: false
+  youtube: false
+  tiktok: false
+
+# Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
+planned:
+  - vk_clips
+  - instagram
+  - odnoklassniki
+  - rutube
+  - pinterest

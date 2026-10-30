@@ -56,6 +56,7 @@ class Source(Base):
     failures: Mapped[int] = mapped_column(Integer, default=0)
     last_yield: Mapped[int] = mapped_column(Integer, default=0)
     idle_streak: Mapped[int] = mapped_column(Integer, default=0)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_sources_enabled", "enabled", "kind"),)
@@ -175,6 +176,10 @@ class Post(Base):
     variant: Mapped[str] = mapped_column(String(8), default="a")
 
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Refreshed while a worker is actively waiting on a platform/browser. The
+    # stuck detector uses this heartbeat so slow but live uploads are not
+    # incorrectly marked outcome-unknown just because they exceed the timeout.
+    publish_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tg_message_id: Mapped[int | None] = mapped_column(Integer)
     tg_chat_id: Mapped[int | None] = mapped_column(Integer)
@@ -256,11 +261,52 @@ class CrosspostLog(Base):
     url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
+    retry_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
         Index("ix_crosspost_post_platform", "post_public_id", "platform"),
     )
+
+
+class CrosspostClaim(Base):
+    """One durable in-flight claim per material/platform pair.
+
+    CrosspostLog is append-only history; its historical 'publishing' rows cannot
+    uniquely lock a pair. This separate row provides a database-enforced lock
+    across multiple TgFarm processes and survives a crash for manual reconciliation.
+    """
+    __tablename__ = "crosspost_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_public_id: Mapped[str] = mapped_column(String(32), index=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("post_public_id", "platform", name="uq_crosspost_claim_pair"),
+    )
+
+
+class RedditMetricSnapshot(Base):
+    """A bounded history of publicly available Reddit post-level feedback."""
+
+    __tablename__ = "reddit_metric_snapshots"
+    __table_args__ = (
+        Index("ix_reddit_metrics_subreddit_time", "subreddit", "collected_at"),
+        Index("ix_reddit_metrics_log_time", "crosspost_log_id", "collected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    crosspost_log_id: Mapped[int] = mapped_column(
+        ForeignKey("crosspost_logs.id", ondelete="CASCADE"), index=True
+    )
+    subreddit: Mapped[str] = mapped_column(String(32), index=True)
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    num_comments: Mapped[int] = mapped_column(Integer, default=0)
+    upvote_ratio: Mapped[float | None] = mapped_column(Float)
+    created_utc: Mapped[float | None] = mapped_column(Float)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class PipelineRun(Base):
@@ -309,6 +355,28 @@ class AIUsage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_ai_usage_day_charged", "created_at", "charged"),)
+
+
+class ImageUsage(Base):
+    """One persisted row per image-provider request attempt.
+
+    Attempts count against the daily cap even when the provider returns an
+    error, because a timeout does not prove the remote service did not bill it.
+    """
+
+    __tablename__ = "image_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    charged: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", index=True)
+    reason: Mapped[str] = mapped_column(String(80), default="")
+    error_kind: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_image_usage_day_charged", "created_at", "charged"),)
 
 
 class BlocklistEntry(Base):

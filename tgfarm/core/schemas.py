@@ -18,7 +18,7 @@ Lang = str
 Angle = Literal["news", "analysis", "why_it_matters", "comparison", "checklist", "history",
     "listicle"]
 PostStatus = Literal[
-    "draft", "gated", "scheduled", "publishing", "published", "rejected", "failed"
+    "draft", "gated", "scheduled", "publishing", "publish_unknown", "published", "rejected", "failed"
 ]
 
 
@@ -180,7 +180,7 @@ class QualityReport(Strict):
 
 class MediaAsset(Strict):
     kind: Literal[
-        "template", "infographic", "quote", "ai_art", "article_image", "none"
+        "template", "infographic", "quote", "ai_art", "article_image", "video", "none"
     ] = "template"
     path: str | None = None
     width: int = 0
@@ -219,16 +219,18 @@ class CrosspostPayload(Strict):
     text: str
     link: str | None = None
     image_path: str | None = None
+    video_path: str | None = None
     hashtags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class CrosspostResult(Strict):
     platform: str
-    status: Literal["posted", "skipped", "failed", "dry_run"]
+    status: Literal["posted", "skipped", "failed", "permanent", "unknown", "dry_run"]
     remote_id: str | None = None
     url: str | None = None
     error: str | None = None
+    retry_after_seconds: int | None = None
 
 
 class ChannelHealth(Strict):

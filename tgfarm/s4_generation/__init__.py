@@ -15,6 +15,7 @@ from __future__ import annotations
 import random
 import re
 import uuid
+from datetime import date
 
 from sqlalchemy import select
 
@@ -393,6 +394,20 @@ async def generate(
         )
 
     if decision is not None and decision.allowed:
+        # Pull archive context only when an online draft will actually be requested.
+        # The archive guides novelty, never factual grounding; S4 verification still
+        # binds every factual claim to today's source block.
+        try:
+            from tgfarm.s4_generation.topic_memory import build_topic_context
+
+            topic_memory = await to_thread(
+                build_topic_context, items, plan.channel_id
+            )
+            if topic_memory:
+                prompt = f"{prompt}\n\n{topic_memory}"
+        except Exception as exc:  # noqa: BLE001 - memory must never stall generation
+            log.warning("topic memory lookup failed: %s", exc)
+
         payload, response = await llm.complete_json(
             _DRAFT_SYSTEM,
             prompt,
@@ -480,13 +495,13 @@ async def verify(
             reason=reason,
             cluster_public_id="",
         )
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     decision = await to_thread(
         policy.reserve, "s4_verify", purpose="verify"
     )
     if not decision.allowed:
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     payload, response = await llm.complete_json(
         _VERIFY_SYSTEM, prompt, max_tokens=1600, offline_fallback=fallback
@@ -503,7 +518,7 @@ async def verify(
     claims: list[Claim] = []
     raw_claims = payload.get("claims")
     if not isinstance(raw_claims, list):
-        return [Claim(**fallback["claims"][0])]
+        return _fallback_claims(draft, items)
 
     for entry in raw_claims[:8]:
         if not isinstance(entry, dict):
@@ -516,14 +531,19 @@ async def verify(
         url = url if url in allowed else items[0].url
         verified = bool(entry.get("verified")) and _lexically_supported(claim_text, allowed[url])
         claims.append(Claim(claim=claim_text, source_url=url, verified=verified))
-    return claims
+
+    # Independently audit every numeric sentence, even when the model omitted
+    # it from its claim list. This also runs in offline/budget-limited mode.
+    claims.extend(_numeric_audit_claims(draft, items))
+    claims.extend(_date_audit_claims(draft, items))
+    return _dedupe_claims(claims)
 
 
 # A number followed by an optional unit. Deliberately strict about the decimal
 # point (`\d+(?:[.,]\d+)*`) so a sentence-ending period is never swallowed into
 # the token — "GPT-5.5." must normalise to "5.5", not "5.5.".
 _NUMBER_RE = re.compile(
-    r"\d+(?:[.,]\d+)*\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$)?",
+    r"\d+(?:(?:[ \u00a0]\d{3})|(?:[.,]\d+))*(?:\s*(?:%|млрд|млн|тыс|млрд\.|руб(?:\.|лей)?|RUB|USD|EUR|\$))?",
     re.I,
 )
 _DIGIT_STRIP = re.compile(r"[^\d]")
@@ -537,8 +557,11 @@ def _normalise_number(token: str) -> str:
     the RU/EU sources write decimal commas ("0,02" -> "0.02").
     """
     cleaned = (token or "").replace(" ", "").replace(" ", "")
-    cleaned = re.sub(r"[^\d.,]", "", cleaned)
-    cleaned = cleaned.rstrip(".,")
+    cleaned = re.sub(r"[^\d.,]", "", cleaned).rstrip(".,")
+    if "," in cleaned and "." not in cleaned:
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", cleaned):
+            return cleaned.replace(",", "")
+        return cleaned.replace(",", ".")
     return cleaned.replace(",", ".")
 
 
@@ -547,19 +570,229 @@ def _normalise_haystack(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", ".", collapsed)
 
 
-def _lexically_supported(claim: str, item) -> bool:
-    """Cheap corroboration: every number in the claim must appear in the source.
+def _checkable_numbers(text: str) -> list[str]:
+    """Canonical numeric values, excluding leading numbered-list markers only."""
+    text = text or ""
+    values: list[str] = []
+    for match in _NUMBER_RE.finditer(text):
+        digits = _normalise_number(match.group())
+        if not digits:
+            continue
 
-    Catches the dominant hallucination class (invented figures) without any API
-    call. A claim with no numbers passes — it is qualitative and gets caught by
-    the tone critic instead.
+        # Don't treat "1." or "12)" at the start of a line as a content claim.
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.start())
+        if line_end < 0:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)](?:\s+|$)", line)
+        if marker:
+            marker_start = line_start + marker.start(1)
+            marker_end = line_start + marker.end(1)
+            if match.start() == marker_start and match.end() <= marker_end:
+                continue
+        values.append(digits)
+    return values
+
+
+def _lexically_supported(claim: str, item) -> bool:
+    """Every checkable number in a claim must occur as a whole value in a source.
+
+    This includes single-digit measurements and percentages. Enumerated list
+    markers are ignored so they don't become bogus factual claims.
     """
-    haystack = _normalise_haystack(f"{item.title} {item.text}")
-    for token in _NUMBER_RE.findall(claim or ""):
-        digits = _normalise_number(token)
-        if len(digits) >= 2 and digits not in haystack:
-            return False
-    return True
+    source_numbers = set(_checkable_numbers(f"{item.title} {item.text}"))
+    return all(
+        digits in source_numbers
+        for digits in _checkable_numbers(claim or "")
+    )
+
+
+def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
+    """Return sentences containing numeric assertions, including single-digit values.
+
+    Splitting only at punctuation followed by whitespace avoids splitting decimal
+    numbers such as 0.02. Leading enumerated-list markers are filtered separately.
+    """
+    parts = [draft.hook, draft.body]
+    if draft.cta:
+        parts.append(draft.cta)
+    text = "\n".join(part for part in parts if part)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in candidates:
+        sentence = " ".join(sentence.split()).strip()
+        if not sentence:
+            continue
+        checkable = _checkable_numbers(sentence)
+        key = sentence.casefold()
+        if checkable and key not in seen:
+            seen.add(key)
+            out.append(sentence)
+    return out
+
+
+def _numeric_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Ground all numeric sentences against sources independently of the LLM."""
+    if not items:
+        return []
+    audits: list[Claim] = []
+    for sentence in _numeric_claim_sentences(draft):
+        source = next((item for item in items if _lexically_supported(sentence, item)), None)
+        audits.append(
+            Claim(
+                claim=sentence[:400],
+                source_url=(source or items[0]).url,
+                verified=source is not None,
+                note="numeric_audit",
+            )
+        )
+    return audits
+
+
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+_EN_MONTHS = {
+    name: month
+    for month, names in enumerate((
+        ("jan", "january"), ("feb", "february"), ("mar", "march"),
+        ("apr", "april"), ("may",), ("jun", "june"), ("jul", "july"),
+        ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
+        ("nov", "november"), ("dec", "december"),
+    ), start=1)
+    for name in names
+}
+_DATE_PATTERNS = (
+    re.compile(r"(?<!\d)(?P<year>(?:19|20)\d{2})[-/.](?P<month>\d{1,2})[-/.](?P<day>\d{1,2})(?!\d)"),
+    re.compile(r"(?<!\d)(?P<day>\d{1,2})[./-](?P<month>\d{1,2})[./-](?P<year>(?:19|20)\d{2})(?!\d)"),
+    re.compile(
+        r"(?P<day>\d{1,2})\s+(?P<month>января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[ ]+(?P<day>\d{1,2})(?:st|nd|rd|th)?[,]?[ ]+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<day>\d{1,2})[ ]+(?P<month>january|jan\.?|february|feb\.?|march|mar\.?|april|apr\.?|may|june|jun\.?|july|jul\.?|august|aug\.?|september|sept?\.?|october|oct\.?|november|nov\.?|december|dec\.?)[,]?[ ]+(?P<year>(?:19|20)\d{2})",
+        re.I,
+    ),
+)
+
+
+def _canonical_date(year: str, month: str | int, day: str) -> date | None:
+    try:
+        month_number = int(month) if str(month).isdigit() else (
+            _RU_MONTHS.get(str(month).lower())
+            or _EN_MONTHS.get(str(month).lower().rstrip("."))
+        )
+        if month_number is None:
+            return None
+        return date(int(year), month_number, int(day))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _explicit_dates(text: str) -> set[date]:
+    """Extract unambiguous full calendar dates and normalize formatting variants."""
+    dates: set[date] = set()
+    for pattern in _DATE_PATTERNS:
+        for match in pattern.finditer(text or ""):
+            groups = match.groupdict()
+            parsed = _canonical_date(groups["year"], groups["month"], groups["day"])
+            if parsed is not None:
+                dates.add(parsed)
+    return dates
+
+
+def _date_claim_sentences(draft: DraftPost) -> list[str]:
+    parts = [draft.hook, draft.body]
+    if draft.cta:
+        parts.append(draft.cta)
+    text = "\n".join(part for part in parts if part)
+    candidates = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sentence in candidates:
+        sentence = " ".join(sentence.split()).strip()
+        if not sentence or not _explicit_dates(sentence):
+            continue
+        key = sentence.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(sentence)
+    return out
+
+
+def _date_audit_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Require every explicit calendar date in a sentence to appear in one cited source."""
+    if not items:
+        return []
+    source_dates = [
+        (item, _explicit_dates(f"{item.title} {item.text}"))
+        for item in items
+    ]
+    audits: list[Claim] = []
+    for sentence in _date_claim_sentences(draft):
+        dates = _explicit_dates(sentence)
+        source = next(
+            (item for item, dates_in_source in source_dates if dates.issubset(dates_in_source)),
+            None,
+        )
+        audits.append(
+            Claim(
+                claim=sentence[:400],
+                source_url=(source or items[0]).url,
+                verified=source is not None,
+                note="date_audit",
+            )
+        )
+    return audits
+
+
+def _fallback_claims(draft: DraftPost, items: list[ItemScored]) -> list[Claim]:
+    """Deterministic claim set for offline mode and exhausted AI budget."""
+    if not items:
+        return []
+    base = Claim(
+        claim=draft.hook[:200],
+        source_url=items[0].url,
+        verified=_lexically_supported(draft.hook, items[0]),
+    )
+    return _dedupe_claims([
+        base,
+        *_numeric_audit_claims(draft, items),
+        *_date_audit_claims(draft, items),
+    ])
+
+
+def _dedupe_claims(claims: list[Claim]) -> list[Claim]:
+    """Deduplicate claims without letting a permissive duplicate mask a failure."""
+    out: list[Claim] = []
+    positions: dict[str, int] = {}
+    for claim in claims:
+        key = " ".join(claim.claim.casefold().split())
+        if not key:
+            continue
+        if key not in positions:
+            positions[key] = len(out)
+            out.append(claim)
+            continue
+        index = positions[key]
+        existing = out[index]
+        if not claim.verified and existing.verified:
+            out[index] = claim
+        elif not existing.verified and claim.verified:
+            # Numeric corroboration validates the figures, not the whole semantic
+            # assertion. Preserve an existing unverified model claim.
+            continue
+        elif claim.note == "numeric_audit" and existing.note != "numeric_audit":
+            out[index] = claim
+    return out
 
 
 def _channel_history_vectors(channel_id: str, limit: int = 60) -> list:
@@ -695,21 +928,26 @@ async def run(cluster_public_id: str) -> list[str]:
 
     scored_items = _to_scored(raw_items)
     created: list[str] = []
-    # Two clusters can carry the same story under different labels; routing
-    # compares labels and lets both through, and the wall ends up with the
-    # same post twice in a row. The draft embedding is the honest check.
+    # Load per-channel history before checking the first generated draft. The
+    # separate archive lookup below covers the entire published history, not just
+    # this short vector window.
     history: list = []
     seen_batch: list = []
     embedder = get_embedder()
+    for channel_id in sorted({plan.channel_id for plan in plans}):
+        history.extend(
+            {"channel_id": channel_id, "vec": vec, "label": ""}
+            for vec in await to_thread(_channel_history_vectors, channel_id)
+        )
 
-    def _too_similar(draft_text: str, channel_id: str) -> bool:
+    def _too_similar(draft_text: str, channel_id: str):
         vec = embedder.embed(draft_text)
         if _too_similar_vec(vec, history + seen_batch, channel_id):
-            return True
+            return True, vec
         seen_batch.append(
             {"channel_id": channel_id, "vec": vec, "label": draft_text[:60]}
         )
-        return False
+        return False, vec
 
     with StageTimer("s4_generate") as timer:
         for plan in plans:
@@ -728,15 +966,25 @@ async def run(cluster_public_id: str) -> list[str]:
             except Exception as exc:  # noqa: BLE001 - one bad plan must not kill the cluster
                 log.warning("generation failed for %s: %s", plan.channel_id, exc)
                 continue
-            if _too_similar(draft.text, plan.channel_id):
+            batch_duplicate, draft_vector = _too_similar(draft.text, plan.channel_id)
+            if batch_duplicate:
+                log.info("s4 duplicate suppressed against in-cycle history: %s/%s", plan.channel_id, cluster_public_id)
                 continue
-            if not history:
-                history = [
-                    {"channel_id": plan.channel_id, "vec": vec, "label": ""}
-                    for vec in await to_thread(
-                        _channel_history_vectors, plan.channel_id
-                    )
-                ]
+            try:
+                from tgfarm.s4_generation.memory import find_near_duplicate
+
+                prior = await to_thread(
+                    find_near_duplicate, draft.text, plan.channel_id, draft_vector
+                )
+            except Exception as exc:  # noqa: BLE001 - archive search is fail-open
+                prior = None
+                log.warning("archive duplicate check failed: %s", exc)
+            if prior:
+                log.info(
+                    "s4 duplicate suppressed against full archive: %s/%s prior=%s similarity=%.3f",
+                    plan.channel_id, cluster_public_id, prior["post_public_id"], prior["similarity"],
+                )
+                continue
             public_id = await to_thread(
                 persist_draft, draft, plan, format_plan, video
             )

@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, update
 
 from tgfarm import pipeline
 from tgfarm.config import get_config
@@ -25,6 +26,7 @@ from tgfarm.core import apiauth
 from tgfarm.core.apiauth import ensure_token, is_authorised, is_public_path
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.db.bootstrap import ensure_bootstrapped
 from tgfarm.db.models import (
     Channel,
@@ -36,6 +38,7 @@ from tgfarm.db.models import (
     PipelineRun,
     Post,
     PostStat,
+    RedditMetricSnapshot,
     RawItem,
     Source,
 )
@@ -59,6 +62,61 @@ class PublishRequest(BaseModel):
 class RejectRequest(BaseModel):
     post_public_ids: list[str]
     reason: str = "manual"
+
+
+class PublishReconcileRequest(BaseModel):
+    action: Literal["confirm_published", "retry_after_check"]
+    confirm_not_published: bool = False
+
+
+class CrosspostReconcileRequest(BaseModel):
+    action: Literal["confirm_posted", "retry_after_check"]
+    confirm_not_published: bool = False
+
+
+class PlatformToggleRequest(BaseModel):
+    enabled: bool
+
+
+class PlatformPlanRequest(BaseModel):
+    planned: bool
+
+
+class PlatformCredentialsRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+
+class TikTokPublishRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=5000)
+    privacy_level: str = Field(min_length=1, max_length=40)
+    consent: bool = False
+
+
+class MastodonOAuthStartRequest(BaseModel):
+    instance: str = Field(min_length=1, max_length=300)
+
+class RedditScoutRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=120)
+    post_public_id: str | None = Field(default=None, max_length=120)
+    title: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=5000)
+    limit: int = Field(default=6, ge=1, le=8)
+
+
+class RedditTailorRequest(BaseModel):
+    post_public_id: str = Field(min_length=3, max_length=120)
+    subreddit: str = Field(min_length=2, max_length=21)
+
+
+class RedditPublishRequest(BaseModel):
+    post_public_id: str = Field(min_length=3, max_length=120)
+    subreddit: str = Field(min_length=2, max_length=21)
+    title: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1, max_length=40000)
+    confirm: bool = False
+
+
+class RedditMetricsRefreshRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=100)
 
 
 class PolishRequest(BaseModel):
@@ -190,6 +248,15 @@ def _sources() -> list[dict]:
                 "failures": r.failures,
                 "last_yield": r.last_yield,
                 "idle_streak": r.idle_streak,
+                "cooldown_until": r.cooldown_until,
+                "cooldown_active": bool(
+                    r.cooldown_until
+                    and (
+                        r.cooldown_until.replace(tzinfo=UTC)
+                        if r.cooldown_until.tzinfo is None
+                        else r.cooldown_until.astimezone(UTC)
+                    ) > datetime.now(UTC)
+                ),
                 "effective_interval_s": effective_interval(r),
                 "last_error": (r.last_error or "")[:200] or None,
             }
@@ -200,9 +267,11 @@ def _sources() -> list[dict]:
 def _post_view(session, row: Post, *, detail: bool) -> dict:
     """Shared projection for the list and the detail endpoints."""
     channel = session.get(Channel, row.channel_id)
+    # Load all attached media: the original vertical MP4 is deliberately
+    # non-primary so it never replaces the post's cover image.
     media = session.execute(
         select(Media)
-        .where(Media.post_id == row.id, Media.is_primary.is_(True))
+        .where(Media.post_id == row.id)
         .order_by(Media.created_at.asc())
     ).scalars().all()
     stat = session.execute(
@@ -220,14 +289,21 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
         if stat and stat.impressions
         else 0.0
     )
-    # prefer a media row whose file is actually on disk
+    # Prefer the explicit primary cover, but choose video independently.
+    # The renderer intentionally marks MP4 as non-primary so it cannot replace
+    # the article cover; filtering to primary rows would hide it from the UI.
     alive = [m for m in media if Path(m.path).exists()]
-    cover = next((m for m in alive if m.kind != "video"), None) or next(
-        (m for m in media if m.kind != "video"), None
+    cover_rows = [m for m in media if m.kind != "video"]
+    alive_covers = [m for m in alive if m.kind != "video"]
+    video_rows = [m for m in media if m.kind == "video"]
+    alive_videos = [m for m in alive if m.kind == "video"]
+    cover = (
+        next((m for m in alive_covers if m.is_primary), None)
+        or next(iter(alive_covers), None)
+        or next((m for m in cover_rows if m.is_primary), None)
+        or next(iter(cover_rows), None)
     )
-    video = next((m for m in alive if m.kind == "video"), None) or next(
-        (m for m in media if m.kind == "video"), None
-    )
+    video = alive_videos[-1] if alive_videos else (video_rows[-1] if video_rows else None)
 
     platform = ((channel.platform if channel else None) or "telegram").lower()
     payload = {
@@ -281,6 +357,22 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
             "media": [
                 {"kind": m.kind, "path": m.path, "sha": m.sha, "width": m.width, "height": m.height}
                 for m in media
+            ],
+            "crossposts": [
+                {
+                    "platform": entry.platform,
+                    "status": entry.status,
+                    "at": entry.created_at,
+                    "attempt": entry.attempt,
+                    "url": entry.url if str(entry.url or "").startswith("https://") else None,
+                    "message": _crosspost_status_message(entry.status),
+                }
+                for entry in session.execute(
+                    select(CrosspostLog)
+                    .where(CrosspostLog.post_public_id == row.public_id)
+                    .order_by(CrosspostLog.id.desc())
+                    .limit(30)
+                ).scalars().all()
             ],
         }
     return payload
@@ -415,7 +507,7 @@ def _operator(action: str, target: str, detail: str = "") -> None:
                 OperatorLog(action=action, target=target[:64], detail=(detail or "")[:500] or None)
             )
     except Exception as exc:  # noqa: BLE001 - audit must not break the action
-        log.warning("operator log failed: %s", exc)
+        log.warning("operator log failed: %s", redact_sensitive_text(exc, limit=180))
 
 
 def _polish_post(public_id: str, mode: str) -> dict:
@@ -755,6 +847,72 @@ def _runs(limit: int) -> list[dict]:
         ]
 
 
+def _crosspost_status_message(status: str) -> str:
+    """Safe operator hint: never leak the raw exception/provider response."""
+    return {
+        "posted": "Публикация подтверждена площадкой.",
+        "dry_run": "Это был тестовый прогон; публикация в сеть не отправлялась.",
+        "skipped": "Отправка пропущена: проверь переключатель и настройки площадки.",
+        "failed": "Временная ошибка запроса. Перед повтором проверь, не появился ли пост.",
+        "permanent": "Площадка отклонила запрос. Проверь разрешения, формат и настройки.",
+        "permanent_failure": "Площадка отклонила запрос. Проверь разрешения, формат и настройки.",
+        "unknown": "Результат неоднозначен. Сначала проверь аккаунт площадки вручную.",
+        "publishing": "Отправка началась, но не подтверждена. Проверь результат перед повтором.",
+        "retry_authorized": "Повтор разрешён оператором после ручной сверки.",
+    }.get(str(status or "").lower(), "Статус доставки сохранён. Проверь журнал площадки.")
+
+
+def _crosspost_incident(post_public_id: str, platform: str) -> dict:
+    """Create a minimal incident export without raw provider errors, tokens or post text."""
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    platform = str(platform or "").strip().lower()
+    if platform not in ADAPTERS:
+        raise HTTPException(404, "unknown platform")
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == post_public_id)
+        ).scalar_one_or_none()
+        if post is None:
+            raise HTTPException(404, "post not found")
+        rows = session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(25)
+        ).scalars().all()
+        history = [
+            {
+                "status": str(row.status or "unknown"),
+                "at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
+                "attempt": int(row.attempt or 1),
+                "url": row.url[:500] if isinstance(row.url, str) and row.url.startswith("https://") else None,
+                "message": _crosspost_status_message(row.status),
+            }
+            for row in rows
+        ]
+        return {
+            "schema": "tgfarm.delivery-incident.v1",
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "post_id": post_public_id,
+            "post_status": str(post.status or "unknown"),
+            "platform": platform,
+            "latest_status": history[0]["status"] if history else "not_attempted",
+            "latest_message": history[0]["message"] if history else "В журнале нет попыток отправки для этой площадки.",
+            "attempt_count": len(history),
+            "history": history,
+            "privacy": {
+                "includes_post_text": False,
+                "includes_raw_provider_errors": False,
+                "includes_credentials_or_tokens": False,
+                "includes_account_profile": False,
+            },
+        }
+
+
 def _crossposts(limit: int) -> list[dict]:
     with session_scope() as session:
         rows = session.execute(
@@ -765,17 +923,182 @@ def _crossposts(limit: int) -> list[dict]:
                 "post": r.post_public_id,
                 "platform": r.platform,
                 "status": r.status,
-                "url": r.url,
-                "error": (r.error or "")[:200] or None,
+                "remote_id": r.remote_id,
+                "url": redact_sensitive_text(r.url, limit=500) if r.url else None,
+                "error": redact_sensitive_text(r.error, limit=200) if r.error else None,
+                "attempt": r.attempt,
+                "retry_after_at": getattr(r, "retry_after_at", None),
                 "at": r.created_at,
             }
             for r in rows
         ]
 
 
+def _crosspost_health() -> dict:
+    """Summarize the latest state of every material/platform delivery pair."""
+    from tgfarm.db.models import CrosspostClaim
+    from tgfarm.s9_growth.adapters import MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+
+    now = datetime.now(UTC)
+    stale_before = now - timedelta(minutes=30)
+    latest_ids = (
+        select(func.max(CrosspostLog.id).label("latest_id"))
+        .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+        .subquery()
+    )
+    with session_scope() as session:
+        rows = session.execute(
+            select(CrosspostLog)
+            .join(latest_ids, CrosspostLog.id == latest_ids.c.latest_id)
+            .order_by(CrosspostLog.platform.asc(), CrosspostLog.created_at.desc())
+        ).scalars().all()
+        claims = session.execute(select(CrosspostClaim)).scalars().all()
+
+    by_platform: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = by_platform.setdefault(
+            row.platform,
+            {
+                "platform": row.platform,
+                "targets": 0,
+                "posted": 0,
+                "failed": 0,
+                "permanent": 0,
+                "unknown": 0,
+                "publishing": 0,
+                "stuck": 0,
+                "retry_authorized": 0,
+                "skipped": 0,
+                "dry_run": 0,
+                "last_success_at": None,
+                "oldest_attention_at": None,
+                "state": "not_tested",
+            },
+        )
+        item["targets"] += 1
+        status = str(row.status or "unknown")
+        if status in item:
+            item[status] += 1
+
+        stamp = row.created_at
+        if stamp is not None:
+            stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+        if status == "posted":
+            previous = item["last_success_at"]
+            if previous is None or (stamp and stamp.isoformat() > previous):
+                item["last_success_at"] = stamp.isoformat() if stamp else None
+
+        is_stuck = status == "publishing" and stamp is not None and stamp <= stale_before
+        if is_stuck:
+            item["stuck"] += 1
+        attention = (
+            status in {"unknown", "permanent"}
+            or (status == "failed" and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS)
+            or is_stuck
+        )
+        if attention and stamp is not None:
+            previous_attention = item["oldest_attention_at"]
+            if previous_attention is None or stamp.isoformat() < previous_attention:
+                item["oldest_attention_at"] = stamp.isoformat()
+
+    for item in by_platform.values():
+        exhausted = item["failed"] and any(
+            row.platform == item["platform"]
+            and row.status == "failed"
+            and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+            for row in rows
+        )
+        if item["unknown"] or item["permanent"] or exhausted or item["stuck"]:
+            item["state"] = "attention"
+        elif item["publishing"] or item["retry_authorized"] or item["failed"]:
+            item["state"] = "working"
+        elif item["posted"]:
+            item["state"] = "healthy"
+        elif item["skipped"]:
+            item["state"] = "setup"
+        elif item["dry_run"]:
+            item["state"] = "dry_run"
+        else:
+            item["state"] = "not_tested"
+
+    totals = {
+        "targets": len(rows),
+        "platforms": len(by_platform),
+        "posted": sum(item["posted"] for item in by_platform.values()),
+        "failed": sum(item["failed"] for item in by_platform.values()),
+        "permanent": sum(item["permanent"] for item in by_platform.values()),
+        "unknown": sum(item["unknown"] for item in by_platform.values()),
+        "publishing": sum(item["publishing"] for item in by_platform.values()),
+        "stuck": sum(item["stuck"] for item in by_platform.values()),
+        "retry_authorized": sum(item["retry_authorized"] for item in by_platform.values()),
+        "skipped": sum(item["skipped"] for item in by_platform.values()),
+        "dry_run": sum(item["dry_run"] for item in by_platform.values()),
+        "claims": len(claims),
+        "stale_claims": sum(
+            1 for claim in claims
+            if claim.claimed_at is not None
+            and (
+                claim.claimed_at.replace(tzinfo=UTC)
+                if claim.claimed_at.tzinfo is None
+                else claim.claimed_at.astimezone(UTC)
+            ) <= stale_before
+        ),
+        "needs_attention": sum(
+            item["unknown"] + item["permanent"] + item["stuck"]
+            + sum(
+                1 for row in rows
+                if row.platform == item["platform"]
+                and row.status == "failed"
+                and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+            )
+            for item in by_platform.values()
+        ),
+    }
+    overall = (
+        "attention" if totals["needs_attention"] or totals["stale_claims"]
+        else "working" if totals["publishing"] or totals["failed"] or totals["retry_authorized"]
+        else "healthy" if totals["posted"]
+        else "not_tested"
+    )
+    return {
+        "generated_at": now.isoformat(),
+        "state": overall,
+        "totals": totals,
+        "platforms": sorted(by_platform.values(), key=lambda item: item["platform"]),
+    }
+
+
+def _crossposts_export(limit: int = 300) -> dict:
+    """Export delivery diagnostics without raw error text or credentials."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(CrosspostLog).order_by(CrosspostLog.id.desc()).limit(limit)
+        ).scalars().all()
+        return {
+            "schema_version": 1,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "redactions": ["raw error text omitted", "credentials and browser sessions are never exported"],
+            "crossposts": [
+                {
+                    "post": r.post_public_id,
+                    "platform": r.platform,
+                    "status": r.status,
+                    "remote_id": r.remote_id,
+                    "url": redact_sensitive_text(r.url, limit=500) if r.url else None,
+                    "attempt": r.attempt,
+                    "retry_after_at": getattr(r, "retry_after_at", None).isoformat() if getattr(r, "retry_after_at", None) else None,
+                    "at": r.created_at.isoformat() if r.created_at else None,
+                    "has_error": bool(r.error),
+                }
+                for r in rows
+            ],
+        }
+
+
 def _report(days: int) -> dict:
     from tgfarm import s8_analytics
     from tgfarm.s8_analytics.dzen_web import metrics_status
+    from tgfarm.s8_analytics.portfolio import portfolio_report
 
     return {
         "fleet": s8_analytics.fleet_summary(days),
@@ -785,6 +1108,7 @@ def _report(days: int) -> dict:
         "guardrail": s8_analytics.style_diversity(min(days, 7)),
         "platform_health": s8_analytics.platform_health(min(days, 14)),
         "hours": s8_analytics.slot_performance(days),
+        "portfolio": portfolio_report(max(30, days)),
         "dzen": metrics_status(),
     }
 
@@ -796,14 +1120,215 @@ def _channels() -> list[dict]:
 
 
 def _reject(public_ids: list[str], reason: str) -> int:
+    """Reject only drafts/queued posts; never rewrite published or in-flight state."""
+    with session_scope() as session:
+        result = session.execute(
+            update(Post)
+            .where(
+                Post.public_id.in_(public_ids),
+                Post.status.in_(("draft", "gated", "scheduled", "rejected", "failed")),
+            )
+            .values(status="rejected", reject_reason=reason)
+        )
+        return result.rowcount or 0
+
+
+def _reconcile_crosspost_outcome(
+    post_public_id: str,
+    platform: str,
+    action: str,
+) -> dict:
+    """Resolve a crosspost whose remote outcome could not be confirmed."""
+    from tgfarm.db.models import CrosspostClaim
+    from tgfarm.s9_growth.adapters import ADAPTERS, MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+
+    if platform not in ADAPTERS:
+        return {"ok": False, "error": "unsupported_platform"}
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == post_public_id)
+        ).scalar_one_or_none()
+        if post is None:
+            return {"ok": False, "error": "not_found"}
+
+        latest = session.execute(
+            select(CrosspostLog)
+            .where(
+                CrosspostLog.post_public_id == post_public_id,
+                CrosspostLog.platform == platform,
+            )
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        # Ambiguous outcomes require reconciliation; definite failed/permanent
+        # outcomes may be retried only after an operator fixes the cause and
+        # explicitly confirms that the destination does not already contain the post.
+        retry_exhausted = bool(
+            latest and latest.status == "failed"
+            and int(latest.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+        )
+        reconcilable_status = bool(
+            latest and latest.status in {"unknown", "publishing", "permanent"}
+        )
+        if latest is None or not (reconcilable_status or retry_exhausted):
+            return {
+                "ok": False,
+                "error": "not_reconcilable",
+                "status": latest.status if latest else None,
+            }
+        if latest.status == "publishing":
+            created = latest.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created > datetime.now(UTC) - timedelta(minutes=30):
+                return {"ok": False, "error": "still_in_flight"}
+
+        if action not in {"confirm_posted", "retry_after_check"}:
+            return {"ok": False, "error": "invalid_action"}
+
+        # Reconciliation is the only path that releases an ambiguous/stale claim.
+        session.query(CrosspostClaim).filter_by(
+            post_public_id=post_public_id, platform=platform
+        ).delete(synchronize_session=False)
+
+        attempt = latest.attempt
+        if action == "confirm_posted":
+            session.add(
+                CrosspostLog(
+                    post_public_id=post_public_id,
+                    platform=platform,
+                    status="posted",
+                    remote_id=latest.remote_id,
+                    url=latest.url,
+                    error="confirmed by operator; destination ID may be unavailable",
+                    attempt=attempt,
+                )
+            )
+            return {"ok": True, "status": "posted", "post_id": post.id, "detail": "operator confirmed destination post"}
+
+        session.add(
+            CrosspostLog(
+                post_public_id=post_public_id,
+                platform=platform,
+                status="retry_authorized",
+                error="operator checked destination and authorized retry",
+                attempt=attempt,
+            )
+        )
+        return {
+            "ok": True,
+            "status": "retry_authorized",
+            "post_id": post.id,
+            "detail": "operator checked destination and authorized retry",
+        }
+
+
+def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
     with session_scope() as session:
         rows = session.execute(
-            select(Post).where(Post.public_id.in_(public_ids))
+            select(Post.public_id).where(
+                Post.public_id.in_(public_ids),
+                Post.status == "publish_unknown",
+            )
         ).scalars().all()
-        for row in rows:
-            row.status = "rejected"
-            row.reject_reason = reason
-        return len(rows)
+        return list(rows)
+
+
+def _retry_failed_publish(public_id: str) -> dict:
+    """Manually requeue a terminal, definite publish failure after the cause is fixed."""
+    from tgfarm.platforms import is_platform_enabled
+
+    with session_scope() as session:
+        row = session.execute(
+            select(Post).where(Post.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "error": "not_found"}
+        if row.status != "failed":
+            return {"ok": False, "error": "not_failed", "status": row.status}
+        if row.tg_message_id is not None:
+            return {"ok": False, "error": "already_published"}
+        channel = session.get(Channel, row.channel_id)
+        platform = ((channel.platform if channel else None) or "telegram").lower()
+        if not is_platform_enabled(platform):
+            return {
+                "ok": False,
+                "error": "platform_disabled",
+                "platform": platform,
+            }
+
+        row.status = "scheduled"
+        row.scheduled_at = datetime.now(UTC)
+        row.attempts = 0
+        row.publish_error = None
+        row.publish_heartbeat_at = None
+        return {
+            "ok": True,
+            "public_id": public_id,
+            "platform": platform,
+            "scheduled_at": row.scheduled_at,
+        }
+
+
+def _blocked_publish_now_ids(public_ids: list[str]) -> list[dict]:
+    """Reject forced publishing if a post is ineligible or its platform is paused."""
+    from tgfarm.platforms import is_platform_enabled
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(Post.public_id, Post.status, Channel.platform)
+            .outerjoin(Channel, Post.channel_id == Channel.id)
+            .where(Post.public_id.in_(public_ids))
+        ).all()
+        details = {
+            public_id: (status, (platform or "telegram").lower())
+            for public_id, status, platform in rows
+        }
+
+    blocked: list[dict] = []
+    for public_id in public_ids:
+        status, platform = details.get(public_id, ("not_found", ""))
+        if status not in {"scheduled", "gated"}:
+            blocked.append({"id": public_id, "status": status})
+        elif not is_platform_enabled(platform):
+            blocked.append({
+                "id": public_id,
+                "status": status,
+                "reason": "platform_disabled",
+                "platform": platform,
+            })
+    return blocked
+
+
+def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
+    """Resolve a publish whose remote outcome could not be confirmed.
+
+    Retrying is only enabled after the operator has checked the destination.
+    This is intentionally not an automatic retry policy.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(Post).where(Post.public_id == public_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "error": "not_found"}
+        if row.status != "publish_unknown":
+            return {"ok": False, "error": "not_unknown", "status": row.status}
+
+        if action == "confirm_published":
+            row.status = "published"
+            row.published_at = datetime.now(UTC)
+            row.publish_error = None
+            detail = "operator confirmed post exists on destination"
+        elif action == "retry_after_check":
+            row.status = "scheduled"
+            row.scheduled_at = datetime.now(UTC)
+            row.publish_error = "manual retry approved after operator checked destination"
+            detail = "operator checked destination and authorised retry"
+        else:
+            return {"ok": False, "error": "invalid_action"}
+
+        return {"ok": True, "status": row.status, "detail": detail}
 
 
 def _config_payload() -> dict:
@@ -837,7 +1362,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             count = await io(_warm_index)
             log.info("vector index warmed with %d items", count)
         except Exception as exc:  # noqa: BLE001 - a cold start is survivable
-            log.warning("vector index warmup failed: %s", exc)
+            log.warning("vector index warmup failed: %s", redact_sensitive_text(exc, limit=180))
 
         if not with_scheduler:
             yield
@@ -882,9 +1407,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             header = request.headers.get(apiauth.HEADER)
             query = request.query_params.get("token")
             cookie = request.cookies.get(apiauth.COOKIE)
-            if not is_authorised(header, query, cookie):
+            # Authorize against the original query, then remove its credential
+            # before downstream handlers and ASGI access logging can see it.
+            if query is not None:
+                request.scope["query_string"] = apiauth.strip_token_from_query(
+                    request.scope.get("query_string", b"")
+                )
+            if not is_authorised(header, cookie):
                 log.info(
-                    "401 %s header=%s query=%s cookie=%s",
+                    "401 %s header=%s query_token_rejected=%s cookie=%s",
                     path,
                     bool(header),
                     bool(query),
@@ -901,6 +1432,50 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                     status_code=401,
                 )
         return await call_next(request)
+
+    @app.middleware("http")
+    async def redact_mastodon_oauth_callback(request: Request, call_next):
+        """Capture OAuth credentials, then strip the query before access logging."""
+        callback_scopes = {
+            "/api/platforms/mastodon/auth/callback": "tgfarm_mastodon_oauth_params",
+            "/api/platforms/x/auth/callback": "tgfarm_x_oauth_params",
+            "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
+            "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
+            "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
+            "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
+        }
+        callback_scope = callback_scopes.get(request.url.path)
+        if callback_scope:
+            from urllib.parse import parse_qs
+
+            raw_query = request.scope.get("query_string", b"")
+            if isinstance(raw_query, bytes):
+                raw_query = raw_query.decode("utf-8", errors="replace")
+            # Strip first: even an overlong/malformed callback query must not reach access logs.
+            request.scope["query_string"] = b""
+            try:
+                parsed = parse_qs(raw_query, keep_blank_values=True, max_num_fields=16)
+            except ValueError:
+                parsed = {}
+            request.scope[callback_scope] = {
+                key: values[0]
+                for key, values in parsed.items()
+                if key in {"code", "state", "error"} and values
+            }
+        response = await call_next(request)
+        if request.url.path in {
+            "/api/platforms/mastodon/auth/callback",
+            "/api/platforms/x/auth/callback",
+            "/api/platforms/threads/auth/callback",
+            "/api/platforms/linkedin/auth/callback",
+            "/api/platforms/youtube/auth/callback",
+            "/api/platforms/tiktok/auth/callback",
+        }:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        return response
 
     # ------------------------------------------------------------------- UI
     # no-store: the dashboard ships with the app, and a cached stylesheet after
@@ -1018,6 +1593,59 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def report(days: int = Query(7, ge=1, le=90)) -> dict:
         return await io(_report, days)
 
+    @app.get("/api/portfolio")
+    async def portfolio(
+        days: int = Query(30, ge=1, le=90),
+        min_age_hours: int = Query(24, ge=0, le=336),
+    ) -> dict:
+        from tgfarm.s8_analytics.portfolio import portfolio_report
+
+        return await io(portfolio_report, days, min_age_hours)
+
+    @app.get("/api/memory")
+    async def memory(
+        query: str = Query("", max_length=500),
+        channel_id: str | None = None,
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=1000000),
+    ) -> dict:
+        """Search the entire published archive, including claims and source metadata."""
+        from tgfarm.s4_generation.memory import search_archive
+
+        return await io(
+            search_archive,
+            query,
+            channel_id=channel_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/api/memory/reindex")
+    async def memory_reindex() -> dict:
+        """Rebuild the derived full-text index from all posts stored in the database."""
+        from tgfarm.s4_generation.memory import rebuild_archive_index
+
+        return await io(rebuild_archive_index)
+
+    @app.get("/api/memory/topic")
+    async def memory_topic(
+        query: str = Query(..., min_length=2, max_length=500),
+        channel_id: str | None = None,
+        days: int = Query(30, ge=1, le=180),
+        archive_limit: int = Query(300, ge=1, le=300),
+    ) -> dict:
+        """Build a topic dossier from historical posts and recently collected sources."""
+        from tgfarm.s4_generation.topic_memory import build_topic_dossier
+
+        return await io(
+            build_topic_dossier,
+            query,
+            channel_id=channel_id,
+            preferred_channel_id=channel_id,
+            days=days,
+            archive_limit=archive_limit,
+        )
+
     @app.get("/api/editorial")
     async def editorial(limit: int = Query(25, ge=1, le=100)) -> dict:
         from tgfarm.editorial import queue
@@ -1037,6 +1665,967 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def channels() -> dict:
         return {"channels": await io(_channels)}
 
+    @app.get("/api/platforms")
+    async def platforms() -> dict:
+        from tgfarm.platforms import get_platform_catalog
+
+        return await io(get_platform_catalog)
+
+    @app.put("/api/platforms/{platform_id}")
+    async def toggle_platform(platform_id: str, request: PlatformToggleRequest) -> dict:
+        from tgfarm.platforms import set_platform_enabled
+
+        try:
+            item = await io(set_platform_enabled, platform_id, request.enabled)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=redact_sensitive_text(exc, limit=300)) from exc
+        _operator(
+            "platform-toggle",
+            platform_id,
+            "enabled" if request.enabled else "disabled",
+        )
+        return {"ok": True, "platform": item}
+
+    @app.put("/api/platforms/{platform_id}/plan")
+    async def plan_platform(platform_id: str, request: PlatformPlanRequest) -> dict:
+        from tgfarm.platforms import set_platform_planned
+
+        try:
+            item = await io(set_platform_planned, platform_id, request.planned)
+        except ValueError as exc:
+            status = 404 if "Неизвестная" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=redact_sensitive_text(exc, limit=300)) from exc
+        _operator(
+            "platform-plan",
+            platform_id,
+            "planned" if request.planned else "removed from plan",
+        )
+        return {"ok": True, "platform": item}
+
+
+    @app.put("/api/platforms/{platform_id}/credentials")
+    async def save_platform_credentials(
+        platform_id: str, request: PlatformCredentialsRequest
+    ) -> dict:
+        from tgfarm.platforms import save_platform_credentials as save_credentials
+
+        try:
+            item = await io(save_credentials, platform_id, request.values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        _operator(
+            "platform-auth-save",
+            platform_id,
+            "saved keys: " + ", ".join(sorted(request.values.keys()))[:200],
+        )
+        return {"ok": True, "auth": item}
+
+    @app.post("/api/platforms/{platform_id}/auth/check")
+    async def check_platform_credentials(platform_id: str) -> dict:
+        from tgfarm.platforms import CATALOG
+        from tgfarm.platform_auth import check_platform_auth
+
+        if not any(item["id"] == platform_id.lower() for item in CATALOG):
+            raise HTTPException(status_code=404, detail="Неизвестная площадка.")
+        if not any(item["id"] == platform_id.lower() and item["mode"] == "built_in" for item in CATALOG):
+            raise HTTPException(
+                status_code=409,
+                detail="Площадка ещё не подключена к публикационному адаптеру. Вход на её сайт не означает интеграцию с TgFarm.",
+            )
+        result = await check_platform_auth(platform_id)
+        _operator(
+            "platform-auth-check",
+            platform_id,
+            "authorized" if result["authorized"] else "check failed",
+        )
+        return result
+
+    @app.post("/api/platforms/youtube/auth/start")
+    async def youtube_oauth_start(request: Request) -> dict:
+        from tgfarm.youtube_oauth import begin_youtube_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/youtube/auth/callback"
+        try:
+            return await begin_youtube_oauth(
+                settings.youtube_client_id,
+                settings.youtube_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/youtube/auth/callback")
+    async def youtube_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.youtube_oauth import cancel_youtube_oauth, complete_youtube_oauth
+
+        params = request.scope.get("tgfarm_youtube_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_youtube_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение YouTube не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_youtube_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "youtube",
+                {
+                    "YOUTUBE_CLIENT_ID": credentials["client_id"],
+                    "YOUTUBE_CLIENT_SECRET": credentials["client_secret"],
+                    "YOUTUBE_ACCESS_TOKEN": credentials["access_token"],
+                    "YOUTUBE_REFRESH_TOKEN": credentials["refresh_token"],
+                    "YOUTUBE_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "YOUTUBE_CHANNEL_ID": credentials["channel_id"],
+                    "YOUTUBE_CHANNEL_TITLE": credentials["channel_title"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "youtube",
+                True,
+                account=credentials["account"],
+                detail="YouTube OAuth подтверждён: канал проверен через YouTube Data API и токены сохранены локально.",
+            )
+            _operator("platform-auth-check", "youtube", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>YouTube подключён</h1><p>Доступ подтверждён для канала <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально и обновляются автоматически. Новые видео по умолчанию загружаются как Private. "
+                "Включай YouTube в панели только после тестовой загрузки и проверки настроек Google Cloud.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить YouTube</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001 - callback must return a safe operator-facing page
+            cancel_youtube_oauth(state_value)
+            log.warning("YouTube OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения YouTube</h1><p>Не удалось проверить доступ. Проверь журнал диагностики и настройки OAuth.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/mastodon/auth/start")
+    async def mastodon_oauth_start(payload: MastodonOAuthStartRequest, request: Request) -> dict:
+        from tgfarm.mastodon_oauth import begin_mastodon_oauth, normalize_instance_url
+        from tgfarm.platforms import save_platform_credentials as save_credentials
+
+        try:
+            instance = normalize_instance_url(payload.instance)
+            # Remember the chosen instance before beginning so the OAuth
+            # descriptor and future requests refer to the same server.
+            await io(save_credentials, "mastodon", {"MASTODON_INSTANCE": instance})
+            redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/mastodon/auth/callback"
+            return await begin_mastodon_oauth(instance, redirect_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/mastodon/auth/callback")
+    async def mastodon_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.mastodon_oauth import cancel_mastodon_oauth, complete_mastodon_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_mastodon_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_mastodon_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_mastodon_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "mastodon",
+                {
+                    "MASTODON_INSTANCE": credentials["instance"],
+                    "MASTODON_CLIENT_ID": credentials["client_id"],
+                    "MASTODON_CLIENT_SECRET": credentials["client_secret"],
+                    "MASTODON_ACCESS_TOKEN": credentials["access_token"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "mastodon",
+                True,
+                account=credentials["account"],
+                detail="Mastodon OAuth подтверждён; профиль доступен.",
+            )
+            _operator("platform-auth-check", "mastodon", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Mastodon подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Публикация остаётся выключенной, пока ты не включишь площадку в TgFarm.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_mastodon_oauth(state_value)
+            # OAuth codes, tokens and exception bodies are never written to logs.
+            log.warning("mastodon OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Mastodon</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_mastodon_oauth(state_value)
+            log.warning("mastodon OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Mastodon</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/x/auth/start")
+    async def x_oauth_start(request: Request) -> dict:
+        from tgfarm.x_oauth import begin_x_oauth
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/x/auth/callback"
+        try:
+            return await begin_x_oauth(
+                settings.x_oauth_client_id,
+                settings.x_oauth_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/x/auth/callback")
+    async def x_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.x_oauth import cancel_x_oauth, complete_x_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_x_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_x_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение X не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_x_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "x",
+                {
+                    "X_OAUTH_CLIENT_ID": credentials["client_id"],
+                    "X_OAUTH_CLIENT_SECRET": credentials["client_secret"],
+                    "X_ACCESS_TOKEN": credentials["access_token"],
+                    "X_REFRESH_TOKEN": credentials["refresh_token"],
+                    "X_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "X_USER_ID": credentials["user_id"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "x",
+                True,
+                account=credentials["account"],
+                detail="X OAuth подтверждён; профиль и права пользователя проверены.",
+            )
+            _operator("platform-auth-check", "x", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>X подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>OAuth-токены сохранены локально и будут обновляться автоматически. Публикация остаётся выключенной, пока ты не включишь X в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_x_oauth(state_value)
+            log.warning("X OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить X</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_x_oauth(state_value)
+            log.warning("X OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить X</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/threads/auth/start")
+    async def threads_oauth_start(request: Request) -> dict:
+        from tgfarm.threads_oauth import begin_threads_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/threads/auth/callback"
+        try:
+            return await begin_threads_oauth(
+                settings.threads_app_id,
+                settings.threads_app_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/threads/auth/callback")
+    async def threads_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.threads_oauth import cancel_threads_oauth, complete_threads_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_threads_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_threads_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение Threads не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_threads_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "threads",
+                {
+                    "THREADS_APP_ID": credentials["client_id"],
+                    "THREADS_APP_SECRET": credentials["client_secret"],
+                    "THREADS_ACCESS_TOKEN": credentials["access_token"],
+                    "THREADS_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "THREADS_USER_ID": credentials["user_id"],
+                    "THREADS_USERNAME": credentials["username"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "threads",
+                True,
+                account=credentials["account"],
+                detail="Threads OAuth подтверждён; долгоживущий токен и профиль сохранены локально.",
+            )
+            _operator("platform-auth-check", "threads", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Threads подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>OAuth-токен сохранён локально и будет обновляться до истечения срока. Публикация остаётся выключенной, пока ты не включишь Threads в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_threads_oauth(state_value)
+            log.warning("Threads OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Threads</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_threads_oauth(state_value)
+            log.warning("Threads OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Threads</h1><p>Внутренняя ошибка. Проверь настройки и повтори подключение.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/linkedin/auth/start")
+    async def linkedin_oauth_start(request: Request) -> dict:
+        from tgfarm.linkedin_oauth import begin_linkedin_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/linkedin/auth/callback"
+        try:
+            return await begin_linkedin_oauth(
+                settings.linkedin_client_id,
+                settings.linkedin_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/linkedin/auth/callback")
+    async def linkedin_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.linkedin_oauth import cancel_linkedin_oauth, complete_linkedin_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_linkedin_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_linkedin_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение LinkedIn не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_linkedin_oauth(state_value, code)
+            values = {
+                "LINKEDIN_CLIENT_ID": credentials["client_id"],
+                "LINKEDIN_CLIENT_SECRET": credentials["client_secret"],
+                "LINKEDIN_ACCESS_TOKEN": credentials["access_token"],
+                "LINKEDIN_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                "LINKEDIN_MEMBER_ID": credentials["member_id"],
+                "LINKEDIN_MEMBER_NAME": credentials["member_name"],
+                "LINKEDIN_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+            }
+            if credentials.get("refresh_token"):
+                values["LINKEDIN_REFRESH_TOKEN"] = credentials["refresh_token"]
+            await io(save_credentials, "linkedin", values)
+            await io(
+                record_auth_check,
+                "linkedin",
+                True,
+                account=credentials["account"],
+                detail="LinkedIn OAuth подтверждён; профиль OpenID Connect и пользовательский токен сохранены локально.",
+            )
+            _operator("platform-auth-check", "linkedin", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>LinkedIn подключён</h1><p>Доступ подтверждён для аккаунта <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Если LinkedIn не выдал refresh token, повторное подключение потребуется после истечения access token. "
+                "Публикация остаётся выключенной, пока ты не включишь площадку в панели.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_linkedin_oauth(state_value)
+            log.warning("LinkedIn OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить LinkedIn</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001
+            cancel_linkedin_oauth(state_value)
+            log.warning("LinkedIn OAuth callback failed (%s)", type(exc).__name__)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить LinkedIn</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/tiktok/auth/start")
+    async def tiktok_oauth_start(request: Request) -> dict:
+        from tgfarm.tiktok_oauth import begin_tiktok_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/tiktok/auth/callback"
+        try:
+            return await begin_tiktok_oauth(
+                settings.tiktok_client_key,
+                settings.tiktok_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/tiktok/auth/callback")
+    async def tiktok_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials
+        from tgfarm.tiktok_oauth import cancel_tiktok_oauth, complete_tiktok_oauth
+
+        params = request.scope.get("tgfarm_tiktok_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_tiktok_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение TikTok не завершено</h1><p>Ответ OAuth неполный или авторизация отменена.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        try:
+            credentials = await complete_tiktok_oauth(state_value, code)
+            await io(save_platform_credentials, "tiktok", {
+                "TIKTOK_CLIENT_KEY": credentials["client_key"],
+                "TIKTOK_CLIENT_SECRET": credentials["client_secret"],
+                "TIKTOK_ACCESS_TOKEN": credentials["access_token"],
+                "TIKTOK_REFRESH_TOKEN": credentials["refresh_token"],
+                "TIKTOK_TOKEN_EXPIRES_AT": credentials["token_expires_at"],
+                "TIKTOK_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+                "TIKTOK_OPEN_ID": credentials["open_id"],
+                "TIKTOK_USERNAME": credentials["username"],
+            })
+            await io(
+                record_auth_check,
+                "tiktok",
+                True,
+                account=credentials["account"],
+                detail="TikTok OAuth подтверждён; creator-info будет проверяться перед каждой прямой публикацией.",
+            )
+            _operator("platform-oauth-complete", "tiktok", "TikTok account OAuth completed")
+            account = html.escape(credentials["account"] or "TikTok creator")
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>TikTok подключён</h1><p>OAuth подтвердил аккаунт <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально. Публикация запускается только после просмотра видео, настройки подписи и отдельного подтверждения.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, headers=headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cancel_tiktok_oauth(state_value)
+            log.warning("TikTok OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить TikTok</h1><p>Внутренняя ошибка. Проверь конфигурацию и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=headers,
+            )
+
+    @app.post("/api/posts/{post_public_id}/video/render")
+    async def render_post_video(post_public_id: str) -> dict:
+        """Render an original vertical MP4 from an already-published post."""
+        from tgfarm.s11_video.renderer import render_post_short
+
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Короткое видео доступно после подтверждённой основной публикации.")
+        try:
+            artifact = await io(render_post_short, post_public_id)
+        except Exception as exc:  # noqa: BLE001 - no fake MP4 or fake success
+            log.warning("short video render failed (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+            ) from exc
+        refreshed = await io(_post_detail, post_public_id)
+        _operator("short-video-render", post_public_id, f"{artifact.width}x{artifact.height} {artifact.duration_s:.1f}s")
+        return {
+            "ok": True,
+            "artifact": artifact.as_dict(),
+            "video": refreshed.get("video"),
+            "download_url": (
+                f"/api/media/{refreshed['video']['id']}"
+                if refreshed.get("video") and refreshed["video"].get("id")
+                else None
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/prepare")
+    async def prepare_tiktok_post(post_public_id: str) -> dict:
+        """Prepare/preview a video and fetch the current creator privacy options."""
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, primary_video_path
+        from tgfarm.tiktok_oauth import get_tiktok_creator_info
+        from tgfarm.tiktok_publish import _truncate_utf16
+
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "Сначала включи TikTok в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "Сначала подключи TikTok через OAuth и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "TikTok Direct Post доступен после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        artifact = None
+        if not video_path:
+            from tgfarm.s11_video.renderer import render_post_short
+
+            try:
+                artifact = await io(render_post_short, post_public_id)
+                video_path = artifact.path
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=422,
+                    detail=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+                ) from exc
+            detail = await io(_post_detail, post_public_id)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(410, "Видео не найдено после подготовки.")
+        try:
+            creator = await get_tiktok_creator_info()
+        except Exception as exc:  # noqa: BLE001 - provider errors are bounded for the dashboard
+            raise HTTPException(
+                status_code=502,
+                detail=redact_sensitive_text(exc, limit=300) or "Не удалось получить настройки TikTok.",
+            ) from exc
+        caption = _truncate_utf16(
+            "\n\n".join(part for part in (str(detail.get("hook") or ""), str(detail.get("body") or "")) if part),
+            2200,
+        )
+        return {
+            "ok": True,
+            "post": post_public_id,
+            "caption": caption,
+            "video": detail.get("video"),
+            "download_url": (
+                f"/api/media/{detail['video']['id']}"
+                if detail.get("video") and detail["video"].get("id")
+                else None
+            ),
+            "artifact": artifact.as_dict() if artifact else None,
+            "creator": creator,
+            "live": get_settings().live,
+            "warning": (
+                "Проверь видео, подпись и приватность. До аудита приложения TikTok может ограничить видимость API-публикаций."
+            ),
+        }
+
+    @app.post("/api/posts/{post_public_id}/tiktok/publish")
+    async def publish_tiktok_post(post_public_id: str, request: TikTokPublishRequest) -> dict:
+        """Submit one video after explicit consent and durable crosspost claim."""
+        from tgfarm.core.schemas import CrosspostResult
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, begin_crosspost, log_result, primary_video_path
+        from tgfarm.tiktok_publish import publish_tiktok_video
+
+        if not request.consent:
+            raise HTTPException(400, "Подтверди отправку именно этого видео в TikTok.")
+        if not get_settings().live:
+            raise HTTPException(409, "TGFARM_MODE не live. Сначала выполни контролируемый запуск в режиме live.")
+        if not is_platform_enabled("tiktok"):
+            raise HTTPException(409, "TikTok выключен в разделе «Площадки».")
+        adapter = ADAPTERS.get("tiktok")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "TikTok OAuth не настроен. Подключи аккаунт и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Direct Post доступен только для подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(
+                select(Post.id).where(Post.public_id == post_public_id)
+            ).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(409, "Сначала подготовь видео и дождись готового MP4.")
+        attempt = await io(begin_crosspost, post_public_id, "tiktok")
+        if attempt is None:
+            raise HTTPException(409, "Для этого поста уже есть доставка/блокировка. Проверь историю TikTok перед повтором.")
+        try:
+            result = await publish_tiktok_video(
+                video_path,
+                caption=request.caption,
+                privacy_level=request.privacy_level,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unexpected failure after claim is conservatively unknown
+            log.warning("TikTok Direct Post failed unexpectedly (%s)", type(exc).__name__)
+            result = CrosspostResult(
+                platform="tiktok",
+                status="unknown",
+                error="Результат отправки не подтверждён. Проверь TikTok перед повтором.",
+            )
+        await io(log_result, post_public_id, result, attempt)
+        _operator("tiktok-direct-publish", post_public_id, f"status={result.status} privacy={request.privacy_level}")
+        return {
+            "ok": result.status == "posted",
+            "status": result.status,
+            "remote_id": result.remote_id,
+            "url": result.url,
+            "error": result.error,
+            "detail": (
+                "TikTok подтвердил публикацию."
+                if result.status == "posted"
+                else "Результат не подтверждён. Проверь TikTok вручную и не повторяй отправку, пока не убедишься, что видео отсутствует."
+                if result.status == "unknown"
+                else "TikTok не подтвердил публикацию. Исправь причину перед повтором."
+            ),
+        }
+
+    @app.get("/api/reddit/metrics")
+    async def reddit_metrics() -> dict:
+        from tgfarm.s9_growth.reddit_metrics import get_reddit_metrics_report
+
+        return await io(get_reddit_metrics_report)
+
+    @app.post("/api/reddit/metrics/refresh")
+    async def reddit_metrics_refresh(request: RedditMetricsRefreshRequest) -> dict:
+        from tgfarm.s9_growth.reddit_metrics import RedditMetricsError, refresh_reddit_metrics
+
+        try:
+            return await refresh_reddit_metrics(limit=request.limit)
+        except RedditMetricsError as exc:
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.post("/api/reddit/scout")
+    async def reddit_scout(request: RedditScoutRequest) -> dict:
+        from tgfarm.s9_growth.reddit_scout import RedditScoutError, search_communities
+
+        try:
+            return await search_communities(
+                request.query,
+                post_public_id=request.post_public_id or "",
+                title=request.title,
+                body=request.body,
+                limit=request.limit,
+            )
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.post("/api/reddit/tailor")
+    async def reddit_tailor(request: RedditTailorRequest) -> dict:
+        from tgfarm.s9_growth.reddit_scout import RedditScoutError, tailor_post
+
+        try:
+            return await tailor_post(request.post_public_id, request.subreddit)
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.post("/api/reddit/publish")
+    async def reddit_publish(request: RedditPublishRequest) -> dict:
+        from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth import adapters as growth_adapters
+        from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, crosspost_retry_after_seconds, log_result
+        from tgfarm.s9_growth import already_done, begin_crosspost
+        from tgfarm.s9_growth.reddit_scout import (
+            RedditScoutError,
+            _post_record,
+            inspect_community,
+            validate_submission,
+        )
+
+        if not request.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Подтверди, что просмотрел черновик и правила сообщества.",
+            )
+        settings_now = get_settings()
+        if not settings_now.live:
+            raise HTTPException(
+                status_code=409,
+                detail="TGFARM_MODE не live. Сначала проверь черновик в dry-режиме.",
+            )
+        if not is_platform_enabled("reddit"):
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit выключен в центре площадок.",
+            )
+        adapter = growth_adapters.ADAPTERS.get("reddit")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit OAuth не настроен. Проверь локальный .env.",
+            )
+        subreddit = request.subreddit.strip()
+        if subreddit.lower().startswith("r/"):
+            subreddit = subreddit[2:]
+        if not re.fullmatch(r"[A-Za-z0-9_]{2,21}", subreddit):
+            raise HTTPException(status_code=422, detail="Некорректное имя subreddit.")
+
+        try:
+            post = await io(_post_record, request.post_public_id)
+            if post["status"] != "published":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Для Reddit можно использовать только уже опубликованный пост TgFarm.",
+                )
+            community = await inspect_community(subreddit)
+            problems = validate_submission(request.title, request.body, community)
+            if problems:
+                raise HTTPException(status_code=422, detail={"errors": problems})
+        except RedditScoutError as exc:
+            raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+        if await io(already_done, post["public_id"], "reddit"):
+            raise HTTPException(
+                status_code=409,
+                detail="Для этого исходного поста уже есть результат Reddit. Проверь журнал перед повтором.",
+            )
+        attempt = await io(begin_crosspost, post["public_id"], "reddit")
+        if attempt is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Публикация уже запускалась или ожидает сверки. Повтор запрещён до проверки журнала.",
+            )
+
+        payload = CrosspostPayload(
+            platform="reddit",
+            title=request.title.strip(),
+            text=request.body.strip(),
+            meta={"subreddit": subreddit, "reddit_kind": "self"},
+        )
+        # The global switch may have changed while the API refreshed community
+        # rules and requirements. Recheck after claiming the attempt and just
+        # before the side-effecting request.
+        if not await io(is_platform_enabled, "reddit"):
+            paused = CrosspostResult(
+                platform="reddit",
+                status="skipped",
+                error="Reddit was disabled before submit; no post was sent.",
+            )
+            await io(log_result, post["public_id"], paused, attempt)
+            raise HTTPException(
+                status_code=409,
+                detail="Reddit выключен до отправки. Никакая публикация не отправлена.",
+            )
+        try:
+            result = await adapter.publish(payload)
+        except Exception as exc:  # noqa: BLE001 - ambiguity must block blind retries
+            result = CrosspostResult(
+                platform="reddit",
+                status="unknown" if ambiguous_crosspost_error(exc) else "failed",
+                error=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
+            )
+        await io(log_result, post["public_id"], result, attempt)
+        _operator(
+            "reddit-publish",
+            f"{post['public_id']}:r/{subreddit}",
+            result.status,
+        )
+        return {
+            "ok": result.status == "posted",
+            "result": result.model_dump(),
+            "subreddit": subreddit,
+            "review_required": True,
+        }
+
     @app.get("/api/runs")
     async def runs(limit: int = Query(30, ge=1, le=200)) -> dict:
         return {"runs": await io(_runs, limit)}
@@ -1045,10 +2634,69 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def crossposts(limit: int = Query(50, ge=1, le=300)) -> dict:
         return {"crossposts": await io(_crossposts, limit)}
 
+    @app.get("/api/crossposts/health")
+    async def crosspost_health() -> dict:
+        return await io(_crosspost_health)
+
+    @app.get("/api/crossposts/export")
+    async def export_crossposts(limit: int = Query(300, ge=1, le=300)) -> dict:
+        return await io(_crossposts_export, limit)
+
+    @app.post("/api/crossposts/{post_public_id}/{platform}/reconcile")
+    async def reconcile_crosspost(
+        post_public_id: str,
+        platform: str,
+        request: CrosspostReconcileRequest,
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили целевую площадку и поста там нет.",
+            )
+        if request.action == "retry_after_check":
+            from tgfarm.platforms import is_platform_enabled
+            from tgfarm.s9_growth.adapters import ADAPTERS
+
+            if not is_platform_enabled(platform):
+                raise HTTPException(
+                    409,
+                    "Эта площадка выключена. Сначала включи её в разделе «Площадки», затем разрешай повтор.",
+                )
+            adapter = ADAPTERS.get(platform)
+            if adapter is None or not adapter.configured():
+                raise HTTPException(
+                    409,
+                    "Площадка не настроена. Исправь подключение и проверь авторизацию перед повтором.",
+                )
+        result = await io(_reconcile_crosspost_outcome, post_public_id, platform, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "still_in_flight":
+            raise HTTPException(409, "Публикация ещё может выполняться; повторно проверьте позже.")
+        if result.get("error") == "not_reconcilable":
+            raise HTTPException(409, detail=f"Кросспост нельзя сверить из текущего состояния (текущий статус: {result.get('status')})")
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        if request.action == "retry_after_check":
+            from tgfarm import s9_growth
+
+            outcomes = await s9_growth.crosspost_post(result["post_id"], [platform])
+            result["outcomes"] = [outcome.model_dump() for outcome in outcomes]
+        _operator("crosspost-reconcile", f"{post_public_id}:{platform}", result["detail"])
+        return result
+
     # --------------------------------------------------------------- actions
     @app.post("/api/cycle")
     async def run_cycle(collect: bool = True, max_clusters: int = 8) -> dict:
-        result = await pipeline.run_cycle(collect=collect, max_clusters=max_clusters)
+        result = await pipeline._guarded_cycle(
+            collect=collect,
+            max_clusters=max(1, min(max_clusters, pipeline.MAX_CLUSTERS_PER_CYCLE)),
+        )
+        if result is None:
+            health = pipeline.cycle_health()
+            if health.get("state") == "running":
+                raise HTTPException(409, "Полный цикл уже выполняется; повторный запуск пропущен.")
+            raise HTTPException(503, "Цикл не завершился успешно. Проверьте состояние и журнал фермы.")
         return result.as_dict()
 
     @app.post("/api/posts/publish")
@@ -1057,14 +2705,72 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         if not request.post_public_ids:
             raise HTTPException(400, "empty post list")
+        unknown_ids = await io(_unknown_publish_ids, request.post_public_ids)
+        if unknown_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "publish_outcome_unknown",
+                    "post_public_ids": unknown_ids,
+                    "message": "Проверьте площадку и разрешите повтор через reconcile.",
+                },
+            )
+        blocked_ids = await io(_blocked_publish_now_ids, request.post_public_ids)
+        if blocked_ids:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "post_not_publishable_now",
+                    "posts": blocked_ids,
+                    "message": "Немедленная публикация разрешена только для постов в очереди или прошедших гейты.",
+                },
+            )
         updated = await io(s7_publish.unpublish, request.post_public_ids)
-        published = await s7_publish.publish_due(limit=len(request.post_public_ids))
+        published = await s7_publish.publish_due(
+            limit=len(request.post_public_ids),
+            post_public_ids=request.post_public_ids,
+        )
         _operator(
             "publish",
             ",".join(request.post_public_ids)[:64],
-            f"published={published.get('published')} failed={published.get('failed')}",
+            f"rescheduled={updated} published={published.get('published')} failed={published.get('failed')}",
         )
         return {"rescheduled": updated, **published}
+
+    @app.post("/api/posts/{post_public_id}/retry")
+    async def retry_failed_publish(post_public_id: str) -> dict:
+        result = await io(_retry_failed_publish, post_public_id)
+        if not result.get("ok"):
+            code = 404 if result.get("error") == "not_found" else 409
+            raise HTTPException(code, result.get("error", "retry failed"))
+        _operator(
+            "publish-retry",
+            post_public_id,
+            f"manually requeued after definite failure on {result['platform']}",
+        )
+        return result
+
+    @app.post("/api/posts/{post_public_id}/reconcile")
+    async def reconcile_publish(
+        post_public_id: str, request: PublishReconcileRequest
+    ) -> dict:
+        if request.action == "retry_after_check" and not request.confirm_not_published:
+            raise HTTPException(
+                400,
+                "Для повтора нужно подтвердить, что вы проверили площадку и поста там нет.",
+            )
+        result = await io(_reconcile_publish_outcome, post_public_id, request.action)
+        if result.get("error") == "not_found":
+            raise HTTPException(404, "post not found")
+        if result.get("error") == "not_unknown":
+            raise HTTPException(
+                409,
+                detail=f"Пост не ожидает сверки (текущий статус: {result.get('status')})",
+            )
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "reconcile failed"))
+        _operator("publish-reconcile", post_public_id, result["detail"])
+        return result
 
     @app.post("/api/posts/reject")
     async def reject(request: RejectRequest) -> dict:
@@ -1118,10 +2824,20 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             publisher = DzenWebPublisher(headless=False)
             try:
                 result = asyncio.run(publisher.login(timeout_s=timeout))
+                from tgfarm.platforms import record_auth_check
+
+                record_auth_check(
+                    "dzen", True,
+                    account=str(result.get("publisher_name") or result.get("account") or ""),
+                    detail="Сессия сохранена через браузерный вход.",
+                )
                 _operator("dzen-login", "dzen", "сессия обновлена из панели")
-                return {"ok": True, **result}
+                return {"ok": True, "authorized": True, **result}
             except DzenNotLoggedIn as exc:
-                return {"ok": False, "authorized": False, "error": str(exc)[:200]}
+                from tgfarm.platforms import record_auth_check
+
+                record_auth_check("dzen", False, detail=redact_sensitive_text(exc, limit=200))
+                return {"ok": False, "authorized": False, "error": redact_sensitive_text(exc, limit=200)}
 
         return await io(_run)
 
@@ -1153,6 +2869,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 ]
 
         return {"entries": await io(_load)}
+
+    @app.get("/api/ai/usage")
+    async def ai_usage(days: int = Query(7, ge=1, le=30)) -> dict:
+        """Persisted AI call-budget use, including offline fallbacks and stale reservations."""
+        from tgfarm.llm.policy import usage_report
+
+        return await io(usage_report, days)
 
     @app.get("/api/metrics")
     async def metrics() -> dict:

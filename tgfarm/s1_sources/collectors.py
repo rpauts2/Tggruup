@@ -15,7 +15,14 @@ from tgfarm.core.ratelimit import RATE
 from tgfarm.core.schemas import RawItem
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import strip_html
-from tgfarm.s1_sources.base import Collector, get_text, parse_date, to_raw
+from tgfarm.s1_sources.base import (
+    Collector,
+    SourceCollectionResult,
+    collect_all_detailed,
+    get_text,
+    parse_date,
+    to_raw,
+)
 from tgfarm.s1_sources.extra_sources import (
     GitHubCollector,
     HackerNewsCollector,
@@ -188,14 +195,22 @@ def _city_from_config() -> str:
     return ""
 
 
-async def collect(fetchers: dict[str, Collector], specs: list[SourceSpec]) -> list[RawItem]:
-    from tgfarm.s1_sources.base import collect_all
-
+async def collect_detailed(
+    fetchers: dict[str, Collector],
+    specs: list[SourceSpec],
+) -> list[SourceCollectionResult]:
+    """Collect online and preserve a separate outcome for each source."""
     settings = get_settings()
     if not settings.online:
         log.warning("mode=off — skipping network collection")
         return []
-    return await collect_all(fetchers, [s for s in specs if s.enabled])
+    return await collect_all_detailed(fetchers, [s for s in specs if s.enabled])
+
+
+async def collect(fetchers: dict[str, Collector], specs: list[SourceSpec]) -> list[RawItem]:
+    """Backward-compatible flattened collector interface."""
+    results = await collect_detailed(fetchers, specs)
+    return [item for result in results for item in result.items]
 
 
 FETCHERS: dict[str, Collector] = {

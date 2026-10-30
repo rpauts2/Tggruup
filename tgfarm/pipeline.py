@@ -13,19 +13,22 @@ dead source or a rate-limited LLM must never stop the other channels.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import Cluster, PipelineRun, Post, RawItem
+from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem, Source
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -35,6 +38,21 @@ MAX_CLUSTERS_PER_CYCLE = 1000
 _cycle_started_at: datetime | None = None
 _cycle_finished_at: datetime | None = None
 _cycle_state = "idle"
+_active_cycle_task: asyncio.Task | None = None
+_watchdog_recovery_attempts = 0
+_watchdog_last_recovery_at: datetime | None = None
+
+
+def _watchdog_recovery_delay_min(
+    attempts: int,
+    base_min: int,
+    max_min: int,
+) -> int:
+    """Exponential retry delay, capped so a persistent failure cannot hot-loop."""
+    base = max(1, int(base_min))
+    cap = max(base, int(max_min))
+    exponent = min(max(0, int(attempts) - 1), 10)
+    return min(cap, base * (2**exponent))
 
 
 def cycle_health(now: datetime | None = None) -> dict:
@@ -51,17 +69,40 @@ def cycle_health(now: datetime | None = None) -> dict:
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
         age = max(0, int((current - started).total_seconds()))
+    settings = get_settings()
     stale = (
         _cycle_state == "running"
         and age is not None
-        and age >= max(1, get_settings().cycle_stale_min) * 60
+        and age >= max(1, settings.cycle_stale_min) * 60
     )
+    recovery_next_at = None
+    recovery_delay_min = None
+    recovery_wait_s = None
+    if _watchdog_last_recovery_at is not None:
+        recovery_at = _watchdog_last_recovery_at
+        if recovery_at.tzinfo is None:
+            recovery_at = recovery_at.replace(tzinfo=UTC)
+        else:
+            recovery_at = recovery_at.astimezone(UTC)
+        recovery_delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_at = recovery_at + timedelta(minutes=recovery_delay_min)
+        recovery_next_at = next_at.isoformat(timespec="seconds")
+        recovery_wait_s = max(0, int((next_at - current).total_seconds()))
+
     return {
         "state": _cycle_state,
         "started_at": started.isoformat(timespec="seconds") if started else None,
         "finished_at": finished.isoformat(timespec="seconds") if finished else None,
         "age_s": age,
         "stale": stale,
+        "recovery_attempts": _watchdog_recovery_attempts,
+        "recovery_delay_min": recovery_delay_min,
+        "recovery_next_at": recovery_next_at,
+        "recovery_wait_s": recovery_wait_s,
     }
 
 
@@ -98,12 +139,12 @@ def _record(run_id: str, stage: str, status: str, items_in: int = 0, items_out: 
                     items_in=items_in,
                     items_out=items_out,
                     duration_ms=duration_ms,
-                    error=(error or "")[:1000] or None,
+                    error=redact_sensitive_text(error, limit=1000) if error else None,
                     meta=meta or {},
                 )
             )
     except Exception:  # noqa: BLE001 - see docstring
-        log.exception("could not record pipeline run %s/%s", run_id, stage)
+        log.error("could not record pipeline run %s/%s", run_id, stage)
 
 
 async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = None) -> object:
@@ -123,12 +164,393 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
         )
         return value
     except Exception as exc:  # noqa: BLE001 - stage isolation is the point
-        message = f"{type(exc).__name__}: {exc}"
-        log.exception("stage %s failed", name)
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600)
+        log.error("stage %s failed: %s", name, message)
         result.stages[name] = {"ok": False, "error": message}
         result.errors.append(f"{name}: {message}")
         await to_thread(_record, result.run_id, name, "error", 0, 0, timer.duration_ms, message)
         return None
+
+
+def _ai_budget_alert(
+    charged_calls: int,
+    daily_budget: int,
+    *,
+    online_provider_enabled: bool,
+) -> dict | None:
+    """Warn only after the configured online pipeline has actually reserved calls."""
+    if not online_provider_enabled or int(charged_calls) <= 0:
+        return None
+    used = max(0, int(charged_calls))
+    budget = max(0, int(daily_budget))
+    if budget == 0 or used >= budget:
+        return {
+            "level": "warning",
+            "code": "ai_daily_budget_exhausted",
+            "message": (
+                f"Дневной лимит онлайн-вызовов ИИ исчерпан ({used}/{budget}). "
+                "Ферма продолжит доступные офлайн-сценарии; увеличь AI_DAILY_BUDGET "
+                "или дождись следующего дня."
+            ),
+        }
+    if used / budget >= 0.8:
+        return {
+            "level": "warning",
+            "code": "ai_daily_budget_near_limit",
+            "message": (
+                f"Использовано {used} из {budget} дневных онлайн-вызовов ИИ "
+                f"({used / budget:.0%}). Проверь лимит до следующего цикла."
+            ),
+        }
+    return None
+
+
+def _queue_backlog_alerts(
+    scheduled_count: int,
+    gated_count: int,
+    *,
+    live: bool,
+    scheduled_threshold: int,
+    gated_threshold: int,
+) -> list[dict]:
+    """Report a growing publication queue without leaking post content."""
+    if not live:
+        return []
+    alerts: list[dict] = []
+    scheduled_limit = max(1, int(scheduled_threshold))
+    gated_limit = max(1, int(gated_threshold))
+    scheduled = max(0, int(scheduled_count))
+    gated = max(0, int(gated_count))
+    if scheduled >= scheduled_limit:
+        level = "error" if scheduled >= scheduled_limit * 2 else "warning"
+        alerts.append({
+            "level": level,
+            "code": "scheduled_queue_backlog",
+            "message": (
+                f"В очереди публикации {scheduled} постов (порог {scheduled_limit}). "
+                "Проверьте доступность площадок, расписание и причины повторных ошибок."
+            ),
+        })
+    if gated >= gated_limit:
+        alerts.append({
+            "level": "warning",
+            "code": "editorial_review_backlog",
+            "message": (
+                f"{gated} постов ожидают редакционного одобрения (порог {gated_limit}). "
+                "Проверьте очередь проверки и качество черновиков."
+            ),
+        })
+    return alerts
+
+
+def _publication_liveness_alert(
+    last_published: datetime | None,
+    oldest_waiting: datetime | None,
+    queued_count: int,
+    current: datetime,
+    threshold_hours: int,
+) -> dict | None:
+    """Alert when the queue has been quiet too long, including before first success."""
+    if queued_count <= 0:
+        return None
+
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    baseline = last_published or oldest_waiting
+    if baseline is None:
+        return None
+    baseline = baseline.replace(tzinfo=UTC) if baseline.tzinfo is None else baseline.astimezone(UTC)
+    quiet_hours = (current - baseline).total_seconds() / 3600
+    if quiet_hours < max(1, int(threshold_hours)):
+        return None
+
+    if last_published is None:
+        return {
+            "level": "error",
+            "code": "first_publication_missing",
+            "message": (
+                f"первая публикация ещё не состоялась {quiet_hours:.1f} ч, "
+                f"в очереди {queued_count} материал(ов)"
+            ),
+        }
+    return {
+        "level": "error",
+        "code": "no_publications",
+        "message": (
+            f"последняя публикация {quiet_hours:.1f} ч назад, "
+            f"в очереди {queued_count} материал(ов)"
+        ),
+    }
+
+
+def _backup_freshness_alert(
+    last_successful_backup_at: datetime | None,
+    current: datetime,
+    max_age_hours: int,
+) -> dict | None:
+    """Warn when no verified backup exists or the last one is too old."""
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    threshold_hours = max(1, int(max_age_hours))
+    if last_successful_backup_at is None:
+        return {
+            "level": "warning",
+            "code": "backup_missing",
+            "message": (
+                "Нет ни одной успешной проверенной резервной копии. "
+                "TgFarm создаёт резервную копию автоматически раз в сутки; "
+                "проверь доступность папки BACKUP_DIR."
+            ),
+        }
+
+    stamp = (
+        last_successful_backup_at.replace(tzinfo=UTC)
+        if last_successful_backup_at.tzinfo is None
+        else last_successful_backup_at.astimezone(UTC)
+    )
+    age_hours = max(0.0, (current - stamp).total_seconds() / 3600)
+    if age_hours < threshold_hours:
+        return None
+    return {
+        "level": "error",
+        "code": "backup_stale",
+        "message": (
+            f"Последняя успешная резервная копия была {age_hours:.1f} ч назад "
+            f"(порог {threshold_hours} ч). Проверь расписание, диск и BACKUP_DIR."
+        ),
+    }
+
+
+def _source_freshness_alert(enabled_source_rows, current: datetime, settings=None) -> dict | None:
+    """Warn when enabled sources are not being polled within their adaptive cadence."""
+    from tgfarm.s1_sources import effective_interval
+
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    overdue = 0
+    total = len(enabled_source_rows)
+    for row in enabled_source_rows:
+        last_fetched = getattr(row, "last_fetched_at", None)
+        created_at = getattr(row, "created_at", None)
+        stamp = last_fetched or created_at
+        if stamp is None:
+            overdue += 1
+            continue
+        stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+        # Honor the collector's adaptive backoff for idle feeds and repeated
+        # failures; otherwise a deliberately backed-off source looks falsely stale.
+        interval_s = effective_interval(row, settings)
+        # Allow three effective intervals, but never flag a source for less
+        # than two hours of silence. Long-interval sources retain their cadence.
+        threshold_s = max(2 * 60 * 60, interval_s * 3)
+        if (current - stamp).total_seconds() >= threshold_s:
+            overdue += 1
+
+    if total == 0 or overdue == 0:
+        return None
+    if overdue == total:
+        return {
+            "level": "error",
+            "code": "source_collection_stale",
+            "message": (
+                f"Все включённые источники ({total}) давно не проверялись по своему расписанию. "
+                "Проверь цикл сбора, scheduler и доступность базы."
+            ),
+        }
+    return {
+        "level": "warning",
+        "code": "source_collection_degraded",
+        "message": (
+            f"{overdue} из {total} включённых источников проверялись позже ожидаемого срока. "
+            "Часть новостей может поступать с задержкой."
+        ),
+    }
+
+
+def _source_health_alert(enabled_source_rows) -> dict | None:
+    """Raise a bounded alert when enabled sources have entered repeated-failure cooldown."""
+    total = len(enabled_source_rows)
+    if total == 0:
+        return None
+
+    unhealthy = [
+        row
+        for row in enabled_source_rows
+        if int(getattr(row, "failures", 0) or 0) >= 3
+        or str(getattr(row, "last_status", "") or "").lower() == "cooldown"
+    ]
+    if not unhealthy:
+        return None
+
+    count = len(unhealthy)
+    if count == total:
+        return {
+            "level": "error",
+            "code": "source_fleet_down",
+            "message": (
+                f"Все {total} включённых источника находятся в состоянии повторных ошибок "
+                "или cooldown. Проверь сеть и доступность источников; коллекция новостей может остановиться."
+            ),
+        }
+    return {
+        "level": "warning",
+        "code": "source_fleet_degraded",
+        "message": (
+            f"{count} из {total} включённых источников не прошли несколько попыток и находятся "
+            "в cooldown/повторных ошибках. Остальные источники продолжают работать."
+        ),
+    }
+
+
+def _platform_auth_monitor_freshness_alert(
+    last_check_at: datetime | None,
+    current: datetime,
+    max_age_hours: int,
+    *,
+    has_configured_platforms: bool,
+) -> dict | None:
+    """Report when enabled/configured platform auth monitoring has stopped running."""
+    if not has_configured_platforms:
+        return None
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    if last_check_at is None:
+        return {
+            "level": "warning",
+            "code": "platform_auth_monitor_missing",
+            "message": (
+                "Для настроенных площадок ещё нет ни одной записи проверки авторизации. "
+                "Проверь запуск scheduler и задачу platform-auth-health."
+            ),
+        }
+    stamp = last_check_at.replace(tzinfo=UTC) if last_check_at.tzinfo is None else last_check_at.astimezone(UTC)
+    age_hours = max(0.0, (current - stamp).total_seconds() / 3600)
+    threshold = max(1, int(max_age_hours))
+    if age_hours < threshold:
+        return None
+    return {
+        "level": "warning",
+        "code": "platform_auth_monitor_stale",
+        "message": (
+            f"Проверка авторизации не запускалась {age_hours:.1f} ч "
+            f"(порог {threshold} ч). Проверь scheduler и журнал platform_auth."
+        ),
+    }
+
+
+def _alert_delivery_failure_alert(last_delivery) -> dict | None:
+    """Expose failed Telegram alert delivery in status/API without echoing raw errors."""
+    if last_delivery is None or str(getattr(last_delivery, "status", "")) != "error":
+        return None
+    return {
+        "level": "warning",
+        "code": "alert_delivery_failed",
+        "message": (
+            "Последняя попытка отправки уведомлений в Telegram завершилась ошибкой. "
+            "Проверь токен бота, ALERT_CHAT_ID и сетевое соединение; состояние видно в панели."
+        ),
+    }
+
+
+def _platform_auth_alert(platform_rows) -> dict | None:
+    """Alert only for explicitly failed auth checks on enabled, configured adapters."""
+    failed = [
+        row
+        for row in platform_rows
+        if row.get("supported")
+        and row.get("enabled")
+        and row.get("configured")
+        and (row.get("auth") or {}).get("status") == "failed"
+    ]
+    if not failed:
+        return None
+
+    names = [
+        str(row.get("name") or row.get("id") or "неизвестная площадка")
+        for row in failed
+    ]
+    shown = names[:6]
+    suffix = f" и ещё {len(names) - len(shown)}" if len(names) > len(shown) else ""
+    return {
+        "level": "error",
+        "code": "platform_auth_failed",
+        "message": (
+            "Проверка доступа не пройдена для площадок: "
+            + ", ".join(shown)
+            + suffix
+            + ". Переподключи аккаунт или обнови токен; публикация на этих площадках может не работать."
+        ),
+    }
+
+
+def _disk_space_alerts(
+    mounts: list[tuple[str, str | Path]],
+    *,
+    warn_free_gb: float,
+    critical_free_gb: float,
+) -> list[dict]:
+    """Check configured storage locations once per filesystem without exposing paths."""
+    warn = max(0.0, float(warn_free_gb))
+    critical = max(0.0, float(critical_free_gb))
+    if warn <= 0 and critical <= 0:
+        return []
+    if warn > 0 and critical > 0:
+        warn = max(warn, critical)
+
+    grouped: dict[int, dict] = {}
+    inaccessible: list[str] = []
+    for role, raw_path in mounts:
+        path = Path(raw_path).expanduser()
+        probe = path
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        try:
+            device = probe.stat().st_dev
+            entry = grouped.setdefault(device, {"roles": [], "probe": probe})
+            if role not in entry["roles"]:
+                entry["roles"].append(role)
+        except OSError:
+            if role not in inaccessible:
+                inaccessible.append(role)
+
+    alerts: list[dict] = []
+    for entry in grouped.values():
+        try:
+            free_gb = shutil.disk_usage(entry["probe"]).free / (1024**3)
+        except OSError:
+            inaccessible.extend(role for role in entry["roles"] if role not in inaccessible)
+            continue
+        roles = ", ".join(entry["roles"])
+        if critical > 0 and free_gb < critical:
+            alerts.append({
+                "level": "error",
+                "code": "disk_space_critical",
+                "message": f"Критически мало свободного места ({free_gb:.1f} ГБ) для: {roles}. Освободи место или перенеси данные.",
+            })
+        elif warn > 0 and free_gb < warn:
+            alerts.append({
+                "level": "warning",
+                "code": "disk_space_low",
+                "message": f"Свободного места осталось {free_gb:.1f} ГБ для: {roles}; порог предупреждения {warn:.1f} ГБ.",
+            })
+    if inaccessible:
+        alerts.append({
+            "level": "warning",
+            "code": "disk_space_check_failed",
+            "message": "Не удалось проверить свободное место для: " + ", ".join(inaccessible) + ". Проверь доступность каталога.",
+        })
+    return alerts
+
+
+def _configured_disk_mounts(settings) -> list[tuple[str, str | Path]]:
+    """Resolve only storage roles that TgFarm actually uses."""
+    data_root = settings.data_root()
+    backup_dir = str(getattr(settings, "backup_dir", "") or "").strip()
+    mirror_dir = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
+    root = Path(__file__).resolve().parents[1]
+    mounts: list[tuple[str, str | Path]] = [
+        ("данных фермы", data_root),
+        ("резервных копий", Path(backup_dir) if backup_dir else root / "backup"),
+    ]
+    if mirror_dir:
+        mounts.append(("зеркала резервных копий", mirror_dir))
+    return mounts
 
 
 def collect_alerts(now: datetime | None = None) -> list[dict]:
@@ -167,6 +589,13 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 Post.status == "scheduled", Post.scheduled_at <= current
             )
         ).scalar_one()
+        oldest_waiting = _aware(
+            session.execute(
+                select(func.min(func.coalesce(Post.scheduled_at, Post.created_at))).where(
+                    Post.status.in_(("gated", "scheduled"))
+                )
+            ).scalar_one_or_none()
+        )
         stuck = session.execute(
             select(func.count()).select_from(Post).where(
                 Post.status == "publishing",
@@ -174,9 +603,87 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 Post.scheduled_at < current - timedelta(minutes=30),
             )
         ).scalar_one()
+        publish_unknown = session.execute(
+            select(func.count()).select_from(Post).where(Post.status == "publish_unknown")
+        ).scalar_one()
+        terminal_publish_failures = session.execute(
+            select(func.count()).select_from(Post).where(
+                Post.status == "failed",
+                Post.attempts > 0,
+            )
+        ).scalar_one()
+        latest_crosspost_ids = (
+            select(func.max(CrosspostLog.id).label("latest_id"))
+            .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+            .subquery()
+        )
+        crosspost_attention = session.execute(
+            select(func.count())
+            .select_from(CrosspostLog)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(
+                or_(
+                    CrosspostLog.status == "unknown",
+                    and_(
+                        CrosspostLog.status == "publishing",
+                        CrosspostLog.created_at <= current - timedelta(minutes=30),
+                    ),
+                )
+            )
+        ).scalar_one()
+        from tgfarm.s9_growth.adapters import MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+
+        crosspost_failures = session.execute(
+            select(func.count())
+            .select_from(CrosspostLog)
+            .join(latest_crosspost_ids, CrosspostLog.id == latest_crosspost_ids.c.latest_id)
+            .where(
+                or_(
+                    CrosspostLog.status == "permanent",
+                    and_(
+                        CrosspostLog.status == "failed",
+                        CrosspostLog.attempt >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS,
+                    ),
+                )
+            )
+        ).scalar_one()
         last_generate = session.execute(
             select(PipelineRun.status, PipelineRun.error)
             .where(PipelineRun.stage == "s4_generate")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).first()
+        last_backup = session.execute(
+            select(PipelineRun.status, PipelineRun.error, PipelineRun.meta)
+            .where(PipelineRun.stage == "backup")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).first()
+        last_successful_backup_at = session.execute(
+            select(PipelineRun.created_at)
+            .where(PipelineRun.stage == "backup", PipelineRun.status == "ok")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        enabled_source_health = session.execute(
+            select(
+                Source.failures,
+                Source.last_status,
+                Source.last_fetched_at,
+                Source.min_interval_s,
+                Source.idle_streak,
+                Source.created_at,
+            ).where(Source.enabled.is_(True))
+        ).all()
+        last_platform_auth_check_at = session.execute(
+            select(PipelineRun.created_at)
+            .where(PipelineRun.stage == "platform_auth")
+            .order_by(PipelineRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        last_alert_delivery = session.execute(
+            select(PipelineRun.status, PipelineRun.error)
+            .where(PipelineRun.stage == "alert_delivery")
             .order_by(PipelineRun.id.desc())
             .limit(1)
         ).first()
@@ -205,25 +712,75 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
             )
         ).scalar_one()
 
-    if settings.live and last_published is not None:
-        quiet_hours = (current - last_published).total_seconds() / 3600
-        if quiet_hours >= max(1, settings.alert_no_publish_hours) and (gated or scheduled):
-            alerts.append(
-                {
-                    "level": "error",
-                    "code": "no_publications",
-                    "message": (
-                        f"последняя публикация {quiet_hours:.1f} ч назад, "
-                        f"в очереди {gated} gated + {scheduled} scheduled"
-                    ),
-                }
-            )
+    if settings.live:
+        liveness = _publication_liveness_alert(
+            last_published,
+            oldest_waiting,
+            int(gated or 0) + int(scheduled or 0),
+            current,
+            settings.alert_no_publish_hours,
+        )
+        if liveness:
+            alerts.append(liveness)
+    alerts.extend(_queue_backlog_alerts(
+        int(scheduled or 0),
+        int(gated or 0),
+        live=bool(getattr(settings, "live", False)),
+        scheduled_threshold=getattr(settings, "queue_backlog_alert_threshold", 100),
+        gated_threshold=getattr(settings, "editorial_backlog_alert_threshold", 50),
+    ))
     if stuck:
         alerts.append(
             {
                 "level": "warning",
                 "code": "publishing_stuck",
                 "message": f"{stuck} пост(ов) висят в publishing дольше 30 минут",
+            }
+        )
+    if publish_unknown:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "publish_outcome_unknown",
+                "message": (
+                    f"{publish_unknown} пост(ов) требуют сверки на площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
+            }
+        )
+    if crosspost_attention:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "crosspost_outcome_unknown",
+                "message": (
+                    f"{crosspost_attention} кросспост(ов) требуют сверки на целевой площадке; "
+                    "автоматический повтор остановлен во избежание дублей"
+                ),
+            }
+        )
+
+    if crosspost_failures:
+        alerts.append(
+            {
+                "level": "warning",
+                "code": "crosspost_delivery_failed",
+                "message": (
+                    f"{crosspost_failures} кросспост(ов) требуют исправления подключения "
+                    "или ручного повторного разрешения после проверки целевой площадки"
+                ),
+            }
+        )
+
+    if terminal_publish_failures:
+        alerts.append(
+            {
+                "level": "error",
+                "code": "publish_terminal_failure",
+                "message": (
+                    f"Остановлено публикаций: {terminal_publish_failures}. Причина: постоянная ошибка "
+                    "или исчерпан лимит попыток. Исправь причину и используй «Повторить» в карточке поста."
+                ),
             }
         )
 
@@ -285,6 +842,98 @@ def collect_alerts(now: datetime | None = None) -> list[dict]:
                 "message": f"генерация падает: {(last_generate.error or '')[:160]}",
             }
         )
+    if last_backup is not None and last_backup.status == "error":
+        backup_meta = last_backup.meta or {}
+        if backup_meta.get("local_verified"):
+            message = (
+                "Локальная резервная копия создана, но зеркало резервных копий "
+                "не прошло проверку. Проверь BACKUP_MIRROR_DIR и доступность диска."
+            )
+        else:
+            message = (
+                "Последняя резервная копия не прошла проверку: "
+                + redact_sensitive_text(last_backup.error or "причина не записана", limit=180)
+            )
+        alerts.append(
+            {
+                "level": "error",
+                "code": "backup_failed",
+                "message": message,
+            }
+        )
+    backup_freshness = _backup_freshness_alert(
+        last_successful_backup_at,
+        current,
+        getattr(settings, "backup_max_age_hours", 36),
+    )
+    if backup_freshness:
+        alerts.append(backup_freshness)
+    if getattr(settings, "online", False):
+        source_freshness = _source_freshness_alert(enabled_source_health, current, settings)
+        if source_freshness:
+            alerts.append(source_freshness)
+    source_alert = _source_health_alert(enabled_source_health)
+    if source_alert:
+        alerts.append(source_alert)
+
+    # Auth state is read from the local platform catalog; this path performs
+    # no network requests and never includes token values in the alert.
+    try:
+        from tgfarm.platforms import get_platform_catalog
+
+        platform_rows = get_platform_catalog().get("platforms", [])
+        auth_alert = _platform_auth_alert(platform_rows)
+        if auth_alert:
+            alerts.append(auth_alert)
+        configured_auth_monitoring = any(
+            row.get("supported")
+            and row.get("enabled")
+            and row.get("configured")
+            and row.get("id") in {
+                "telegram", "vk", "max", "x", "reddit", "bluesky",
+                "threads", "linkedin", "mastodon",
+            }
+            for row in platform_rows
+        )
+        if settings.online:
+            freshness_alert = _platform_auth_monitor_freshness_alert(
+                last_platform_auth_check_at,
+                current,
+                getattr(settings, "platform_auth_max_age_hours", 12),
+                has_configured_platforms=configured_auth_monitoring,
+            )
+            if freshness_alert:
+                alerts.append(freshness_alert)
+    except Exception as exc:  # noqa: BLE001 - health reporting must not break the dashboard
+        log.debug("platform auth alert projection failed (%s)", type(exc).__name__)
+    delivery_alert = _alert_delivery_failure_alert(last_alert_delivery)
+    if delivery_alert:
+        alerts.append(delivery_alert)
+    try:
+        from tgfarm.llm.policy import charged_today, has_online_provider
+
+        budget_alert = _ai_budget_alert(
+            charged_today(),
+            getattr(settings, "ai_daily_budget", 30),
+            online_provider_enabled=bool(settings.online and has_online_provider()),
+        )
+        if budget_alert:
+            alerts.append(budget_alert)
+    except Exception as exc:  # noqa: BLE001 - usage telemetry must not stop the watchdog
+        log.debug("AI budget alert projection failed (%s)", type(exc).__name__)
+    try:
+        alerts.extend(_disk_space_alerts(
+            _configured_disk_mounts(settings),
+            warn_free_gb=getattr(settings, "disk_free_warn_gb", 10.0),
+            critical_free_gb=getattr(settings, "disk_free_critical_gb", 3.0),
+        ))
+    except Exception as exc:  # noqa: BLE001 - disk monitoring must never stop the watchdog
+        log.debug("disk-space alert projection failed (%s)", type(exc).__name__)
+        alerts.append({
+            "level": "warning",
+            "code": "disk_space_check_failed",
+            "message": "Не удалось проверить свободное место. Проверь доступность каталогов данных и резервных копий.",
+        })
     return alerts
 
 
@@ -307,54 +956,247 @@ async def _tg_send_text(text: str) -> bool:
 
 
 async def backup_job() -> dict:
-    """Weekly sqlite backup into backup/, keeping only the newest few.
+    """Create, validate and atomically publish a SQLite backup.
 
-    A backup that lives next to the database is not a real disaster plan, but
-    it survives the common failures: a bad migration, a corrupt WAL, an
-    operator mistake. Off-machine copies stay the operator's job (see RUNBOOK).
+    A same-directory backup protects against operator mistakes and bad
+    migrations, but is not an off-machine disaster-recovery plan. The file is
+    never added to retention until integrity and disposable-restore checks pass.
     """
+    import os
     import sqlite3
+    import uuid
     from pathlib import Path
 
     from sqlalchemy.engine import make_url
 
     settings = get_settings()
-    db_path = make_url(str(get_engine_url())).database
-    if not db_path:
-        return {"backup": None, "reason": "non-sqlite database"}
+
+    mirror_config = str(getattr(settings, "backup_mirror_dir", "") or "").strip()
+
+    run_id = f"backup-{uuid.uuid4().hex[:8]}"
+
+    def record_report(report: dict) -> dict:
+        verified = bool(report.get("verified"))
+        local_verified = bool(report.get("local_verified", verified))
+        mirror = report.get("mirror") or {}
+        reason = None if verified else str(
+            report.get("reason") or mirror.get("reason") or "backup verification failed"
+        )
+        _record(
+            run_id,
+            "backup",
+            "ok" if verified else "error",
+            items_out=1 if local_verified else 0,
+            error=reason,
+            meta={
+                "local_verified": local_verified,
+                "mirror_configured": bool(mirror_config),
+                "mirror_verified": mirror.get("verified"),
+                "restore_tested": bool(report.get("restore_tested")),
+            },
+        )
+        return report
+
+    db_url = make_url(str(get_engine_url()))
+    if db_url.get_backend_name() != "sqlite":
+        return record_report({
+            "backup": None,
+            "verified": False,
+            "reason": "non-sqlite database; configure an external database backup",
+        })
+
+    db_path = db_url.database
+    if not db_path or db_path == ":memory:":
+        return record_report({
+            "backup": None,
+            "verified": False,
+            "reason": "SQLite database has no persistent file to back up",
+        })
+
+    source_path = Path(db_path).expanduser()
+    if not source_path.is_absolute():
+        source_path = source_path.resolve()
+    if not source_path.is_file():
+        return record_report({
+            "backup": None,
+            "verified": False,
+            "reason": f"SQLite database file not found: {source_path}",
+        })
 
     dest_dir = (
-        Path(settings.backup_dir)
+        Path(settings.backup_dir).expanduser()
         if settings.backup_dir
         else Path(__file__).resolve().parent.parent / "backup"
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M")
+    keep = max(1, int(settings.keep_backups))
+    # Microseconds prevent two manual backups in the same minute from
+    # silently overwriting one another. A unique temporary file also makes a
+    # crashed/failed backup invisible to the retention/pruning logic.
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S-%f")
     dest = dest_dir / f"tgfarm-{stamp}.db"
+    temp = dest_dir / f".{dest.name}.{uuid.uuid4().hex}.tmp"
 
-    src = sqlite3.connect(db_path)
-    dst = sqlite3.connect(str(dest))
-    src.backup(dst)
-    dst.close()
-    src.close()
-    # the database is momentarily quiet after a backup copy: safe to compact
-    from tgfarm.maintenance import checkpoint
+    src = None
+    dst = None
+    try:
+        src = sqlite3.connect(str(source_path), timeout=30)
+        dst = sqlite3.connect(str(temp), timeout=30)
+        src.backup(dst)
+        dst.commit()
+        check = dst.execute("PRAGMA integrity_check").fetchone()
+        if not check or check[0] != "ok":
+            raise sqlite3.DatabaseError(f"backup integrity_check failed: {check!r}")
+        dst.close()
+        dst = None
+        src.close()
+        src = None
 
-    checkpoint("TRUNCATE")
+        # Only a verified, fully closed snapshot receives the public .db name.
+        os.replace(temp, dest)
 
-    backups = sorted(dest_dir.glob("tgfarm-*.db"))
-    kept = 0
-    for old in backups[: max(0, len(backups) - max(1, settings.keep_backups))]:
-        old.unlink(missing_ok=True)
-    kept = len(backups)
-    log.info("backup written: %s (%s kept)", dest.name, kept)
-    return {"backup": str(dest), "kept": kept}
+        # Integrity alone proves the file is readable, not that the snapshot can
+        # be restored with its schema and data intact. Test the disposable restore
+        # before pruning any previous known-good backups or copying the mirror.
+        from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+        restore_report = verify_sqlite_backup_restore(dest)
+        if not restore_report.get("verified"):
+            dest.unlink(missing_ok=True)
+            reason = redact_sensitive_text(
+                restore_report.get("reason") or "restore verification failed",
+                limit=200,
+            )
+            raise sqlite3.DatabaseError(f"backup restore verification failed: {reason}")
+
+        backups = sorted(dest_dir.glob("tgfarm-*.db"), key=lambda path: path.name)
+        for old in backups[: max(0, len(backups) - keep)]:
+            old.unlink(missing_ok=True)
+        kept = len(list(dest_dir.glob("tgfarm-*.db")))
+        size_bytes = dest.stat().st_size
+        mirror_report = {"configured": bool(mirror_config), "verified": None, "backup": None}
+        if mirror_config:
+            from tgfarm.db.backup_mirror import mirror_verified_backup
+
+            try:
+                mirror_report = mirror_verified_backup(
+                    dest,
+                    mirror_config,
+                    keep=keep,
+                    local_backup_dir=dest_dir,
+                )
+            except Exception as mirror_exc:  # noqa: BLE001 - local snapshot remains valid
+                mirror_report = {
+                    "configured": True,
+                    "verified": False,
+                    "backup": None,
+                    "reason": redact_sensitive_text(mirror_exc, limit=240),
+                }
+            if not mirror_report.get("verified"):
+                reason = str(mirror_report.get("reason") or "mirror verification failed")
+                log.error(
+                    "backup mirror failed; local snapshot verified at %s: %s",
+                    dest.name,
+                    reason,
+                )
+                return record_report({
+                    "backup": str(dest),
+                    "verified": False,
+                    "local_verified": True,
+                    "integrity_check": "ok",
+                    "restore_tested": True,
+                    "restore_verification": restore_report,
+                    "size_bytes": size_bytes,
+                    "kept": kept,
+                    "mirror": mirror_report,
+                    "reason": "local snapshot verified, but configured backup mirror failed",
+                })
+
+        log.info("verified backup written: %s (%s kept; mirror=%s)", dest.name, kept, mirror_report.get("verified"))
+        return record_report({
+            "backup": str(dest),
+            "verified": True,
+            "local_verified": True,
+            "integrity_check": "ok",
+            "restore_tested": True,
+            "restore_verification": restore_report,
+            "size_bytes": size_bytes,
+            "kept": kept,
+            "mirror": mirror_report,
+        })
+    except Exception as exc:
+        _record(
+            run_id,
+            "backup",
+            "error",
+            error=redact_sensitive_text(exc, limit=240),
+            meta={"local_verified": False, "mirror_configured": bool(mirror_config)},
+        )
+        # Close handles before unlinking the temporary file; Windows refuses
+        # to remove an open SQLite file.
+        if dst is not None:
+            dst.close()
+            dst = None
+        if src is not None:
+            src.close()
+            src = None
+        temp.unlink(missing_ok=True)
+        raise
+    finally:
+        if dst is not None:
+            dst.close()
+        if src is not None:
+            src.close()
 
 
 def get_engine_url() -> str:
     from tgfarm.db.session import get_engine
 
     return str(get_engine().url)
+
+
+def _weekly_portfolio_insight_lines(report: dict, limit: int = 3) -> list[str]:
+    """Format only confidence-gated portfolio recommendations for the weekly digest."""
+    labels = {
+        "promote": "усилить",
+        "reduce": "сократить",
+        "test": "проверить экспериментом",
+    }
+    dimensions = {
+        "angle": "угол подачи",
+        "hook_style": "стиль захода",
+        "format": "формат",
+    }
+    candidates = []
+    for channel in report.get("channels") or []:
+        for recommendation in channel.get("recommendations") or []:
+            decision = recommendation.get("decision")
+            if not recommendation.get("actionable") or decision not in labels:
+                continue
+            candidates.append({
+                **recommendation,
+                "channel_title": str(channel.get("title") or channel.get("channel_id") or "канал"),
+            })
+    priority = {"promote": 0, "reduce": 1, "test": 2}
+    candidates.sort(
+        key=lambda item: (
+            priority.get(item.get("decision"), 9),
+            -abs(float(item.get("lift") or 0)),
+            -int(item.get("sample_size") or 0),
+        )
+    )
+    lines = []
+    for item in candidates[:max(0, int(limit))]:
+        lift_pct = float(item.get("lift") or 0) * 100
+        dimension = dimensions.get(str(item.get("dimension") or ""), str(item.get("dimension") or "параметр"))
+        key = " ".join(str(item.get("key") or "без названия").split())[:55]
+        lines.append(
+            f"• {item['channel_title']}: {dimension} «{key}» → "
+            f"{labels[item['decision']]} ({lift_pct:+.1f} п.п., n={int(item.get('sample_size') or 0)})"
+        )
+    if not lines:
+        lines.append("• Пока недостаточно зрелых данных для надёжных рекомендаций; стратегия не менялась.")
+    return lines
 
 
 async def weekly_report() -> dict:
@@ -365,6 +1207,7 @@ async def weekly_report() -> dict:
 
     def _summary() -> dict:
         from tgfarm.s8_analytics import fleet_summary
+        from tgfarm.s8_analytics.portfolio import portfolio_report
 
         cutoff = datetime.now(UTC) - timedelta(days=7)
         with session_scope() as session:
@@ -374,36 +1217,42 @@ async def weekly_report() -> dict:
                 .order_by(Post.published_at.desc())
                 .limit(3)
             ).scalars().all()
-        return {"fleet": fleet_summary(7), "recent": list(rows)}
+        try:
+            portfolio = portfolio_report(30)
+        except Exception as exc:  # noqa: BLE001 - digest should survive an analytics failure
+            log.warning("weekly portfolio report unavailable (%s)", type(exc).__name__)
+            portfolio = {}
+        return {"fleet": fleet_summary(7), "recent": list(rows), "portfolio": portfolio}
 
     data = await to_thread(_summary)
     fleet = data.get("fleet") or {}
+    portfolio = data.get("portfolio") or {}
     lines = [
         "📊 Недельный отчёт фермы",
         f"Постов: {fleet.get('posts', 0)} · просмотров: {fleet.get('views_total', 0)}"
         f" · ER: {fleet.get('avg_er', 0)}",
+        f"Данные для аналитики: {portfolio.get('measured_posts', 0)} измеренных постов за окно до 30 дней.",
+        "Рекомендации по результатам (автоматически настройки не меняются):",
+        *_weekly_portfolio_insight_lines(portfolio, limit=3),
     ]
     for hook in data.get("recent") or []:
-        lines.append(f"• {hook[:90]}")
+        lines.append(f"• Недавний пост: {hook[:90]}")
     ok = await _tg_send_text("\n".join(lines))
     return {"sent": ok}
 
 
 async def deliver_alerts() -> int:
-    """Push fresh alerts to the operator's Telegram chat.
+    """Push fresh alerts to Telegram and persist delivery health for the dashboard.
 
-    Requires ALERT_CHAT_ID and the bot token; without them alerts stay in the
-    logs and the status API. A per-code cooldown keeps a persistent problem
-    from becoming spam: the watchdog re-emits it every tick, the chat sees it
-    once per cooldown window.
+    A per-code cooldown prevents spam. Failed sends are not cooled down, and the
+    failure state stays visible in /api/status until a later delivery succeeds.
     """
     import httpx
 
     settings = get_settings()
     alerts = await to_thread(collect_alerts)
+    heartbeat = False
     if not alerts:
-        # Heartbeat: daily "everything is fine", so silence stops being
-        # ambiguous. Shares the cooldown map with real alerts.
         heartbeat_hours = max(1, settings.alert_heartbeat_hours) * 3600
         if time.monotonic() - _alert_last_sent.get("heartbeat", 0.0) >= heartbeat_hours:
             alerts = [{
@@ -414,39 +1263,65 @@ async def deliver_alerts() -> int:
             heartbeat = True
         else:
             return 0
-    else:
-        heartbeat = False
     if not (settings.telegram_bot_token and settings.alert_chat_id):
         log.debug("alerts pending but delivery not configured: %d", len(alerts))
         return 0
 
     now = time.monotonic()
     cooldown = max(1, settings.alert_cooldown_min) * 60
+    pending = [
+        alert for alert in alerts
+        if _alert_last_sent.get(alert["code"]) is None
+        or now - _alert_last_sent[alert["code"]] >= cooldown
+    ]
+    if not pending:
+        return 0
+
     sent = 0
-    async with httpx.AsyncClient(timeout=15) as client:
-        for alert in alerts:
-            code = alert["code"]
-            if now - _alert_last_sent.get(code, 0.0) < cooldown:
-                continue
-            resp = await client.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": settings.alert_chat_id,
-                    "text": f"[tgfarm] {code}: {alert['message']}",
-                },
-            )
-            if resp.status_code == 200:
-                _alert_last_sent[code] = now
-                sent += 1
-                if heartbeat:
-                    break
-            else:
-                log.warning(
-                    "alert delivery failed for %s: %s %s",
-                    code, resp.status_code, resp.text[:120],
-                )
-                if heartbeat:
-                    break
+    failures: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for alert in pending:
+                code = str(alert.get("code") or "unknown")
+                try:
+                    resp = await client.post(
+                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
+                        json={
+                            "chat_id": settings.alert_chat_id,
+                            "text": f"[tgfarm] {code}: {alert['message']}",
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 - notification failures must remain observable
+                    failures.append(f"{code}:{type(exc).__name__}")
+                    log.warning("alert delivery failed for %s (%s)", code, type(exc).__name__)
+                    if heartbeat:
+                        break
+                    continue
+
+                if resp.status_code == 200:
+                    _alert_last_sent[code] = now
+                    sent += 1
+                    if heartbeat:
+                        break
+                else:
+                    failures.append(f"{code}:HTTP{int(resp.status_code)}")
+                    log.warning("alert delivery failed for %s (HTTP %s)", code, resp.status_code)
+                    if heartbeat:
+                        break
+    except Exception as exc:  # noqa: BLE001 - client setup/teardown can also fail
+        failures.append(f"client:{type(exc).__name__}")
+        log.warning("alert delivery client failed (%s)", type(exc).__name__)
+
+    await to_thread(
+        _record,
+        f"alert-{uuid.uuid4().hex[:8]}",
+        "alert_delivery",
+        "error" if failures else "ok",
+        items_in=len(pending),
+        items_out=sent,
+        error=("Telegram alert delivery failed: " + ", ".join(failures[:5])) if failures else None,
+        meta={"attempted": len(pending), "sent": sent, "failed": len(failures)},
+    )
     if heartbeat and sent:
         log.info("heartbeat delivered")
     return sent
@@ -591,38 +1466,136 @@ async def run_cycle(
     return result
 
 
-async def _guarded_cycle(*, collect: bool = True) -> CycleResult | None:
-    """Run one cycle under a hard timeout so a hung stage cannot wedge the farm."""
-    global _cycle_finished_at, _cycle_state
+async def _guarded_cycle(
+    *,
+    collect: bool = True,
+    max_clusters: int = MAX_CLUSTERS_PER_CYCLE,
+) -> CycleResult | None:
+    """Run one full cycle, skipping overlap and bounding its runtime."""
+    global _cycle_finished_at, _cycle_state, _active_cycle_task
+
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        active = _active_cycle_task
+        if active is not None and active is not current_task and not active.done():
+            log.warning("cycle skipped: another full cycle is still active")
+            return None
+        _active_cycle_task = current_task
 
     settings = get_settings()
     timeout = max(60, settings.cycle_timeout_min * 60)
     try:
-        return await asyncio.wait_for(run_cycle(collect=collect), timeout=timeout)
+        try:
+            return await asyncio.wait_for(
+                run_cycle(collect=collect, max_clusters=max_clusters),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            _cycle_state = "timeout"
+            _cycle_finished_at = datetime.now(UTC)
+            log.error("cycle exceeded %ss and was cancelled", timeout)
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "timeout",
+                error=f"cycle exceeded {timeout}s",
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
+            _cycle_state = "failed"
+            _cycle_finished_at = datetime.now(UTC)
+            log.error("cycle crashed: %s", redact_sensitive_text(exc, limit=300))
+            await to_thread(
+                _record,
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "error",
+                error=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600),
+            )
+            return None
+    finally:
+        if current_task is not None and _active_cycle_task is current_task:
+            _active_cycle_task = None
+
+
+async def _publish_tick() -> dict:
+    """Drain the publication queue without re-running expensive content stages.
+
+    The full cycle collects trends, generates drafts, performs quality checks,
+    and learns from analytics. That work must not run every five minutes just
+    because the scheduler wants to deliver already-prepared posts.
+    """
+    from tgfarm import s7_publish
+
+    run_id = f"pub-{uuid.uuid4().hex[:10]}"
+    result = CycleResult(run_id=run_id)
+    started = time.perf_counter()
+
+    await _stage(result, "s7_publish", s7_publish.run)
+
+    result.duration_ms = int((time.perf_counter() - started) * 1000)
+    status = "ok" if not result.errors else "partial"
+    await to_thread(
+        _record,
+        result.run_id,
+        "publish_tick",
+        status,
+        duration_ms=result.duration_ms,
+        error="; ".join(result.errors) if result.errors else None,
+        meta={"errors": result.errors},
+    )
+    log.info(
+        "publish tick %s finished in %dms errors=%d",
+        result.run_id,
+        result.duration_ms,
+        len(result.errors),
+    )
+    return result.as_dict()
+
+
+async def _guarded_publish_tick() -> dict:
+    """Bound a fast publisher tick independently of the long content cycle."""
+    settings = get_settings()
+    timeout = max(60, settings.dzen_publish_timeout_s + 60)
+    run_id = f"pt-{uuid.uuid4().hex[:8]}"
+    try:
+        return await asyncio.wait_for(_publish_tick(), timeout=timeout)
     except TimeoutError:
-        _cycle_state = "timeout"
-        _cycle_finished_at = datetime.now(UTC)
-        log.error("cycle exceeded %ss and was cancelled", timeout)
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "timeout",
-            error=f"cycle exceeded {timeout}s",
-        )
-        return None
+        message = f"publish tick exceeded {timeout}s"
+        log.error(message)
+        await to_thread(_record, run_id, "publish_tick", "timeout", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": timeout * 1000}
     except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
-        _cycle_state = "failed"
-        _cycle_finished_at = datetime.now(UTC)
-        log.exception("cycle crashed")
-        await to_thread(
-            _record,
-            f"guard-{uuid.uuid4().hex[:8]}",
-            "cycle",
-            "error",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return None
+        message = f"{type(exc).__name__}: {exc}"
+        log.error("publish tick crashed: %s", redact_sensitive_text(exc, limit=300))
+        await to_thread(_record, run_id, "publish_tick", "error", error=message)
+        return {"run_id": run_id, "stages": {}, "errors": [message], "duration_ms": 0}
+
+
+async def _guarded_crosspost_tick() -> dict:
+    """Drain eligible external deliveries independently of content generation."""
+    from tgfarm import s9_growth
+
+    settings = get_settings()
+    timeout = max(60, min(900, settings.cycle_timeout_min * 60))
+    run_id = f"xpost-{uuid.uuid4().hex[:8]}"
+    started = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(s9_growth.run_crossposts(limit=10), timeout=timeout)
+        if result.get("skipped_concurrent"):
+            log.info("crosspost tick skipped because another batch is still active")
+        return result
+    except TimeoutError:
+        message = f"crosspost tick exceeded {timeout}s"
+        log.error(message)
+        await to_thread(_record, run_id, "crosspost_tick", "timeout", error=message)
+        return {"posted": 0, "failed": 0, "unknown": 0, "errors": [message]}
+    except Exception as exc:  # noqa: BLE001 - periodic work must not kill the scheduler
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+        log.error("crosspost tick failed: %s", message)
+        await to_thread(_record, run_id, "crosspost_tick", "error", duration_ms=int((time.perf_counter() - started) * 1000), error=message)
+        return {"posted": 0, "failed": 0, "unknown": 0, "errors": [message]}
 
 
 async def _watchdog() -> None:
@@ -633,7 +1606,8 @@ async def _watchdog() -> None:
     of waiting for the next scheduled slot. Operator alerts are re-emitted on
     every tick on purpose: silence is the failure mode this exists to prevent.
     """
-    import asyncio
+    global _cycle_state, _cycle_finished_at
+    global _watchdog_recovery_attempts, _watchdog_last_recovery_at
 
     alerts = await to_thread(collect_alerts)
     for alert in alerts:
@@ -645,28 +1619,66 @@ async def _watchdog() -> None:
         if delivered:
             log.info("watchdog: delivered %d alert(s) to the operator", delivered)
     except Exception as exc:  # noqa: BLE001 - delivery must not kill the watchdog
-        log.debug("alert delivery failed: %s", exc)
+        log.debug("alert delivery failed: %s", redact_sensitive_text(exc, limit=180))
 
     health = cycle_health()
     if health["stale"]:
         log.error(
-            "watchdog: cycle has been running for %ss (state=%s); forcing recovery",
+            "watchdog: cycle has been running for %ss (state=%s); cancelling stale task",
             health["age_s"],
             health["state"],
         )
-        global _cycle_state
+        active = _active_cycle_task
+        if active is not None and active is not asyncio.current_task() and not active.done():
+            active.cancel()
         _cycle_state = "failed"
+        _cycle_finished_at = datetime.now(UTC)
+        # Do not start a replacement in the same tick. The cancelled task must
+        # unwind and release its active-task slot first; the next watchdog tick
+        # can safely schedule catch-up if no newer cycle has started.
+        return
     elif health["state"] in ("failed", "timeout", "partial"):
-        log.warning("watchdog: last cycle ended as %s; scheduling catch-up", health["state"])
+        log.warning("watchdog: last cycle ended as %s; considering catch-up", health["state"])
+    elif health["state"] == "ok":
+        if _watchdog_recovery_attempts or _watchdog_last_recovery_at is not None:
+            log.info("watchdog: healthy cycle observed; resetting recovery backoff")
+        _watchdog_recovery_attempts = 0
+        _watchdog_last_recovery_at = None
+        return
     else:
         log.debug("watchdog: cycle %s", health)
         return
 
-    if _cycle_state != "running":
-        try:
-            asyncio.create_task(_guarded_cycle(collect=False))
-        except RuntimeError:  # no running event loop
-            log.debug("watchdog: no event loop for catch-up task")
+    settings = get_settings()
+    now = datetime.now(UTC)
+    if _watchdog_last_recovery_at is not None:
+        delay_min = _watchdog_recovery_delay_min(
+            _watchdog_recovery_attempts,
+            settings.watchdog_recovery_base_min,
+            settings.watchdog_recovery_max_min,
+        )
+        next_attempt_at = _watchdog_last_recovery_at + timedelta(minutes=delay_min)
+        if now < next_attempt_at:
+            remaining_min = max(1, int((next_attempt_at - now).total_seconds() // 60) + 1)
+            log.warning(
+                "watchdog: recovery backoff active; retry window in ~%d min "
+                "(attempt=%d, delay=%d min)",
+                remaining_min,
+                _watchdog_recovery_attempts,
+                delay_min,
+            )
+            return
+
+    try:
+        asyncio.create_task(_guarded_cycle(collect=False))
+        _watchdog_recovery_attempts += 1
+        _watchdog_last_recovery_at = now
+        log.warning(
+            "watchdog: scheduled recovery cycle attempt %d",
+            _watchdog_recovery_attempts,
+        )
+    except RuntimeError:  # no running event loop
+        log.debug("watchdog: no event loop for catch-up task")
 
 
 async def _top_groups_tick() -> dict | None:
@@ -678,7 +1690,7 @@ async def _top_groups_tick() -> dict | None:
     try:
         return await collect_top_groups()
     except Exception as exc:  # noqa: BLE001 - optional source must not kill the scheduler
-        log.info("top groups tick failed: %s", exc)
+        log.info("top groups tick failed: %s", redact_sensitive_text(exc, limit=180))
         return None
 
 
@@ -700,7 +1712,7 @@ async def _dzen_warm_tick() -> dict | None:
             log.warning("dzen warm tick: сессия мертва — нужен «Дзен: войти» в панели")
         return state
     except Exception as exc:  # noqa: BLE001 - warming must not kill the scheduler
-        log.debug("dzen warm tick failed: %s", exc)
+        log.debug("dzen warm tick failed: %s", redact_sensitive_text(exc, limit=180))
         return None
 
 
@@ -710,7 +1722,148 @@ async def _branding_tick() -> dict | None:
 
         return await run_branding_tick()
     except Exception as exc:  # noqa: BLE001 - optional branding must not kill scheduler
-        log.info("branding tick failed: %s", exc)
+        log.info("branding tick failed: %s", redact_sensitive_text(exc, limit=180))
+        return None
+
+
+async def _platform_auth_tick() -> dict:
+    """Periodically verify configured credentials with read-only provider requests."""
+    settings = get_settings()
+    run_id = f"auth-{uuid.uuid4().hex[:8]}"
+    if not settings.online:
+        return {"checked": 0, "authorized": 0, "failed": 0, "indeterminate": 0, "skipped": "mode=off"}
+
+    try:
+        from tgfarm.platform_auth import check_platform_auth
+        from tgfarm.platforms import get_platform_catalog
+
+        catalog = await to_thread(get_platform_catalog)
+    except Exception as exc:  # noqa: BLE001 - auth monitoring must not kill the scheduler
+        error_type = type(exc).__name__
+        log.error("platform auth catalog unavailable (%s)", error_type)
+        await to_thread(
+            _record,
+            run_id,
+            "platform_auth",
+            "error",
+            error=f"platform catalog unavailable ({error_type})",
+        )
+        return {
+            "checked": 0,
+            "authorized": 0,
+            "failed": 0,
+            "indeterminate": 0,
+            "error": "platform_catalog_unavailable",
+        }
+
+    # These adapters have a read-only auth probe. Dzen has its own browser
+    # warm-up, while non-integrated catalog entries are intentionally ignored.
+    checkable = {
+        "telegram", "vk", "max", "x", "reddit", "bluesky",
+        "threads", "linkedin", "mastodon",
+    }
+    candidates = [
+        row
+        for row in catalog.get("platforms", [])
+        if row.get("supported")
+        and row.get("enabled")
+        and row.get("configured")
+        and row.get("id") in checkable
+    ]
+
+    authorized_ids: list[str] = []
+    failed_ids: list[str] = []
+    indeterminate_ids: list[str] = []
+    for item in candidates:
+        platform_id = str(item["id"])
+        try:
+            result = await check_platform_auth(platform_id)
+            authorized = result.get("authorized")
+            if authorized is True:
+                authorized_ids.append(platform_id)
+            elif authorized is False:
+                failed_ids.append(platform_id)
+                log.warning("platform auth check failed for %s", platform_id)
+            else:
+                indeterminate_ids.append(platform_id)
+                log.info("platform auth check was inconclusive for %s", platform_id)
+        except Exception as exc:  # noqa: BLE001 - one adapter must not block the others
+            indeterminate_ids.append(platform_id)
+            log.warning(
+                "platform auth check raised for %s (%s)",
+                platform_id,
+                type(exc).__name__,
+            )
+
+    state = "error" if failed_ids else "partial" if indeterminate_ids else "ok"
+    report = {
+        "checked": len(candidates),
+        "authorized": len(authorized_ids),
+        "failed": len(failed_ids),
+        "indeterminate": len(indeterminate_ids),
+        "failed_platforms": failed_ids,
+        "indeterminate_platforms": indeterminate_ids,
+    }
+    await to_thread(
+        _record,
+        run_id,
+        "platform_auth",
+        state,
+        items_in=len(candidates),
+        items_out=len(authorized_ids),
+        error=("authorization check failed for: " + ", ".join(failed_ids)) if failed_ids else None,
+        meta={
+            "checked": len(candidates),
+            "failed_platforms": failed_ids,
+            "indeterminate_platforms": indeterminate_ids,
+        },
+    )
+    return report
+
+
+async def _startup_backup_check() -> dict | None:
+    """Create a verified snapshot on startup when none is fresh or the last attempt failed."""
+    settings = get_settings()
+    try:
+        with session_scope() as session:
+            last_successful = session.execute(
+                select(PipelineRun.created_at)
+                .where(PipelineRun.stage == "backup", PipelineRun.status == "ok")
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            last_attempt = session.execute(
+                select(PipelineRun.status)
+                .where(PipelineRun.stage == "backup")
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+        stale = _backup_freshness_alert(
+            last_successful,
+            datetime.now(UTC),
+            getattr(settings, "backup_max_age_hours", 36),
+        )
+        if stale is None and last_attempt != "error":
+            log.info("startup backup check: a recent verified snapshot exists")
+            return None
+
+        reason = stale["code"] if stale else "the last backup attempt failed"
+        log.warning("startup backup check: creating a snapshot (%s)", reason)
+        report = await backup_job()
+        if report.get("verified"):
+            log.info("startup backup check: verified snapshot created")
+        else:
+            log.error(
+                "startup backup check: snapshot still needs attention (%s)",
+                redact_sensitive_text(report.get("reason") or "verification failed", limit=180),
+            )
+        return report
+    except Exception as exc:  # noqa: BLE001 - recovery must not prevent the scheduler from starting
+        log.error(
+            "startup backup check failed: %s",
+            redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=200),
+        )
         return None
 
 
@@ -734,13 +1887,22 @@ def _build_scheduler():
     )
 
     scheduler.add_job(
-        _guarded_cycle,
+        _guarded_publish_tick,
         IntervalTrigger(minutes=5),
         id="publish-tick",
         name="publish tick",
         max_instances=1,
         coalesce=True,
-        kwargs={"collect": False},
+    )
+
+    scheduler.add_job(
+        _guarded_crosspost_tick,
+        IntervalTrigger(minutes=10),
+        id="crosspost-tick",
+        name="crosspost retry and delivery",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
 
     scheduler.add_job(
@@ -767,9 +1929,9 @@ def _build_scheduler():
 
     scheduler.add_job(
         backup_job,
-        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=settings.tz),
-        id="weekly-backup",
-        name="weekly sqlite backup",
+        CronTrigger(hour=4, minute=0, timezone=settings.tz),
+        id="daily-backup",
+        name="daily verified sqlite backup",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
@@ -802,6 +1964,37 @@ def _build_scheduler():
         name="brand cover rotation",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # The weekly/daily cron is not enough for a new install or a machine that
+    # was powered off during the scheduled time. Check freshness once at boot.
+    scheduler.add_job(
+        _startup_backup_check,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-backup-check",
+        name="ensure a recent backup on startup",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        _platform_auth_tick,
+        IntervalTrigger(hours=6),
+        id="platform-auth-health",
+        name="read-only platform auth health",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _platform_auth_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-platform-auth-check",
+        name="initial read-only platform auth check",
+        max_instances=1,
         misfire_grace_time=3600,
     )
     return scheduler

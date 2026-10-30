@@ -14,18 +14,23 @@ the clearest tell of an automated network.
 
 from __future__ import annotations
 
+import asyncio
 import random
+from contextlib import suppress
+from email.utils import parsedate_to_datetime
 import uuid
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from tgfarm.config import get_config
 from tgfarm.core.errors import PublishError
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.db.models import Channel as ChannelRow
@@ -46,7 +51,7 @@ PLATFORM_TEXT_LIMITS = {
     "vk": VK_TEXT_LIMIT,
 }
 # A post left in `publishing` longer than this was interrupted (crash,
-# timeout, kill). It goes back to the queue instead of blocking forever.
+# timeout, kill). Its outcome becomes `publish_unknown` until reconciled.
 STUCK_PUBLISHING_MIN = 15
 
 
@@ -566,7 +571,7 @@ async def _publish_dzen(
                 await to_thread(_log_result, public_id, vk_result)
                 log.info("vk mirror from dzen: %s", vk_result.status)
     except Exception as exc:  # noqa: BLE001
-        log.warning("vk mirror from dzen failed: %s", exc)
+        log.warning("vk mirror from dzen failed: %s", redact_sensitive_text(exc, limit=180))
 
     return {"ok": True, "message_id": None, "remote_id": result.remote_id}
 
@@ -574,9 +579,9 @@ async def _publish_dzen(
 def _claim_post(post_id: int) -> bool:
     """Take a post out of the queue atomically.
 
-    The cycle and the 5-minute publish tick overlap on purpose, so two
-    coroutines can see the same `scheduled` row. A conditional UPDATE is the
-    lock: only one of them moves the row to `publishing`, the other skips it.
+    The in-process publisher serializes batches, but this database claim is
+    still required as a final guard against a second process or direct caller.
+    Only one worker can move a given `scheduled` row to `publishing`.
     """
     with session_scope() as session:
         result = session.execute(
@@ -589,30 +594,180 @@ def _claim_post(post_id: int) -> bool:
                 # detector measures from here, not from queue time, or a slow
                 # browser publish gets murdered mid-flight
                 scheduled_at=datetime.now(UTC),
+                publish_heartbeat_at=datetime.now(UTC),
             )
         )
         return result.rowcount == 1
 
 
-def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
-    """Return posts orphaned in `publishing` to the queue.
+def _is_ambiguous_publish_error(exc: BaseException) -> bool:
+    """Return True when the remote platform may have accepted the post.
 
-    A killed process leaves a row in `publishing` forever: it is invisible to
-    due_posts and no error is ever reported. Anything older than the window is
-    not in flight any more.
+    A timeout/reset after a request was sent is not proof of failure. Retrying
+    such a request blindly can create duplicates. Connection/DNS failures that
+    happen before an HTTP connection is established remain retryable.
+    """
+    kind = type(exc).__name__.lower()
+    message = f"{kind}: {exc}".lower()
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code >= 500 or status_code in (408, 425):
+            # The server may have committed the post before returning an error.
+            return True
+        if 400 <= status_code < 500:
+            # Explicit client errors, including rate limits, mean the request was
+            # rejected; retry policy can handle them without duplicate risk.
+            return False
+
+    # These Dzen errors are detected before submitting the article.
+    if kind in {"dzencaptcha", "dzennotloggedin"}:
+        return False
+
+    definitely_before_send = (
+        "connecttimeout",
+        "connecterror",
+        "getaddrinfo",
+        "name or service not known",
+        "connection refused",
+        "network is unreachable",
+    )
+    if any(marker in message for marker in definitely_before_send):
+        return False
+
+    ambiguous = (
+        "readtimeout",
+        "writetimeout",
+        "request timeout",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "server disconnected",
+        "remotedisconnected",
+        "remoteprotocolerror",
+        "incomplete read",
+        "unexpected eof",
+        "broken pipe",
+    )
+    if any(marker in message for marker in ambiguous):
+        return True
+
+    # An unknown exception can be raised after a remote side effect. Without a
+    # platform-specific proof that nothing was submitted, manual reconciliation
+    # is safer than automatically creating a second copy.
+    return True
+
+
+def _publish_retry_after_seconds(
+    exc: BaseException,
+    *,
+    now: datetime | None = None,
+    max_seconds: int = 86_400,
+) -> int | None:
+    """Read a platform retry-after hint without trusting unbounded values."""
+    raw = getattr(exc, "retry_after", None)
+    if raw is not None:
+        if isinstance(raw, timedelta):
+            seconds = ceil(raw.total_seconds())
+        else:
+            try:
+                seconds = ceil(float(raw))
+            except (TypeError, ValueError, OverflowError):
+                seconds = -1
+        if seconds >= 0:
+            return min(seconds, max(0, int(max_seconds)))
+
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    headers = getattr(response, "headers", {}) or {}
+    raw_header = headers.get("Retry-After") or headers.get("retry-after")
+    if raw_header is None:
+        return None
+    value = str(raw_header).strip()
+    try:
+        seconds = ceil(float(value))
+    except (TypeError, ValueError, OverflowError):
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        current = now or datetime.now(UTC)
+        current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+        seconds = ceil((retry_at.astimezone(UTC) - current).total_seconds())
+    return min(max(0, seconds), max(0, int(max_seconds)))
+
+
+def _is_permanent_publish_error(exc: BaseException) -> bool:
+    """Explicit client rejections are terminal; rate limits remain retryable."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int):
+        return False
+    return 400 <= status_code < 500 and status_code not in (408, 425, 429)
+
+
+def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
+    """Move interrupted attempts to manual reconciliation, never auto-retry.
+
+    A process can die after the platform accepted a post but before the local
+    database committed that fact. The old automatic requeue could publish a
+    duplicate. Keep the original attempt timestamp and expose the uncertain
+    outcome so an operator can verify the destination before retrying.
     """
     cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
     with session_scope() as session:
+        # Existing rows from before the heartbeat migration have NULL heartbeat,
+        # so fall back to their original publishing timestamp.
+        last_activity = func.coalesce(PostRow.publish_heartbeat_at, PostRow.scheduled_at)
         result = session.execute(
             update(PostRow)
-            .where(PostRow.status == "publishing", PostRow.scheduled_at <= cutoff)
+            .where(
+                PostRow.status == "publishing",
+                last_activity <= cutoff,
+            )
             .values(
-                status="scheduled",
-                scheduled_at=datetime.now(UTC),
-                publish_error=f"requeued after {minutes} min in publishing",
+                status="publish_unknown",
+                publish_heartbeat_at=None,
+                publish_error=f"outcome unknown after {minutes} min without heartbeat; verify platform before retry",
             )
         )
         return result.rowcount or 0
+
+
+def _touch_publish_heartbeat(post_id: int) -> bool:
+    """Refresh liveness only while this worker still owns the publishing state."""
+    with session_scope() as session:
+        result = session.execute(
+            update(PostRow)
+            .where(PostRow.id == post_id, PostRow.status == "publishing")
+            .values(publish_heartbeat_at=datetime.now(UTC))
+        )
+        return result.rowcount == 1
+
+
+async def _publish_heartbeat_loop(post_id: int, interval_s: float = 30.0) -> None:
+    """Keep long browser/API publishes alive without masking an abandoned worker."""
+    while True:
+        await asyncio.sleep(max(1.0, interval_s))
+        try:
+            still_publishing = await to_thread(_touch_publish_heartbeat, post_id)
+        except Exception as exc:  # noqa: BLE001 - telemetry must not cancel a live publish
+            log.warning("publish heartbeat update failed for post %s (%s)", post_id, type(exc).__name__)
+            continue
+        if not still_publishing:
+            return
+
+
+async def _stop_publish_heartbeat(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 async def _publish_one(
@@ -629,10 +784,18 @@ async def _publish_one(
             return {"ok": False, "error": "post disappeared"}
         if post.status == "published":
             return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
+    from tgfarm.platforms import is_platform_enabled
+
+    if not is_platform_enabled(platform):
+        return {"ok": True, "skipped": True, "reason": "platform_disabled"}
+    if platform not in {"telegram", "dzen", "vk"}:
+        # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
+        return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
+    settings = get_settings()
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
-    settings = get_settings()
+    heartbeat_task = asyncio.create_task(_publish_heartbeat_loop(post_id))
     message_id = None
     try:
         if platform == "dzen":
@@ -653,40 +816,108 @@ async def _publish_one(
             message_id = await PUBLISHER.send(int(target), text, media)
         else:
             log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
+    except asyncio.CancelledError:
+        # Cancellation can happen during shutdown or a watchdog recovery. The
+        # remote side effect may already have happened, so never leave a live
+        # heartbeat behind and never put this post straight back in the queue.
+        await _stop_publish_heartbeat(heartbeat_task)
+        with session_scope() as session:
+            post = session.get(PostRow, post_id)
+            if post and post.status == "publishing":
+                post.status = "publish_unknown"
+                post.publish_heartbeat_at = None
+                post.publish_error = "publisher task cancelled; verify platform before retry"
+        log.error(
+            "publish task cancelled for %s (%s); reconciliation required",
+            post_id,
+            platform,
+        )
+        raise
     except Exception as exc:  # noqa: BLE001 - retry later
+        await _stop_publish_heartbeat(heartbeat_task)
         retry_min = 5
         if platform == "dzen":
             from tgfarm.dzen_web import DzenCaptcha, DzenNotLoggedIn
 
             if isinstance(exc, (DzenNotLoggedIn, DzenCaptcha)):
                 retry_min = 60
-        error_text = str(exc)
-        # Transport failures (DNS down, timeouts) back off exponentially: a
-        # network outage must not hammer the API every five minutes for hours.
+        raw_error_text = str(exc)
+        error_text = redact_sensitive_text(raw_error_text, limit=400)
+        # A timeout/reset after sending may mean the platform already accepted it.
+        ambiguous = _is_ambiguous_publish_error(exc)
+        permanent = _is_permanent_publish_error(exc)
+        retry_after_seconds = _publish_retry_after_seconds(exc)
+        lower_error = raw_error_text.lower()
         transport = any(
-            marker in error_text
-            for marker in ("getaddrinfo", "timed out", "Network is unreachable", "connection reset")
+            marker in lower_error
+            for marker in ("getaddrinfo", "network is unreachable", "connection refused", "connecttimeout", "connecterror")
         )
+        try:
+            max_attempts = max(1, int(getattr(settings, "primary_publish_max_attempts", 5)))
+        except (TypeError, ValueError):
+            max_attempts = 5
+        terminal_failure = False
+        attempts = 1
         with session_scope() as session:
             post = session.get(PostRow, post_id)
             if post:
-                if transport:
-                    retry_min = min(360, 10 * 2 ** min(max(1, post.attempts) - 1, 5))
-                post.status = "scheduled"
+                attempts = max(1, int(post.attempts or 1))
                 post.publish_error = error_text[:400]
-                post.scheduled_at = datetime.now(UTC) + timedelta(minutes=retry_min)
-        log.warning(
-            "publish failed for %s (%s): %s (retry in %s min)",
-            post_id, platform, exc, retry_min,
-        )
-        return {"ok": False, "error": error_text}
+                post.publish_heartbeat_at = None
+                if ambiguous:
+                    post.status = "publish_unknown"
+                    # Keep scheduled_at as the start timestamp for this attempt.
+                elif permanent or attempts >= max_attempts:
+                    # Stop retrying a definite failure after the configured cap.
+                    # The operator can explicitly requeue it after fixing the cause.
+                    post.status = "failed"
+                    post.scheduled_at = None
+                    terminal_failure = True
+                else:
+                    if retry_after_seconds is not None:
+                        next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+                    else:
+                        if transport:
+                            retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
+                        next_attempt_at = datetime.now(UTC) + timedelta(minutes=retry_min)
+                    post.status = "scheduled"
+                    post.scheduled_at = next_attempt_at
+        if ambiguous:
+            log.error(
+                "publish outcome unknown for %s (%s): %s; operator reconciliation required",
+                post_id, platform, error_text,
+            )
+        elif terminal_failure:
+            reason = "permanent rejection" if permanent else f"attempt limit {max_attempts} reached"
+            log.error(
+                "publish stopped for %s (%s) after %s attempt(s): %s; operator retry required",
+                post_id, platform, attempts, reason,
+            )
+        else:
+            delay_label = (
+                f"{retry_after_seconds}s (Retry-After)"
+                if retry_after_seconds is not None
+                else f"{retry_min} min"
+            )
+            log.warning(
+                "publish failed for %s (%s): %s (retry in %s; attempt %s/%s)",
+                post_id, platform, error_text, delay_label, attempts, max_attempts,
+            )
+        return {
+            "ok": False,
+            "error": error_text,
+            "outcome_unknown": ambiguous,
+            "terminal_failure": terminal_failure,
+        }
 
+    await _stop_publish_heartbeat(heartbeat_task)
     with session_scope() as session:
         post = session.get(PostRow, post_id)
         if post:
             post.status = "published"
             post.published_at = datetime.now(UTC)
             post.tg_message_id = message_id
+            post.publish_heartbeat_at = None
             if platform == "telegram":
                 post.tg_chat_id = int(target)
             post.publish_error = None
@@ -694,19 +925,36 @@ async def _publish_one(
     return {"ok": True, "message_id": message_id, "post_id": post_id}
 
 
-def due_posts(limit: int = 20) -> list[tuple[int, str, int | str, str]]:
+def due_posts(
+    limit: int = 20,
+    post_public_ids: list[str] | None = None,
+) -> list[tuple[int, str, int | str, str]]:
+    """Load due posts, optionally restricted to a specific operator selection."""
+    if post_public_ids is not None and not post_public_ids:
+        return []
     now = datetime.now(UTC)
     out: list[tuple[int, str, int | str, str]] = []
+    from tgfarm.platforms import is_platform_enabled
+
     with session_scope() as session:
-        rows = session.execute(
+        stmt = (
             select(PostRow)
             .where(PostRow.status == "scheduled", PostRow.scheduled_at <= now)
             .order_by(PostRow.scheduled_at.asc())
-            .limit(limit)
-        ).scalars().all()
+        )
+        if post_public_ids is not None:
+            stmt = stmt.where(PostRow.public_id.in_(post_public_ids))
+        rows = session.execute(stmt.limit(limit)).scalars().all()
         for row in rows:
             channel = session.get(ChannelRow, row.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
+            if not is_platform_enabled(platform):
+                # Pause delivery without changing the queued post's state.
+                # Re-enabling the platform makes the same queued post eligible again.
+                continue
+            if platform not in {"telegram", "dzen", "vk"}:
+                # Crosspost-only services must never be sent to the Telegram API.
+                continue
             if platform == "dzen":
                 target: int | str = channel.id if channel else "dzen"
                 out.append((row.id, assemble_text(row, platform), target, platform))
@@ -781,13 +1029,19 @@ def _last_dzen_publish_time() -> datetime | None:
     return value
 
 
-async def publish_due(limit: int = 1000) -> dict[str, int]:
+async def _publish_due_once(
+    limit: int = 1000,
+    post_public_ids: list[str] | None = None,
+) -> dict[str, int]:
     get_settings()
     with StageTimer("s7_publish") as timer:
         requeued = await to_thread(_requeue_stuck)
         if requeued:
-            log.warning("s7: requeued %d posts stuck in publishing", requeued)
-        pending = await to_thread(due_posts, limit)
+            log.warning(
+                "s7: moved %d interrupted posts to publish_unknown; reconcile before retry",
+                requeued,
+            )
+        pending = await to_thread(due_posts, limit, post_public_ids)
         if not pending:
             timer.items_out = 0
             return {"published": 0, "failed": 0}
@@ -795,7 +1049,7 @@ async def publish_due(limit: int = 1000) -> dict[str, int]:
         post_ids = [p[0] for p in pending]
         media = await to_thread(_media_for, post_ids)
         inline = await to_thread(_inline_media_for, post_ids)
-        sent = failed = 0
+        sent = failed = skipped = 0
         errors: list[str] = []
         last_dzen = getattr(publish_due, "_last_dzen", None)
         db_last = await to_thread(_last_dzen_publish_time)
@@ -828,6 +1082,9 @@ async def publish_due(limit: int = 1000) -> dict[str, int]:
                 inline.get(post_id),
             )
             if result.get("ok"):
+                if result.get("skipped"):
+                    skipped += 1
+                    continue
                 sent += 1
                 if platform == "dzen":
                     last_dzen = datetime.now(UTC)
@@ -844,7 +1101,33 @@ async def publish_due(limit: int = 1000) -> dict[str, int]:
             "failed": failed,
             "errors": errors,
             **({"skipped_llm": skipped_llm} if skipped_llm else {}),
+            **({"skipped": skipped} if skipped else {}),
         }
+
+
+_active_publish_task: asyncio.Task | None = None
+
+
+async def publish_due(
+    limit: int = 1000,
+    post_public_ids: list[str] | None = None,
+) -> dict[str, int]:
+    """Serialize publisher batches so platform-level spacing rules stay valid."""
+    global _active_publish_task
+
+    current_task = asyncio.current_task()
+    active = _active_publish_task
+    if active is not None and active is not current_task and not active.done():
+        log.info("s7: publish batch skipped because another batch is still running")
+        return {"published": 0, "failed": 0, "skipped_concurrent": 1}
+
+    if current_task is not None:
+        _active_publish_task = current_task
+    try:
+        return await _publish_due_once(limit, post_public_ids)
+    finally:
+        if current_task is not None and _active_publish_task is current_task:
+            _active_publish_task = None
 
 
 async def run() -> dict[str, int]:
@@ -854,15 +1137,22 @@ async def run() -> dict[str, int]:
 
 
 def unpublish(posts_public_ids: list[str]) -> int:
-    """Admin action: pull a post back to `scheduled` (never deletes remotely)."""
+    """Schedule eligible posts immediately without overwriting concurrent claims.
+
+    A single conditional UPDATE is important here: selecting ORM objects and
+    saving them later can overwrite a worker's concurrent transition to
+    `publishing`, reopening a duplicate-send race.
+    """
     with session_scope() as session:
-        rows = session.execute(
-            select(PostRow).where(PostRow.public_id.in_(posts_public_ids))
-        ).scalars().all()
-        for row in rows:
-            row.status = "scheduled"
-            row.scheduled_at = datetime.now(UTC)
-        return len(rows)
+        result = session.execute(
+            update(PostRow)
+            .where(
+                PostRow.public_id.in_(posts_public_ids),
+                PostRow.status.in_(("scheduled", "gated")),
+            )
+            .values(status="scheduled", scheduled_at=datetime.now(UTC))
+        )
+        return result.rowcount or 0
 
 
 def new_run_id() -> str:

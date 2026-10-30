@@ -9,15 +9,19 @@
     tgfarm posts [--status X]   list generated posts
     tgfarm show <post_id>       print one post with its quality report
     tgfarm render <post_id>     (re)render the cover
+    tgfarm video-render <id>    render an original silent 9:16 MP4 from a post
     tgfarm publish <post_id>    force-publish one post now
+    tgfarm reddit-test <post_id> preview or explicitly live-test Reddit crossposting
     tgfarm channels             channel inventory + today's load
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm doctor               diagnose configuration and connectivity
+    tgfarm backup-test FILE     restore a backup to a temporary DB and verify it
     tgfarm demo                 seed synthetic data and run a cycle offline
     tgfarm dzen-login           open Dzen and keep the Yandex session in a profile
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
+    tgfarm history-import FILE  import old publication exports (preview by default)
 """
 
 from __future__ import annotations
@@ -89,11 +93,20 @@ def cmd_cycle(args) -> int:
 
     async def _run() -> int:
         await pipeline.bootstrap()
-        result = await pipeline.run_cycle(collect=not args.no_collect, max_clusters=args.max_clusters)
-        return (0 if not result.errors else 2) if result.as_dict() else 0
+        result = await pipeline._guarded_cycle(
+            collect=not args.no_collect,
+            max_clusters=args.max_clusters,
+        )
+        if result is None:
+            _print({
+                "error": "cycle skipped, timed out, or failed",
+                "health": pipeline.cycle_health(),
+            })
+            return 2
+        _print(result.as_dict())
+        return 0 if not result.errors else 2
 
-    code = asyncio.run(_run())
-    return code
+    return asyncio.run(_run())
 
 
 def cmd_serve(args) -> int:
@@ -336,9 +349,21 @@ def cmd_render(args) -> int:
     return 0
 
 
-def cmd_publish(args) -> int:
-    from datetime import timedelta
+def cmd_video_render(args) -> int:
+    """Render an original silent vertical MP4 from a saved post."""
+    from tgfarm.s11_video.renderer import render_post_short
 
+    _bootstrap()
+    artifact = render_post_short(
+        args.post_id,
+        force=bool(args.force),
+        output_path=args.output or None,
+    )
+    _print(artifact.as_dict())
+    return 0
+
+
+def cmd_publish(args) -> int:
     from sqlalchemy import select
 
     from tgfarm import s7_publish
@@ -346,7 +371,6 @@ def cmd_publish(args) -> int:
     from tgfarm.db.session import session_scope
 
     _bootstrap()
-    now = datetime.now(UTC)
     with session_scope() as session:
         post = session.execute(
             select(Post).where(Post.public_id == args.post_id)
@@ -354,12 +378,88 @@ def cmd_publish(args) -> int:
         if post is None:
             _print({"error": "not found"})
             return 1
-        post.status = "scheduled"
-        post.scheduled_at = now - timedelta(seconds=1)
+        if post.status not in {"scheduled", "gated"}:
+            _print({
+                "error": "not publishable now",
+                "post_id": args.post_id,
+                "status": post.status,
+                "allowed_statuses": ["scheduled", "gated"],
+            })
+            return 2
 
-    result = asyncio.run(s7_publish.publish_due(limit=1))
+    # Use the publisher's conditional UPDATE; never overwrite a worker that
+    # claimed this post between the status check and the forced publish.
+    rescheduled = s7_publish.unpublish([args.post_id])
+    if not rescheduled:
+        _print({"error": "state changed; reload the queue and try again", "post_id": args.post_id})
+        return 2
+
+    result = asyncio.run(
+        s7_publish.publish_due(limit=1, post_public_ids=[args.post_id])
+    )
     _print(result)
     return 0 if result.get("failed", 0) == 0 else 1
+
+
+def cmd_reddit_test(args) -> int:
+    """Dry-run or explicitly confirmed live crosspost of one published post."""
+    from sqlalchemy import select
+
+    from tgfarm import s9_growth
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.platforms import is_platform_enabled
+
+    _bootstrap()
+    settings = get_settings()
+    if settings.live and not args.confirm_live:
+        _print({
+            "error": "live mode requires explicit --confirm-live for Reddit",
+            "hint": "Check subreddit rules and OAuth access before the one-post smoke test.",
+        })
+        return 2
+    if not is_platform_enabled("reddit"):
+        _print({
+            "error": "Reddit is disabled in the global platform center",
+            "hint": "Enable Reddit only after OAuth settings and subreddit rules are checked.",
+        })
+        return 2
+
+    with session_scope() as session:
+        post = session.execute(
+            select(Post).where(Post.public_id == args.post_id)
+        ).scalar_one_or_none()
+        if post is None:
+            _print({"error": "post not found", "post_id": args.post_id})
+            return 1
+        if post.status != "published":
+            _print({
+                "error": "Reddit test requires a primary post already marked published",
+                "post_id": args.post_id,
+                "status": post.status,
+            })
+            return 2
+        post_pk = post.id
+
+    results = asyncio.run(s9_growth.crosspost_post(post_pk, ["reddit"]))
+    if not results:
+        _print({
+            "post_id": args.post_id,
+            "mode": "live" if settings.live else "dry_run",
+            "results": [],
+            "note": (
+                "No new attempt was created. Check the global switch, adapter credentials, "
+                "and existing crosspost history before trying again."
+            ),
+        })
+        return 0
+
+    _print({
+        "post_id": args.post_id,
+        "mode": "live" if settings.live else "dry_run",
+        "results": [result.model_dump() for result in results],
+    })
+    return 0 if all(result.status in {"posted", "dry_run"} for result in results) else 1
 
 
 def cmd_channels(_args) -> int:
@@ -456,6 +556,94 @@ def cmd_dzen_login(args) -> int:
     return 0
 
 
+def _prepare_history_import(args) -> tuple[bool, dict | None]:
+    """Require a verified SQLite backup before any write to imported history."""
+    if not getattr(args, "apply", False):
+        return True, None
+
+    if getattr(args, "skip_preimport_backup", False):
+        return True, {
+            "verified": False,
+            "skipped": True,
+            "reason": "operator explicitly skipped the automatic backup; verify an external backup",
+        }
+
+    from tgfarm import pipeline
+
+    backup = asyncio.run(pipeline.backup_job())
+    if not backup.get("verified"):
+        return False, backup
+    return True, backup
+
+
+def cmd_backup(_args) -> int:
+    """Create and verify a SQLite backup now."""
+    from tgfarm import pipeline
+
+    _bootstrap()
+    report = asyncio.run(pipeline.backup_job())
+    _print(report)
+    return 0 if report.get("verified") else 2
+
+
+def cmd_backup_test(args) -> int:
+    """Restore a snapshot into a disposable SQLite database and verify it."""
+    from tgfarm.db.recovery import verify_sqlite_backup_restore
+
+    report = verify_sqlite_backup_restore(args.path)
+    _print(report)
+    return 0 if report.get("verified") else 2
+
+
+def cmd_history_import(args) -> int:
+    """Import a local platform export into the archive, without publishing."""
+    from tgfarm.history_import import import_history, load_history_export
+
+    _bootstrap()
+    ready, backup = _prepare_history_import(args)
+    if not ready:
+        _print({
+            "ok": False,
+            "error": "История не импортирована: не удалось подтвердить резервную копию.",
+            "pre_import_backup": backup,
+            "hint": "Для внешнего backup вручную проверьте копию БД и только затем используйте --skip-preimport-backup.",
+        })
+        return 2
+
+    records = load_history_export(args.input, platform=args.platform)
+    report = import_history(records, channel_id=args.channel, apply=args.apply)
+    report["source_file"] = str(args.input)
+    if backup is not None:
+        report["pre_import_backup"] = backup
+    _print(report)
+    return 0
+
+
+def cmd_history_import_telegram(args) -> int:
+    """Import bounded history through the existing read-only Telegram session."""
+    from tgfarm.history_import import fetch_telegram_history, import_history
+
+    _bootstrap()
+    ready, backup = _prepare_history_import(args)
+    if not ready:
+        _print({
+            "ok": False,
+            "error": "История не импортирована: не удалось подтвердить резервную копию.",
+            "pre_import_backup": backup,
+            "hint": "Для внешнего backup вручную проверьте копию БД и только затем используйте --skip-preimport-backup.",
+        })
+        return 2
+
+    records = asyncio.run(fetch_telegram_history(args.chat, limit=args.limit))
+    report = import_history(records, channel_id=args.channel, apply=args.apply)
+    report["telegram_chat"] = args.chat
+    report["requested_limit"] = args.limit
+    if backup is not None:
+        report["pre_import_backup"] = backup
+    _print(report)
+    return 0
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tgfarm", description=__doc__,
@@ -543,9 +731,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("post_id")
     p_render.set_defaults(func=cmd_render)
 
+    p_video = sub.add_parser(
+        "video-render",
+        help="render an original silent 9:16 MP4 from a saved post (requires FFmpeg)",
+    )
+    p_video.add_argument("post_id", help="public ID of a saved post")
+    p_video.add_argument("--output", default="", help="optional output .mp4 path")
+    p_video.add_argument("--force", action="store_true", help="replace an existing output file")
+    p_video.set_defaults(func=cmd_video_render)
+
     p_publish = sub.add_parser("publish", help="force-publish one post")
     p_publish.add_argument("post_id")
     p_publish.set_defaults(func=cmd_publish)
+
+    p_reddit_test = sub.add_parser(
+        "reddit-test", help="dry-run or explicitly confirmed live test of one Reddit crosspost"
+    )
+    p_reddit_test.add_argument("post_id", help="public id of an already-published farm post")
+    p_reddit_test.add_argument(
+        "--confirm-live",
+        action="store_true",
+        help="required when TGFARM_MODE=live; this can create a real Reddit submission",
+    )
+    p_reddit_test.set_defaults(func=cmd_reddit_test)
 
     sub.add_parser("channels", help="channel inventory").set_defaults(func=cmd_channels)
 
@@ -563,6 +771,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.set_defaults(func=cmd_audit)
 
     sub.add_parser("doctor", help="diagnose configuration").set_defaults(func=cmd_doctor)
+    sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
+
+    p_backup_test = sub.add_parser(
+        "backup-test", help="test restoring a SQLite backup to a temporary database"
+    )
+    p_backup_test.add_argument("path", help="path to a .db backup snapshot")
+    p_backup_test.set_defaults(func=cmd_backup_test)
 
     p_demo = sub.add_parser("demo", help="offline end-to-end demo with synthetic data")
     p_demo.add_argument("--cycles", type=int, default=1)
@@ -581,6 +796,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--respect-interval", action="store_true", help="skip if DZEN_STATS_INTERVAL_MIN has not elapsed"
     )
     p_dzen_stats.set_defaults(func=cmd_dzen_stats)
+
+    p_history = sub.add_parser(
+        "history-import", help="import a historical JSON/CSV export (preview by default)"
+    )
+    p_history.add_argument("input", help="path to a local .json or .csv export")
+    p_history.add_argument("--channel", required=True, help="existing TgFarm channel id")
+    p_history.add_argument(
+        "--platform",
+        choices=["auto", "telegram", "vk", "dzen", "generic"],
+        default="auto",
+        help="source export format/platform (default: auto)",
+    )
+    p_history.add_argument(
+        "--apply",
+        action="store_true",
+        help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_history.add_argument(
+        "--skip-preimport-backup",
+        action="store_true",
+        help="skip the automatic backup only when an external database backup is verified",
+    )
+    p_history.set_defaults(func=cmd_history_import)
+
+    p_tg_history = sub.add_parser(
+        "history-import-telegram",
+        help="preview/import Telegram history using the configured read-only user session",
+    )
+    p_tg_history.add_argument("chat", help="Telegram username, t.me link, or chat ID")
+    p_tg_history.add_argument("--channel", required=True, help="existing TgFarm channel id")
+    p_tg_history.add_argument(
+        "--limit", type=int, default=1000, help="messages from the oldest part of history (1..5000)"
+    )
+    p_tg_history.add_argument(
+        "--apply",
+        action="store_true",
+        help="write deduplicated archive rows; without this flag only previews",
+    )
+    p_tg_history.add_argument(
+        "--skip-preimport-backup",
+        action="store_true",
+        help="skip the automatic backup only when an external database backup is verified",
+    )
+    p_tg_history.set_defaults(func=cmd_history_import_telegram)
 
     return parser
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core import settings as core_settings
@@ -105,10 +105,39 @@ def reserve(
         return AIDecision(None, False, reason)
 
     budget = max(0, int(get_settings().ai_daily_budget))
-    current_charged = charged_today()
-    if current_charged >= budget:
-        log.warning("AI: budget exhausted (%d/%d) for stage %s", current_charged, budget, stage)
-        with session_scope() as session:
+    # The count and insert must be one serialized transaction. A read-then-write
+    # in separate transactions lets parallel workers all observe the same free
+    # slot and exceed the daily cap.
+    with session_scope() as session:
+        dialect = session.get_bind().dialect.name
+        if dialect == "sqlite":
+            # SQLite's deferred transactions do not lock out another reader
+            # before the count. BEGIN IMMEDIATE obtains the write reservation
+            # before we inspect today's usage.
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        elif dialect == "postgresql":
+            # A transaction-scoped advisory lock serializes reservations across
+            # every process/worker without introducing a singleton lock table.
+            session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 731904217})
+        else:
+            raise RuntimeError(
+                f"Atomic AI budget reservations are unsupported for database dialect: {dialect}"
+            )
+
+        current_charged = int(
+            session.execute(
+                select(func.count())
+                .select_from(AIUsage)
+                .where(
+                    AIUsage.charged.is_(True),
+                    AIUsage.created_at >= _start_of_day(),
+                )
+            ).scalar_one()
+            or 0
+        )
+
+        if current_charged >= budget:
+            log.warning("AI: budget exhausted (%d/%d) for stage %s", current_charged, budget, stage)
             row = AIUsage(
                 stage=stage,
                 purpose=purpose,
@@ -123,27 +152,36 @@ def reserve(
             session.add(row)
             session.flush()
             usage_id = row.id
-        return AIDecision(usage_id, False, "budget exhausted")
-    
-    if current_charged >= budget * 0.8:
-        log.warning("AI: approaching budget limit (%d/%d) for stage %s", current_charged, budget, stage)
+            allowed = False
+        else:
+            if current_charged >= budget * 0.8:
+                log.warning(
+                    "AI: approaching budget limit (%d/%d) for stage %s",
+                    current_charged,
+                    budget,
+                    stage,
+                )
+            row = AIUsage(
+                stage=stage,
+                purpose=purpose,
+                provider=provider,
+                model=model,
+                charged=True,
+                used=False,
+                reason="reserved",
+                post_public_id=post_public_id,
+                cluster_public_id=cluster_public_id,
+            )
+            session.add(row)
+            session.flush()
+            usage_id = row.id
+            allowed = True
 
-    with session_scope() as session:
-        row = AIUsage(
-            stage=stage,
-            purpose=purpose,
-            provider=provider,
-            model=model,
-            charged=True,
-            used=False,
-            reason="reserved",
-            post_public_id=post_public_id,
-            cluster_public_id=cluster_public_id,
-        )
-        session.add(row)
-        session.flush()
-        usage_id = row.id
-    return AIDecision(usage_id, True, "reserved")
+    return AIDecision(
+        usage_id,
+        allowed,
+        "reserved" if allowed else "budget exhausted",
+    )
 
 
 def finalize(
@@ -198,6 +236,95 @@ def record_skip(
                 cluster_public_id=cluster_public_id,
             )
         )
+
+
+def usage_report(days: int = 7, now: datetime | None = None) -> dict:
+    """Safe dashboard report of call-budget use, fallbacks, and persistent reservations."""
+    current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    days = min(30, max(1, int(days)))
+    start = _start_of_day(current) - timedelta(days=days - 1)
+    today_start = _start_of_day(current)
+    with session_scope() as session:
+        rows = session.execute(
+            select(AIUsage).where(AIUsage.created_at >= start)
+        ).scalars().all()
+
+    def _aware(value: datetime) -> datetime:
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    rows_today = [row for row in rows if _aware(row.created_at) >= today_start]
+    used_rows = [row for row in rows if row.used]
+    fallback_rows = [row for row in rows if row.reason == "fallback:offline"]
+    blocked_rows = [
+        row for row in rows
+        if not row.used and row.reason not in ("", "fallback:offline", "reserved")
+    ]
+    pending_rows = [
+        row for row in rows
+        if row.charged and not row.used and row.reason == "reserved"
+    ]
+    stale_pending = [
+        row for row in pending_rows
+        if (current - _aware(row.created_at)).total_seconds() >= 15 * 60
+    ]
+
+    def _group_by(field: str) -> list[dict]:
+        groups: dict[str, dict] = {}
+        for row in rows:
+            key = str(getattr(row, field, "") or "unknown")
+            item = groups.setdefault(key, {"name": key, "calls": 0, "charged": 0, "used": 0, "fallbacks": 0})
+            item["calls"] += 1
+            item["charged"] += int(bool(row.charged))
+            item["used"] += int(bool(row.used))
+            item["fallbacks"] += int(row.reason == "fallback:offline")
+        return sorted(groups.values(), key=lambda item: (-item["charged"], -item["calls"], item["name"]))
+
+    daily: dict[str, dict] = {}
+    for row in rows:
+        day = _aware(row.created_at).date().isoformat()
+        item = daily.setdefault(day, {"date": day, "calls": 0, "charged": 0, "used": 0, "fallbacks": 0, "skipped": 0})
+        item["calls"] += 1
+        item["charged"] += int(bool(row.charged))
+        item["used"] += int(bool(row.used))
+        item["fallbacks"] += int(row.reason == "fallback:offline")
+        item["skipped"] += int(not row.used and row.reason not in ("", "fallback:offline", "reserved"))
+
+    budget = max(0, int(get_settings().ai_daily_budget))
+    charged_today = sum(1 for row in rows_today if row.charged)
+    return {
+        "period_days": days,
+        "since": start.isoformat(timespec="seconds"),
+        "budget_unit": "online_call_reservations",
+        "daily_budget": budget,
+        "today": {
+            "calls": len(rows_today),
+            "charged": charged_today,
+            "used": sum(1 for row in rows_today if row.used),
+            "fallbacks": sum(1 for row in rows_today if row.reason == "fallback:offline"),
+            "skipped": sum(1 for row in rows_today if not row.used and row.reason not in ("", "fallback:offline", "reserved")),
+            "pending_reservations": sum(1 for row in rows_today if row.charged and not row.used and row.reason == "reserved"),
+            "stale_reservations": sum(
+                1 for row in rows_today
+                if row.charged and not row.used and row.reason == "reserved"
+                and (current - _aware(row.created_at)).total_seconds() >= 15 * 60
+            ),
+            "remaining": max(0, budget - charged_today),
+        },
+        "totals": {
+            "calls": len(rows),
+            "charged": sum(1 for row in rows if row.charged),
+            "used": len(used_rows),
+            "fallbacks": len(fallback_rows),
+            "skipped": len(blocked_rows),
+            "pending_reservations": len(pending_rows),
+            "stale_reservations": len(stale_pending),
+            "average_latency_ms": round(sum(row.latency_ms for row in used_rows) / len(used_rows), 1) if used_rows else 0,
+        },
+        "by_provider": _group_by("provider"),
+        "by_stage": _group_by("stage"),
+        "daily": sorted(daily.values(), key=lambda item: item["date"]),
+    }
 
 
 def usage_summary(days: int = 1, now: datetime | None = None) -> dict[str, int | str]:

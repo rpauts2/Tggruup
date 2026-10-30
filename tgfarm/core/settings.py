@@ -217,6 +217,9 @@ class Settings(BaseSettings):
     image_model: str = Field(default="", alias="IMAGE_MODEL")
     image_size: str = Field(default="1280x720", alias="IMAGE_SIZE")
     image_enabled: bool = Field(default=False, alias="IMAGE_ENABLED")
+    # Maximum image-provider requests per UTC day. A request attempt consumes
+    # one slot even if its outcome is ambiguous, to avoid surprise spend.
+    image_daily_budget: int = Field(default=20, alias="IMAGE_DAILY_BUDGET")
     image_quality: str = Field(default="standard", alias="IMAGE_QUALITY")
     image_timeout_s: float = Field(default=90.0, alias="IMAGE_TIMEOUT_S")
 
@@ -258,16 +261,47 @@ class Settings(BaseSettings):
     )
 
     # --- crossposting -------------------------------------------------------
+    bluesky_handle: str = Field(default="", alias="BLUESKY_HANDLE")
+    bluesky_app_password: str = Field(default="", alias="BLUESKY_APP_PASSWORD")
+    # Mastodon OAuth user token; client credentials are registered per instance.
+    mastodon_instance: str = Field(default="", alias="MASTODON_INSTANCE")
+    mastodon_client_id: str = Field(default="", alias="MASTODON_CLIENT_ID")
+    mastodon_client_secret: str = Field(default="", alias="MASTODON_CLIENT_SECRET")
+    mastodon_access_token: str = Field(default="", alias="MASTODON_ACCESS_TOKEN")
     vk_access_token: str = Field(default="", alias="VK_ACCESS_TOKEN")
     vk_group_id: str = Field(default="", alias="VK_GROUP_ID")
     max_access_token: str = Field(default="", alias="MAX_ACCESS_TOKEN")
     max_channel_id: str = Field(default="", alias="MAX_CHANNEL_ID")
+    # YouTube Data API OAuth. The refresh token is the durable user grant;
+    # access tokens are refreshed before an upload and never shown in the UI.
+    youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
+    youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
+    youtube_access_token: str = Field(default="", alias="YOUTUBE_ACCESS_TOKEN")
+    youtube_refresh_token: str = Field(default="", alias="YOUTUBE_REFRESH_TOKEN")
+    youtube_token_expires_at: str = Field(default="", alias="YOUTUBE_TOKEN_EXPIRES_AT")
+    youtube_channel_id: str = Field(default="", alias="YOUTUBE_CHANNEL_ID")
+    youtube_channel_title: str = Field(default="", alias="YOUTUBE_CHANNEL_TITLE")
+    youtube_privacy_status: Literal["private", "unlisted", "public"] = Field(
+        default="private", alias="YOUTUBE_PRIVACY_STATUS"
+    )
+    youtube_category_id: str = Field(default="25", alias="YOUTUBE_CATEGORY_ID")
+    # TikTok Content Posting API. Direct posts are explicit operator actions, not background jobs.
+    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
+    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
+    tiktok_access_token: str = Field(default="", alias="TIKTOK_ACCESS_TOKEN")
+    tiktok_refresh_token: str = Field(default="", alias="TIKTOK_REFRESH_TOKEN")
+    tiktok_token_expires_at: int = Field(default=0, alias="TIKTOK_TOKEN_EXPIRES_AT")
+    tiktok_refresh_token_expires_at: int = Field(default=0, alias="TIKTOK_REFRESH_TOKEN_EXPIRES_AT")
+    tiktok_open_id: str = Field(default="", alias="TIKTOK_OPEN_ID")
+    tiktok_username: str = Field(default="", alias="TIKTOK_USERNAME")
     # Dzen has no public publishing API. Publishing goes through its web editor
     # in a dedicated browser profile, logged in by the operator once.
     dzen_profile_dir: str = Field(default="", alias="DZEN_PROFILE_DIR")
     dzen_browser: str = Field(default="chrome", alias="DZEN_BROWSER")
     dzen_headless: bool = Field(default=False, alias="DZEN_HEADLESS")
     dzen_publish_timeout_s: int = Field(default=600, alias="DZEN_PUBLISH_TIMEOUT_S")
+    # Stop retrying a primary publication after this many definite failures.
+    primary_publish_max_attempts: int = Field(default=5, alias="PRIMARY_PUBLISH_MAX_ATTEMPTS")
     dzen_login_timeout_s: int = Field(default=600, alias="DZEN_LOGIN_TIMEOUT_S")
     dzen_human_delay_ms: int = Field(default=70, alias="DZEN_HUMAN_DELAY_MS")
     # Dzen's editor is a browser session, not an API: publishing faster than one
@@ -287,6 +321,63 @@ class Settings(BaseSettings):
     dzen_stats_timeout_s: int = Field(default=60, alias="DZEN_STATS_TIMEOUT_S")
     x_bearer_token: str = Field(default="", alias="X_BEARER_TOKEN")
     x_user_id: str = Field(default="", alias="X_USER_ID")
+    x_oauth_client_id: str = Field(default="", alias="X_OAUTH_CLIENT_ID")
+    x_oauth_client_secret: str = Field(default="", alias="X_OAUTH_CLIENT_SECRET")
+    x_access_token: str = Field(default="", alias="X_ACCESS_TOKEN")
+    x_refresh_token: str = Field(default="", alias="X_REFRESH_TOKEN")
+    x_token_expires_at: int = Field(default=0, alias="X_TOKEN_EXPIRES_AT")
+    # Reddit uses OAuth refresh tokens. Account passwords must never be stored.
+    reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
+    reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
+    reddit_refresh_token: str = Field(default="", alias="REDDIT_REFRESH_TOKEN")
+    reddit_subreddit: str = Field(default="", alias="REDDIT_SUBREDDIT")
+    reddit_user_agent: str = Field(default="", alias="REDDIT_USER_AGENT")
+    # Threads user OAuth, refreshed locally before expiry.
+    threads_app_id: str = Field(default="", alias="THREADS_APP_ID")
+    threads_app_secret: str = Field(default="", alias="THREADS_APP_SECRET")
+    threads_access_token: str = Field(default="", alias="THREADS_ACCESS_TOKEN")
+    threads_token_expires_at: int = Field(default=0, alias="THREADS_TOKEN_EXPIRES_AT")
+    threads_user_id: str = Field(default="", alias="THREADS_USER_ID")
+    threads_username: str = Field(default="", alias="THREADS_USERNAME")
+    # LinkedIn member OAuth and post publishing.
+    linkedin_client_id: str = Field(default="", alias="LINKEDIN_CLIENT_ID")
+    linkedin_client_secret: str = Field(default="", alias="LINKEDIN_CLIENT_SECRET")
+    linkedin_access_token: str = Field(default="", alias="LINKEDIN_ACCESS_TOKEN")
+    linkedin_refresh_token: str = Field(default="", alias="LINKEDIN_REFRESH_TOKEN")
+    linkedin_token_expires_at: int = Field(default=0, alias="LINKEDIN_TOKEN_EXPIRES_AT")
+    linkedin_refresh_token_expires_at: int = Field(default=0, alias="LINKEDIN_REFRESH_TOKEN_EXPIRES_AT")
+    linkedin_member_id: str = Field(default="", alias="LINKEDIN_MEMBER_ID")
+    linkedin_member_name: str = Field(default="", alias="LINKEDIN_MEMBER_NAME")
+    # Instagram Login for professional accounts and public media delivery.
+    instagram_app_id: str = Field(default="", alias="INSTAGRAM_APP_ID")
+    instagram_app_secret: str = Field(default="", alias="INSTAGRAM_APP_SECRET")
+    instagram_access_token: str = Field(default="", alias="INSTAGRAM_ACCESS_TOKEN")
+    instagram_token_expires_at: int = Field(default=0, alias="INSTAGRAM_TOKEN_EXPIRES_AT")
+    instagram_user_id: str = Field(default="", alias="INSTAGRAM_USER_ID")
+    instagram_username: str = Field(default="", alias="INSTAGRAM_USERNAME")
+    public_base_url: str = Field(default="", alias="TGFARM_PUBLIC_BASE_URL")
+
+    # YouTube Data API upload and metadata.
+    youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
+    youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
+    youtube_refresh_token: str = Field(default="", alias="YOUTUBE_REFRESH_TOKEN")
+    youtube_channel_id: str = Field(default="", alias="YOUTUBE_CHANNEL_ID")
+    youtube_channel_title: str = Field(default="", alias="YOUTUBE_CHANNEL_TITLE")
+    youtube_privacy_status: Literal["private", "unlisted", "public"] = Field(
+        default="unlisted", alias="YOUTUBE_PRIVACY_STATUS"
+    )
+    youtube_category_id: str = Field(default="28", alias="YOUTUBE_CATEGORY_ID")
+
+    # TikTok Content Posting API. Video direct-post is invoked only from an
+    # explicit per-post confirmation in the dashboard, never by the scheduler.
+    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
+    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
+    tiktok_access_token: str = Field(default="", alias="TIKTOK_ACCESS_TOKEN")
+    tiktok_refresh_token: str = Field(default="", alias="TIKTOK_REFRESH_TOKEN")
+    tiktok_token_expires_at: int = Field(default=0, alias="TIKTOK_TOKEN_EXPIRES_AT")
+    tiktok_refresh_token_expires_at: int = Field(default=0, alias="TIKTOK_REFRESH_TOKEN_EXPIRES_AT")
+    tiktok_open_id: str = Field(default="", alias="TIKTOK_OPEN_ID")
+    tiktok_username: str = Field(default="", alias="TIKTOK_USERNAME")
 
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
@@ -324,11 +415,22 @@ class Settings(BaseSettings):
     source_failure_backoff_max: int = Field(
         default=4, alias="SOURCE_FAILURE_BACKOFF_MAX"
     )
+    source_auto_cooldown_after_failures: int = Field(
+        default=5, alias="SOURCE_AUTO_COOLDOWN_AFTER_FAILURES"
+    )
+    source_auto_cooldown_hours: int = Field(
+        default=24, alias="SOURCE_AUTO_COOLDOWN_HOURS"
+    )
 
     # --- always-on supervision ---------------------------------------------
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
+    # News drafts with known publication dates are rejected when every attached source is older than this.
+    source_max_age_hours: int = Field(default=72, alias="SOURCE_MAX_AGE_HOURS")
     # Operational alerts: the farm must say out loud when it stops shipping.
     alert_no_publish_hours: int = Field(default=3, alias="ALERT_NO_PUBLISH_HOURS")
+    # Warn when scheduled publication or editorial review queues grow beyond these limits.
+    queue_backlog_alert_threshold: int = Field(default=100, alias="QUEUE_BACKLOG_ALERT_THRESHOLD")
+    editorial_backlog_alert_threshold: int = Field(default=50, alias="EDITORIAL_BACKLOG_ALERT_THRESHOLD")
     # Where alerts go. Empty chat id = alerts stay in logs and /api/status.
     alert_chat_id: str = Field(default="", alias="ALERT_CHAT_ID")
     alert_cooldown_min: int = Field(default=30, alias="ALERT_COOLDOWN_MIN")
@@ -341,16 +443,31 @@ class Settings(BaseSettings):
     vk_prime_share: float = Field(default=0.3, alias="VK_PRIME_SHARE")
     # Silence is ambiguous: a daily "everything is fine" heartbeat removes it.
     alert_heartbeat_hours: int = Field(default=24, alias="ALERT_HEARTBEAT_HOURS")
-    # Weekly automatic backup destination; empty means ROOT/backup (same as the
+    # Daily automatic backup destination; empty means ROOT/backup (same as the
     # Makefile). Old files beyond keep_backups are pruned.
     backup_dir: str = Field(default="", alias="BACKUP_DIR")
+    # Optional mirror on a separate disk or mounted network share. Empty disables it.
+    backup_mirror_dir: str = Field(default="", alias="BACKUP_MIRROR_DIR")
     keep_backups: int = Field(default=8, alias="KEEP_BACKUPS")
+    # Warn when no successful verified snapshot exists within this window.
+    backup_max_age_hours: int = Field(default=36, alias="BACKUP_MAX_AGE_HOURS")
+    # Disk free-space alerts are evaluated by the watchdog; zero disables a threshold.
+    disk_free_warn_gb: float = Field(default=10.0, alias="DISK_FREE_WARN_GB")
+    disk_free_critical_gb: float = Field(default=3.0, alias="DISK_FREE_CRITICAL_GB")
     # Cluster and data hygiene: forming clusters age out, old raw rows leave.
     stale_cluster_hours: int = Field(default=72, alias="STALE_CLUSTER_HOURS")
     retention_raw_days: int = Field(default=90, alias="RETENTION_RAW_DAYS")
     retention_runs_days: int = Field(default=30, alias="RETENTION_RUNS_DAYS")
     cycle_stale_min: int = Field(default=45, alias="CYCLE_STALE_MIN")
     watchdog_interval_min: int = Field(default=5, alias="WATCHDOG_INTERVAL_MIN")
+    # Alert if scheduled read-only auth checks stop running for this long.
+    platform_auth_max_age_hours: int = Field(default=12, alias="PLATFORM_AUTH_MAX_AGE_HOURS")
+    watchdog_recovery_base_min: int = Field(
+        default=5, alias="WATCHDOG_RECOVERY_BASE_MIN"
+    )
+    watchdog_recovery_max_min: int = Field(
+        default=60, alias="WATCHDOG_RECOVERY_MAX_MIN"
+    )
 
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 3

@@ -18,7 +18,8 @@ from tgfarm.db.models import Source as SourceRow
 from tgfarm.db.session import session_scope
 from tgfarm.db.vector import get_index, pack
 from tgfarm.llm.embedding import get_embedder
-from tgfarm.s1_sources.collectors import FETCHERS, collect
+from tgfarm.s1_sources.base import SourceCollectionResult
+from tgfarm.s1_sources.collectors import FETCHERS, collect_detailed
 
 log = get_logger(__name__)
 
@@ -36,6 +37,14 @@ def due_sources(now: datetime | None = None) -> list[SourceSpec]:
             spec = specs.get(row.id)
             if spec is None or not spec.enabled or not row.enabled:
                 continue
+            cooldown_until = row.cooldown_until
+            if cooldown_until is not None:
+                if cooldown_until.tzinfo is None:
+                    cooldown_until = cooldown_until.replace(tzinfo=UTC)
+                else:
+                    cooldown_until = cooldown_until.astimezone(UTC)
+                if cooldown_until > now:
+                    continue
             if row.last_fetched_at is None:
                 due.append(spec)
                 continue
@@ -77,15 +86,52 @@ def _mark_source(
         row = session.get(SourceRow, source_id)
         if row is None:
             return
-        row.last_fetched_at = datetime.now(UTC)
-        row.last_status = "ok" if ok else "error"
+        now = datetime.now(UTC)
+        row.last_fetched_at = now
         row.last_error = (error or "")[:500] or None
         if not ok:
             row.failures += 1
+            settings = get_settings()
+            failure_limit = max(1, int(settings.source_auto_cooldown_after_failures))
+            if row.failures >= failure_limit:
+                cooldown_hours = max(1, int(settings.source_auto_cooldown_hours))
+                row.cooldown_until = now + timedelta(hours=cooldown_hours)
+                row.last_status = "cooldown"
+                log.warning(
+                    "source %s parked until %s after %d consecutive failures",
+                    source_id,
+                    row.cooldown_until.isoformat(timespec="seconds"),
+                    row.failures,
+                )
+            else:
+                row.cooldown_until = None
+                row.last_status = "error"
         else:
+            row.last_status = "ok"
             row.failures = 0
+            row.cooldown_until = None
             row.last_yield = max(0, int(items_new))
             row.idle_streak = 0 if items_new else row.idle_streak + 1
+
+
+async def _record_source_outcomes(
+    results: list[SourceCollectionResult],
+    counts: dict[str, int],
+    *,
+    skip_success_ids: set[str] | None = None,
+) -> None:
+    """Persist each fetch outcome without treating failed feeds as empty success."""
+    skip_success_ids = skip_success_ids or set()
+    for result in results:
+        if result.error is not None:
+            await to_thread(_mark_source, result.source_id, False, result.error)
+        elif result.source_id not in skip_success_ids:
+            await to_thread(
+                _mark_source,
+                result.source_id,
+                True,
+                items_new=counts.get(result.source_id, 0),
+            )
 
 
 def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
@@ -171,24 +217,33 @@ def _batched(seq, size):
 async def run(limit: int | None = None) -> int:
     """Full S1 cycle: fetch due sources -> persist -> index."""
     with StageTimer("s1_collect") as timer:
+        if not get_settings().online:
+            log.warning("s1: network collection disabled; source health left unchanged")
+            timer.items_out = 0
+            return 0
+
         specs = due_sources()
         if not specs:
             timer.items_out = 0
             log.info("s1: no source due yet")
             return 0
 
-        items = await collect(FETCHERS, specs)
-        if limit:
+        results = await collect_detailed(FETCHERS, specs)
+        all_items = [item for result in results for item in result.items]
+        items = all_items
+        skip_success_ids: set[str] = set()
+        if limit and len(items) > limit:
             items = items[:limit]
+            selected_ids = {item.source_id for item in items}
+            skipped_ids = {item.source_id for item in all_items[limit:]}
+            skip_success_ids = skipped_ids - selected_ids
 
         written, counts = await to_thread(_persist_detailed, items)
-        for spec in specs:
-            await to_thread(
-                _mark_source,
-                spec.id,
-                True,
-                items_new=counts.get(spec.id, 0),
-            )
+        await _record_source_outcomes(
+            results,
+            counts,
+            skip_success_ids=skip_success_ids,
+        )
         timer.items_in = len(items)
         timer.items_out = written
         return written
@@ -200,15 +255,10 @@ async def run_all_sources() -> int:
     if not settings.online:
         return 0
     specs = [s for s in get_config().sources if s.enabled]
-    items = await collect(FETCHERS, specs)
+    results = await collect_detailed(FETCHERS, specs)
+    items = [item for result in results for item in result.items]
     written, counts = await to_thread(_persist_detailed, items)
-    for spec in specs:
-        await to_thread(
-            _mark_source,
-            spec.id,
-            True,
-            items_new=counts.get(spec.id, 0),
-        )
+    await _record_source_outcomes(results, counts)
     return written
 
 

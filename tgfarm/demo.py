@@ -161,7 +161,28 @@ def _seed_items() -> int:
 
 
 async def run_demo(cycles: int = 1, offline: bool = True) -> dict:
-    """Drive the full pipeline over synthetic data. Returns a stage-by-stage report."""
+    """Run the synthetic end-to-end demo without publishing when offline=True.
+
+    The offline guard temporarily overrides the cached Settings instance, so
+    every publishing adapter and network-aware component sees mode="off".
+    The caller's original mode is restored even if a pipeline stage raises.
+    """
+    if not offline:
+        return await _run_demo_workflow(cycles=cycles)
+
+    from tgfarm.core.settings import get_settings
+
+    settings = get_settings()
+    previous_mode = settings.mode
+    settings.mode = "off"
+    try:
+        return await _run_demo_workflow(cycles=cycles)
+    finally:
+        settings.mode = previous_mode
+
+
+async def _run_demo_workflow(cycles: int = 1) -> dict:
+    """Drive the full synthetic pipeline. Caller controls the runtime mode."""
     from sqlalchemy import select
 
     from tgfarm import (

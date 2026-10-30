@@ -139,6 +139,134 @@ def spec(kind: str, **params) -> SourceSpec:
     return SourceSpec(id=f"t_{kind}", name=kind, kind=kind, url="", niches=["tech"], params=params)
 
 
+@pytest.mark.asyncio
+async def test_collect_all_detailed_preserves_success_and_failure_per_source():
+    from tgfarm.core.schemas import RawItem
+    from tgfarm.s1_sources.base import collect_all_detailed
+
+    good = SourceSpec(
+        id="collector_good",
+        name="good",
+        kind="good",
+        url="https://example.invalid/feed",
+        niches=["tech"],
+    )
+    bad = SourceSpec(
+        id="collector_bad",
+        name="bad",
+        kind="bad",
+        url="https://example.invalid/bad",
+        niches=["tech"],
+    )
+
+    class GoodCollector:
+        async def fetch(self, source, client):
+            return [
+                RawItem(
+                    source_id=source.id,
+                    external_id="item-1",
+                    url="https://example.invalid/story",
+                    title="A grounded source headline",
+                    text="Source body",
+                    niche_hint=["tech"],
+                )
+            ]
+
+    class BadCollector:
+        async def fetch(self, source, client):
+            raise RuntimeError("feed is down")
+
+    results = await collect_all_detailed(
+        {"good": GoodCollector(), "bad": BadCollector()},
+        [good, bad],
+    )
+    by_id = {result.source_id: result for result in results}
+
+    assert by_id["collector_good"].error is None
+    assert len(by_id["collector_good"].items) == 1
+    assert by_id["collector_bad"].items == []
+    assert "feed is down" in by_id["collector_bad"].error
+
+
+def test_source_circuit_breaker_parks_and_retries_after_cooldown(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from tgfarm import s1_sources
+    from tgfarm.config import SourceSpec
+    from tgfarm.db.models import Source
+    from tgfarm.db.session import session_scope
+
+    source_id = "source_circuit_test"
+    spec = SourceSpec(
+        id=source_id,
+        name="Circuit test",
+        kind="rss",
+        url="https://example.invalid/feed",
+        niches=["tech"],
+        enabled=True,
+        min_interval_s=600,
+    )
+    settings = SimpleNamespace(
+        source_auto_cooldown_after_failures=3,
+        source_auto_cooldown_hours=24,
+        source_adaptive_cadence=True,
+        source_idle_backoff_max=6,
+        source_failure_backoff_max=4,
+    )
+    monkeypatch.setattr(s1_sources, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        s1_sources,
+        "get_config",
+        lambda: SimpleNamespace(sources=[spec]),
+    )
+
+    with session_scope() as session:
+        session.merge(
+            Source(
+                id=source_id,
+                name=spec.name,
+                kind=spec.kind,
+                url=spec.url,
+                niches=spec.niches,
+                enabled=True,
+                min_interval_s=spec.min_interval_s,
+            )
+        )
+
+    try:
+        for _ in range(3):
+            s1_sources._mark_source(source_id, False, "temporary timeout")
+
+        with session_scope() as session:
+            row = session.get(Source, source_id)
+            assert row is not None
+            assert row.failures == 3
+            assert row.last_status == "cooldown"
+            assert row.cooldown_until is not None
+            cooldown_until = row.cooldown_until
+            if cooldown_until.tzinfo is None:
+                cooldown_until = cooldown_until.replace(tzinfo=UTC)
+            assert cooldown_until > datetime.now(UTC) + timedelta(hours=23)
+
+        assert s1_sources.due_sources() == []
+        due_again = s1_sources.due_sources(cooldown_until + timedelta(minutes=1))
+        assert [s.id for s in due_again] == [source_id]
+
+        s1_sources._mark_source(source_id, True, items_new=1)
+        with session_scope() as session:
+            row = session.get(Source, source_id)
+            assert row is not None
+            assert row.failures == 0
+            assert row.cooldown_until is None
+            assert row.last_status == "ok"
+    finally:
+        with session_scope() as session:
+            row = session.get(Source, source_id)
+            if row is not None:
+                session.delete(row)
+
+
 def test_reddit_url_for_a_subreddit():
     from tgfarm.s1_sources.extra_sources import RedditCollector
 

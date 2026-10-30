@@ -70,6 +70,13 @@ def test_authorisation_can_be_disabled_for_trusted_environments(monkeypatch):
         ("/ui/app.js", True),
         ("/api/status", False),
         ("/api/posts", False),
+        ("/api/memory/topic", False),
+        ("/api/platforms/mastodon/auth/callback", True),
+        ("/api/platforms/x/auth/callback", True),
+        ("/api/platforms/threads/auth/callback", True),
+        ("/api/platforms/linkedin/auth/callback", True),
+        ("/api/platforms/youtube/auth/callback", True),
+        ("/api/platforms/tiktok/auth/callback", True),
     ],
 )
 def test_public_paths(path, public):
@@ -91,14 +98,33 @@ def test_api_rejects_a_wrong_token(client):
     assert client.get("/api/status", headers={apiauth.HEADER: "nope"}).status_code == 401
 
 
+def test_topic_dossier_api_requires_authentication(client):
+    response = client.get("/api/memory/topic?query=Kestrelion%20reactor")
+    assert response.status_code == 401
+
+
 def test_api_accepts_the_real_token(client):
     token = ensure_token()
     assert client.get("/api/status", headers={apiauth.HEADER: token}).status_code == 200
 
 
-def test_api_accepts_the_token_as_a_query_parameter(client):
+def test_api_rejects_token_supplied_in_query_string(client):
     token = ensure_token()
-    assert client.get(f"/api/status?token={token}").status_code == 200
+    response = client.get(f"/api/status?token={token}")
+    assert response.status_code == 401
+
+
+def test_api_accepts_the_token_from_httponly_cookie(client):
+    from tgfarm.core.apiauth import COOKIE
+
+    token = ensure_token()
+    response = client.get("/api/status", cookies={COOKIE: token})
+    assert response.status_code == 200
+
+
+def test_token_is_removed_from_query_before_downstream_processing():
+    assert apiauth.strip_token_from_query(b"token=secret&days=7") == b"days=7"
+    assert apiauth.strip_token_from_query(b"days=7") == b"days=7"
 
 
 def test_destructive_endpoints_are_protected(client):
@@ -107,8 +133,45 @@ def test_destructive_endpoints_are_protected(client):
         ("/api/cycle", {}),
         ("/api/posts/publish", {"post_public_ids": ["x"]}),
         ("/api/posts/reject", {"post_public_ids": ["x"]}),
+        ("/api/crossposts/post-id/vk/reconcile", {"action": "confirm_posted"}),
+        ("/api/posts/post-id/video/render", {}),
+        ("/api/posts/post-id/tiktok/prepare", {}),
+        ("/api/posts/post-id/tiktok/publish", {"caption": "body", "privacy_level": "SELF_ONLY", "consent": True}),
     ):
         assert client.post(path, json=payload).status_code == 401, path
+
+
+def test_tiktok_direct_post_requires_explicit_consent(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    response = client.post(
+        "/api/posts/this-post/tiktok/publish",
+        json={"caption": "A real short", "privacy_level": "SELF_ONLY", "consent": False},
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 400
+    assert "Подтверди отправку" in response.json()["detail"]
+
+
+def test_tiktok_oauth_callback_does_not_echo_code_and_is_not_cached(client):
+    marker = "secret-tiktok-oauth-code"
+    response = client.get(
+        f"/api/platforms/tiktok/auth/callback?code={marker}&state=expired-state"
+    )
+    assert response.status_code == 400
+    assert marker not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_short_form_ui_is_wired_and_vk_clips_is_an_explicit_manual_handoff(client):
+    script = client.get("/ui/app.js").text
+    html = client.get("/").text
+    assert "tgfarmRenderShort" in script
+    assert "tgfarmPrepareTikTok" in script
+    assert "/tiktok/publish" in script
+    assert 'id="tiktok-publish-consent"' in html
+    assert "https://vk.com/clips" in script
 
 
 def test_the_dashboard_embeds_the_token(client):
@@ -187,3 +250,25 @@ def test_desktop_module_imports_without_a_display():
 
     assert hasattr(desktop, "DesktopApp")
     assert "webview" not in {name for name in dir(desktop) if name == "webview"}
+
+
+def test_video_oauth_callbacks_are_public_but_do_not_echo_provider_codes(client):
+    for platform_id in ("youtube", "tiktok"):
+        marker = f"secret-{platform_id}-authorization-code"
+        response = client.get(
+            f"/api/platforms/{platform_id}/auth/callback?code={marker}&state=expired-state"
+        )
+        assert response.status_code == 400
+        assert marker not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_admin_api_rejects_untrusted_host_even_with_valid_token(client):
+    response = client.get(
+        "/api/status",
+        headers={"Host": "attacker.example", apiauth.HEADER: ensure_token()},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "untrusted host"
+

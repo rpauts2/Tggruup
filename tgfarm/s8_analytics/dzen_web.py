@@ -22,6 +22,7 @@ from sqlalchemy import desc, func, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import ChannelStat, CrosspostLog, PostStat
 from tgfarm.db.models import Post as PostRow
@@ -191,7 +192,7 @@ async def _save_debug(page, name: str) -> Path | None:
         await page.screenshot(path=str(path), full_page=True)
         return path
     except Exception as exc:  # noqa: BLE001 - diagnostics must not mask the real error
-        log.debug("could not save Dzen stats screenshot: %s", exc)
+        log.debug("could not save Dzen stats screenshot: %s", redact_sensitive_text(exc, limit=160))
         return None
 
 
@@ -373,7 +374,7 @@ def _write_state(payload: dict[str, Any]) -> None:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     except OSError as exc:
-        log.debug("could not persist Dzen stats state: %s", exc)
+        log.debug("could not persist Dzen stats state: %s", redact_sensitive_text(exc, limit=160))
 
 
 def metrics_status() -> dict[str, Any]:
@@ -461,7 +462,7 @@ async def collect_and_record(*, force: bool = False) -> dict[str, Any]:
         return payload
     except Exception as exc:
         _write_state(
-            {"collected_at": started.isoformat(), "error": str(exc)[:300], "seen": 0}
+            {"collected_at": started.isoformat(), "error": redact_sensitive_text(exc, limit=300), "seen": 0}
         )
         raise
 
