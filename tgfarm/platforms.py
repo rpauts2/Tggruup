@@ -328,9 +328,6 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "discord": [
         {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
     ],
-    "discord": [
-        {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
-    ],
     "bluesky": [
         {"key": "BLUESKY_HANDLE", "attribute": "bluesky_handle", "label": "Handle", "secret": False, "placeholder": "name.bsky.social", "help": "Handle аккаунта Bluesky, можно с собственным доменом."},
         {"key": "BLUESKY_APP_PASSWORD", "attribute": "bluesky_app_password", "label": "App password", "secret": True, "placeholder": "xxxx-xxxx-xxxx-xxxx", "help": "Создай отдельный пароль приложения в Settings → Privacy and Security → App passwords. Не вводи основной пароль."},
@@ -383,6 +380,13 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "INSTAGRAM_TOKEN_EXPIRES_AT", "attribute": "instagram_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
         {"key": "INSTAGRAM_USER_ID", "attribute": "instagram_user_id", "label": "Instagram user ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "INSTAGRAM_USERNAME", "attribute": "instagram_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
+    "odnoklassniki": [
+        {"key": "OK_APPLICATION_KEY", "attribute": "ok_application_key", "label": "Публичный ключ приложения", "secret": False, "placeholder": "Application key", "help": "Публичный ключ приложения ОК из кабинета разработчика."},
+        {"key": "OK_APPLICATION_SECRET", "attribute": "ok_application_secret", "label": "Секрет приложения", "secret": True, "placeholder": "Application secret key", "help": "Секрет используется только для подписи API-запросов и хранится локально."},
+        {"key": "OK_ACCESS_TOKEN", "attribute": "ok_access_token", "label": "Long access token", "secret": True, "placeholder": "Долгоживущий access token", "help": "Запроси LONG_ACCESS_TOKEN и права GROUP_CONTENT у api-support@ok.ru. Пароль от аккаунта не нужен."},
+        {"key": "OK_SESSION_SECRET_KEY", "attribute": "ok_session_secret_key", "label": "Session secret key", "secret": True, "placeholder": "Session secret key (если выдан)", "help": "Если не задан, подпись рассчитывается официальным способом MD5(access_token + application_secret_key)."},
+        {"key": "OK_GROUP_ID", "attribute": "ok_group_id", "label": "ID группы", "secret": False, "placeholder": "12345678901234", "help": "Числовой ID группы, в которой приложение имеет GROUP_CONTENT."},
     ],
     "pinterest": [
         {"key": "PINTEREST_APP_ID", "attribute": "pinterest_app_id", "label": "Pinterest App ID", "secret": False, "placeholder": "App ID из Pinterest Developer Portal", "help": "Зарегистрируй приложение и добавь точный callback URL из панели."},
