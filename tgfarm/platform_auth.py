@@ -149,6 +149,29 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "pinterest":
+            from tgfarm.pinterest_oauth import get_valid_pinterest_access_token
+
+            board_id = str(settings.pinterest_board_id or "").strip()
+            if not board_id or not settings.pinterest_refresh_token:
+                raise RuntimeError("Сначала подключи Pinterest через OAuth и укажи ID доски.")
+            token = await get_valid_pinterest_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                board = await _response_json(
+                    client,
+                    f"https://api.pinterest.com/v5/boards/{quote(board_id, safe='')}",
+                )
+            if str(board.get("id") or "") != board_id:
+                raise RuntimeError("Pinterest не подтвердил выбранную доску. Проверь её ID и доступ.")
+            board_name = str(board.get("name") or board_id)
+            owner = board.get("owner") or {}
+            username = str(owner.get("username") or "").strip()
+            account = ("@" + username + " · " if username else "") + board_name
+            authorized = True
+            detail = "Pinterest OAuth и доступ к выбранной доске подтверждены read-only запросом."
         elif platform_id == "instagram":
             from tgfarm.instagram_oauth import get_valid_instagram_access_token
 
