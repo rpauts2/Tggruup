@@ -170,8 +170,6 @@ async def test_caption_is_filled_after_the_rest_of_the_body(tmp_path):
 
 
 def test_loaded_dzen_image_jobs_keep_channel_id_for_generation_fallback(monkeypatch):
-    from tgfarm import s6_visual
-    from tgfarm.config import get_config
     from tgfarm.db.models import Channel, Cluster, Post, RawItem
     from tgfarm.db.session import session_scope
     import tgfarm.s6_visual.article_images as article_images
