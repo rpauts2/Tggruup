@@ -2720,18 +2720,20 @@
               ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Открыть ↗</a>` : ""}
             </div>
             <p>${esc(item.description || "Описание не получено.")}</p>
-            ${(item.matches || []).length ? `<div class="community-target-tags">${item.matches.map((value) => `<span>${esc(value)}</span>`).join("")}</div>` : ""}
+            ${(item.suggested_tags || item.matches || []).length ? `<div class="community-target-tags">${(item.suggested_tags || item.matches || []).map((value) => `<span>${esc(value)}</span>`).join("")}</div>` : ""}
             ${risks.length ? `<div class="community-target-risks">${risks.map((value) => `<p>! ${esc(value)}</p>`).join("")}</div>` : ""}
             ${item.rules ? `<details><summary>Правила этого места</summary><p>${esc(item.rules)}</p></details>` : `<small>Правила не удалось распознать, рекомендация не подтверждена.</small>`}
           </article>`;
       };
+      state.communityTargetPlans = state.communityTargetPlans || {};
+      state.communityTargetPlans[id + ":" + platform] = result;
       root.innerHTML = `
         <div class="community-target-summary">
           <strong>${selected ? "Место подобрано" : "Безопасное место не найдено"}</strong>
           <p>${esc(result.detail || "")}</p>
           <small>${platform === "vc_ru"
-            ? "Подбор темы не подтверждает право на автоматическую публикацию."
-            : "Подбор сообщества не гарантирует одобрение модераторами."}</small>
+            ? "Перед завершением проверь, что эта тема отображается в редакторе."
+            : "Перед завершением проверь, что это сообщество выбрано и теги подходят. Одобрение модераторов не гарантируется."}</small>
         </div>
         ${selected ? renderCandidate(selected, true) : ""}
         ${candidates.filter((item) => !selected || item.slug !== selected.slug).slice(0, 4).map((item) => renderCandidate(item)).join("")}
@@ -2747,19 +2749,43 @@
   window.tgfarmPrepareCommunityDraft = async (id, platform) => {
     if (!id || !["vc_ru", "pikabu"].includes(platform)) return;
     const label = platform === "vc_ru" ? "vc.ru" : "Пикабу";
-    if (!confirm("Подготовить черновик для " + label + "? TgFarm заполнит редактор и прикрепит изображение, но НЕ будет нажимать «Опубликовать».")) return;
+    state.communityTargetPlans = state.communityTargetPlans || {};
+    let plan = state.communityTargetPlans[id + ":" + platform] || null;
     try {
+      if (!plan) {
+        plan = await post(
+          "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/targets",
+          {},
+        );
+        state.communityTargetPlans[id + ":" + platform] = plan;
+      }
+    } catch (error) {
+      plan = null;
+    }
+    const selected = plan?.selected || null;
+    const targetText = selected
+      ? "\n\nРекомендуемое место: " + (selected.name || selected.title) + ". Открою редактор с этой страницы, но проверь, что площадка действительно выбрала нужный раздел."
+      : "\n\nПодходящее место с достаточным совпадением не найдено. Открою общий редактор, выбери тему/сообщество вручную.";
+    if (!confirm("Подготовить черновик для " + label + "? TgFarm заполнит редактор и прикрепит изображение, но НЕ будет нажимать «Опубликовать»." + targetText)) return;
+    try {
+      const targetQuery = selected
+        ? "?target_url=" + encodeURIComponent(selected.url || "")
+          + "&target_name=" + encodeURIComponent(selected.name || selected.title || "")
+        : "";
       const result = await post(
-        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/prepare",
+        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/prepare" + targetQuery,
         {},
       );
       const count = Number(result.media_count || 0);
       const manualSteps = (result.manual_steps || []).join("; ");
+      const targetLabel = result.target_name || selected?.name || selected?.title || "";
+      const targetMessage = targetLabel ? " Цель: " + targetLabel + "." : "";
       const statusMessage = result.status === "already_prepared"
-        ? label + ": открыл ранее подготовленный черновик, дубликат не создавался."
+        ? label + ": открыл ранее подготовленный черновик, дубликат не создавался." + targetMessage
         : result.status === "needs_review"
-          ? label + ": прошлая попытка прервалась. Новый черновик не создавался, проверь открытый редактор."
-          : label + ": черновик заполнен, изображений: " + count + ". Проверь редактор и опубликуй вручную."
+          ? label + ": прошлая попытка прервалась. Новый черновик не создавался, проверь открытый редактор." + targetMessage
+          : label + ": черновик заполнен, изображений: " + count + "." + targetMessage
+            + " Проверь выбранную тему/сообщество и опубликуй вручную."
             + (manualSteps ? " Ещё нужно: " + manualSteps + "." : "");
       toast(statusMessage, "ok");
     } catch (error) {
