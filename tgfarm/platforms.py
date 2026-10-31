@@ -161,10 +161,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "pinterest", "name": "Pinterest", "symbol": "P", "color": "#E60023",
         "category": "Визуальные", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["visual", "search"],
-        "description": "Долгоживущие визуальные пины со ссылкой на исходную статью или сайт.",
-        "requirements": "OAuth, доступ к Pins API и подготовка вертикальных изображений.",
-        "docs_url": "https://developers.pinterest.com/",
+        "mode": "built_in", "roles": ["visual", "search", "crosspost"],
+        "description": "Нативные image Pins через Pinterest API v5 с OAuth и размещением в выбранной доске.",
+        "requirements": "PINTEREST App OAuth с boards:read, pins:read, pins:write и ID доски, доступной подключённому профилю.",
+        "docs_url": "https://developers.pinterest.com/docs/work-with-organic-content-and-users/create-boards-and-pins/",
     },
     {
         "id": "odnoklassniki", "name": "Одноклассники", "symbol": "OK", "color": "#EE8208",
@@ -384,6 +384,15 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "INSTAGRAM_USER_ID", "attribute": "instagram_user_id", "label": "Instagram user ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "INSTAGRAM_USERNAME", "attribute": "instagram_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "pinterest": [
+        {"key": "PINTEREST_APP_ID", "attribute": "pinterest_app_id", "label": "Pinterest App ID", "secret": False, "placeholder": "App ID из Pinterest Developer Portal", "help": "Зарегистрируй приложение и добавь точный callback URL из панели."},
+        {"key": "PINTEREST_APP_SECRET", "attribute": "pinterest_app_secret", "label": "Pinterest App Secret", "secret": True, "placeholder": "App Secret", "help": "Секрет хранится локально и не показывается повторно."},
+        {"key": "PINTEREST_BOARD_ID", "attribute": "pinterest_board_id", "label": "ID доски", "secret": False, "placeholder": "ID существующей Pinterest-доски", "help": "Укажи ID доски, куда будут добавляться Pins. OAuth проверит доступ к этой доске."},
+        {"key": "PINTEREST_ACCESS_TOKEN", "attribute": "pinterest_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
+        {"key": "PINTEREST_REFRESH_TOKEN", "attribute": "pinterest_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний rotating refresh token."},
+        {"key": "PINTEREST_TOKEN_EXPIRES_AT", "attribute": "pinterest_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "PINTEREST_REFRESH_TOKEN_EXPIRES_AT", "attribute": "pinterest_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+    ],
     "linkedin": [
         {"key": "LINKEDIN_CLIENT_ID", "attribute": "linkedin_client_id", "label": "LinkedIn Client ID", "secret": False, "placeholder": "Client ID из Developer Portal", "help": "Приложение должно иметь OpenID Connect и Share on LinkedIn."},
         {"key": "LINKEDIN_CLIENT_SECRET", "attribute": "linkedin_client_secret", "label": "LinkedIn Client Secret", "secret": True, "placeholder": "Client Secret из Developer Portal", "help": "Секрет хранится только в локальном .env."},
@@ -555,7 +564,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "vkhost"
     elif platform_id in {"vc_ru", "pikabu"}:
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -854,6 +863,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
+    if platform_id == "pinterest":
+        if settings.pinterest_access_token and settings.pinterest_refresh_token and settings.pinterest_board_id:
+            return True, "Pinterest OAuth подключён; токен обновляется автоматически, выбранная доска проверяется перед публикацией."
+        if settings.pinterest_app_id and settings.pinterest_app_secret and settings.pinterest_board_id:
+            return False, "Pinterest App и доска сохранены; подключи аккаунт через OAuth."
+        return False, "Нужны Pinterest App ID/Secret и ID доски, затем подключи профиль через OAuth."
     if platform_id == "instagram":
         if settings.instagram_access_token and settings.instagram_user_id and settings.public_base_url:
             return True, "Instagram OAuth сохранён; нужен публичный HTTPS-домен для безопасной передачи фото и Reels в Meta."
@@ -1010,7 +1025,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "discord",
+    "instagram", "linkedin", "discord", "pinterest",
 })
 
 
