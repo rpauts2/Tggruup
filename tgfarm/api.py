@@ -78,6 +78,11 @@ class PlatformToggleRequest(BaseModel):
     enabled: bool
 
 
+class RuntimeModeRequest(BaseModel):
+    mode: Literal["off", "dry", "live"]
+    confirm_live: bool = False
+
+
 class PlatformPlanRequest(BaseModel):
     planned: bool
 
@@ -1668,6 +1673,28 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/channels")
     async def channels() -> dict:
         return {"channels": await io(_channels)}
+
+    @app.get("/api/distribution/plan")
+    async def distribution_plan() -> dict:
+        """Show the current editorial allocation, daily budgets and selected posts."""
+        from tgfarm.distribution import build_distribution_plan
+
+        return await io(build_distribution_plan)
+
+    @app.put("/api/runtime/mode")
+    async def set_runtime_mode(request: RuntimeModeRequest) -> dict:
+        """Global kill switch; LIVE always requires a separate explicit confirmation."""
+        from tgfarm.distribution import build_distribution_plan, set_runtime_mode as persist_runtime_mode
+
+        if request.mode == "live" and not request.confirm_live:
+            raise HTTPException(
+                status_code=400,
+                detail="Для включения LIVE нужно явно подтвердить запуск реальных публикаций.",
+            )
+        mode = await io(persist_runtime_mode, request.mode)
+        _operator("runtime-mode", "farm", mode)
+        plan = await io(build_distribution_plan)
+        return {"ok": True, "mode": mode, "plan": plan}
 
     @app.get("/api/platforms")
     async def platforms() -> dict:
