@@ -1,9 +1,9 @@
 """Odnoklassniki REST API group publisher with signed requests and media upload."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -188,7 +188,7 @@ class OdnoklassnikiAdapter:
     ) -> list[str]:
         from tgfarm.s9_growth.instagram import _ensure_jpeg
 
-        path = await __import__("asyncio").to_thread(_ensure_jpeg, path_value)
+        path = await asyncio.to_thread(_ensure_jpeg, path_value)
         if not path.is_file():
             raise OKAPIError("OK cover image is missing.")
         if not await self._has_permission(client, "PHOTO_CONTENT"):
