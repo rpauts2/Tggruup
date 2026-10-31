@@ -307,12 +307,13 @@ def test_platform_auth_metadata_distinguishes_saved_keys_from_real_access(tmp_pa
     entries = {item["id"]: item for item in catalog["platforms"]}
 
     reddit = entries["reddit"]["auth"]
-    assert reddit["method"] == "credentials"
+    assert reddit["method"] == "oauth"
     assert reddit["integration_ready"] is True
     assert {field["key"] for field in reddit["fields"]} >= {
-        "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_REFRESH_TOKEN",
+        "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
         "REDDIT_SUBREDDIT", "REDDIT_USER_AGENT",
     }
+    assert "REDDIT_REFRESH_TOKEN" not in {field["key"] for field in reddit["fields"]}
     assert all("value" not in field for field in reddit["fields"])
     assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
 
