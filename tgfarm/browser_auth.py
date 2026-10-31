@@ -244,6 +244,26 @@ async def login_in_browser(platform_id: str, timeout_s: int = 420) -> dict[str, 
     }
 
 
+def vkhost_oauth_data(url: str) -> dict[str, str] | None:
+    """Parse a token only from VK's documented blank.html OAuth redirect fragment."""
+    parsed = urlparse(str(url or ""))
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "oauth.vk.com"
+        or not parsed.path.rstrip("/").endswith("blank.html")
+    ):
+        return None
+    fragment = parse_qs(parsed.fragment)
+    token = str((fragment.get("access_token") or [""])[0]).strip()
+    if not token:
+        return None
+    return {
+        "access_token": token,
+        "user_id": str((fragment.get("user_id") or [""])[0]).strip(),
+        "expires_in": str((fragment.get("expires_in") or ["0"])[0]),
+    }
+
+
 async def capture_vkhost_token(timeout_s: int = 420) -> dict[str, Any]:
     """Let the owner authorize via VKHost and capture the OAuth redirect fragment."""
     from playwright.async_api import async_playwright
@@ -267,22 +287,16 @@ async def capture_vkhost_token(timeout_s: int = 420) -> dict[str, Any]:
                 for candidate in list(context.pages):
                     if candidate.is_closed():
                         continue
-                    current = candidate.url
-                    parsed = urlparse(current)
-                    if parsed.scheme != "https" or parsed.netloc.lower() != "oauth.vk.com":
+                    captured = vkhost_oauth_data(candidate.url)
+                    if not captured:
                         continue
-                    if not parsed.path.rstrip("/").endswith("blank.html"):
-                        continue
-                    fragment = parse_qs(parsed.fragment)
-                    token = str((fragment.get("access_token") or [""])[0]).strip()
-                    expires_raw = str((fragment.get("expires_in") or ["0"])[0])
-                    user_id = str((fragment.get("user_id") or [""])[0]).strip()
+                    token = captured["access_token"]
+                    user_id = captured["user_id"]
                     try:
-                        expires_in = max(0, int(expires_raw))
+                        expires_in = max(0, int(captured["expires_in"]))
                     except ValueError:
                         expires_in = 0
-                    if token:
-                        break
+                    break
                 if token:
                     break
                 await asyncio.sleep(0.5)
