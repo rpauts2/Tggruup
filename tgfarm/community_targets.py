@@ -215,13 +215,16 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
         ((_score(post_text, label)[0], slug, label) for slug, label in links.items()),
         reverse=True,
     )[:MAX_PIKABU]
-    candidates: list[dict[str, Any]] = []
-    for initial, slug, label in first:
+    post_words = set(content_tokens(post_text))
+    semaphore = asyncio.Semaphore(4)
+
+    async def read_community(initial: int, slug: str, label: str) -> dict[str, Any] | None:
         url = f"https://pikabu.ru/community/{slug}"
-        try:
-            page = await _fetch(url)
-        except Exception:
-            continue
+        async with semaphore:
+            try:
+                page = await _fetch(url)
+            except Exception:
+                return None
         rule_text = _rules(page["chunks"], page["text"])
         description = page["description"] or page["text"][:900]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}\n{rule_text}")
@@ -234,12 +237,11 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             ):
                 visible_tags.append(tag_label)
         visible_tags = list(dict.fromkeys(visible_tags))[:20]
-        post_words = set(content_tokens(post_text))
         suggested_tags = [
             tag for tag in visible_tags
             if set(content_tokens(tag)) & post_words
         ][:8]
-        candidates.append({
+        return {
             "target_type": "community",
             "name": label,
             "slug": slug,
@@ -255,7 +257,15 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "risks": warnings,
             "blockers": blockers,
             "recommended": bool(rule_text) and not blockers and score >= MIN_SCORE,
-        })
+        }
+
+    candidates = [
+        item for item in await asyncio.gather(*(
+            read_community(initial, slug, label)
+            for initial, slug, label in first
+        ))
+        if item is not None
+    ]
     candidates.sort(key=lambda x: (x["recommended"], x["score"], x["name"]), reverse=True)
     best = next((item for item in candidates if item["recommended"]), None)
     return {
@@ -328,17 +338,19 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
         ((_score(post_text, label)[0], path, label) for path, label in topics),
         reverse=True,
     )[:MAX_VC]
-    candidates = []
-    for initial, path, label in first:
+    semaphore = asyncio.Semaphore(4)
+
+    async def read_topic(initial: int, path: str, label: str) -> dict[str, Any] | None:
         url = urljoin("https://vc.ru", path)
-        try:
-            page = await _fetch(url)
-        except Exception:
-            continue
+        async with semaphore:
+            try:
+                page = await _fetch(url)
+            except Exception:
+                return None
         description = page["description"] or page["text"][:1000]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}")
         risks = _vc_risks(post, rules_text)
-        candidates.append({
+        return {
             "target_type": "topic",
             "name": label,
             "slug": path.lstrip("/"),
@@ -350,7 +362,15 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "risks": risks,
             "rules_available": bool(rules_text),
             "recommended": score >= MIN_SCORE,
-        })
+        }
+
+    candidates = [
+        item for item in await asyncio.gather(*(
+            read_topic(initial, path, label)
+            for initial, path, label in first
+        ))
+        if item is not None
+    ]
     candidates.sort(key=lambda x: (x["score"], x["name"]), reverse=True)
     best = candidates[0] if candidates and candidates[0]["recommended"] else None
     return {
