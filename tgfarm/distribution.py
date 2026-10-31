@@ -212,6 +212,7 @@ def _angle_fit(platform_id: str, angle: str) -> float:
     preferences = {
         "linkedin": {"analysis": 1.0, "comparison": 0.95, "checklist": 0.9, "why_it_matters": 0.9, "news": 0.65},
         "instagram": {"history": 1.0, "comparison": 0.95, "why_it_matters": 0.9, "checklist": 0.85, "news": 0.7},
+        "pinterest": {"checklist": 1.0, "comparison": 0.95, "history": 0.9, "why_it_matters": 0.9, "news": 0.55},
         "reddit": {"checklist": 1.0, "analysis": 1.0, "comparison": 0.95, "why_it_matters": 0.9, "news": 0.55},
         "x": {"analysis": 1.0, "news": 0.9, "comparison": 0.8, "why_it_matters": 0.8, "checklist": 0.7},
         "bluesky": {"analysis": 0.95, "why_it_matters": 0.9, "history": 0.8, "news": 0.65},
