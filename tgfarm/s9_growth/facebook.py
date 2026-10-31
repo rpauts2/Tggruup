@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -70,7 +71,7 @@ class FacebookPageAdapter:
         from tgfarm.instagram_oauth import make_signed_instagram_media_url
         from tgfarm.s9_growth.instagram import _registered_media_id
 
-        media_id = await asyncio.to_thread(_registered_media_id, __import__("pathlib").Path(path), post_public_id, kind)
+        media_id = await asyncio.to_thread(_registered_media_id, Path(path), post_public_id, kind)
         url = make_signed_instagram_media_url(media_id)
         if not url:
             raise RuntimeError("Facebook media needs a public HTTPS origin in TGFARM_PUBLIC_BASE_URL.")
