@@ -1807,8 +1807,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         return result
 
     @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/prepare")
-    async def prepare_platform_draft(platform_id: str, post_public_id: str) -> dict:
-        """Fill a platform-native draft in the owner's saved browser profile; never publish."""
+    async def prepare_platform_draft(
+        platform_id: str,
+        post_public_id: str,
+        target_url: str | None = Query(None, max_length=500),
+        target_name: str | None = Query(None, max_length=120),
+    ) -> dict:
+        """Fill a destination-specific draft in the saved browser profile; never publish."""
         from tgfarm.community_drafts import CommunityDraftError, prepare_community_draft
 
         platform_id = platform_id.lower()
@@ -1819,7 +1824,14 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
         try:
             result = await io(
-                lambda: asyncio.run(prepare_community_draft(platform_id, post_public_id))
+                lambda: asyncio.run(
+                    prepare_community_draft(
+                        platform_id,
+                        post_public_id,
+                        target_url=target_url,
+                        target_name=target_name,
+                    )
+                )
             )
         except CommunityDraftError as exc:
             raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=500)) from exc
