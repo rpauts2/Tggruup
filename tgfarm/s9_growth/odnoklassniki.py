@@ -25,6 +25,10 @@ MAX_VIDEO_BYTES = 1024 * 1024 * 1024
 class OKAPIError(RuntimeError):
     """A sanitized rejection from the Odnoklassniki REST API."""
 
+    def __init__(self, message: str, *, ambiguous: bool = False) -> None:
+        super().__init__(message)
+        self.ambiguous = bool(ambiguous)
+
 
 def _credentials() -> tuple[str, str, str, str, str]:
     settings = get_settings()
@@ -93,7 +97,13 @@ def _parse_ok_response(response: httpx.Response, method: str):
         except ValueError as exc:
             raise OKAPIError(f"OK {method} returned a non-JSON response (HTTP {response.status_code}).") from exc
     if response.status_code >= 400:
-        raise OKAPIError(f"OK {method} returned HTTP {response.status_code}.")
+        ambiguous = method == "mediatopic.post" and (
+            response.status_code in {408, 425} or response.status_code >= 500
+        )
+        raise OKAPIError(
+            f"OK {method} returned HTTP {response.status_code}.",
+            ambiguous=ambiguous,
+        )
     if isinstance(payload, dict) and (payload.get("error_code") or payload.get("error_msg")):
         error_code = str(payload.get("error_code") or "API_ERROR")
         error_msg = str(payload.get("error_msg") or "Request rejected")
@@ -118,7 +128,11 @@ async def ok_api_call(
     try:
         response = await client.post(API_URL, data=body, follow_redirects=False)
     except httpx.RequestError as exc:
-        raise OKAPIError(f"OK {method} network request failed ({type(exc).__name__}).") from exc
+        definitely_before_send = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+        raise OKAPIError(
+            f"OK {method} network request failed ({type(exc).__name__}).",
+            ambiguous=(method == "mediatopic.post" and not definitely_before_send),
+        ) from exc
     return _parse_ok_response(response, method)
 
 
@@ -353,8 +367,17 @@ class OdnoklassnikiAdapter:
                 )
         except OKAPIError as exc:
             message = str(exc)
-            status = "permanent" if "permission" in message.lower() or "invalid" in message.lower() else "failed"
-            return CrosspostResult(platform=self.platform, status=status, error=redact_sensitive_text(message, limit=260))
+            if exc.ambiguous:
+                status = "unknown"
+            elif "permission" in message.lower() or "invalid" in message.lower():
+                status = "permanent"
+            else:
+                status = "failed"
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=redact_sensitive_text(message, limit=260),
+            )
         except Exception as exc:
             log.warning("OK publish failed (%s)", type(exc).__name__)
             return CrosspostResult(
