@@ -243,6 +243,9 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             image_path=image_path if name == "vk" else None,
             video_path=video_path if name in video_targets else None,
         )
+        from tgfarm.distribution import adapt_payload_for_platform
+
+        payload = adapt_payload_for_platform(payload, name)
         payload.platform = name
         if name in video_targets and video_render_error:
             payload.meta = {
