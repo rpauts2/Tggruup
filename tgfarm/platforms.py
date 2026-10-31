@@ -703,7 +703,7 @@ def save_platform_credentials(platform_id: str, values: dict[str, str]) -> dict[
 _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
-    "reddit", "tiktok", "vk_clips", "instagram", "threads",
+    "reddit", "tiktok", "vk_clips", "threads",
     "odnoklassniki", "rutube", "linkedin",
 ]
 
