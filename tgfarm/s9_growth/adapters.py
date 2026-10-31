@@ -1868,7 +1868,7 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
                 attempt=attempt,
                 retry_after_at=(
                     datetime.now(UTC) + timedelta(seconds=min(86_400, max(0, result.retry_after_seconds)))
-                    if result.status == "failed" and result.retry_after_seconds is not None
+                    if result.status in {"failed", "skipped"} and result.retry_after_seconds is not None
                     else None
                 ),
             )
