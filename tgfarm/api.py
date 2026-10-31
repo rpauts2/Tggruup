@@ -2798,13 +2798,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         if not request.consent:
             raise HTTPException(400, "Подтверди отправку именно этого видео в TikTok.")
-        if not get_settings().live:
+        settings = get_settings()
+        if not settings.live:
             raise HTTPException(409, "TGFARM_MODE не live. Сначала выполни контролируемый запуск в режиме live.")
         if not is_platform_enabled("tiktok"):
             raise HTTPException(409, "TikTok выключен в разделе «Площадки».")
         adapter = ADAPTERS.get("tiktok")
         if adapter is None or not adapter.configured():
             raise HTTPException(409, "TikTok OAuth не настроен. Подключи аккаунт и проверь доступ.")
+
         detail = await io(_post_detail, post_public_id)
         if detail.get("status") != "published":
             raise HTTPException(409, "Direct Post доступен только для подтверждённой основной публикации.")
@@ -2817,6 +2819,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         video_path = await io(primary_video_path, post_pk)
         if not video_path or not Path(video_path).is_file():
             raise HTTPException(409, "Сначала подготовь видео и дождись готового MP4.")
+
         attempt = await io(begin_crosspost, post_public_id, "tiktok")
         if attempt is None:
             raise HTTPException(409, "Для этого поста уже есть доставка/блокировка. Проверь историю TikTok перед повтором.")
@@ -2826,28 +2829,36 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 caption=request.caption,
                 privacy_level=request.privacy_level,
             )
-        except Exception as exc:  # noqa: BLE001 - an unexpected failure after claim is conservatively unknown
+        except Exception as exc:  # noqa: BLE001 - uncertain outcome must never be retried blindly
             log.warning("TikTok Direct Post failed unexpectedly (%s)", type(exc).__name__)
             result = CrosspostResult(
                 platform="tiktok",
                 status="unknown",
                 error="Результат отправки не подтверждён. Проверь TikTok перед повтором.",
             )
+
         await io(log_result, post_public_id, result, attempt)
-        _operator("tiktok-direct-publish", post_public_id, f"status={result.status} privacy={request.privacy_level}")
+        _operator(
+            "tiktok-direct-publish",
+            post_public_id,
+            f"status={result.status} privacy={request.privacy_level}",
+        )
+        if result.status == "posted":
+            message = "TikTok подтвердил публикацию."
+        elif result.status == "unknown":
+            message = (
+                "Результат не подтверждён. Проверь TikTok вручную и не повторяй отправку, "
+                "пока не убедишься, что видео отсутствует."
+            )
+        else:
+            message = "TikTok не подтвердил публикацию. Исправь причину перед повтором."
         return {
             "ok": result.status == "posted",
             "status": result.status,
             "remote_id": result.remote_id,
             "url": result.url,
             "error": result.error,
-            "detail": (
-                "TikTok подтвердил публикацию."
-                if result.status == "posted"
-                else "Результат не подтверждён. Проверь TikTok вручную и не повторяй отправку, пока не убедишься, что видео отсутствует."
-                if result.status == "unknown"
-                else "TikTok не подтвердил публикацию. Исправь причину перед повтором."
-            ),
+            "detail": message,
         }
 
     @app.get("/api/reddit/metrics")
