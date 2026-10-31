@@ -272,6 +272,8 @@ class Settings(BaseSettings):
     vk_group_id: str = Field(default="", alias="VK_GROUP_ID")
     max_access_token: str = Field(default="", alias="MAX_ACCESS_TOKEN")
     max_channel_id: str = Field(default="", alias="MAX_CHANNEL_ID")
+    # Owner-managed Discord webhook; stored only in the local .env.
+    discord_webhook_url: str = Field(default="", alias="DISCORD_WEBHOOK_URL")
     # YouTube Data API OAuth. The refresh token is the durable user grant;
     # access tokens are refreshed before an upload and never shown in the UI.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
