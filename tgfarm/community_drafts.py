@@ -116,6 +116,27 @@ def _safe_editor_url(platform_id: str, url: str) -> bool:
     )
 
 
+def _safe_target_url(platform_id: str, value: str | None) -> str | None:
+    """Accept only a canonical public topic/community page on its own platform."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not _safe_editor_url(platform_id, raw):
+        raise CommunityDraftError("Адрес целевого сообщества/темы не принадлежит выбранной площадке.")
+    parsed = urlparse(raw)
+    path = parsed.path.rstrip("/")
+    if platform_id == "pikabu":
+        valid = bool(re.fullmatch(r"/community/[A-Za-z0-9_-]{2,80}", path))
+    else:
+        valid = bool(
+            re.fullmatch(r"/[A-Za-z0-9_-]{1,50}", path)
+            and path not in {"/rules", "/support", "/editor", "/search", "/login", "/register"}
+        )
+    if not valid or parsed.query or parsed.fragment:
+        raise CommunityDraftError("Адрес должен вести на публичную страницу конкретного сообщества или темы.")
+    return f"https://{parsed.hostname}{path}"
+
+
 def _clean_markup_text(value: str) -> str:
     """Turn the farm's light Markdown into readable editor text."""
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -405,8 +426,15 @@ def _load_post(post_public_id: str) -> dict[str, Any]:
         }
 
 
-async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict[str, Any]:
-    """Open a saved profile and prepare/reopen a platform draft without publishing."""
+async def prepare_community_draft(
+    platform_id: str,
+    post_public_id: str,
+    *,
+    target_url: str | None = None,
+    target_name: str | None = None,
+) -> dict[str, Any]:
+    """Open a saved profile and prepare/reopen a destination-specific draft."""
+
     from playwright.async_api import async_playwright
 
     from tgfarm.browser_auth import _launch_context
@@ -424,6 +452,8 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
         )
     try:
         spec = PLATFORMS[platform_id]
+        target_url = _safe_target_url(platform_id, target_url)
+        target_name = str(target_name or "").strip()[:120]
         profile = DATA_DIR / "platform_profiles" / platform_id
         if not profile.is_dir() or not any(profile.iterdir()):
             raise CommunityDraftError(
@@ -442,6 +472,10 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                 "и не использую шаблонные обложки с текстом или инфографику."
             )
         fingerprint = _fingerprint(platform_id, title, body, images)
+        if target_url:
+            fingerprint = hashlib.sha256(
+                f"{fingerprint}\0{target_url}".encode("utf-8")
+            ).hexdigest()
         key = f"{platform_id}:{post_public_id}"
         state = _read_state()
         previous = state.get(key) if isinstance(state.get(key), dict) else None
@@ -491,7 +525,14 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                             ),
                         }
                 else:
-                    await page.goto(spec["start_url"], wait_until="domcontentloaded", timeout=60_000)
+                    # Opening the editor from a community/topic page gives the
+                    # native site a chance to preselect that destination. The
+                    # UI must still verify the selected target before publishing.
+                    await page.goto(
+                        target_url or spec["start_url"],
+                        wait_until="domcontentloaded",
+                        timeout=60_000,
+                    )
                     await _click_editor_entry(page, platform_id)
                 if not _safe_editor_url(platform_id, page.url):
                     raise CommunityDraftError(
@@ -510,6 +551,8 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                         "draft_url": page.url,
                         "status": "preparing",
                         "media_count": 0,
+                        "target_url": target_url,
+                        "target_name": target_name,
                         "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     },
                 )
@@ -535,6 +578,8 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                 "draft_url": draft_url,
                 "status": "prepared",
                 "media_count": media_count,
+                "target_url": target_url,
+                "target_name": target_name,
                 "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
         )
@@ -546,10 +591,14 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
             "status": "prepared",
             "draft_url": draft_url,
             "media_count": media_count,
+            "target_url": target_url,
+            "target_name": target_name or None,
             "manual_steps": (
-                ["выбрать тему vc.ru", "проверить обложку и блоки"]
+                (["проверить, что выбрана тема " + target_name] if target_url and target_name else ["выбрать тему vc.ru"])
+                + ["проверить обложку и блоки"]
                 if platform_id == "vc_ru"
-                else ["выбрать теги Пикабу", "при необходимости выбрать сообщество"]
+                else (["проверить, что выбрано сообщество " + target_name] if target_url and target_name else ["выбрать сообщество"])
+                + ["проверить теги Пикабу; для AI-контента поставить специальный тег"]
             ),
             "detail": (
                 "Черновик заполнен в редакторе. TgFarm не нажимал «Опубликовать». "
