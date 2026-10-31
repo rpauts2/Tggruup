@@ -1018,6 +1018,34 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "pinterest" && !forceCredentials) {
+      const appId = (auth.fields || []).find((field) => field.key === "PINTEREST_APP_ID");
+      const appSecret = (auth.fields || []).find((field) => field.key === "PINTEREST_APP_SECRET");
+      const boardId = (auth.fields || []).find((field) => field.key === "PINTEREST_BOARD_ID");
+      if (!appId?.has_value || !appSecret?.has_value || !boardId?.has_value) {
+        toast("Сначала сохрани Pinterest App ID, App Secret и ID доски.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/pinterest/auth/callback";
+      const proceed = window.confirm(
+        "В Pinterest Developer Portal добавь этот Redirect URI и включи разрешения boards:read, pins:read и pins:write. TgFarm проверит доступ к выбранной доске и сможет создавать image Pins.\n\n"
+        + callbackUri + "\n\nПродолжить официальный Pinterest OAuth?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/pinterest/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Pinterest вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Pinterest OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "reddit" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "REDDIT_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "REDDIT_CLIENT_SECRET");
