@@ -62,6 +62,104 @@ def assert_safe_growth(primitive: str) -> None:
 
 
 # ---------------------------------------------------------------- crossposting
+def _crosspost_sampled(
+    public_id: str,
+    sample_rate: float,
+    rng=None,
+) -> bool:
+    """Legacy stable sampler retained for compatibility and regression tests.
+
+    The live S9 scheduler no longer calls this lottery: current publishing uses
+    the deterministic post/platform editorial planner below. Keeping the pure
+    helper avoids breaking old integrations and lets us verify its historical
+    semantics independently.
+    """
+    import hashlib
+    import math
+
+    try:
+        rate = float(sample_rate)
+    except (TypeError, ValueError):
+        rate = 0.0
+    if not math.isfinite(rate):
+        rate = 0.0
+    rate = min(1.0, max(0.0, rate))
+    if rate <= 0.0:
+        return False
+    if rate >= 1.0:
+        return True
+    if rng is not None:
+        return rng.random() < rate
+    digest = hashlib.sha256(str(public_id).encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], byteorder="big") / (2**64)
+    return bucket < rate
+
+
+def _pending_crossposts(
+    sample_rate: float,
+    window_minutes: int = 720,
+    rng=None,
+    platforms: list[str] | None = None,
+) -> list[tuple[int, str]]:
+    """Legacy candidate reader retained for compatibility; unused by live S9.
+
+    Only Telegram-origin posts are eligible, and older retryable delivery
+    records remain discoverable after a long outage.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, or_, select
+
+    from tgfarm.core.run import ensure_utc
+    from tgfarm.db.models import Channel as ChannelRow
+    from tgfarm.db.models import CrosspostLog, Post as PostRow
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+    target_platforms = list(platforms if platforms is not None else ADAPTERS.keys())
+    retryable_public_ids = None
+    if target_platforms:
+        latest_ids = (
+            select(func.max(CrosspostLog.id).label("latest_id"))
+            .where(CrosspostLog.platform.in_(target_platforms))
+            .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
+            .subquery()
+        )
+        retryable_public_ids = (
+            select(CrosspostLog.post_public_id)
+            .join(latest_ids, CrosspostLog.id == latest_ids.c.latest_id)
+            .where(CrosspostLog.status.in_(("failed", "retry_authorized", "skipped", "dry_run")))
+        )
+
+    with session_scope() as session:
+        where_retry = (
+            PostRow.public_id.in_(retryable_public_ids)
+            if retryable_public_ids is not None
+            else False
+        )
+        rows = session.execute(
+            select(PostRow)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(
+                PostRow.status == "published",
+                or_(PostRow.published_at >= cutoff, where_retry),
+                or_(ChannelRow.platform.is_(None), ChannelRow.platform == "telegram"),
+                ChannelRow.enabled.is_(True),
+            )
+            .order_by(PostRow.published_at.asc(), PostRow.id.asc())
+        ).scalars().all()
+
+        candidates: list[tuple[int, str]] = []
+        for row in rows:
+            if row.public_id is None or row.published_at is None:
+                continue
+            published_at = ensure_utc(row.published_at)
+            if published_at < cutoff:
+                candidates.append((row.id, row.public_id))
+            elif _crosspost_sampled(row.public_id, sample_rate, rng):
+                candidates.append((row.id, row.public_id))
+        return candidates
+
+
 def _load_post(post_pk: int) -> PostRow | None:
     with session_scope() as session:
         return session.get(PostRow, post_pk)
