@@ -138,7 +138,9 @@ def compose_editor_text(post: dict[str, Any], platform_id: str) -> str:
     if additions:
         body = "\n\n".join(part for part in (body, *additions) if part)
     if platform_id == "pikabu" and len(str(post.get("title") or "").strip()) > 140:
-        raise CommunityDraftError("Заголовок Пикабу длиннее 140 символов. Сократи его в TgFarm и повтори подготовку.")
+        raise CommunityDraftError(
+            "Заголовок Пикабу длиннее 140 символов. Сократи его в TgFarm и повтори подготовку."
+        )
     if not body:
         raise CommunityDraftError("У поста пустое тело: нечего переносить в редактор.")
     return body
@@ -244,7 +246,8 @@ async def _click_editor_entry(page, platform_id: str) -> None:
             continue
     label = "«Написать»" if platform_id == "vc_ru" else "«Добавить пост»"
     raise CommunityDraftError(
-        f"Не нашёл кнопку {label}. Проверь вход в аккаунт и открой редактор вручную, затем повтори подготовку."
+        f"Не нашёл кнопку {label}. Проверь вход в аккаунт и открой редактор "
+        "вручную, затем повтори подготовку."
     )
 
 
@@ -397,7 +400,9 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
         raise CommunityDraftError("Некорректный идентификатор поста.")
     lock = _LOCKS[platform_id]
     if not lock.acquire(blocking=False):
-        raise CommunityDraftError(f"Браузер {PLATFORMS[platform_id]['name']} уже используется другой операцией.")
+        raise CommunityDraftError(
+            f"Браузер {PLATFORMS[platform_id]['name']} уже используется другой операцией."
+        )
     try:
         spec = PLATFORMS[platform_id]
         profile = DATA_DIR / "platform_profiles" / platform_id
@@ -445,7 +450,9 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                             "platform": platform_id,
                             "post_public_id": post_public_id,
                             "status": "already_prepared",
-                            "draft_url": page.url if _safe_editor_url(platform_id, page.url) else existing_url,
+                            "draft_url": (
+                                page.url if _safe_editor_url(platform_id, page.url) else existing_url
+                            ),
                             "media_count": int(previous.get("media_count") or 0),
                             "detail": "Открыл ранее подготовленный черновик. Повторно ничего не создавал.",
                         }
@@ -455,15 +462,22 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                             "platform": platform_id,
                             "post_public_id": post_public_id,
                             "status": "needs_review",
-                            "draft_url": page.url if _safe_editor_url(platform_id, page.url) else existing_url,
+                            "draft_url": (
+                                page.url if _safe_editor_url(platform_id, page.url) else existing_url
+                            ),
                             "media_count": int(previous.get("media_count") or 0),
-                            "detail": "Предыдущая попытка прервалась. Открыл тот же редактор, новый пост не создавал. Проверь поля и медиа вручную.",
+                            "detail": (
+                                "Предыдущая попытка прервалась. Открыл тот же редактор, новый пост "
+                                "не создавал. Проверь поля и медиа вручную."
+                            ),
                         }
                 else:
                     await page.goto(spec["start_url"], wait_until="domcontentloaded", timeout=60_000)
                     await _click_editor_entry(page, platform_id)
                 if not _safe_editor_url(platform_id, page.url):
-                    raise CommunityDraftError("После открытия редактора браузер оказался вне домена площадки.")
+                    raise CommunityDraftError(
+                        "После открытия редактора браузер оказался вне домена площадки."
+                    )
                 # Persist the editor URL before any form interaction. If the
                 # browser crashes mid-fill, the next click reopens this draft
                 # instead of creating another one.
