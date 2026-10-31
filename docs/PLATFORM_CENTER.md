@@ -118,6 +118,14 @@ LinkedIn member posts используют официальный Posts API и `
 
 Проверка авторизации read-only подтверждает текущего пользователя, группу и `GROUP_CONTENT`; наличие `PHOTO_CONTENT` и `VIDEO_CONTENT` показывается отдельно. Для фото TgFarm получает upload URL через `photosV2.getUploadUrl` и прикладывает выданный upload token к групповому медиатопику. Для видео используется `video.getUploadUrl`, multipart upload и завершающий `video.update` перед созданием темы. Переключатель выключен по умолчанию: сначала проверь доступы и сделай один контролируемый пост в тестовую группу.
 
+## Одноклассники: REST API групповых медиатопиков
+
+Одноклассники подключаются через официальный REST API. TgFarm подписывает каждый запрос MD5 по правилам OK: сортирует параметры по ключу, исключает `access_token`, добавляет session secret и отправляет запрос на `https://api.ok.ru/fb.do`. Поддерживаются текстовые групповые медиатопики, фото и видео. См. [mediatopic.post](https://apiok.ru/dev/methods/rest/mediatopic/mediatopic.post), [photosV2.getUploadUrl](https://apiok.ru/dev/methods/rest/photosV2/photosV2.getUploadUrl), [video.getUploadUrl](https://apiok.ru/dev/methods/rest/video/video.getUploadUrl) и [video.update](https://apiok.ru/dev/methods/rest/video/video.update).
+
+В настройках приложения запроси у `api-support@ok.ru` разрешения `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT`. В карточке TgFarm введи Application Key, Application Secret, access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан вместе с токеном; иначе подпись рассчитывается по официальному fallback MD5(access_token + application_secret_key). Секреты сохраняются только в локальном `.env`.
+
+Проверка авторизации read-only подтверждает текущего пользователя, выбранную группу и `GROUP_CONTENT`; наличие `PHOTO_CONTENT` и `VIDEO_CONTENT` показывается отдельно. Для фото TgFarm получает upload URL через `photosV2.getUploadUrl` и прикладывает upload token непосредственно к групповому медиатопику. Для видео используется `video.getUploadUrl`, multipart upload и завершающий `video.update` перед созданием темы. Неопределённый ответ после `mediatopic.post` блокирует автоматический повтор до ручной сверки. Переключатель выключен по умолчанию: сначала проверь доступы и сделай один контролируемый пост в тестовую группу.
+
 ## Pinterest: OAuth и image/video Pins
 
 Pinterest включён как рабочая цель S9 для image и video Pins. Подключи приложение через Pinterest OAuth с разрешениями `boards:read`, `pins:read`, `pins:write`, заранее укажи ID доски и заверши авторизацию. Callback проверяет, что подключённый пользователь действительно имеет доступ к выбранной доске. Access и rotating refresh token хранятся в локальном `.env`; access token обновляется автоматически до истечения.
