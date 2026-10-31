@@ -21,8 +21,6 @@ MAX_VIDEO_MB = 100
 
 
 def _error_result(exc: BaseException, operation: str) -> CrosspostResult:
-    from tgfarm.s9_growth.adapters import crosspost_error_status, crosspost_retry_after_seconds
-
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     if status == 429:
@@ -110,7 +108,6 @@ class PinterestAdapter:
             raise RuntimeError("Pinterest returned an invalid video upload session.")
 
         form = {str(key): str(value) for key, value in parameters.items()}
-        form["Content-Type"] = "multipart/form-data"
         try:
             with path.open("rb") as handle:
                 uploaded = await client.post(
