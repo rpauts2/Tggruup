@@ -123,14 +123,14 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "instagram", "name": "Instagram", "symbol": "IG", "color": "#E4405F",
         "category": "Мировые", "market": "Мировые", "priority": "P1",
-        "mode": "planned", "roles": ["visual", "crosspost"],
+        "mode": "built_in", "roles": ["visual", "video", "crosspost"],
         "description": (
-            "OAuth-вход Instagram доступен, но проверенного адаптера создания публикаций "
-            "в TgFarm пока нет. Поэтому аккаунт не включается в автономное распределение."
+            "Нативные фото и Reels через Instagram Login Content Publishing API; медиа передаётся "
+            "по подписанным HTTPS URL, результат контейнера проверяется до публикации."
         ),
         "requirements": (
-            "Business/Creator аккаунт и Instagram Login OAuth. Для автопостинга нужен отдельный "
-            "проверенный Instagram Content Publishing adapter и публичный HTTPS URL для медиа."
+            "Professional (Business/Creator) аккаунт, Instagram Login scopes instagram_business_basic "
+            "и instagram_business_content_publish, плюс публичный HTTPS-домен в TGFARM_PUBLIC_BASE_URL."
         ),
         "docs_url": "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/content-publishing/",
     },
@@ -833,10 +833,10 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
     if platform_id == "instagram":
+        if settings.instagram_access_token and settings.instagram_user_id and settings.public_base_url:
+            return True, "Instagram OAuth сохранён; нужен публичный HTTPS-домен для безопасной передачи фото и Reels в Meta."
         if settings.instagram_access_token and settings.instagram_user_id:
-            if settings.public_base_url:
-                return True, "Instagram OAuth сохранён; перед публикацией проверяются токен, профиль и доступность публичного медиа-URL."
-            return True, "Instagram OAuth сохранён; для публикации изображения также нужен TGFARM_PUBLIC_BASE_URL с публичным HTTPS-доменом."
+            return False, "Instagram подключён, но нужен публичный HTTPS-домен в TGFARM_PUBLIC_BASE_URL для передачи медиа."
         if settings.instagram_app_id and settings.instagram_app_secret:
             return False, "Instagram App настроено; подключи профессиональный аккаунт через OAuth."
         return False, "Нужны Instagram App ID/Secret и подключение Business/Creator аккаунта через OAuth."
