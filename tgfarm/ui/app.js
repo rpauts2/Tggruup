@@ -841,6 +841,10 @@
       const priority = item.priority === "core" ? "Встроено"
         : item.priority === "P1" ? "Приоритет 1"
         : item.priority === "P2" ? "Приоритет 2" : "Приоритет 3";
+      const automationLabel = item.automation_mode === "automatic" ? "Автопостинг"
+        : item.automation_mode === "primary" ? "Основная очередь"
+        : item.automation_mode === "manual" ? "Только вручную"
+        : "Нет автопубликации";
       const switchMarkup = supported
         ? `<button type="button" class="platform-switch ${item.enabled ? "is-on" : ""} ${busy ? "is-busy" : ""}"
              data-platform-toggle="${esc(item.id)}" role="switch" aria-checked="${item.enabled ? "true" : "false"}"
@@ -902,8 +906,11 @@
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
       const readyHint = supported
-        ? (item.configured ? item.connection_detail : item.connection_detail)
+        ? item.connection_detail
         : (item.planned ? "Выбрана для следующей волны интеграций." : "Можно добавить в список следующих интеграций.");
+      const automationNote = item.automation_note
+        ? `<small class="platform-auth-checked">${esc(item.automation_note)}</small>`
+        : "";
       return `
         <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}"
           style="--platform-color:${esc(item.color || "#7890b2")}">
@@ -919,11 +926,12 @@
           <div class="platform-badge-row">
             <span class="platform-status status-${statusClass}"><i></i>${esc(item.status_label || "Статус неизвестен")}</span>
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
+            <span class="platform-priority">${esc(automationLabel)}</span>
           </div>
           <div class="platform-connection">
             <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>
             <div><strong>${supported ? (item.configured ? "Настройки найдены" : "Нужна настройка") : "Пока не подключена"}</strong>
-              <p>${esc(readyHint)}</p>
+              <p>${esc(readyHint)}</p>${automationNote}
             </div>
           </div>
           <div class="platform-auth-block ${authStyle}">
@@ -1726,6 +1734,14 @@
   async function updatePlatformSwitch(platformId, enabled) {
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
+    if (enabled && platformId === "x") {
+      const proceed = confirm(
+        "Разрешить TgFarm автоматически публиковать подобранные информационные материалы в X через официальный API?\n\n"
+        + "Ферма не будет публиковать тренды, одинаковые сообщения или массовые ответы. "
+        + "Отключи площадку в любой момент, чтобы остановить новые отправки."
+      );
+      if (!proceed) return;
+    }
     if (enabled && !item.configured) {
       const proceed = confirm(
         `${item.name} будет включена в настройках, но пока не настроена.\n\n`
@@ -2864,6 +2880,11 @@
   $("#tiktok-publish-caption")?.addEventListener("input", updateTikTokPublishControls);
   $("#tiktok-publish-privacy")?.addEventListener("change", updateTikTokPublishControls);
   $("#tiktok-publish-consent")?.addEventListener("change", updateTikTokPublishControls);
+
+  $("#distribution-mode-buttons")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-runtime-mode]");
+    if (button) window.tgfarmSetRuntimeMode(button.dataset.runtimeMode);
+  });
 
   $("#platform-search")?.addEventListener("input", (event) => {
     state.platformQuery = event.target.value || "";
