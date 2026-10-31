@@ -288,16 +288,26 @@ async def _fill_editor_fields(page, platform_id: str, title: str, body: str) -> 
         ) from exc
 
 
+async def _first_file_input(page):
+    """File inputs are intentionally hidden by editors, so visibility is irrelevant."""
+    for selector in (
+        'input[type="file"][accept*="image" i]',
+        'input[type="file"][accept*=".jpg" i]',
+        'input[type="file"][accept*=".png" i]',
+        'input[type="file"]',
+    ):
+        locator = page.locator(selector)
+        count = await locator.count()
+        if count:
+            return locator.first
+    return None
+
+
 async def _upload_images(page, platform_id: str, images: list[Path]) -> int:
     """Attach media using the editor's image file input; never activate publish."""
     if not images:
         return 0
-    selectors = (
-        'input[type="file"][accept*="image" i]',
-        'input[type="file"][accept*=".jpg" i]',
-        'input[type="file"][accept*=".png" i]',
-    )
-    file_input = await _first_visible(page, selectors)
+    file_input = await _first_file_input(page)
     if file_input is None:
         labels = (
             re.compile(r"Фото или видео|Изображение|Добавить фото|Добавить изображение", re.I),
@@ -322,7 +332,7 @@ async def _upload_images(page, platform_id: str, images: list[Path]) -> int:
                 break
         if opened:
             await page.wait_for_timeout(500)
-            file_input = await _first_visible(page, selectors)
+            file_input = await _first_file_input(page)
     if file_input is None:
         raise CommunityDraftError(
             f"{PLATFORMS[platform_id]['name']}: редактор не показал загрузчик изображения. "
