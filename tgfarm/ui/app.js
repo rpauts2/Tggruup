@@ -753,16 +753,24 @@
         : authStatus === "failed" ? "is-failed"
         : authStatus === "not_integrated" ? "is-not-integrated" : "is-pending";
       const authSetupLabel = auth.method === "browser" ? "Войти в Дзен"
+        : auth.method === "vkhost" ? "Получить токен VK"
         : auth.method === "oauth" ? "Подключить через OAuth"
-        : auth.method === "credentials" ? "Настроить доступ" : "Открыть сервис ↗";
+        : auth.method === "credentials" ? "Настроить доступ" : "Войти / подключить ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && ["x", "threads", "linkedin", "youtube", "tiktok"].includes(item.id) && auth.method === "oauth"
-        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>Настроить приложение</button>`
+      const authConfig = supported && (["x", "threads", "linkedin", "youtube", "tiktok", "vk"].includes(item.id) && (auth.method === "oauth" || item.id === "vk"))
+        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>${item.id === "vk" ? "ID сообщества" : "Настроить приложение"}</button>`
         : "";
-      const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured))
+      const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured) || (auth.method === "vkhost" && item.configured))
         ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
              data-platform-auth-check="${esc(item.id)}" ${busy ? "disabled" : ""}>Проверить</button>`
+        : "";
+      const browserSession = auth.browser_session || {};
+      const browserSessionMarkup = browserSession.profile_saved
+        ? `<small class="platform-auth-checked">${browserSession.verified ? "Сессия сайта сохранена и распознана" : "Профиль сайта сохранён, вход не подтверждён"}</small>`
+        : "";
+      const browserLoginButton = browserSession.available && !["dzen", "vk"].includes(item.id)
+        ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
       const readyHint = supported
         ? (item.configured ? item.connection_detail : item.connection_detail)
@@ -792,9 +800,9 @@
           <div class="platform-auth-block ${authStyle}">
             <div class="platform-auth-copy">
               <span class="platform-auth-dot" aria-hidden="true"></span>
-              <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p>${authCheckedMarkup}</div>
+              <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p>${authCheckedMarkup}${browserSessionMarkup}</div>
             </div>
-            <div class="platform-auth-actions">${authConfig}${authSetup}${authCheck}</div>
+            <div class="platform-auth-actions">${authConfig}${authSetup}${authCheck}${browserLoginButton}</div>
           </div>
           <div class="platform-requirements"><span>ТРЕБУЕТСЯ</span><p>${esc(item.requirements || "Информация уточняется.")}</p></div>
           <div class="platform-card-footer">
@@ -826,6 +834,10 @@
     const auth = item.auth || {};
     if (auth.method === "browser" && platformId === "dzen") {
       window.tgfarmDzenLogin();
+      return;
+    }
+    if (auth.method === "vkhost" && !forceCredentials) {
+      await startVkHostAuthorization();
       return;
     }
     if (auth.method === "oauth" && platformId === "mastodon" && !forceCredentials) {
@@ -983,12 +995,16 @@
       return;
     }
     if (auth.method !== "credentials" && !forceCredentials) {
+      if (auth.browser_session?.available && !["dzen", "vk"].includes(platformId)) {
+        await startPlatformBrowserLogin(platformId);
+        return;
+      }
       const url = safeExternalUrl(auth.connect_url);
       if (url) window.open(url, "_blank", "noopener,noreferrer");
       toast(
         item.supported
-          ? "Сайт открыт. Чтобы подтвердить доступ, вернись в карточку и проверь интеграцию."
-          : "Сайт открыт. Эта сеть пока не публикует через TgFarm, вход на сайт не означает подключение API.",
+          ? "Сайт открыт. Вход на сайт сам по себе не выдаёт API-разрешения для TgFarm."
+          : "Сайт открыт. Эта сеть пока не публикует через TgFarm; вход не означает подключение API.",
         item.supported ? "" : "err",
       );
       return;
@@ -1037,6 +1053,50 @@
         : "Заполни поля, которые нужны этой площадке. Пустые значения ничего не стирают.",
     );
     if (!dialog.open) dialog.showModal();
+  }
+
+  async function startVkHostAuthorization(button = null) {
+    if (!confirm(
+      "Откроется VKHost. Выбери приложение и разрешения для стены, фотографий и групп, затем войди в VK и подтверди доступ. TgFarm перехватит только OAuth-токен из redirect, проверит его через VK API и сохранит локально. Пароль VK не читается."
+    )) return;
+    if (button) button.disabled = true;
+    toast("Открываю VKHost. После подтверждения окно вернёт токен…");
+    try {
+      const result = await post("/api/platforms/vk/auth/vkhost?timeout=420", {});
+      toast(
+        "VK подключён: " + (result.account || "аккаунт подтверждён")
+          + ". Теперь укажи ID сообщества в карточке VK.",
+        "ok",
+      );
+      await refresh();
+    } catch (error) {
+      toast("Не удалось получить токен VK: " + (error?.message || error), "err");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function startPlatformBrowserLogin(platformId, button = null) {
+    if (!platformId || state.platformBusy.has(platformId)) return;
+    state.platformBusy.add(platformId);
+    if (button) button.disabled = true;
+    renderPlatformCards();
+    toast("Открываю отдельный профиль " + platformId + ". Войди на сайте в открывшемся окне…");
+    try {
+      const result = await post(
+        "/api/platforms/" + encodeURIComponent(platformId) + "/browser-login?timeout=420", {},
+      );
+      const message = result.authorized
+        ? "Вход в " + platformId + " распознан. Профиль сохранён локально."
+        : "Профиль " + platformId + " сохранён, но подтверждение входа не распознано. API-доступ отдельно не подтверждён.";
+      toast(message, result.authorized ? "ok" : "warn");
+    } catch (error) {
+      toast("Не удалось сохранить вход " + platformId + ": " + (error?.message || error), "err");
+    } finally {
+      state.platformBusy.delete(platformId);
+      await refresh();
+      renderPlatformCards();
+    }
   }
 
   async function checkPlatformAuthorization(platformId, button = null) {
@@ -2602,6 +2662,11 @@
     const authConfig = event.target.closest("[data-platform-auth-config]");
     if (authConfig) {
       await openPlatformAuthorization(authConfig.dataset.platformAuthConfig, true);
+      return;
+    }
+    const browserAuth = event.target.closest("[data-platform-browser-auth]");
+    if (browserAuth) {
+      await startPlatformBrowserLogin(browserAuth.dataset.platformBrowserAuth, browserAuth);
       return;
     }
     const authSetup = event.target.closest("[data-platform-auth]");
