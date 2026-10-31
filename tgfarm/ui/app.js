@@ -676,6 +676,14 @@
         const sent = Math.max(0, Number(item.daily_sent || 0));
         const channelList = (item.channels || []).map(esc).join(" · ");
         const topics = (item.topics || []).map(esc).join(", ");
+        const queued = item.queue_preview || [];
+        const queuedMarkup = queued.length
+          ? `<div class="distribution-picks"><strong>В очереди: ${n(queued.length)}+</strong>${queued.slice(0, 3).map((post) => `
+              <div class="distribution-pick">
+                <strong>${esc(post.title || post.post_public_id)}</strong>
+                <span>${esc(post.channel || "")} · ${esc(post.status || "")}${post.scheduled_at ? " · " + esc(dt(post.scheduled_at)) : ""}</span>
+              </div>`).join("")}</div>`
+          : `<div class="distribution-no-pick">В очереди пока нет готового материала.</div>`;
         const progress = cap ? Math.min(100, sent / cap * 100) : 0;
         return `
           <article class="distribution-card ${item.enabled && item.configured ? "is-ready" : "is-paused"}">
@@ -690,6 +698,7 @@
             <div class="distribution-track"><i style="width:${progress}%"></i></div>
             <p class="distribution-topics">${topics || "Темы не заданы"}</p>
             <p class="distribution-detail">${channelList || esc(item.reason || "")}</p>
+            ${queuedMarkup}
             <small>${esc(item.reason || "")}</small>
           </article>`;
       }).join("") || `<div class="distribution-empty">Нет включённых основных каналов.</div>`;
