@@ -398,6 +398,7 @@ _AUTH_URLS: dict[str, str] = {
     "telegram": "https://web.telegram.org/",
     "dzen": "https://dzen.ru/profile/editor/",
     "vk": "https://vk.com/",
+    "vk_clips": "https://vk.com/clips",
     "max": "https://web.max.ru/",
     "x": "https://x.com/",
     "reddit": "https://www.reddit.com/",
@@ -422,6 +423,9 @@ _AUTH_URLS: dict[str, str] = {
     "twitch": "https://www.twitch.tv/",
     "tumblr": "https://www.tumblr.com/",
     "snapchat": "https://www.snapchat.com/",
+    "wechat": "https://www.wechat.com/",
+    "douyin": "https://www.douyin.com/",
+    "rednote": "https://www.xiaohongshu.com/",
 }
 
 def _auth_state_path() -> Path:
@@ -522,14 +526,29 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         status_label = "Не настроено"
     if platform_id == "dzen":
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok"}:
+    elif platform_id == "vk":
+        method = "vkhost"
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram"}:
         method = "oauth"
     elif fields:
         method = "credentials"
     else:
         method = "external"
+    try:
+        from tgfarm.browser_auth import browser_session_status
+        browser_session = browser_session_status(platform_id) if platform_id in _AUTH_URLS else {
+            "available": False, "profile_saved": False, "verified": False, "state": "not_available"
+        }
+    except Exception:  # noqa: BLE001 - auth metadata must never break the platform dashboard
+        browser_session = {
+            "available": platform_id in _AUTH_URLS,
+            "profile_saved": False,
+            "verified": False,
+            "state": "unknown",
+        }
     return {
         "method": method,
+        "browser_session": browser_session,
         "status": status,
         "status_label": status_label,
         "configured": configured,
@@ -544,6 +563,10 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         "note": (
             "Вход выполняется в отдельном окне браузера и сохраняется в профиле Дзена."
             if platform_id == "dzen" else
+            "VKHost откроется в отдельном окне. После подтверждения VK вернёт токен, TgFarm проверит его и сохранит локально. ID сообщества задаётся отдельно."
+            if platform_id == "vk" else
+            "Можно войти в сайт в отдельном локальном профиле браузера. Эта сессия не заменяет OAuth/API-разрешения и не включает публикацию без рабочего адаптера."
+            if not supported else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
             if not supported else
             "Для YouTube настрой OAuth Web Client в Google Cloud, включи YouTube Data API v3 и добавь callback URI панели. Загрузка по умолчанию остаётся Private; для публикаций нужна квота Google и доступ к youtube.upload."
