@@ -28,6 +28,7 @@ from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.s9_growth.instagram import InstagramAdapter
+from tgfarm.s9_growth.pinterest import PinterestAdapter
 
 log = get_logger(__name__)
 
@@ -1767,6 +1768,7 @@ ADAPTERS: dict[str, Adapter] = {
     "tiktok": TikTokAdapter(),
     "instagram": InstagramAdapter(),
     "discord": DiscordAdapter(),
+    "pinterest": PinterestAdapter(),
 }
 
 
