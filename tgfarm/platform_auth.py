@@ -110,6 +110,20 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 if channel_id else
                 "Токен принят. Добавь ID целевого канала и проверь права бота."
             )
+        elif platform_id == "discord":
+            webhook = str(settings.discord_webhook_url or "").strip()
+            if not webhook:
+                raise RuntimeError("Введи DISCORD_WEBHOOK_URL.")
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+                payload = await _response_json(client, webhook)
+            webhook_id = str(payload.get("id") or "")
+            channel_id = str(payload.get("channel_id") or "")
+            if not webhook_id or not channel_id:
+                raise RuntimeError("Discord не подтвердил webhook и целевой канал.")
+            channel_name = str(payload.get("name") or "webhook")
+            account = f"Discord · #{channel_name}"
+            authorized = True
+            detail = "Discord подтвердил webhook и канал read-only запросом. Проверка не отправляла тестовое сообщение."
         elif platform_id == "bluesky":
             handle = str(settings.bluesky_handle or "").strip()
             app_password = str(settings.bluesky_app_password or "").strip()
