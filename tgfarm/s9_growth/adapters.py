@@ -1776,10 +1776,13 @@ def already_done(post_public_id: str, platform: str) -> bool:
         # Do not journal the same dry-run forever, but allow a later switch to live.
         return not get_settings().live
     if row.status == "skipped":
-        # A missing credential should not occupy batch slots every 10 minutes.
-        # Re-evaluate it as soon as the adapter becomes configured.
+        # Missing credentials wait until configuration changes. A readable but
+        # unsuitable destination may also carry a bounded editorial cooldown.
         adapter = ADAPTERS.get(platform)
-        return adapter is None or not adapter.configured()
+        if adapter is None or not adapter.configured():
+            return True
+        retry_at = crosspost_retry_not_before(row)
+        return retry_at is not None and datetime.now(UTC) < retry_at
     return False
 
 
