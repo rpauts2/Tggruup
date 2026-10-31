@@ -1117,6 +1117,34 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "facebook" && !forceCredentials) {
+      const appId = (auth.fields || []).find((field) => field.key === "FACEBOOK_APP_ID");
+      const appSecret = (auth.fields || []).find((field) => field.key === "FACEBOOK_APP_SECRET");
+      const pageId = (auth.fields || []).find((field) => field.key === "FACEBOOK_PAGE_ID");
+      if (!appId?.has_value || !appSecret?.has_value || !pageId?.has_value) {
+        toast("Сначала сохрани Facebook App ID, App Secret и ID своей Page.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/facebook/auth/callback";
+      const proceed = window.confirm(
+        "В Meta Developer Portal включи Facebook Login, Pages API и добавь этот Redirect URI. Нужны permissions pages_show_list, pages_read_engagement и pages_manage_posts. Твой профиль должен иметь задачу CREATE_CONTENT на выбранной Page. Личные профили и группы не поддерживаются.\n\n"
+        + callbackUri + "\n\nПродолжить Facebook Login?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/facebook/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Facebook вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Facebook OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "linkedin" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_SECRET");
