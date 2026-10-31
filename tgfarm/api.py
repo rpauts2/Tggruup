@@ -1756,6 +1756,33 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         _operator("platform-browser-login", platform_id, result["state"])
         return result
 
+    @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/prepare")
+    async def prepare_platform_draft(platform_id: str, post_public_id: str) -> dict:
+        """Fill a platform-native draft in the owner's saved browser profile; never publish."""
+        from tgfarm.community_drafts import CommunityDraftError, prepare_community_draft
+
+        platform_id = platform_id.lower()
+        if platform_id not in {"vc_ru", "pikabu"}:
+            raise HTTPException(status_code=404, detail="Подготовка черновиков доступна только для vc.ru и Пикабу.")
+        try:
+            result = await io(
+                lambda: asyncio.run(prepare_community_draft(platform_id, post_public_id))
+            )
+        except CommunityDraftError as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=500)) from exc
+        except Exception as exc:  # noqa: BLE001 - editor and browser versions can change
+            log.warning("community draft preparation failed for %s (%s)", platform_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось подготовить черновик. Проверь авторизацию, редактор и журнал диагностики.",
+            ) from exc
+        _operator(
+            "community-draft-prepared",
+            f"{platform_id}:{post_public_id}",
+            "draft prepared; publish action was not triggered",
+        )
+        return result
+
     @app.post("/api/platforms/vk/auth/vkhost")
     async def vkhost_auth(timeout: int = Query(420, ge=60, le=1800)) -> dict:
         """Capture only the VK OAuth token returned after owner consent in VKHost."""
