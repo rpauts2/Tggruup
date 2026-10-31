@@ -2204,6 +2204,30 @@
       ${q.issues && q.issues.length ? `<div class="drawer-block"><h4>Замечания критика</h4>
         <ul class="drawer-issues">${q.issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>` : ""}
 
+      <div class="drawer-block short-video-tools">
+        <h4>Ручная подготовка для остальных площадок</h4>
+        <p class="drawer-meta">TgFarm адаптирует заголовок, текст, теги и медиа. Этот режим ничего не публикует: проверь пакет и отправь его через официальный редактор площадки.</p>
+        <div class="short-video-actions">
+          <select id="manual-platform-\${esc(p.id)}" aria-label="Площадка для ручной подготовки">
+            <option value="vk_clips">VK Клипы</option>
+            <option value="rutube">RUTUBE</option>
+            <option value="vc_ru">vc.ru</option>
+            <option value="habr">Хабр</option>
+            <option value="pikabu">Пикабу</option>
+            <option value="tenchat">TenChat</option>
+            <option value="medium">Medium</option>
+            <option value="whatsapp_channels">WhatsApp Channels</option>
+            <option value="twitch">Twitch</option>
+            <option value="snapchat">Snapchat</option>
+            <option value="wechat">WeChat / Weixin</option>
+            <option value="douyin">Douyin</option>
+            <option value="rednote">RedNote / Xiaohongshu</option>
+          </select>
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmPrepareManualDraft('\${esc(p.id)}')">Подготовить пакет</button>
+        </div>
+        <div class="manual-draft-result" id="manual-draft-result-\${esc(p.id)}"></div>
+      </div>
+
       ${(p.claims || []).length ? `<div class="drawer-block"><h4>Проверенные утверждения</h4>
         ${p.claims.map((c) => `<div class="claim ${c.verified ? "ok" : "no"}">
           <span class="claim-dot"></span><span>${esc(c.claim)}${c.verified ? "" : " <em>(нет в источнике)</em>"}</span>
@@ -2840,6 +2864,59 @@
     } catch (error) {
       root.textContent = "Не удалось подобрать место: " + (error?.message || error);
       toast("Подбор " + label + " не выполнен: " + (error?.message || error), "err");
+    }
+  };
+
+  window.tgfarmPrepareManualDraft = async (id) => {
+    const platform = document.getElementById("manual-platform-" + id)?.value || "";
+    const root = document.getElementById("manual-draft-result-" + id);
+    if (!root || !platform) return;
+    root.innerHTML = \`<div class="empty">Подготавливаю пакет…</div>\`;
+    try {
+      const result = await api("/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/package");
+      const media = (result.media || []).map((item) => \`
+        <a class="btn btn-ghost btn-sm" href="\${esc(item.url)}" download="\${esc(item.filename)}">Скачать \${item.kind === "video" ? "MP4" : "изображение"}</a>
+      \`).join("");
+      const notes = (result.notes || []).map((item) => \`<li>\${esc(item)}</li>\`).join("");
+      const ready = result.ready
+        ? \`<span class="tag tag-ok">Пакет готов</span>\`
+        : \`<span class="tag tag-warn">Нужна медиа-подготовка</span>\`;
+      const externalUrl = safeExternalUrl(result.url) || "#";
+      root.innerHTML = \`
+        <div class="manual-draft-head">
+          \${ready}
+          <a class="btn btn-ghost btn-sm" href="\${esc(externalUrl)}" target="_blank" rel="noopener noreferrer">Открыть \${esc(result.name)} ↗</a>
+        </div>
+        <p class="drawer-meta">\${esc(result.format)} · \${Number(result.body.length || 0)} символов · ручная отправка</p>
+        <label class="field"><span>Заголовок</span><textarea rows="2" readonly id="manual-title-\${esc(id)}">\${esc(result.title)}</textarea></label>
+        <div class="short-video-actions">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','title')">Копировать заголовок</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','body')">Копировать текст</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','tags')">Копировать теги</button>
+          \${result.needs_video && !result.has_video ? \`<button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('\${esc(id)}')">Создать MP4</button>\` : ""}
+        </div>
+        <label class="field"><span>Текст</span><textarea rows="8" readonly id="manual-body-\${esc(id)}">\${esc(result.body)}</textarea></label>
+        <label class="field"><span>Теги</span><textarea rows="2" readonly id="manual-tags-\${esc(id)}">\${esc((result.hashtags || []).map((tag) => "#" + tag).join(" "))}</textarea></label>
+        <div class="short-video-actions">\${media}</div>
+        <ul class="manual-draft-notes">\${notes}</ul>
+        <small class="drawer-meta">Запрос публикации не выполнялся. Проверь правила и отправляй только через официальный редактор выбранной площадки.</small>
+      \`;
+    } catch (error) {
+      root.innerHTML = \`<div class="empty">\${esc(error?.message || error)}</div>\`;
+      toast("Не удалось подготовить пакет: " + (error?.message || error), "err");
+    }
+  };
+
+  window.tgfarmCopyManualField = async (id, kind) => {
+    const target = document.getElementById("manual-" + kind + "-" + id);
+    if (!target) return;
+    try {
+      await navigator.clipboard.writeText(target.value || "");
+      toast("Скопировано", "ok");
+    } catch (_) {
+      target.focus();
+      target.select();
+      toast("Текст выделен. Нажми Ctrl+C для копирования.", "warn");
     }
   };
 
