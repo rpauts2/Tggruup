@@ -100,3 +100,18 @@ def test_fingerprint_changes_when_image_bytes_change(tmp_path: Path):
     Image.new("RGB", (640, 360), "black").save(image)
     second = community_drafts._fingerprint("pikabu", "Title", "Body", [image])
     assert first != second
+
+
+def test_state_entry_updates_merge_across_platforms(tmp_path, monkeypatch):
+    monkeypatch.setattr(community_drafts, "DATA_DIR", tmp_path)
+    community_drafts._write_state_entry(
+        "vc_ru:post-123",
+        {"status": "preparing", "draft_url": "https://vc.ru/editor/123"},
+    )
+    community_drafts._write_state_entry(
+        "pikabu:post-456",
+        {"status": "prepared", "draft_url": "https://pikabu.ru/create/456"},
+    )
+    restored = community_drafts._read_state()
+    assert restored["vc_ru:post-123"]["status"] == "preparing"
+    assert restored["pikabu:post-456"]["status"] == "prepared"
