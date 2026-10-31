@@ -123,7 +123,16 @@ def _topic_hits(text: str, topics: dict[str, tuple[str, ...]]) -> list[str]:
     normalized = normalize(text)
     found: list[str] = []
     for topic, markers in topics.items():
-        if any(marker in normalized for marker in markers):
+        matched = False
+        for marker in markers:
+            marker = normalize(marker)
+            if len(marker) <= 3:
+                matched = bool(re.search(rf"(?<![a-zа-яё0-9]){re.escape(marker)}(?![a-zа-яё0-9])", normalized))
+            else:
+                matched = marker in normalized
+            if matched:
+                break
+        if matched:
             found.append(topic)
     return found
 
