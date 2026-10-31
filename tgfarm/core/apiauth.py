@@ -47,6 +47,7 @@ PUBLIC_PATHS = (
     "/api/platforms/tiktok/auth/callback",
     "/api/platforms/pinterest/auth/callback",
     "/api/platforms/facebook/auth/callback",
+    "/api/platforms/tumblr/auth/callback",
 )
 PUBLIC_PREFIXES = ("/ui/", "/public/instagram-media/")
 

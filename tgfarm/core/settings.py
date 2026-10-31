@@ -386,6 +386,17 @@ class Settings(BaseSettings):
     facebook_user_access_token: str = Field(default="", alias="FACEBOOK_USER_ACCESS_TOKEN")
     facebook_user_token_expires_at: int = Field(default=0, alias="FACEBOOK_USER_TOKEN_EXPIRES_AT")
 
+    # Tumblr API v2 OAuth 2.0 and selected blog.
+    tumblr_client_id: str = Field(default="", alias="TUMBLR_CLIENT_ID")
+    tumblr_client_secret: str = Field(default="", alias="TUMBLR_CLIENT_SECRET")
+    tumblr_access_token: str = Field(default="", alias="TUMBLR_ACCESS_TOKEN")
+    tumblr_refresh_token: str = Field(default="", alias="TUMBLR_REFRESH_TOKEN")
+    tumblr_token_expires_at: int = Field(default=0, alias="TUMBLR_TOKEN_EXPIRES_AT")
+    tumblr_blog_identifier: str = Field(default="", alias="TUMBLR_BLOG_IDENTIFIER")
+    tumblr_blog_title: str = Field(default="", alias="TUMBLR_BLOG_TITLE")
+    tumblr_blog_url: str = Field(default="", alias="TUMBLR_BLOG_URL")
+    tumblr_username: str = Field(default="", alias="TUMBLR_USERNAME")
+
     # YouTube Data API upload and metadata.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
     youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")

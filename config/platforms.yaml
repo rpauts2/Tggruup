@@ -9,6 +9,7 @@ enabled:
   discord: false
   pinterest: false
   facebook: false
+  tumblr: false
   x: true
   reddit: false
   bluesky: false

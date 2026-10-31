@@ -270,9 +270,9 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "tumblr", "name": "Tumblr", "symbol": "T", "color": "#35465C",
         "category": "Сообщества", "market": "Мировые", "priority": "P3",
-        "mode": "planned", "roles": ["text", "visual"],
-        "description": "Текст, изображения и ссылки для нишевых сообществ.",
-        "requirements": "OAuth и приложение Tumblr API.",
+        "mode": "built_in", "roles": ["text", "crosspost"],
+        "description": "Нативные текстовые публикации NPF через Tumblr API v2 и OAuth 2.0.",
+        "requirements": "Tumblr OAuth App, scopes basic + write + offline_access; можно выбрать основной блог или указать его идентификатор.",
         "docs_url": "https://www.tumblr.com/docs/en/api/v2",
     },
     {
@@ -433,6 +433,17 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
         {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "tumblr": [
+        {"key": "TUMBLR_CLIENT_ID", "attribute": "tumblr_client_id", "label": "Tumblr OAuth Client ID", "secret": False, "placeholder": "Consumer key из Tumblr OAuth Apps", "help": "Зарегистрируй приложение на tumblr.com/oauth/apps и укажи callback URL панели."},
+        {"key": "TUMBLR_CLIENT_SECRET", "attribute": "tumblr_client_secret", "label": "Tumblr OAuth Client Secret", "secret": True, "placeholder": "Consumer secret", "help": "Секрет хранится только в локальном .env и не показывается повторно."},
+        {"key": "TUMBLR_BLOG_IDENTIFIER", "attribute": "tumblr_blog_identifier", "label": "Blog identifier (необязательно)", "secret": False, "placeholder": "my-blog или my-blog.tumblr.com", "help": "Оставь пустым, чтобы после OAuth выбрать основной блог аккаунта."},
+        {"key": "TUMBLR_ACCESS_TOKEN", "attribute": "tumblr_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний OAuth access token."},
+        {"key": "TUMBLR_REFRESH_TOKEN", "attribute": "tumblr_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний rotating refresh token."},
+        {"key": "TUMBLR_TOKEN_EXPIRES_AT", "attribute": "tumblr_token_expires_at", "label": "OAuth expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "TUMBLR_USERNAME", "attribute": "tumblr_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя аккаунта, подтверждённого Tumblr OAuth."},
+        {"key": "TUMBLR_BLOG_TITLE", "attribute": "tumblr_blog_title", "label": "Blog title", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Заголовок выбранного блога."},
+        {"key": "TUMBLR_BLOG_URL", "attribute": "tumblr_blog_url", "label": "Blog URL", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Публичный URL выбранного блога."},
+    ],
     "reddit": [
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
         {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
@@ -577,7 +588,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "vkhost"
     elif platform_id in {"vc_ru", "pikabu"}:
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest", "facebook"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest", "facebook", "tumblr"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -956,6 +967,20 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
             "REDDIT_SUBREDDIT теперь необязателен: цель выбирает редакторский планировщик."
         )
+    if platform_id == "tumblr":
+        if (
+            settings.tumblr_client_id and settings.tumblr_client_secret
+            and settings.tumblr_access_token and settings.tumblr_refresh_token
+            and settings.tumblr_blog_identifier
+        ):
+            return True, (
+                "Tumblr OAuth подключён к блогу "
+                + (settings.tumblr_blog_title or settings.tumblr_blog_identifier)
+                + "; публикация отправляет нативный NPF-текст."
+            )
+        if settings.tumblr_client_id and settings.tumblr_client_secret:
+            return False, "Tumblr App настроено; подключи аккаунт через OAuth и выбери блог."
+        return False, "Нужны Tumblr OAuth Client ID/Secret и подключение через OAuth."
     if platform_id == "dzen":
         try:
             profile = settings.dzen_profile_path()
@@ -1064,7 +1089,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook",
+    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 
 
