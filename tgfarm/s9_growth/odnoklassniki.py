@@ -389,6 +389,15 @@ class OdnoklassnikiAdapter:
         topic_id = str(result or "").strip('"') if result is not None else ""
         if isinstance(result, dict):
             topic_id = str(result.get("id") or result.get("topic_id") or "")
+        if topic_id == "0":
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=(
+                    "OK returned topic ID 0. The application is not approved for group publishing yet; "
+                    "request Publishing Widget/API approval from api-support@ok.ru."
+                ),
+            )
         if not topic_id:
             return CrosspostResult(
                 platform=self.platform,
