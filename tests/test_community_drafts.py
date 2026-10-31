@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from tgfarm import community_drafts
+
+
+def _post(**overrides):
+    value = {
+        "title": "Новая технология",
+        "body": "# Что произошло\n\n**Главный факт** и обычный текст.",
+        "cta": "Обсудим результаты.",
+        "hashtags": ["технологии", "AI"],
+        "sources": [{"title": "Источник", "url": "https://example.com/story"}],
+    }
+    value.update(overrides)
+    return value
+
+
+def test_editor_text_is_clean_and_keeps_sources_and_call_to_action():
+    text = community_drafts.compose_editor_text(_post(), "vc_ru")
+    assert "# Что произошло" not in text
+    assert "Главный факт" in text
+    assert "**" not in text
+    assert "Обсудим результаты." in text
+    assert "Источник: https://example.com/story" in text
+    assert "#технологии" in text
+
+
+def test_pikabu_keeps_tags_out_of_the_body_for_native_tag_picker():
+    text = community_drafts.compose_editor_text(_post(), "pikabu")
+    assert "#технологии" not in text
+    assert "Главный факт" in text
+
+
+def test_pikabu_title_limit_is_enforced_without_silent_truncation():
+    with pytest.raises(community_drafts.CommunityDraftError, match="140"):
+        community_drafts.compose_editor_text(_post(title="А" * 141), "pikabu")
+
+
+def test_editor_url_must_stay_on_the_exact_platform_domain():
+    assert community_drafts._safe_editor_url("vc_ru", "https://vc.ru/editor/123")
+    assert community_drafts._safe_editor_url("pikabu", "https://pikabu.ru/create")
+    assert not community_drafts._safe_editor_url("vc_ru", "http://vc.ru/editor")
+    assert not community_drafts._safe_editor_url("vc_ru", "https://vc.ru.evil.invalid/editor")
+    assert not community_drafts._safe_editor_url("pikabu", "https://vc.ru/editor")
+
+
+def test_only_article_photos_and_ai_art_are_selected(tmp_path: Path):
+    article = tmp_path / "article.jpg"
+    art = tmp_path / "ai-art.png"
+    template = tmp_path / "template.png"
+    for path in (article, art, template):
+        Image.new("RGB", (640, 360), "white").save(path)
+
+    media = [
+        {"kind": "template", "path": str(template), "is_primary": True},
+        {"kind": "ai_art", "path": str(art), "is_primary": True},
+        {"kind": "article_image", "path": str(article), "is_primary": False},
+        {"kind": "video", "path": str(template), "is_primary": True},
+    ]
+    selected = community_drafts._image_candidates(media, "pikabu")
+    assert selected == [article, art]
+
+
+def test_image_count_is_limited_per_platform(tmp_path: Path):
+    paths = []
+    media = []
+    for index in range(4):
+        path = tmp_path / f"photo-{index}.jpg"
+        Image.new("RGB", (640, 360), "white").save(path)
+        paths.append(path)
+        media.append({"kind": "article_image", "path": str(path), "is_primary": index == 0})
+    assert len(community_drafts._image_candidates(media, "vc_ru")) == 1
+    assert len(community_drafts._image_candidates(media, "pikabu")) == 3
+
+
+def test_state_registry_is_written_atomically_and_keeps_only_supplied_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(community_drafts, "DATA_DIR", tmp_path)
+    community_drafts._write_state({
+        "pikabu:post-123": {
+            "status": "prepared",
+            "draft_url": "https://pikabu.ru/create/123",
+            "media_count": 1,
+        }
+    })
+    restored = community_drafts._read_state()
+    assert restored["pikabu:post-123"]["status"] == "prepared"
+    assert restored["pikabu:post-123"]["media_count"] == 1
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_fingerprint_changes_when_image_bytes_change(tmp_path: Path):
+    image = tmp_path / "photo.jpg"
+    Image.new("RGB", (640, 360), "white").save(image)
+    first = community_drafts._fingerprint("pikabu", "Title", "Body", [image])
+    Image.new("RGB", (640, 360), "black").save(image)
+    second = community_drafts._fingerprint("pikabu", "Title", "Body", [image])
+    assert first != second
