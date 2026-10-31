@@ -110,6 +110,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
         },
         "requires_media": True,
     },
+    "discord": {
+        "daily": 2, "max_daily": 4, "min_gap_hours": 4,
+        "age_days": 7, "broad": True,
+        "topics": {
+            "новости и обновления": ("нов", "обнов", "релиз", "запуск", "изменен"),
+            "технологии и практика": ("технолог", "ai", "нейросет", "инструкц", "проект", "код"),
+            "наука и интересное": ("наук", "исследован", "космос", "истор", "открыт"),
+        },
+    },
     "linkedin": {
         "daily": 1, "max_daily": 2, "min_gap_hours": 12,
         "age_days": 7, "broad": False,
