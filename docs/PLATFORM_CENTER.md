@@ -113,41 +113,25 @@ Webhook URL фактически является секретом доступ�
 
 ## Одноклассники: REST API групповых медиатопиков
 
-Одноклассники подключаются через официальный REST API. TgFarm подписывает запросы MD5 по правилам OK и публикует групповые медиатопики с текстом, фотографиями и видео. Основные методы: [mediatopic.post](https://apiok.ru/dev/methods/rest/mediatopic/mediatopic.post), [photosV2.getUploadUrl](https://apiok.ru/dev/methods/rest/photosV2/photosV2.getUploadUrl), [video.getUploadUrl](https://apiok.ru/dev/methods/rest/video/video.getUploadUrl) и [video.update](https://apiok.ru/dev/methods/rest/video/video.update).
-
-В настройках приложения запроси `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT` через кабинет разработчика/поддержку OK. В карточке TgFarm введи Application Key, Application Secret, долгоживущий access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан с токеном; иначе подпись рассчитывается по fallback MD5(access_token + application_secret_key). Секреты хранятся только в локальном `.env`.
-
-Read-only проверка подтверждает текущего пользователя, совпадение ID группы и разрешение `GROUP_CONTENT`; доступы `PHOTO_CONTENT` и `VIDEO_CONTENT` отображаются отдельно. Фото загружается через `photosV2.getUploadUrl` и прикладывается к медиатопику выданным upload token. Видео отправляется через `video.getUploadUrl`, multipart upload и завершающий `video.update`. Неопределённый исход `mediatopic.post` блокирует автоматический повтор до ручной сверки. Переключатель по умолчанию выключен: сначала проверь доступы и сделай один тестовый пост в своей группе.
-
-## Instagram: OAuth, фото и Reels
-
-Instagram теперь является рабочей целью S9 для одиночных JPEG-фото и Reels. Адаптер использует Instagram Login scopes `instagram_business_basic` и `instagram_business_content_publish`, создаёт media container, ждёт окончания обработки Reels, публикует контейнер и сохраняет возвращённый media ID/permalink.
-
-Для передачи медиа Meta скачивает файл по публичному HTTPS URL. Укажи внешний origin в `TGFARM_PUBLIC_BASE_URL`; endpoint `/public/instagram-media/{id}` отдаёт только активы опубликованных постов по короткоживущей HMAC-подписи. Переключатель выключен по умолчанию. Начни с одной контролируемой публикации и проверь результат в самом Instagram.
-
-LinkedIn member posts используют официальный Posts API и `w_member_social`; публикации от имени организации текущий адаптер не выполняет. TikTok остаётся ручной целью на каждое видео: перед Direct Post ферма обязана получить свежие настройки автора и явное согласие владельца.
-
-## Одноклассники: REST API групповых медиатопиков
-
-Одноклассники подключаются через официальный REST API. TgFarm подписывает каждый запрос MD5 по правилам OK: сортирует параметры по ключу, исключает `access_token`, добавляет session secret и отправляет запрос на `https://api.ok.ru/fb.do`. Поддерживаются текстовые групповые медиатопики, фото и видео.
-
-В настройках приложения запроси у `api-support@ok.ru` разрешения `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT`. Пользовательский `LONG_ACCESS_TOKEN` действует 30 дней и автоматически продлевается при использовании API. В карточке TgFarm введи Application Key, Application Secret, access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан вместе с токеном; иначе подпись вычисляется по официальному fallback MD5(access_token + application_secret_key).
-
-Проверка авторизации read-only подтверждает текущего пользователя, группу и `GROUP_CONTENT`; наличие `PHOTO_CONTENT` и `VIDEO_CONTENT` показывается отдельно. Для фото TgFarm получает upload URL через `photosV2.getUploadUrl` и прикладывает выданный upload token к групповому медиатопику. Для видео используется `video.getUploadUrl`, multipart upload и завершающий `video.update` перед созданием темы. Переключатель выключен по умолчанию: сначала проверь доступы и сделай один контролируемый пост в тестовую группу.
-
-## Одноклассники: REST API групповых медиатопиков
-
 Одноклассники подключаются через официальный REST API. TgFarm подписывает каждый запрос MD5 по правилам OK: сортирует параметры по ключу, исключает `access_token`, добавляет session secret и отправляет запрос на `https://api.ok.ru/fb.do`. Поддерживаются текстовые групповые медиатопики, фото и видео. См. [mediatopic.post](https://apiok.ru/dev/methods/rest/mediatopic/mediatopic.post), [photosV2.getUploadUrl](https://apiok.ru/dev/methods/rest/photosV2/photosV2.getUploadUrl), [video.getUploadUrl](https://apiok.ru/dev/methods/rest/video/video.getUploadUrl) и [video.update](https://apiok.ru/dev/methods/rest/video/video.update).
 
-В настройках приложения запроси у `api-support@ok.ru` разрешения `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT`. В карточке TgFarm введи Application Key, Application Secret, access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан вместе с токеном; иначе подпись рассчитывается по официальному fallback MD5(access_token + application_secret_key). Секреты сохраняются только в локальном `.env`.
+В настройках приложения запроси у `api-support@ok.ru` разрешения `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT`. Пользовательский `LONG_ACCESS_TOKEN` действует 30 дней и автоматически продлевается при использовании API. В карточке TgFarm введи Application Key, Application Secret, access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан вместе с токеном; иначе подпись вычисляется по официальному fallback MD5(access_token + application_secret_key). Секреты сохраняются только в локальном `.env`.
 
-Проверка авторизации read-only подтверждает текущего пользователя, выбранную группу и `GROUP_CONTENT`; наличие `PHOTO_CONTENT` и `VIDEO_CONTENT` показывается отдельно. Для фото TgFarm получает upload URL через `photosV2.getUploadUrl` и прикладывает upload token непосредственно к групповому медиатопику. Для видео используется `video.getUploadUrl`, multipart upload и завершающий `video.update` перед созданием темы. Неопределённый ответ после `mediatopic.post` блокирует автоматический повтор до ручной сверки. Переключатель выключен по умолчанию: сначала проверь доступы и сделай один контролируемый пост в тестовую группу.
+Проверка авторизации read-only подтверждает текущего пользователя, выбранную группу и `GROUP_CONTENT`; наличие `PHOTO_CONTENT` и `VIDEO_CONTENT` показывается отдельно. Для фото TgFarm получает upload URL через `photosV2.getUploadUrl` и прикладывает upload token непосредственно к групповому медиатопику. Для видео используется `video.getUploadUrl`, multipart upload и завершающий `video.update` перед созданием темы. Ответ `mediatopic.post` с ID `0` теперь считается отказом приложения в публикации, а не успешным постом. Неопределённый ответ после отправки блокирует автоматический повтор до ручной сверки. Переключатель выключен по умолчанию: сначала проверь доступы и сделай один контролируемый пост в тестовую группу.
 
 ## Pinterest: OAuth и image/video Pins
 
 Pinterest включён как рабочая цель S9 для image и video Pins. Подключи приложение через Pinterest OAuth с разрешениями `boards:read`, `pins:read`, `pins:write`, заранее укажи ID доски и заверши авторизацию. Callback проверяет, что подключённый пользователь действительно имеет доступ к выбранной доске. Access и rotating refresh token хранятся в локальном `.env`; access token обновляется автоматически до истечения.
 
 Для image Pin ферма использует собственную JPEG-обложку поста и `POST /v5/pins` с `media_source.source_type=image_url`. Для video Pin адаптер регистрирует медиа через `POST /v5/media`, загружает multipart на выданный URL, опрашивает статус до `succeeded` и только потом создаёт Pin с `media_source.source_type=video_id` и обложкой. Pinterest забирает изображение-обложку по короткоживущей HMAC-ссылке `/public/instagram-media/{id}` на публичном HTTPS-домене `TGFARM_PUBLIC_BASE_URL`. Переключатель выключен по умолчанию; сначала выполни один контролируемый пост и проверь его в самой доске.
+
+## Ручная передача на площадки без publisher API
+
+В карточке поста есть блок «Ручная подготовка для остальных площадок». Он собирает 13 направлений: VK Клипы, RUTUBE, vc.ru, Хабр, Пикабу, TenChat, Medium, WhatsApp Channels, Twitch, Snapchat, WeChat, Douyin и RedNote/Xiaohongshu.
+
+Пакет содержит адаптированный заголовок и текст, теги, исходные ссылки, локальные ссылки скачивания готового медиа и инструкции для редактора конкретной площадки. Для видеоплощадок отсутствие MP4 отмечается до передачи; можно сначала создать ролик в TgFarm. API `GET /api/platform-drafts/{platform}/{post}/package` ничего не публикует и не меняет статус поста. После проверки владелец сам открывает редактор, загружает файл и нажимает кнопку публикации на стороне площадки.
+
+Это не маскировка API-адаптера. VK Clips и RUTUBE требуют отдельного подтверждённого upload/publish API; у Хабра публичного API создания статей нет; WhatsApp Channels нельзя публиковать через WhatsApp Business Messaging API. Для Medium это именно ручной экспорт: API больше не выдаёт новые integration tokens. Площадка без проверенного API не попадает в автоматическую очередь S9.
 
 ## Каталог следующих интеграций
 
@@ -160,15 +144,12 @@ Pinterest включён как рабочая цель S9 для image и video
 
 ### Вторая очередь: P2
 
-- **vc.ru**, **Хабр**: отдельные статьи, а не простое копирование поста.
-- **TenChat**: деловые публикации с отдельной редактурой.
-- **vc.ru**, **Хабр**: отдельные статьи, а не простое копирование поста.
+- **vc.ru**, **Хабр**: отдельные статьи с отдельной редакторской проверкой.
 - **TenChat**: деловые публикации с отдельной редактурой.
 
 ### Третья очередь: P3
 
 - **WhatsApp Channels**: проверять отдельно. WhatsApp Business Messaging API не следует путать с API управления Channels.
-- **Medium**: новые интеграции и токены для создания публикаций не выдаются; существующий доступ требует отдельной проверки.
 - **Пикабу**: нишевые посты через браузерную подготовку и ручную отправку.
 - **Twitch**: анонсы трансляций и клипы, отдельный сценарий, не обычный постинг.
 - **Snapchat**: вертикальные видео при наличии доступа к нужному продукту публикации.

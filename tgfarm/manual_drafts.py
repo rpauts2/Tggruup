@@ -139,7 +139,7 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
         kind = str(item.get("kind") or "image")
         if kind == "video":
             media.append({"kind": kind, "url": f"/api/media/{sha}", "filename": f"tgfarm-{post.get('id','post')}.mp4"})
-        elif kind in {"article_image", "ai_art"}:
+        elif kind in {"article_image", "ai_art", "template", "infographic", "quote"}:
             media.append({"kind": kind, "url": f"/api/media/{sha}", "filename": f"tgfarm-{post.get('id','post')}.jpg"})
 
     needs_video = bool(spec.get("needs_video"))
