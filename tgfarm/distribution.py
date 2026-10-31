@@ -553,8 +553,9 @@ def build_distribution_plan(
                             if int(latest_log.attempt or 1) >= 5 or (retry_at and retry_at > current):
                                 continue
                         if latest_log.status == "skipped" and configured:
-                            # Credential changes can wake up previously skipped deliveries.
-                            pass
+                            retry_at = _utc(latest_log.retry_after_at)
+                            if retry_at and retry_at > current:
+                                continue
                         if latest_log.status == "dry_run":
                             # A dry-run is journalled once, but must become
                             # eligible again when the operator switches to LIVE.
