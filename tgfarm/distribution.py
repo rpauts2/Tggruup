@@ -130,6 +130,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
         },
         "requires_media": True,
     },
+    "odnoklassniki": {
+        "daily": 2, "max_daily": 3, "min_gap_hours": 4,
+        "age_days": 7, "broad": True,
+        "topics": {
+            "общество и жизнь": ("обще", "город", "люд", "семь", "жизн", "истор"),
+            "технологии и открытия": ("технолог", "ai", "нейросет", "наук", "робот", "открыт"),
+            "практика и полезное": ("как", "инструкц", "совет", "список", "объясн", "проект"),
+        },
+    },
     "linkedin": {
         "daily": 1, "max_daily": 2, "min_gap_hours": 12,
         "age_days": 7, "broad": False,
