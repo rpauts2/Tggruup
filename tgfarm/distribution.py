@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tgfarm.core.settings import ROOT, get_settings
 from tgfarm.core.text import content_tokens, normalize, token_jaccard
@@ -295,6 +295,76 @@ def _latest_logs(rows: list[Any]) -> dict[tuple[str, str], Any]:
     return latest
 
 
+def _build_primary_platform_plan(
+    now: datetime,
+    settings: Any,
+    platform_catalog: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose primary-channel budgets beside the crosspost distribution plan."""
+    personas = [
+        persona for persona in get_config_personas()
+        if persona.enabled and persona.platform in {"telegram", "vk", "dzen"}
+    ]
+    result: list[dict[str, Any]] = []
+    for platform_id in ("telegram", "vk", "dzen"):
+        active = [persona for persona in personas if persona.platform == platform_id]
+        if not active:
+            continue
+        if platform_id == "dzen":
+            daily_cap = 2
+        elif platform_id == "vk":
+            daily_cap = 3
+        else:
+            daily_cap = sum(max(1, int(persona.posts_per_day)) for persona in active)
+
+        midnight = now - timedelta(hours=24)
+        with session_scope() as session:
+            sent = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(Post)
+                    .join(Channel, Channel.id == Post.channel_id)
+                    .where(
+                        Channel.platform == platform_id,
+                        Channel.enabled.is_(True),
+                        Post.status.in_(("scheduled", "publishing", "published")),
+                        func.coalesce(Post.scheduled_at, Post.published_at, Post.created_at) >= midnight,
+                    )
+                ).scalar_one()
+            )
+        item = platform_catalog.get(platform_id, {})
+        enabled = bool(item.get("enabled"))
+        configured = bool(item.get("configured"))
+        if not enabled:
+            reason = "Площадка выключена в UI."
+        elif not configured:
+            reason = "Основной аккаунт или канал не настроен."
+        elif settings.mode == "off":
+            reason = "Глобальный режим OFF: отправки остановлены."
+        elif settings.approval_required:
+            reason = "Включено ручное одобрение публикаций."
+        else:
+            reason = "Автоматическая очередь основной площадки активна."
+        topics = list(dict.fromkeys(
+            str(persona.niche or "общая тематика") for persona in active
+        ))
+        result.append({
+            "platform": platform_id,
+            "name": item.get("name", platform_id),
+            "kind": "primary",
+            "enabled": enabled,
+            "configured": configured,
+            "automation": "primary",
+            "daily_cap": daily_cap,
+            "daily_sent": sent,
+            "remaining": max(0, daily_cap - sent),
+            "channels": [persona.title for persona in active],
+            "topics": topics,
+            "reason": reason,
+        })
+    return result
+
+
 def build_distribution_plan(
     *,
     now: datetime | None = None,
@@ -347,6 +417,10 @@ def build_distribution_plan(
 
     latest = _latest_logs(logs)
     catalog = {item["id"]: item for item in platforms.CATALOG}
+    platform_catalog = {
+        item["id"]: item
+        for item in platforms.get_platform_catalog()["platforms"]
+    }
     active_primary = {
         item.platform for item in get_config_personas()
         if item.enabled and item.platform in {"telegram", "vk", "dzen"}
@@ -497,11 +571,17 @@ def build_distribution_plan(
             "topics": list(rule["topics"]),
         })
 
+    primary_platforms = _build_primary_platform_plan(
+        current,
+        settings,
+        platform_catalog,
+    )
     return {
         "mode": settings.mode,
         "live": settings.live,
         "approval_required": settings.approval_required,
         "selected_total": sum(len(items) for items in selected_by_platform.values()),
+        "primary_platforms": primary_platforms,
         "platforms": results,
     }
 
