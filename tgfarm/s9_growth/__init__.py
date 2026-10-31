@@ -283,7 +283,6 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
     already accounts for each platform's 24-hour budget, minimum gap, enabled
     switch, configured credentials, age, topic fit and near-duplicate history.
     """
-    cfg = get_config().schedule.crosspost
     settings = get_settings()
     empty = {
         "posted": 0,
@@ -293,7 +292,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
         "unknown": 0,
         "considered": 0,
     }
-    if not cfg.get("enabled", True) or settings.mode == "off":
+    if settings.mode == "off":
         return empty
 
     from tgfarm.distribution import build_distribution_plan
