@@ -535,8 +535,7 @@ def build_distribution_plan(
                             # eligible again when the operator switches to LIVE.
                             if not settings.live:
                                 continue
-                    if platform_id == "reddit" and not settings.reddit_subreddit.strip():
-                        continue
+                    # Reddit target communities are selected dynamically by the S9 scout.
                     if rules_requires_video(platform_id) and not settings.video_enabled:
                         continue
                     if platform_id == "youtube" and str(settings.youtube_privacy_status).lower() not in {"private", "unlisted", "public"}:
