@@ -290,7 +290,7 @@ PRIMARY_PLATFORM_DAILY_CAPS = {
 
 
 def _day_bucket_expression():
-    return func.coalesce(PostRow.scheduled_at, PostRow.published_at, PostRow.created_at)
+    return func.coalesce(PostRow.published_at, PostRow.scheduled_at, PostRow.created_at)
 
 
 def _posts_today(session, channel_id: str, now: datetime) -> int:
