@@ -103,6 +103,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "instagram" in PLATFORM_RULES
     assert "pinterest" in PLATFORM_RULES
     assert "odnoklassniki" in PLATFORM_RULES
+    assert "facebook" in PLATFORM_RULES
     assert "tiktok" not in enabled
 
 
