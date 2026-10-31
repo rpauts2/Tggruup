@@ -361,6 +361,14 @@ class Settings(BaseSettings):
     instagram_user_id: str = Field(default="", alias="INSTAGRAM_USER_ID")
     instagram_username: str = Field(default="", alias="INSTAGRAM_USERNAME")
     public_base_url: str = Field(default="", alias="TGFARM_PUBLIC_BASE_URL")
+    # Pinterest API v5 OAuth and a board selected by the owner.
+    pinterest_app_id: str = Field(default="", alias="PINTEREST_APP_ID")
+    pinterest_app_secret: str = Field(default="", alias="PINTEREST_APP_SECRET")
+    pinterest_access_token: str = Field(default="", alias="PINTEREST_ACCESS_TOKEN")
+    pinterest_refresh_token: str = Field(default="", alias="PINTEREST_REFRESH_TOKEN")
+    pinterest_token_expires_at: int = Field(default=0, alias="PINTEREST_TOKEN_EXPIRES_AT")
+    pinterest_refresh_token_expires_at: int = Field(default=0, alias="PINTEREST_REFRESH_TOKEN_EXPIRES_AT")
+    pinterest_board_id: str = Field(default="", alias="PINTEREST_BOARD_ID")
 
     # YouTube Data API upload and metadata.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
