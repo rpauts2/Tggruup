@@ -29,6 +29,7 @@ from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.s9_growth.instagram import InstagramAdapter
 from tgfarm.s9_growth.pinterest import PinterestAdapter
+from tgfarm.s9_growth.odnoklassniki import OdnoklassnikiAdapter
 
 log = get_logger(__name__)
 
@@ -1769,6 +1770,7 @@ ADAPTERS: dict[str, Adapter] = {
     "instagram": InstagramAdapter(),
     "discord": DiscordAdapter(),
     "pinterest": PinterestAdapter(),
+    "odnoklassniki": OdnoklassnikiAdapter(),
 }
 
 
