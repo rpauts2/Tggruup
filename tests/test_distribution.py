@@ -3,6 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.fixture()
+def client():
+    from fastapi.testclient import TestClient
+
+    from tgfarm.api import create_app
+
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1") as test_client:
+        yield test_client
+
 
 def _post(*, title: str, body: str, angle: str = "analysis", age_hours: int = 2):
     return SimpleNamespace(
@@ -94,6 +106,8 @@ def test_manual_only_platforms_never_enter_the_automatic_plan():
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):
+    import os
+
     import tgfarm.distribution as distribution
 
     env_path = tmp_path / ".env"
@@ -102,13 +116,23 @@ def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monke
         encoding="utf-8",
     )
     monkeypatch.setattr(distribution, "ROOT", tmp_path)
+    old_mode = os.environ.get("TGFARM_MODE")
 
-    assert distribution.set_runtime_mode("live") == "live"
-    raw = env_path.read_text(encoding="utf-8")
-    assert raw.count("TGFARM_MODE=") == 1
-    assert "TGFARM_MODE=live" in raw
-    assert "OTHER_SETTING=keep-me" in raw
-    assert __import__("os").environ["TGFARM_MODE"] == "live"
+    try:
+        assert distribution.set_runtime_mode("live") == "live"
+        raw = env_path.read_text(encoding="utf-8")
+        assert raw.count("TGFARM_MODE=") == 1
+        assert "TGFARM_MODE=live" in raw
+        assert "OTHER_SETTING=keep-me" in raw
+        assert os.environ["TGFARM_MODE"] == "live"
+    finally:
+        if old_mode is None:
+            os.environ.pop("TGFARM_MODE", None)
+        else:
+            os.environ["TGFARM_MODE"] = old_mode
+        from tgfarm.core.settings import reset_settings_cache
+
+        reset_settings_cache()
 
 
 def test_primary_platform_cadence_has_global_daily_limits():
