@@ -25,6 +25,12 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
+    assert entries["reddit"]["auth"]["method"] == "oauth"
+    assert entries["instagram"]["auth"]["method"] == "oauth"
+    assert entries["vk"]["auth"]["method"] == "vkhost"
+    # Every catalogue entry exposes a first-party sign-in URL. This only
+    # creates a local browser profile; it does not claim API publish rights.
+    assert all(item["auth"]["browser_session"]["available"] for item in entries.values())
     assert entries["bluesky"]["supported"] is True
     assert entries["bluesky"]["auth"]["method"] == "credentials"
     assert {field["key"] for field in entries["bluesky"]["auth"]["fields"]} == {
