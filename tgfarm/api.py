@@ -1472,6 +1472,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
             "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
             "/api/platforms/instagram/auth/callback": "tgfarm_instagram_oauth_params",
+            "/api/platforms/pinterest/auth/callback": "tgfarm_pinterest_oauth_params",
             "/api/platforms/reddit/auth/callback": "tgfarm_reddit_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
@@ -1501,6 +1502,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/youtube/auth/callback",
             "/api/platforms/tiktok/auth/callback",
             "/api/platforms/instagram/auth/callback",
+            "/api/platforms/pinterest/auth/callback",
             "/api/platforms/reddit/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
@@ -2068,6 +2070,105 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<h1>Ошибка подключения Instagram</h1><p>Проверь настройки приложения и журнал диагностики.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=500, headers=headers,
+            )
+
+    @app.post("/api/platforms/pinterest/auth/start")
+    async def pinterest_oauth_start(request: Request) -> dict:
+        from tgfarm.pinterest_oauth import begin_pinterest_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/pinterest/auth/callback"
+        try:
+            return await begin_pinterest_oauth(
+                settings.pinterest_app_id,
+                settings.pinterest_app_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/pinterest/auth/callback")
+    async def pinterest_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.pinterest_oauth import cancel_pinterest_oauth, complete_pinterest_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_pinterest_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_pinterest_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · Pinterest</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Pinterest не подключён</h1><p>Авторизация отменена или ответ Pinterest неполный. "
+                "<a href='/'>Вернись в TgFarm и повтори подключение.</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        try:
+            credentials = await complete_pinterest_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "pinterest",
+                {
+                    "PINTEREST_APP_ID": credentials["app_id"],
+                    "PINTEREST_APP_SECRET": credentials["app_secret"],
+                    "PINTEREST_ACCESS_TOKEN": credentials["access_token"],
+                    "PINTEREST_REFRESH_TOKEN": credentials["refresh_token"],
+                    "PINTEREST_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "PINTEREST_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+                    "PINTEREST_BOARD_ID": credentials["board_id"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "pinterest",
+                True,
+                account=credentials["account"],
+                detail="Pinterest OAuth подтвердил доступ к выбранной доске через API v5.",
+            )
+            _operator("platform-auth-check", "pinterest", "OAuth connected")
+            account = html.escape(credentials["account"])
+            board_id = html.escape(credentials["board_id"])
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Pinterest подключён</h1><p>Доступ подтверждён: <strong>" + account + "</strong>.</p>"
+                "<p>Доска <code>" + board_id + "</code> сохранена. Токены хранятся локально и обновляются автоматически.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=200,
+                headers=headers,
+            )
+        except (ValueError, RuntimeError) as exc:
+            cancel_pinterest_oauth(state_value)
+            message = html.escape(redact_sensitive_text(exc, limit=260))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Pinterest</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_pinterest_oauth(state_value)
+            log.warning("Pinterest OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Pinterest</h1><p>Проверь настройки приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=headers,
             )
 
     @app.post("/api/platforms/reddit/auth/start")
