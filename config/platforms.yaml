@@ -21,6 +21,5 @@ enabled:
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
   - vk_clips
-  - instagram
   - odnoklassniki
   - rutube
