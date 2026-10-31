@@ -157,6 +157,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
             "практика и карьера": ("проект", "опыт", "карьер", "управлен", "продукт", "процесс"),
         },
     },
+    "tumblr": {
+        "daily": 1, "max_daily": 2, "min_gap_hours": 12,
+        "age_days": 10, "broad": False,
+        "topics": {
+            "технологии и культура": ("технолог", "ai", "нейросет", "код", "программ", "робот", "дизайн"),
+            "наука": ("наук", "исследован", "космос", "эксперимент", "физик", "открыт"),
+            "истории и визуальное": ("истор", "культур", "искусств", "книг", "музык", "архитект"),
+        },
+    },
 }
 
 # These platforms may have a technical adapter but are not eligible for
@@ -714,6 +723,8 @@ def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
     # flairs/tags and does not benefit from a generic hashtag tail.
     lines = body.splitlines()
     if lines and all(re.fullmatch(r"#[0-9a-zа-яё_]+", item.strip(), re.I) for item in lines[-1].split()):
+        if platform_id == "tumblr" and not getattr(payload, "hashtags", None):
+            payload.hashtags = re.findall(r"#([0-9a-zа-яё_]+)", lines[-1], flags=re.I)
         body = "\n".join(lines[:-1]).strip()
 
     if platform_id == "x":
@@ -746,6 +757,9 @@ def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
     elif platform_id == "vk":
         payload.title = truncate(title, 128)
         payload.text = truncate(body, 3600)
+    elif platform_id == "tumblr":
+        payload.title = truncate(title, 200)
+        payload.text = truncate(body, 20_000)
     return payload
 
 

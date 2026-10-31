@@ -104,6 +104,8 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "pinterest" in PLATFORM_RULES
     assert "odnoklassniki" in PLATFORM_RULES
     assert "facebook" in PLATFORM_RULES
+    assert "tumblr" in PLATFORM_RULES
+    assert "tumblr" not in enabled
     assert "tiktok" not in enabled
 
 
@@ -203,6 +205,15 @@ def test_platform_text_adaptation_respects_native_post_length_and_source_link():
         ),
         "reddit",
     )
+    tumblr_payload = adapt_payload_for_platform(
+        CrosspostPayload(
+            platform="tumblr",
+            title="A headline for Tumblr",
+            text=body,
+            link="https://example.com/source",
+        ),
+        "tumblr",
+    )
 
     assert len(x_payload.title) <= 72
     assert len(x_payload.text) <= 160
@@ -210,6 +221,9 @@ def test_platform_text_adaptation_respects_native_post_length_and_source_link():
     assert len(bluesky_payload.text) <= 195
     assert "#AI" not in reddit_payload.text
     assert "verified context" in reddit_payload.text
+    assert len(tumblr_payload.title) <= 200
+    assert len(tumblr_payload.text) <= 20_000
+    assert tumblr_payload.hashtags == ["AI", "Technology"]
 
 
 @pytest.mark.asyncio

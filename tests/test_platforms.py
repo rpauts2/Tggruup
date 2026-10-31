@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -57,6 +57,15 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["facebook"]["auth"]["method"] == "oauth"
     assert {field["key"] for field in entries["facebook"]["auth"]["fields"]} == {
         "FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET", "FACEBOOK_PAGE_ID"
+    }
+    assert entries["tumblr"]["supported"] is True
+    assert entries["tumblr"]["mode"] == "built_in"
+    assert entries["tumblr"]["automation_mode"] == "automatic"
+    assert entries["tumblr"]["enabled"] is False
+    assert entries["tumblr"]["roles"] == ["text", "crosspost"]
+    assert entries["tumblr"]["auth"]["method"] == "oauth"
+    assert {field["key"] for field in entries["tumblr"]["auth"]["fields"]} == {
+        "TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET", "TUMBLR_BLOG_IDENTIFIER"
     }
     assert entries["vk"]["auth"]["method"] == "vkhost"
     # vc.ru and Pikabu use isolated browser sign-in because no public
@@ -121,7 +130,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
-    assert catalog["summary"]["supported"] == 17
+    assert catalog["summary"]["supported"] == 18
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())

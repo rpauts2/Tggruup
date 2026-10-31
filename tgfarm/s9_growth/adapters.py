@@ -31,6 +31,7 @@ from tgfarm.s9_growth.instagram import InstagramAdapter
 from tgfarm.s9_growth.facebook import FacebookPageAdapter
 from tgfarm.s9_growth.pinterest import PinterestAdapter
 from tgfarm.s9_growth.odnoklassniki import OdnoklassnikiAdapter
+from tgfarm.s9_growth.tumblr import TumblrAdapter
 
 log = get_logger(__name__)
 
@@ -1773,6 +1774,7 @@ ADAPTERS: dict[str, Adapter] = {
     "pinterest": PinterestAdapter(),
     "odnoklassniki": OdnoklassnikiAdapter(),
     "facebook": FacebookPageAdapter(),
+    "tumblr": TumblrAdapter(),
 }
 
 

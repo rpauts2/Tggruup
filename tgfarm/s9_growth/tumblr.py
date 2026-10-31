@@ -119,6 +119,13 @@ class TumblrAdapter:
             )
         try:
             token = await get_valid_tumblr_access_token()
+        except Exception as exc:  # noqa: BLE001 - no publication request has been sent yet
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=redact_sensitive_text(exc, limit=300) or "Tumblr OAuth could not be refreshed.",
+            )
+        try:
             async with httpx.AsyncClient(
                 timeout=35.0,
                 follow_redirects=False,
@@ -129,7 +136,7 @@ class TumblrAdapter:
                     json={
                         "content": content,
                         "state": "published",
-                        "tags": _tags(payload),
+                        "tags": ", ".join(_tags(payload)),
                         **({"source_url": source_url} if source_url else {}),
                     },
                 )
