@@ -92,17 +92,16 @@ def test_platform_daily_caps_are_conservative_and_learn_only_from_reliability():
     assert effective_daily_cap("vk", good[:4]) == 3
 
 
-def test_manual_only_platforms_never_enter_the_automatic_plan():
+def test_only_per_post_consent_platforms_are_manual_only():
     from tgfarm.distribution import MANUAL_ONLY, PLATFORM_RULES
     from tgfarm.platforms import enabled_crosspost_platforms
 
     enabled = set(enabled_crosspost_platforms())
-    assert MANUAL_ONLY["linkedin"]
-    assert MANUAL_ONLY["tiktok"]
-    assert "linkedin" not in enabled
+    assert "tiktok" in MANUAL_ONLY
+    assert "linkedin" not in MANUAL_ONLY
+    assert "linkedin" in PLATFORM_RULES
+    assert "instagram" in PLATFORM_RULES
     assert "tiktok" not in enabled
-    assert "instagram" not in enabled
-    assert "reddit" in PLATFORM_RULES
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):
