@@ -214,6 +214,19 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
         description = page["description"] or page["text"][:900]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}\n{rule_text}")
         warnings, blockers = _pikabu_risks(rule_text, post, global_rules)
+        visible_tags = []
+        for href, tag_label in page["links"]:
+            tag_url = urlparse(urljoin(page["url"], href))
+            if tag_url.scheme == "https" and tag_url.hostname in {"pikabu.ru", "www.pikabu.ru"} and (
+                "/tag/" in tag_url.path or "/tags/" in tag_url.path
+            ):
+                visible_tags.append(tag_label)
+        visible_tags = list(dict.fromkeys(visible_tags))[:20]
+        post_words = set(content_tokens(post_text))
+        suggested_tags = [
+            tag for tag in visible_tags
+            if set(content_tokens(tag)) & post_words
+        ][:8]
         candidates.append({
             "target_type": "community",
             "name": label,
@@ -223,6 +236,8 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "description": description[:900],
             "rules": rule_text[:2200],
             "rules_available": bool(rule_text),
+            "tags": visible_tags,
+            "suggested_tags": suggested_tags,
             "score": max(0, min(100, round(score * .8 + initial * .2))),
             "matches": matches,
             "risks": warnings,
