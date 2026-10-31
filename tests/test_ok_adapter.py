@@ -30,6 +30,7 @@ class FakeResponse:
 class FakeOKClient:
     calls = []
     permissions = {"GROUP_CONTENT": True, "PHOTO_CONTENT": True, "VIDEO_CONTENT": True}
+    publish_status = 200
 
     def __init__(self, *args, **kwargs):
         pass
@@ -57,7 +58,7 @@ class FakeOKClient:
             if method == "video.update":
                 return FakeResponse(None, content=b"")
             if method == "mediatopic.post":
-                return FakeResponse("topic-123")
+                return FakeResponse("topic-123", status_code=self.publish_status)
             raise AssertionError("unexpected OK API method " + method)
         if url == "https://api.ok.ru/upload/photo":
             return FakeResponse({"photos": {"photo-encrypted-id": {"token": "photo-upload-token"}}})
@@ -219,3 +220,17 @@ def test_ok_upload_url_rejects_untrusted_host():
     assert _upload_url_allowed("https://uploads.odnoklassniki.ru/file") is True
     assert _upload_url_allowed("https://evil.example/file") is False
     assert _upload_url_allowed("http://api.ok.ru/upload") is False
+
+
+
+@pytest.mark.asyncio
+async def test_ok_ambiguous_group_post_result_is_unknown_and_not_retryable(ok_settings):
+    FakeOKClient.publish_status = 504
+    result = await ok_settings.OdnoklassnikiAdapter().publish(CrosspostPayload(
+        platform="odnoklassniki",
+        title="May already be published",
+        text="The provider timed out after receiving the request.",
+    ))
+    assert result.status == "unknown"
+    assert "HTTP 504" in (result.error or "")
+    FakeOKClient.publish_status = 200
