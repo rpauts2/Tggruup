@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from tgfarm.core.schemas import CrosspostPayload
+
+
+class FakeResponse:
+    status_code = 201
+    content = b'{"id":"987654321012345678","board_id":"123456789012345678"}'
+
+    def json(self):
+        return {"id": "987654321012345678", "board_id": "123456789012345678"}
+
+    def raise_for_status(self):
+        return None
+
+
+class FakePinterestClient:
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return FakeResponse()
+
+
+@pytest.mark.asyncio
+async def test_pinterest_adapter_creates_image_pin_on_selected_board(monkeypatch):
+    from tgfarm import pinterest_oauth
+    from tgfarm.s9_growth import pinterest
+
+    FakePinterestClient.calls = []
+    monkeypatch.setattr(
+        pinterest,
+        "get_settings",
+        lambda: SimpleNamespace(
+            pinterest_app_id="app-id",
+            pinterest_app_secret="app-secret",
+            pinterest_access_token="saved-token",
+            pinterest_refresh_token="refresh-token",
+            pinterest_board_id="123456789012345678",
+        ),
+    )
+
+    async def get_token():
+        return "access-token"
+
+    async def signed_media(*args):
+        return "https://farm.example/public/media/signed-image.jpg"
+
+    monkeypatch.setattr(pinterest_oauth, "get_valid_pinterest_access_token", get_token)
+    monkeypatch.setattr(pinterest, "_signed_media_url", signed_media)
+    monkeypatch.setattr(pinterest, "_ensure_jpeg", lambda path: path)
+    monkeypatch.setattr(httpx, "AsyncClient", FakePinterestClient)
+
+    result = await pinterest.PinterestAdapter().publish(CrosspostPayload(
+        platform="pinterest",
+        title="A useful Pin",
+        text="A factual description",
+        link="https://example.test/source",
+        image_path="/tmp/cover.png",
+        meta={"post_public_id": "post-1"},
+    ))
+
+    assert result.status == "posted"
+    assert result.remote_id == "987654321012345678"
+    assert result.url == "https://www.pinterest.com/pin/987654321012345678/"
+    url, kwargs = FakePinterestClient.calls[0]
+    assert url == "https://api.pinterest.com/v5/pins"
+    assert kwargs["headers"]["Authorization"] == "Bearer access-token"
+    body = kwargs["json"]
+    assert body["board_id"] == "123456789012345678"
+    assert body["title"] == "A useful Pin"
+    assert body["description"] == "A factual description"
+    assert body["link"] == "https://example.test/source"
+    assert body["media_source"] == {
+        "source_type": "image_url",
+        "url": "https://farm.example/public/media/signed-image.jpg",
+        "is_standard": True,
+    }
+
+
+def test_pinterest_adapter_requires_oauth_and_a_board(monkeypatch):
+    from tgfarm.s9_growth.pinterest import PinterestAdapter
+
+    monkeypatch.setattr(
+        "tgfarm.s9_growth.pinterest.get_settings",
+        lambda: SimpleNamespace(
+            pinterest_app_id="",
+            pinterest_app_secret="",
+            pinterest_access_token="",
+            pinterest_refresh_token="",
+            pinterest_board_id="",
+        ),
+    )
+    assert PinterestAdapter().configured() is False
