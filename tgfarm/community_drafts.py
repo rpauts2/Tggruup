@@ -294,7 +294,6 @@ async def _first_file_input(page):
         'input[type="file"][accept*="image" i]',
         'input[type="file"][accept*=".jpg" i]',
         'input[type="file"][accept*=".png" i]',
-        'input[type="file"]',
     ):
         locator = page.locator(selector)
         count = await locator.count()
