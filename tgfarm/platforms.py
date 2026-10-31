@@ -409,7 +409,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
         {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
         {"key": "REDDIT_REFRESH_TOKEN", "attribute": "reddit_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Выдаётся автоматически через Reddit OAuth и хранится локально."},
-        {"key": "REDDIT_SUBREDDIT", "attribute": "reddit_subreddit", "label": "Сообщество по умолчанию", "secret": False, "placeholder": "learnpython", "help": "Название без префикса r/."},
+        {"key": "REDDIT_SUBREDDIT", "attribute": "reddit_subreddit", "label": "Fallback-сообщество (необязательно)", "secret": False, "placeholder": "Можно оставить пустым", "help": "Используется только как запасная настройка. В автономном режиме TgFarm подбирает subreddit отдельно под каждую тему и читает его актуальные правила."},
         {"key": "REDDIT_USER_AGENT", "attribute": "reddit_user_agent", "label": "User-Agent", "secret": False, "placeholder": "python:tgfarm:1.0 (by /u/your_name)", "help": "Уникальная описательная строка. Не оставляй шаблонное имя."},
     ],
 }
@@ -864,17 +864,21 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             settings.reddit_client_id,
             settings.reddit_client_secret,
             settings.reddit_refresh_token,
-            settings.reddit_subreddit,
             user_agent,
         )) and "/u/YOUR_REDDIT_USERNAME" not in user_agent
         if configured:
+            target = (
+                f"Фиксированный fallback: r/{settings.reddit_subreddit.strip()}. "
+                if settings.reddit_subreddit.strip()
+                else "Фиксированный subreddit не задан: TgFarm будет выбирать сообщество под каждый пост. "
+            )
             return True, (
-                "OAuth-настройки найдены; проверь право submit и правила сообщества "
-                "одним live smoke-тестом."
+                target
+                + "Перед отправкой проверяются актуальные правила, ограничения, формат и тематическое совпадение."
             )
         return False, (
-            "Нужны Reddit OAuth client ID/secret, refresh token, REDDIT_SUBREDDIT "
-            "и свой REDDIT_USER_AGENT."
+            "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
+            "REDDIT_SUBREDDIT теперь необязателен: цель выбирает редакторский планировщик."
         )
     if platform_id == "dzen":
         try:
