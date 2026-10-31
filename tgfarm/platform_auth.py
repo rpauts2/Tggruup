@@ -180,6 +180,12 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                     group_info = {}
                 if not isinstance(group_info, dict):
                     raise RuntimeError("OK не вернул информацию о выбранной группе.")
+                returned_group_id = str(
+                    group_info.get("uid") or group_info.get("UID")
+                    or group_info.get("id") or group_info.get("ID") or ""
+                )
+                if returned_group_id and returned_group_id != group_id:
+                    raise RuntimeError("OK вернул другую группу. Проверь OK_GROUP_ID.")
                 group_name = str(group_info.get("name") or group_info.get("NAME") or "")
                 if not await ok_has_permission(client, "GROUP_CONTENT"):
                     raise RuntimeError("У приложения нет GROUP_CONTENT для публикации в выбранную группу.")
