@@ -1652,6 +1652,108 @@ class ThreadsAdapter:
             )
 
 
+
+# -------------------------------------------------------------------- Discord
+class DiscordAdapter:
+    """Publish a safe text message through an owner-managed Discord webhook."""
+
+    platform = "discord"
+    max_title = 256
+    max_body = 2000
+
+    @staticmethod
+    def _webhook_url() -> str:
+        from urllib.parse import urlsplit
+
+        settings = get_settings()
+        raw = str(getattr(settings, "discord_webhook_url", "") or "").strip()
+        parsed = urlsplit(raw)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "discord.com"
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or not re.fullmatch(r"/api/webhooks/\d{17,22}/[A-Za-z0-9._-]{16,}/?", parsed.path)
+        ):
+            return ""
+        return raw.rstrip("/")
+
+    def configured(self) -> bool:
+        return bool(self._webhook_url())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        url = self._webhook_url()
+        if not url:
+            return CrosspostResult(platform=self.platform, status="skipped")
+        content = "\n\n".join(
+            part for part in (str(payload.title or "").strip(), str(payload.text or "").strip())
+            if part
+        )
+        content = truncate(content, self.max_body)
+        if not content:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="Discord messages cannot be empty.",
+            )
+        params = {"wait": "true"}
+        thread_id = str((payload.meta or {}).get("thread_id") or "").strip()
+        if thread_id:
+            if not re.fullmatch(r"\d{17,22}", thread_id):
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="permanent",
+                    error="Discord thread ID must be a numeric snowflake.",
+                )
+            params["thread_id"] = thread_id
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+                response = await client.post(
+                    url,
+                    params=params,
+                    json={
+                        "content": content,
+                        "allowed_mentions": {"parse": []},
+                    },
+                )
+                response.raise_for_status()
+                result = response.json() if response.content else {}
+        except Exception as exc:  # noqa: BLE001 - no blind retry after webhook side effect
+            status = crosspost_error_status(exc)
+            return CrosspostResult(
+                platform=self.platform,
+                status=status,
+                error=(
+                    f"Discord webhook returned HTTP {getattr(getattr(exc, 'response', None), 'status_code', 'error')}."
+                ),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
+            )
+
+        message_id = str(result.get("id") or "") if isinstance(result, dict) else ""
+        if not message_id:
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Discord did not return a message ID; check the channel before retrying.",
+            )
+        channel_id = str(result.get("channel_id") or "")
+        guild_id = str(result.get("guild_id") or "")
+        message_url = (
+            f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+            if guild_id and channel_id else None
+        )
+        return CrosspostResult(
+            platform=self.platform,
+            status="posted",
+            remote_id=message_id,
+            url=message_url,
+        )
+
+
 ADAPTERS: dict[str, Adapter] = {
     "max": MaxAdapter(),
     "vk": VkAdapter(),
@@ -1664,6 +1766,7 @@ ADAPTERS: dict[str, Adapter] = {
     "youtube": YouTubeAdapter(),
     "tiktok": TikTokAdapter(),
     "instagram": InstagramAdapter(),
+    "discord": DiscordAdapter(),
 }
 
 
