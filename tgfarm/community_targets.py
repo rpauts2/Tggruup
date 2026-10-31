@@ -118,7 +118,7 @@ def _score(post_text: str, candidate_text: str) -> tuple[int, list[str]]:
     if not a or not b:
         return 0, []
     hits = sorted(a & b, key=lambda x: (-len(x), x))
-    score = max(0, min(100, round(100 * len(hits) / max(1, min(12, len(a))) * 1.8)))
+    score = max(0, min(100, round(100 * len(hits) / max(1, min(6, len(a))) * 1.8)))
     return score, hits[:8]
 
 
@@ -283,14 +283,17 @@ def _vc_links(page: dict[str, Any]) -> list[tuple[str, str]]:
     return list(result.items())
 
 
-def _vc_risks(post: dict[str, Any]) -> list[str]:
+def _vc_risks(post: dict[str, Any], rules_text: str = "") -> list[str]:
     content = normalize(f"{post['title']}\n{post['body']}")
+    published_rules = normalize(rules_text or "")
     risks = []
     if any(word in content for word in ("промокод", "купи", "закажи", "скидка", "наш продукт", "наш сервис")):
         risks.append("Материал может быть воспринят как продвижение; проверь правила и тип аккаунта.")
     if any(word in content for word in ("политик", "выбор", "президент", "партия", "войн")):
         risks.append("Для vc.ru политическая тема должна быть раскрыта в контексте бизнеса/экономики.")
-    return risks
+    if any(word in published_rules for word in ("коммерческ", "реклам", "ограничен")):
+        risks.append("В текущих правилах есть отдельные ограничения для коммерческих/рекламных публикаций.")
+    return list(dict.fromkeys(risks))
 
 
 async def _vc(post: dict[str, Any]) -> dict[str, Any]:
