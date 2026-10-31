@@ -64,11 +64,13 @@ cadence:
 # that keeps the fleet from looking co-ordinated
 fleet_posts_per_hour: 30
 
-# crosspost behaviour
+# external distribution behaviour
+# Destination selection and daily budgets are calculated by tgfarm.distribution:
+# topic fit, source niche, editorial quality, freshness, prior deliveries,
+# near-duplicate detection and a per-platform minimum gap.
 crosspost:
   enabled: true
-  # fraction of posts that go to external platforms
-  sample_rate: 0.85
+  # enabled platforms at first launch; after that the UI switches are authoritative
   platforms: [max, vk, x]
-  # stagger the external copy by this many minutes after the TG post
+  # wait until the primary post has settled before selecting external destinations
   delay_min: 25
