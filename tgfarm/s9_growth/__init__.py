@@ -12,16 +12,15 @@ no realistic upside — see RUNBOOK for the measured comparison.
 from __future__ import annotations
 
 import asyncio
-   import uuid
+import uuid
 
- 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.core.settings import get_settings
- from tgfarm.db.models import Post as PostRow
+from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.s9_growth.adapters import (
     ADAPTERS,
@@ -33,7 +32,6 @@ from tgfarm.s9_growth.adapters import (
     primary_image_path,
     primary_video_path,
 )
-
 log = get_logger(__name__)
 
 # Growth primitives the farm will never execute. Kept as code, not just prose,
