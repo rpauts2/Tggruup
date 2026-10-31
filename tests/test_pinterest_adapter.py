@@ -57,7 +57,7 @@ async def test_pinterest_adapter_creates_image_pin_on_selected_board(monkeypatch
     async def get_token():
         return "access-token"
 
-    async def signed_media(*args):
+    def signed_media(*args):
         return "https://farm.example/public/media/signed-image.jpg"
 
     monkeypatch.setattr(pinterest_oauth, "get_valid_pinterest_access_token", get_token)
