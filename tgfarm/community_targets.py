@@ -296,7 +296,15 @@ def _vc_risks(post: dict[str, Any]) -> list[str]:
 async def _vc(post: dict[str, Any]) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError
 
-    directory = await _fetch(VC_DIRECTORY)
+    directory_result, rules_result = await asyncio.gather(
+        _fetch(VC_DIRECTORY), _fetch(VC_RULES), return_exceptions=True
+    )
+    if isinstance(directory_result, Exception):
+        raise CommunityDraftError(
+            f"Не удалось получить список тем vc.ru ({type(directory_result).__name__})."
+        )
+    directory = directory_result
+    rules_text = rules_result.get("text", "") if isinstance(rules_result, dict) else ""
     topics = _vc_links(directory)
     if not topics:
         raise CommunityDraftError("Не удалось прочитать актуальный каталог тем vc.ru. Ничего не угадываю.")
@@ -314,6 +322,7 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             continue
         description = page["description"] or page["text"][:1000]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}")
+        risks = _vc_risks(post, rules_text)
         candidates.append({
             "target_type": "topic",
             "name": label,
@@ -323,7 +332,8 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "description": description[:1000],
             "score": max(0, min(100, round(score * .82 + initial * .18))),
             "matches": matches,
-            "risks": _vc_risks(post),
+            "risks": risks,
+            "rules_available": bool(rules_text),
             "recommended": score >= MIN_SCORE,
         })
     candidates.sort(key=lambda x: (x["score"], x["name"]), reverse=True)
@@ -335,6 +345,7 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
         "candidates": candidates[:5],
         "general_notes": [
             "Тема выбрана по актуальному списку разделов и описанию самой темы.",
+            "Общие правила vc.ru перечитаны перед подбором; на тематических страницах могут действовать дополнительные требования модерации.",
             "Если материал не подходит разделам, справка vc.ru рекомендует личный блог или «Офтоп».",
             "Неформатные, рекламные и плохо оформленные публикации могут быть скрыты или возвращены в блог.",
             "Для коммерческих аккаунтов действует отдельный месячный лимит; TgFarm не может определить тип аккаунта по одной сессии.",
