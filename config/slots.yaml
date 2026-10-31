@@ -69,7 +69,6 @@ fleet_posts_per_hour: 30
 # topic fit, source niche, editorial quality, freshness, prior deliveries,
 # near-duplicate detection and a per-platform minimum gap.
 crosspost:
-  enabled: true
   # enabled platforms at first launch; after that the UI switches are authoritative
   platforms: [max, vk, x]
   # wait until the primary post has settled before selecting external destinations
