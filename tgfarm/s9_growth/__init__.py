@@ -184,10 +184,10 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
 
     image_path = (
         await to_thread(primary_image_path, post_pk)
-        if any(name in {"vk", "instagram", "pinterest", "odnoklassniki"} for name in platforms)
+        if any(name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook"} for name in platforms)
         else None
     )
-    video_targets = {"youtube", "tiktok", "vk_clips", "instagram", "pinterest", "odnoklassniki"}
+    video_targets = {"youtube", "tiktok", "vk_clips", "instagram", "pinterest", "odnoklassniki", "facebook"}
     video_render_error = None
     video_requested = any(name in video_targets for name in platforms)
     video_path = (
@@ -274,7 +274,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             continue
         payload = build_payload(
             post,
-            image_path=image_path if name in {"vk", "instagram", "pinterest", "odnoklassniki"} else None,
+            image_path=image_path if name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook"} else None,
             video_path=video_path if name in video_targets else None,
         )
         from tgfarm.distribution import adapt_payload_for_platform
