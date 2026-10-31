@@ -256,3 +256,12 @@ def test_cli_reddit_live_mode_requires_explicit_confirmation(monkeypatch, capsys
 
     assert code == 2
     assert "explicit --confirm-live" in capsys.readouterr().out
+
+
+def test_reddit_adapter_does_not_require_a_fixed_default_subreddit(monkeypatch):
+    settings = _reddit_settings(subreddit="")
+    monkeypatch.setattr(adapters, "get_settings", lambda: settings)
+
+    assert adapters.RedditAdapter().configured() is True
+
+
