@@ -832,6 +832,29 @@ def _media_path(media_id: str) -> Path:
     return path
 
 
+def _instagram_public_media_path(media_id: str) -> Path:
+    """Resolve a signed Instagram media id to an asset on a published post."""
+    from tgfarm.db.models import Media as MediaRow
+
+    try:
+        numeric_id = int(media_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(404, "media not found") from exc
+    with session_scope() as session:
+        row = session.execute(
+            select(MediaRow)
+            .join(Post, Post.id == MediaRow.post_id)
+            .where(MediaRow.id == numeric_id, Post.status == "published")
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "media not found")
+        path = Path(row.path)
+    if not path.is_file():
+        raise HTTPException(410, "media file missing on disk")
+    return path
+
+
 def _runs(limit: int) -> list[dict]:
     with session_scope() as session:
         rows = session.execute(
@@ -1596,6 +1619,26 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def media(media_id: str):
         path = await io(_media_path, media_id)
         return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/public/instagram-media/{media_id}")
+    async def instagram_public_media(
+        media_id: str,
+        expires: int = Query(...),
+        sig: str = Query(..., min_length=64, max_length=64),
+    ):
+        """Serve only signed, expiring assets attached to already-published posts."""
+        from tgfarm.instagram_oauth import verify_signed_instagram_media_url
+
+        if not verify_signed_instagram_media_url(media_id, expires, sig):
+            raise HTTPException(403, "invalid or expired media signature")
+        path = await io(_instagram_public_media_path, media_id)
+        return FileResponse(
+            path,
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     # --------------------------------------------------------------- reports
     @app.get("/api/report")
