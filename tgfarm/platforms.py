@@ -169,10 +169,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "odnoklassniki", "name": "Одноклассники", "symbol": "OK", "color": "#EE8208",
         "category": "Российские", "market": "Россия и СНГ", "priority": "P1",
-        "mode": "planned", "roles": ["text", "visual"],
-        "description": "Отдельная адаптация для российской аудитории и сообществ.",
-        "requirements": "Проверить текущий API публикации, права группы и OAuth-приложение.",
-        "docs_url": "https://apiok.ru/",
+        "mode": "built_in", "roles": ["text", "visual", "video", "crosspost"],
+        "description": "Групповые медиатопики через официальный OK REST API: текст, фото и видео, с подписью запросов и подтверждением ID темы.",
+        "requirements": "OK_APPLICATION_KEY/SECRET, access token с LONG_ACCESS_TOKEN и разрешением GROUP_CONTENT; PHOTO_CONTENT и VIDEO_CONTENT нужны для соответствующих вложений; OK_GROUP_ID — ID принадлежащей тебе группы.",
+        "docs_url": "https://apiok.ru/dev/methods/rest/mediatopic/mediatopic.post",
     },
     {
         "id": "rutube", "name": "RUTUBE", "symbol": "Ru", "color": "#00A0E3",
@@ -704,7 +704,7 @@ _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
     "reddit", "tiktok", "vk_clips", "threads",
-    "odnoklassniki", "rutube", "linkedin",
+    "rutube", "linkedin",
 ]
 
 
@@ -863,6 +863,15 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
+    if platform_id == "odnoklassniki":
+        if (
+            settings.ok_application_key
+            and settings.ok_application_secret
+            and settings.ok_access_token
+            and settings.ok_group_id
+        ):
+            return True, "OK API credentials and group are set; the read-only check will verify current-user, group and GROUP_CONTENT access."
+        return False, "Нужны OK_APPLICATION_KEY/SECRET, OK_ACCESS_TOKEN и OK_GROUP_ID; запроси LONG_ACCESS_TOKEN и GROUP_CONTENT."
     if platform_id == "pinterest":
         if (
             settings.pinterest_app_id
@@ -1031,7 +1040,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "discord", "pinterest",
+    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki",
 })
 
 
