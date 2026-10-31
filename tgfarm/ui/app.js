@@ -2074,7 +2074,12 @@
 
       <div class="drawer-block short-video-tools">
         <h4>Подготовить публикацию · vc.ru / Пикабу</h4>
-        <p class="drawer-meta">TgFarm заполнит заголовок, текст и подходящее фото в редакторе площадки. Черновик не будет опубликован автоматически: проверь его и нажми «Опубликовать» самостоятельно.</p>
+        <p class="drawer-meta">Сначала TgFarm может подобрать конкретную тему vc.ru или сообщество Пикабу, прочитать их публичное описание и правила, а затем заполнить редактор. Автопубликация через API не подтверждена: черновик не будет отправлен без твоего участия.</p>
+        <div class="short-video-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRecommendCommunityTarget('${esc(p.id)}','vc_ru')">Подобрать тему vc.ru</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmRecommendCommunityTarget('${esc(p.id)}','pikabu')">Найти сообщество Пикабу</button>
+        </div>
+        <div class="community-target-result" id="community-target-result-${esc(p.id)}"></div>
         <div class="short-video-actions">
           <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmPrepareCommunityDraft('${esc(p.id)}','vc_ru')">Подготовить для vc.ru</button>
           <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareCommunityDraft('${esc(p.id)}','pikabu')">Подготовить для Пикабу</button>
@@ -2686,6 +2691,56 @@
       refresh();
     } catch (e) {
       toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmRecommendCommunityTarget = async (id, platform) => {
+    if (!id || !["vc_ru", "pikabu"].includes(platform)) return;
+    const root = document.getElementById("community-target-result-" + id);
+    if (!root) return;
+    const label = platform === "vc_ru" ? "vc.ru" : "Пикабу";
+    root.textContent = "Читаю актуальный каталог " + label + ", описания и доступные правила…";
+    try {
+      const result = await post(
+        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/targets",
+        {},
+      );
+      const selected = result.selected || null;
+      const candidates = result.candidates || [];
+      const notes = result.general_notes || [];
+      const renderCandidate = (item, isBest = false) => {
+        const url = safeExternalUrl(item.url);
+        const score = Math.max(0, Math.min(100, Number(item.score || 0)));
+        const risks = item.risks || [];
+        return `
+          <article class="community-target-card ${isBest ? "is-best" : ""}">
+            <div class="community-target-head">
+              <div><strong>${esc(item.name || item.title || "Без названия")}</strong>
+                <span>${isBest ? "Лучший вариант" : "Альтернатива"} · совпадение ${score}/100</span></div>
+              ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Открыть ↗</a>` : ""}
+            </div>
+            <p>${esc(item.description || "Описание не получено.")}</p>
+            ${(item.matches || []).length ? `<div class="community-target-tags">${item.matches.map((value) => `<span>${esc(value)}</span>`).join("")}</div>` : ""}
+            ${risks.length ? `<div class="community-target-risks">${risks.map((value) => `<p>! ${esc(value)}</p>`).join("")}</div>` : ""}
+            ${item.rules ? `<details><summary>Правила этого места</summary><p>${esc(item.rules)}</p></details>` : `<small>Правила не удалось распознать, рекомендация не подтверждена.</small>`}
+          </article>`;
+      };
+      root.innerHTML = `
+        <div class="community-target-summary">
+          <strong>${selected ? "Место подобрано" : "Безопасное место не найдено"}</strong>
+          <p>${esc(result.detail || "")}</p>
+          <small>${platform === "vc_ru"
+            ? "Подбор темы не подтверждает право на автоматическую публикацию."
+            : "Подбор сообщества не гарантирует одобрение модераторами."}</small>
+        </div>
+        ${selected ? renderCandidate(selected, true) : ""}
+        ${candidates.filter((item) => !selected || item.slug !== selected.slug).slice(0, 4).map((item) => renderCandidate(item)).join("")}
+        ${notes.length ? `<ul class="community-target-notes">${notes.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+        ${result.rules_source ? `<a class="community-target-source" href="${esc(safeExternalUrl(result.rules_source))}" target="_blank" rel="noopener noreferrer">Источник общих правил ↗</a>` : ""}`;
+      toast(selected ? label + ": подобрано конкретное место. Открой правила и проверь его." : label + ": подходящее место не найдено, отправлять в случайное сообщество не буду.", selected ? "ok" : "warn");
+    } catch (error) {
+      root.textContent = "Не удалось подобрать место: " + (error?.message || error);
+      toast("Подбор " + label + " не выполнен: " + (error?.message || error), "err");
     }
   };
 
