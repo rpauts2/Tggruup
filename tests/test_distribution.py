@@ -101,6 +101,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "linkedin" not in MANUAL_ONLY
     assert "linkedin" in PLATFORM_RULES
     assert "instagram" in PLATFORM_RULES
+    assert "pinterest" in PLATFORM_RULES
     assert "tiktok" not in enabled
 
 
