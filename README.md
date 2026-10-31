@@ -84,7 +84,9 @@ python -m tgfarm.cli video-render POST_PUBLIC_ID
 
 **LinkedIn:** подключённые личные профили могут автоматически публиковать текст через Posts API и разрешение `w_member_social`. Для организаций потребуются отдельные organization scopes и роль администратора, это не включено в текущий адаптер.
 
-**Pinterest:** подключается через Pinterest OAuth. Укажи App ID/Secret и ID существующей доски, затем подтверди разрешения `boards:read`, `pins:read`, `pins:write`. TgFarm проверяет доступ к выбранной доске и публикует image Pins с ссылкой на первоисточник. Нужен настроенный `TGFARM_PUBLIC_BASE_URL`, чтобы Pinterest мог скачать обложку по краткоживущей подписанной ссылке. Видео-Pins пока не отправляются автоматически.
+**Pinterest:** подключается через Pinterest OAuth. Укажи App ID/Secret и ID существующей доски, затем подтверди разрешения `boards:read`, `pins:read`, `pins:write`. TgFarm проверяет доступ к выбранной доске и публикует image и video Pins с ссылкой на первоисточник. Для фото и обложек видео нужен настроенный `TGFARM_PUBLIC_BASE_URL`, чтобы Pinterest мог скачать файл по краткоживущей подписанной ссылке. Видео проходит отдельную регистрацию в Media API, загрузку на выданный URL и проверку статуса до создания Pin.
+
+**Одноклассники:** подключаются через официальный REST API группы. Введи `OK_APPLICATION_KEY`, `OK_APPLICATION_SECRET`, `OK_ACCESS_TOKEN` и `OK_GROUP_ID`. Для публикации от имени группы приложению нужны `GROUP_CONTENT`, для фото дополнительно `PHOTO_CONTENT`, для видео `VIDEO_CONTENT`. Запроси у `api-support@ok.ru` разрешения `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT`; долгоживущий токен продлевается при регулярных API-вызовах. Если из кабинета выдан отдельный `session_secret_key`, сохрани его; иначе TgFarm рассчитывает подпись официальным способом.
 
 **Discord:** подключается через webhook в собственном сервере/канале. TgFarm проверяет webhook read-only запросом и публикует сообщения с подтверждением Discord; `@everyone` и массовые mentions запрещены. Webhook URL хранится только в локальном `.env`, поэтому не отправляй его в чаты и не добавляй в скриншоты.
 
