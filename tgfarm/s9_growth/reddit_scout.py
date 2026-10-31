@@ -425,6 +425,8 @@ async def search_communities(
                 "subscribers": max(0, int(about.get("subscribers") or raw.get("subscribers") or 0)),
                 "active_user_count": max(0, int(about.get("active_user_count") or raw.get("active_user_count") or 0)),
                 "submission_type": submission_type,
+                "subreddit_type": str(about.get("subreddit_type") or "public"),
+                "restrict_posting": bool(about.get("restrict_posting", False)),
                 "over18": bool(about.get("over18", False)),
                 "score": score,
                 "fit_label": "Хорошее совпадение" if score >= 65 else (
@@ -667,8 +669,128 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
     }
 
 
+async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
+    """Choose one public subreddit, tailor one post, and re-check its live rules.
+
+    This deliberately refuses uncertain destinations: low relevance, missing
+    rules, restricted/18+ communities, required flair (not yet selectable), any
+    detected policy risk, offline/non-native drafts, or machine-check failures.
+    """
+    post = _post_record(post_public_id)
+    if post["status"] != "published":
+        raise RedditScoutError("Автопостинг в Reddit доступен только для опубликованных материалов TgFarm.")
+
+    query_terms = _terms(f"{post['title']} {post['body'][:1200]}", 7)
+    query = " ".join(query_terms[:6]) or post["title"][:100]
+    if len(query.strip()) < 2:
+        return {
+            "ok": False,
+            "reason": "Недостаточно содержательной темы, чтобы выбрать subreddit.",
+            "candidates_checked": 0,
+        }
+
+    discovery = await search_communities(
+        query,
+        post_public_id=post_public_id,
+        limit=6,
+    )
+    rejection_reasons: list[str] = []
+    for candidate in discovery.get("candidates", []):
+        name = str(candidate.get("name") or "").strip()
+        requirements = candidate.get("requirements") or {}
+        rules = candidate.get("rules") or []
+        if int(candidate.get("score") or 0) < 65:
+            rejection_reasons.append(f"r/{name}: тематическое совпадение ниже 65/100.")
+            continue
+        if candidate.get("over18") or candidate.get("subreddit_type") in {"private", "restricted"} or candidate.get("restrict_posting"):
+            rejection_reasons.append(f"r/{name}: закрытая, ограниченная или 18+ площадка.")
+            continue
+        if not rules:
+            rejection_reasons.append(f"r/{name}: Reddit не вернул правила сообщества.")
+            continue
+        if candidate.get("risk_flags"):
+            rejection_reasons.append(
+                f"r/{name}: правила содержат риск-флаги ({'; '.join(candidate['risk_flags'][:2])})."
+            )
+            continue
+        if candidate.get("submission_type") not in {"any", "self"}:
+            rejection_reasons.append(f"r/{name}: формат сообщества не подходит для текстовой статьи.")
+            continue
+        if requirements.get("is_flair_required"):
+            rejection_reasons.append(f"r/{name}: требуется flair, автоматический выбор пока не поддерживается.")
+            continue
+        if requirements.get("body_restriction_policy") == "notAllowed":
+            rejection_reasons.append(f"r/{name}: текстовое тело запрещено.")
+            continue
+
+        try:
+            tailored = await tailor_post(post_public_id, name)
+            if tailored.get("adaptation", {}).get("mode") != "ai":
+                rejection_reasons.append(
+                    f"r/{name}: нативная AI-адаптация недоступна, поэтому исходный текст не отправлен."
+                )
+                continue
+
+            # Re-fetch the community immediately before validation, rather than
+            # trusting discovery metadata that may have changed during drafting.
+            current = await inspect_community(name)
+            if current.get("risk_flags"):
+                rejection_reasons.append(
+                    f"r/{name}: правила изменились или выявлен риск ({'; '.join(current['risk_flags'][:2])})."
+                )
+                continue
+            draft = tailored.get("draft") or {}
+            problems = validate_submission(
+                str(draft.get("title") or ""),
+                str(draft.get("body") or ""),
+                current,
+            )
+            if problems:
+                rejection_reasons.append(f"r/{name}: " + "; ".join(problems[:3]))
+                continue
+            if not str(draft.get("title") or "").strip() or not str(draft.get("body") or "").strip():
+                rejection_reasons.append(f"r/{name}: после адаптации получился пустой текст.")
+                continue
+
+            return {
+                "ok": True,
+                "post_public_id": post_public_id,
+                "subreddit": name,
+                "title": str(draft["title"]).strip(),
+                "body": str(draft["body"]).strip(),
+                "reddit_kind": "self",
+                "score": int(candidate.get("score") or 0),
+                "reason": (
+                    f"Тема совпадает с r/{name} на {int(candidate.get('score') or 0)}/100; "
+                    "правила прочитаны, черновик адаптирован и машинные требования пройдены."
+                ),
+                "community": {
+                    "title": candidate.get("title") or name,
+                    "url": candidate.get("url") or f"https://www.reddit.com/r/{name}/",
+                    "subscribers": int(candidate.get("subscribers") or 0),
+                    "active_user_count": int(candidate.get("active_user_count") or 0),
+                },
+                "rules_checked": len(current.get("rules") or []),
+                "requirements_checked": True,
+                "adaptation": tailored.get("adaptation") or {},
+            }
+        except RedditScoutError as exc:
+            rejection_reasons.append(f"r/{name}: {str(exc)[:180]}")
+            continue
+
+    summary = " ".join(rejection_reasons[:4])
+    if not summary:
+        summary = "Reddit не вернул достаточно подходящих публичных сообществ."
+    return {
+        "ok": False,
+        "reason": "Автоматическая публикация в Reddit пропущена. " + summary,
+        "candidates_checked": len(discovery.get("candidates") or []),
+    }
+
+
 __all__ = [
     "RedditScoutError",
+    "build_automatic_submission",
     "inspect_community",
     "search_communities",
     "tailor_post",
