@@ -58,7 +58,8 @@ async def test_tumblr_adapter_publishes_native_npf_with_tags_and_source(monkeypa
     ))
     async def token():
         return "access-secret"
-    monkeypatch.setattr(adapters, "get_valid_tumblr_access_token", token)
+    from tgfarm.s9_growth import tumblr
+    monkeypatch.setattr(tumblr, "get_valid_tumblr_access_token", token)
     monkeypatch.setattr(httpx, "AsyncClient", FakeTumblrPublishClient)
 
     result = await adapters.ADAPTERS["tumblr"].publish(CrosspostPayload(
