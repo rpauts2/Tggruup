@@ -94,6 +94,11 @@ async def _fetch(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in {"pikabu.ru", "www.pikabu.ru", "vc.ru", "www.vc.ru"}:
         raise ValueError("Unexpected destination host.")
+    expected_hosts = (
+        {"pikabu.ru", "www.pikabu.ru"}
+        if parsed.hostname in {"pikabu.ru", "www.pikabu.ru"}
+        else {"vc.ru", "www.vc.ru"}
+    )
     async with httpx.AsyncClient(
         timeout=18.0,
         follow_redirects=True,
@@ -108,8 +113,8 @@ async def _fetch(url: str) -> dict[str, Any]:
         reader.feed(response.text[:2_500_000])
         result = reader.result(str(response.url))
         final = urlparse(result["url"])
-        if final.scheme != "https" or final.hostname not in {"pikabu.ru", "www.pikabu.ru", "vc.ru", "www.vc.ru"}:
-            raise ValueError("Public page redirected outside the platform.")
+        if final.scheme != "https" or final.hostname not in expected_hosts:
+            raise ValueError("Public page redirected outside the selected platform.")
         return result
 
 
@@ -229,6 +234,8 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
         description = page["description"] or page["text"][:900]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}\n{rule_text}")
         warnings, blockers = _pikabu_risks(rule_text, post, global_rules)
+        if not global_rules:
+            blockers.append("Не удалось прочитать общие правила и Кодекс Пикабу.")
         visible_tags = []
         for href, tag_label in page["links"]:
             tag_url = urlparse(urljoin(page["url"], href))
@@ -350,6 +357,8 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
         description = page["description"] or page["text"][:1000]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}")
         risks = _vc_risks(post, rules_text)
+        if not rules_text:
+            risks.append("Не удалось прочитать общие правила vc.ru. Автоматическая рекомендация заблокирована.")
         return {
             "target_type": "topic",
             "name": label,
@@ -361,7 +370,7 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "matches": matches,
             "risks": risks,
             "rules_available": bool(rules_text),
-            "recommended": score >= MIN_SCORE,
+            "recommended": bool(rules_text) and score >= MIN_SCORE,
         }
 
     candidates = [
