@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from types import SimpleNamespace
+from uuid import uuid4
 from urllib.parse import urlparse
 
 import pytest
@@ -166,3 +167,61 @@ async def test_caption_is_filled_after_the_rest_of_the_body(tmp_path):
         ("type_rest", "Третий."),
         ("caption", "Фото: example.invalid"),
     ]
+
+
+def test_loaded_dzen_image_jobs_keep_channel_id_for_generation_fallback(monkeypatch):
+    from tgfarm import s6_visual
+    from tgfarm.config import get_config
+    from tgfarm.db.models import Channel, Cluster, Post, RawItem
+    from tgfarm.db.session import session_scope
+    import tgfarm.s6_visual.article_images as article_images
+
+    suffix = uuid4().hex[:10]
+    channel_id = f"dzen_img_{suffix}"
+    cluster_public_id = f"cluster_{suffix}"
+    post_public_id = f"post_{suffix}"
+
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id,
+            platform="dzen",
+            title="Dzen image regression",
+            niche="general",
+            enabled=True,
+        ))
+        session.flush()
+        cluster = Cluster(
+            public_id=cluster_public_id,
+            label="Dzen image regression",
+            niche="general",
+            status="ready",
+        )
+        session.add(cluster)
+        session.flush()
+        session.add(Post(
+            public_id=post_public_id,
+            channel_id=channel_id,
+            cluster_public_id=cluster_public_id,
+            status="scheduled",
+            hook="A news item",
+            body="An article body",
+        ))
+        session.add(RawItem(
+            source_id=f"source_{suffix}",
+            external_id=f"external_{suffix}",
+            url="https://example.invalid/story",
+            title="A news item",
+            text="Article source text",
+            cluster_id=cluster.id,
+        ))
+
+    class Config:
+        def persona(self, _channel_id):
+            return SimpleNamespace(platform="dzen", enabled=True)
+
+    monkeypatch.setattr(article_images, "get_config", lambda: Config())
+    posts, _items = article_images._load_posts([post_public_id])
+
+    assert len(posts) == 1
+    assert posts[0]["public_id"] == post_public_id
+    assert posts[0]["channel_id"] == channel_id
