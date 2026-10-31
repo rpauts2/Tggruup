@@ -15,11 +15,11 @@ enabled:
   threads: false
   linkedin: false
   instagram: false
+  odnoklassniki: false
   youtube: false
   tiktok: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
   - vk_clips
-  - odnoklassniki
   - rutube
