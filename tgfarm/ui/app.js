@@ -2461,7 +2461,7 @@
 
   window.tgfarmSetPostFilter = (status) => {
     state.postFilter = status || "";
-    $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x.dataset.status === state.postFilter));
+    $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x.dataset.status === state.postFilter));
     refresh();
   };
 
@@ -2485,8 +2485,8 @@
   /* ---------------------------------------------------------------- wiring */
   function switchView(view) {
     state.view = view;
-    $(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
-    $(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
+    $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so
@@ -2500,10 +2500,10 @@
     if (window.pywebview && window.pywebview.api) return window.pywebview.api.launch_cycle();
     return runCycle();
   };
-  $("#run-cycle")[0].addEventListener("click", window.tgfarmHostCycle);
+  $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
-  $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
-  $("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
+  $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
   $("#crosspost-filter")?.addEventListener("change", (event) => {
     state.crosspostFilter = event.target.value || "all";
@@ -2532,10 +2532,10 @@
     }
   });
 
-  $("#post-filters button").forEach((b) =>
+  $$("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
       state.postFilter = b.dataset.status;
-      $("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
+      $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
 
@@ -2587,7 +2587,7 @@
     const button = event.target.closest("[data-platform-filter]");
     if (!button) return;
     state.platformFilter = button.dataset.platformFilter || "all";
-    $("#platform-filters [data-platform-filter]").forEach((item) =>
+    $$("#platform-filters [data-platform-filter]").forEach((item) =>
       item.classList.toggle("is-active", item === button));
     renderPlatformCards();
   });
@@ -2630,7 +2630,7 @@
       state.platformFilter = "all";
       state.platformCategory = "Все";
       $("#platform-search").value = "";
-      $("#platform-filters [data-platform-filter]").forEach((item) =>
+      $$("#platform-filters [data-platform-filter]").forEach((item) =>
         item.classList.toggle("is-active", item.dataset.platformFilter === "all"));
       renderPlatformCategories(state.platformData?.platforms || []);
       renderPlatformCards();
