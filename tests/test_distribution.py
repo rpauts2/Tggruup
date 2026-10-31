@@ -163,3 +163,102 @@ def test_distribution_plan_is_exposed_only_to_authenticated_dashboard(client):
     assert payload["mode"] in {"off", "dry", "live"}
     assert "primary_platforms" in payload
     assert "platforms" in payload
+
+
+def test_platform_text_adaptation_respects_native_post_length_and_source_link():
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.distribution import adapt_payload_for_platform
+
+    body = (
+        "A long, factual report with one key conclusion. "
+        + ("Additional verified context. " * 40)
+        + "\n\nhttps://example.com/source\n#AI #Technology"
+    )
+    x_payload = adapt_payload_for_platform(
+        CrosspostPayload(
+            platform="x",
+            title="A headline for a long-form report",
+            text=body,
+            link="https://example.com/source",
+        ),
+        "x",
+    )
+    bluesky_payload = adapt_payload_for_platform(
+        CrosspostPayload(
+            platform="bluesky",
+            title="A headline for a long-form report",
+            text=body,
+            link="https://example.com/source",
+        ),
+        "bluesky",
+    )
+    reddit_payload = adapt_payload_for_platform(
+        CrosspostPayload(
+            platform="reddit",
+            title="A headline",
+            text=body,
+            link="https://example.com/source",
+        ),
+        "reddit",
+    )
+
+    assert len(x_payload.title) <= 72
+    assert len(x_payload.text) <= 160
+    assert "https://example.com/source" in x_payload.text
+    assert len(bluesky_payload.text) <= 195
+    assert "#AI" not in reddit_payload.text
+    assert "verified context" in reddit_payload.text
+
+
+@pytest.mark.asyncio
+async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import distribution, s9_growth
+    from tgfarm.core.schemas import CrosspostResult
+
+    calls = []
+
+    monkeypatch.setattr(
+        s9_growth,
+        "get_config",
+        lambda: SimpleNamespace(schedule=SimpleNamespace(crosspost={"enabled": True})),
+    )
+    monkeypatch.setattr(
+        s9_growth,
+        "get_settings",
+        lambda: SimpleNamespace(mode="live"),
+    )
+    monkeypatch.setattr(
+        distribution,
+        "build_distribution_plan",
+        lambda **_kwargs: {
+            "platforms": [
+                {
+                    "platform": "x",
+                    "eligible_count": 4,
+                    "selected": [{"post_id": 123, "score": 0.91}],
+                },
+                {
+                    "platform": "reddit",
+                    "eligible_count": 2,
+                    "selected": [{"post_id": 123, "score": 0.82}],
+                },
+            ]
+        },
+    )
+
+    async def fake_crosspost_post(post_id, platforms):
+        calls.append((post_id, platforms))
+        return [
+            CrosspostResult(platform=name, status="posted", remote_id=f"{name}-1")
+            for name in platforms
+        ]
+
+    monkeypatch.setattr(s9_growth, "crosspost_post", fake_crosspost_post)
+
+    result = await s9_growth._run_crossposts_once(limit=5)
+
+    assert calls == [(123, ["x", "reddit"])]
+    assert result["posted"] == 2
+    assert result["considered"] == 2
