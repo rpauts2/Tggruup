@@ -8,6 +8,7 @@ enabled:
   max: true
   discord: false
   pinterest: false
+  facebook: false
   x: true
   reddit: false
   bluesky: false
