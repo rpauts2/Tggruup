@@ -186,7 +186,7 @@ async def test_pinterest_adapter_uploads_video_waits_for_ready_and_creates_video
         return "access-token"
 
     monkeypatch.setattr(pinterest_oauth, "get_valid_pinterest_access_token", get_token)
-    monkeypatch.setattr(instagram, "_ensure_jpeg", lambda path: Path(path))
+    monkeypatch.setattr(instagram, "_ensure_jpeg", lambda path: path)
     monkeypatch.setattr(
         instagram,
         "_signed_media_url",
