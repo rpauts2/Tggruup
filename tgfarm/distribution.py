@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from tgfarm.core.settings import ROOT, get_settings
 from tgfarm.core.text import content_tokens, normalize, token_jaccard
 from tgfarm.db.models import Channel, CrosspostLog, Media, Post, PostStat
@@ -27,7 +29,7 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
         "daily": 3, "max_daily": 4, "min_gap_hours": 3,
         "age_days": 7, "broad": True,
         "topics": {
-            "технологии": ("технолог", "ии", "ai", "нейросет", "программ", "гаджет", "робот"),
+            "технологии": ("технолог", "ai", "нейросет", "программ", "гаджет", "робот"),
             "наука": ("наук", "космос", "физик", "биолог", "исследован", "учен"),
             "экономика": ("эконом", "бизнес", "рынок", "деньг", "финанс", "компан", "работ"),
             "общество": ("обще", "город", "люд", "образован", "истор", "культур", "жизн"),
@@ -312,7 +314,7 @@ def build_distribution_plan(
 
     with session_scope() as session:
         candidates = session.execute(
-            __import__("sqlalchemy").select(Post, Channel)
+            select(Post, Channel)
             .join(Channel, Channel.id == Post.channel_id)
             .where(
                 Post.status == "published",
@@ -328,17 +330,17 @@ def build_distribution_plan(
         stats_by_post: dict[int, Any] = {}
         if candidate_ids:
             for media in session.execute(
-                __import__("sqlalchemy").select(Media).where(Media.post_id.in_(candidate_ids))
+                select(Media).where(Media.post_id.in_(candidate_ids))
             ).scalars().all():
                 media_by_post.setdefault(media.post_id, []).append(media)
             for stat in session.execute(
-                __import__("sqlalchemy").select(PostStat)
+                select(PostStat)
                 .where(PostStat.post_id.in_(candidate_ids))
                 .order_by(PostStat.collected_at.desc())
             ).scalars().all():
                 stats_by_post.setdefault(stat.post_id, stat)
         logs = session.execute(
-            __import__("sqlalchemy").select(CrosspostLog)
+            select(CrosspostLog)
             .where(CrosspostLog.created_at >= logs_cutoff)
             .order_by(CrosspostLog.id.asc())
         ).scalars().all()
