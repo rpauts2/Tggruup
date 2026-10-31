@@ -107,11 +107,11 @@ class TumblrAdapter:
         title = truncate(str(payload.title or "").strip(), self.max_title)
         body = str(payload.text or "").strip()
         source_url = _valid_http_url(payload.link)
-        if source_url:
-            body = re.sub(rf"\n*\s*Подробнее:\s*{re.escape(source_url)}\s*$", "", body, flags=re.IGNORECASE).strip()
         lines = body.splitlines()
         if lines and all(re.fullmatch(r"#[0-9a-zа-яё_]+", item.strip(), re.I) for item in lines[-1].split()):
             body = "\n".join(lines[:-1]).strip()
+        if source_url:
+            body = re.sub(rf"\n*\s*Подробнее:\s*{re.escape(source_url)}\s*$", "", body, flags=re.IGNORECASE).strip()
         body = truncate(body, self.max_body)
         content = build_npf_content(title, body)
         if not content:
