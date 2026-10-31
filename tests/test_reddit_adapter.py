@@ -259,9 +259,19 @@ def test_cli_reddit_live_mode_requires_explicit_confirmation(monkeypatch, capsys
 
 
 def test_reddit_adapter_does_not_require_a_fixed_default_subreddit(monkeypatch):
-    settings = _reddit_settings(subreddit="")
-    monkeypatch.setattr(adapters, "get_settings", lambda: settings)
+    adapter = adapters.RedditAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_credentials",
+        lambda: (
+            "test-client-id",
+            "test-client-secret",
+            "test-refresh-token",
+            "",
+            "python:tgfarm-tests:1.0 (by /u/test_account)",
+        ),
+    )
 
-    assert adapters.RedditAdapter().configured() is True
+    assert adapter.configured() is True
 
 
