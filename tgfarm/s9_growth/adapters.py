@@ -596,12 +596,13 @@ class RedditAdapter:
         )
 
     def configured(self) -> bool:
-        client_id, client_secret, refresh_token, subreddit, user_agent = self._credentials()
+        client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
+        # TgFarm selects a destination subreddit per post after reading its rules.
+        # REDDIT_SUBREDDIT remains an optional fixed fallback for manual flows.
         return bool(
             client_id
             and client_secret
             and refresh_token
-            and subreddit
             and user_agent
             and "/u/YOUR_REDDIT_USERNAME" not in user_agent
         )
