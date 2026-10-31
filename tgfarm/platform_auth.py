@@ -170,7 +170,7 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 group = await ok_api_call(
                     client,
                     "group.getInfo",
-                    {"uids": group_id, "fields": "NAME,URL"},
+                    {"uids": group_id, "fields": "UID,NAME,URL"},
                 )
                 if isinstance(group, list):
                     group_info = group[0] if group else {}
