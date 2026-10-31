@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -40,6 +40,15 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["pinterest"]["auth"]["method"] == "oauth"
     assert {field["key"] for field in entries["pinterest"]["auth"]["fields"]} == {
         "PINTEREST_APP_ID", "PINTEREST_APP_SECRET", "PINTEREST_BOARD_ID"
+    }
+    assert entries["odnoklassniki"]["supported"] is True
+    assert entries["odnoklassniki"]["mode"] == "built_in"
+    assert entries["odnoklassniki"]["automation_mode"] == "automatic"
+    assert entries["odnoklassniki"]["enabled"] is False
+    assert entries["odnoklassniki"]["auth"]["method"] == "credentials"
+    assert {field["key"] for field in entries["odnoklassniki"]["auth"]["fields"]} == {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN",
+        "OK_SESSION_SECRET_KEY", "OK_GROUP_ID",
     }
     assert entries["vk"]["auth"]["method"] == "vkhost"
     # vc.ru and Pikabu use isolated browser sign-in because no public
@@ -104,7 +113,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
-    assert catalog["summary"]["supported"] == 15
+    assert catalog["summary"]["supported"] == 16
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -198,7 +207,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 15
+    assert payload["summary"]["supported"] == 16
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
