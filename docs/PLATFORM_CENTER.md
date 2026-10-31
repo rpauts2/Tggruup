@@ -102,6 +102,14 @@ Discord включён как рабочая цель S9 для принадле
 
 Webhook URL фактически является секретом доступа к каналу: храни его только в локальном `.env`, не вставляй в скриншоты и при утечке сразу перевыпусти webhook в Discord.
 
+## Одноклассники: REST API групповых медиатопиков
+
+Одноклассники подключаются через официальный REST API. TgFarm подписывает запросы MD5 по правилам OK и публикует групповые медиатопики с текстом, фотографиями и видео. Основные методы: [mediatopic.post](https://apiok.ru/dev/methods/rest/mediatopic/mediatopic.post), [photosV2.getUploadUrl](https://apiok.ru/dev/methods/rest/photosV2/photosV2.getUploadUrl), [video.getUploadUrl](https://apiok.ru/dev/methods/rest/video/video.getUploadUrl) и [video.update](https://apiok.ru/dev/methods/rest/video/video.update).
+
+В настройках приложения запроси `VALUABLE_ACCESS`, `LONG_ACCESS_TOKEN`, `GROUP_CONTENT`, `PHOTO_CONTENT` и `VIDEO_CONTENT` через кабинет разработчика/поддержку OK. В карточке TgFarm введи Application Key, Application Secret, долгоживущий access token и ID группы. `OK_SESSION_SECRET_KEY` можно заполнить, если он выдан с токеном; иначе подпись рассчитывается по fallback MD5(access_token + application_secret_key). Секреты хранятся только в локальном `.env`.
+
+Read-only проверка подтверждает текущего пользователя, совпадение ID группы и разрешение `GROUP_CONTENT`; доступы `PHOTO_CONTENT` и `VIDEO_CONTENT` отображаются отдельно. Фото загружается через `photosV2.getUploadUrl` и прикладывается к медиатопику выданным upload token. Видео отправляется через `video.getUploadUrl`, multipart upload и завершающий `video.update`. Неопределённый исход `mediatopic.post` блокирует автоматический повтор до ручной сверки. Переключатель по умолчанию выключен: сначала проверь доступы и сделай один тестовый пост в своей группе.
+
 ## Instagram: OAuth, фото и Reels
 
 Instagram теперь является рабочей целью S9 для одиночных JPEG-фото и Reels. Адаптер использует Instagram Login scopes `instagram_business_basic` и `instagram_business_content_publish`, создаёт media container, ждёт окончания обработки Reels, публикует контейнер и сохраняет возвращённый media ID/permalink.
