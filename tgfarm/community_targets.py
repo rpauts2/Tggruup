@@ -151,17 +151,29 @@ def _pikabu_risks(
     global_rules: str,
 ) -> tuple[list[str], list[str]]:
     """Return warnings separately from hard policy/fit blockers."""
-    joined = normalize(f"{rules}\n{global_rules}")
+    joined = normalize(rules)
     content = normalize(f"{post['title']}\n{post['body']}")
     warnings: list[str] = []
     blockers: list[str] = []
     if not rules:
         blockers.append("Не удалось прочитать правила этого сообщества.")
-    if any(word in joined for word in ("самореклам", "реклама", "продвижение", "промо")):
-        blockers.append("Правила сообщества упоминают ограничения рекламы или самопродвижения.")
-    if any(word in joined for word in ("запрещен ai", "запрещены нейросет", "нейросетевый контент запрещ", "искусственный интеллект запрещ")):
+    advertising_bans = (
+        "самореклама запрещ", "запрещена самореклама", "реклама запрещена",
+        "запрещена реклама", "рекламировать запрещено", "не рекламируйте",
+        "реклама не допускается", "продвижение запрещено", "запрещено продвижение",
+    )
+    if any(phrase in joined for phrase in advertising_bans):
+        blockers.append("Правила сообщества явно запрещают рекламу или самопродвижение.")
+    elif any(word in joined for word in ("самореклам", "реклама", "продвижение", "промо")):
+        warnings.append("В правилах есть требования к рекламе или самопродвижению; проверь соответствие.")
+    ai_bans = (
+        "нейросетевый контент запрещ", "контент нейросетей запрещ",
+        "генерация нейросетью запрещ", "запрещены нейросети",
+        "запрещен ai-контент", "ai-контент запрещен",
+    )
+    if any(phrase in joined for phrase in ai_bans):
         blockers.append("Правила сообщества явно запрещают AI-контент.")
-    if any(word in joined for word in ("нейросет", "искусственн", "генерац", "ai-контент")):
+    elif any(word in joined for word in ("нейросет", "искусственн", "генерац", "ai-контент")):
         warnings.append("Правила упоминают AI-контент; проверь допустимость и специальную маркировку.")
     if any(word in content for word in ("жесть", "смерт", "кров", "увеч", "насили")):
         warnings.append("Проверь специальный тег «Жесть» и требования к небезопасному контенту.")
@@ -171,7 +183,7 @@ def _pikabu_risks(
         warnings.append("Проверь специальный тег «Контент нейросетей».")
     if re.search(r"https?://", content):
         warnings.append(
-            "В материале есть внешние ссылки: Кодекс Пикабу запрещает посты-ссылки и "
+            "В материале есть внешние ссылки: Кодекс Пикабу запрещает самостоятельные посты-ссылки и "
             "перенос продолжения на внешний ресурс. Источники должны быть вспомогательными."
         )
     return list(dict.fromkeys(warnings)), list(dict.fromkeys(blockers))
