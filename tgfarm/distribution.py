@@ -100,13 +100,31 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
         },
         "requires_video": True,
     },
+    "instagram": {
+        "daily": 1, "max_daily": 2, "min_gap_hours": 12,
+        "age_days": 7, "broad": False,
+        "topics": {
+            "визуальные технологии": ("технолог", "ai", "нейросет", "дизайн", "гаджет", "робот"),
+            "наука и открытия": ("наук", "космос", "исследован", "эксперимент", "открыт"),
+            "истории и культура": ("истор", "культур", "путешеств", "архитект", "искусств"),
+        },
+        "requires_media": True,
+    },
+    "linkedin": {
+        "daily": 1, "max_daily": 2, "min_gap_hours": 12,
+        "age_days": 7, "broad": False,
+        "topics": {
+            "технологии и работа": ("технолог", "ai", "нейросет", "программ", "разработ", "команд"),
+            "бизнес и экономика": ("бизнес", "эконом", "рынок", "финанс", "компан", "стартап"),
+            "практика и карьера": ("проект", "опыт", "карьер", "управлен", "продукт", "процесс"),
+        },
+    },
 }
 
 # These platforms may have a technical adapter but are not eligible for
 # unattended background sends. The platform's own consent flow is separate.
 MANUAL_ONLY: dict[str, str] = {
     "tiktok": "Каждая публикация TikTok требует отдельного просмотра, выбора приватности и согласия автора.",
-    "linkedin": "Публичные правила LinkedIn API не допускают использование API для автоматизации публикаций.",
 }
 MIN_SCORE = 0.38
 MAX_CANDIDATES = 180
@@ -172,6 +190,8 @@ def _quality_score(post: Any, stat: Any | None) -> float:
 def _angle_fit(platform_id: str, angle: str) -> float:
     angle = str(angle or "").lower()
     preferences = {
+        "linkedin": {"analysis": 1.0, "comparison": 0.95, "checklist": 0.9, "why_it_matters": 0.9, "news": 0.65},
+        "instagram": {"history": 1.0, "comparison": 0.95, "why_it_matters": 0.9, "checklist": 0.85, "news": 0.7},
         "reddit": {"checklist": 1.0, "analysis": 1.0, "comparison": 0.95, "why_it_matters": 0.9, "news": 0.55},
         "x": {"analysis": 1.0, "news": 0.9, "comparison": 0.8, "why_it_matters": 0.8, "checklist": 0.7},
         "bluesky": {"analysis": 0.95, "why_it_matters": 0.9, "history": 0.8, "news": 0.65},
@@ -570,6 +590,12 @@ def build_distribution_plan(
                     if platform_id == "youtube" and not any(m.kind == "video" for m in media_rows):
                         # S9 can render a short on demand for configured YouTube accounts.
                         pass
+                    if platform_id == "instagram" and not any(
+                        m.kind == "video" or (m.is_primary and m.kind != "article_image")
+                        for m in media_rows
+                    ):
+                        # Instagram needs a real image or Reel asset; no text-only fallback.
+                        continue
                     score = score_post_for_platform(
                         post,
                         platform_id,
