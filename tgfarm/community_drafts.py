@@ -39,6 +39,7 @@ PLATFORMS = {
     },
 }
 _DRAFT_STATE = "community_drafts.json"
+_STATE_LOCK = threading.RLock()
 _LOCKS = {platform: threading.Lock() for platform in PLATFORMS}
 _IMAGE_KINDS = {"article_image": 0, "ai_art": 1, "photo": 2, "image": 3}
 
@@ -51,7 +52,7 @@ def _state_path() -> Path:
     return DATA_DIR / _DRAFT_STATE
 
 
-def _read_state() -> dict[str, Any]:
+def _read_state_unlocked() -> dict[str, Any]:
     try:
         value = json.loads(_state_path().read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else {}
@@ -59,7 +60,12 @@ def _read_state() -> dict[str, Any]:
         return {}
 
 
-def _write_state(value: dict[str, Any]) -> None:
+def _read_state() -> dict[str, Any]:
+    with _STATE_LOCK:
+        return _read_state_unlocked()
+
+
+def _write_state_unlocked(value: dict[str, Any]) -> None:
     import os
     import tempfile
 
@@ -82,6 +88,19 @@ def _write_state(value: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def _write_state(value: dict[str, Any]) -> None:
+    with _STATE_LOCK:
+        _write_state_unlocked(value)
+
+
+def _write_state_entry(key: str, entry: dict[str, Any]) -> None:
+    """Merge a platform/post entry without losing a concurrent update to another platform."""
+    with _STATE_LOCK:
+        state = _read_state_unlocked()
+        state[key] = entry
+        _write_state_unlocked(state)
 
 
 def _safe_editor_url(platform_id: str, url: str) -> bool:
@@ -481,16 +500,19 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                 # Persist the editor URL before any form interaction. If the
                 # browser crashes mid-fill, the next click reopens this draft
                 # instead of creating another one.
-                state[key] = {
-                    "platform": platform_id,
-                    "post_public_id": post_public_id,
-                    "fingerprint": fingerprint,
-                    "draft_url": page.url,
-                    "status": "preparing",
-                    "media_count": 0,
-                    "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                }
-                await asyncio.to_thread(_write_state, state)
+                await asyncio.to_thread(
+                    _write_state_entry,
+                    key,
+                    {
+                        "platform": platform_id,
+                        "post_public_id": post_public_id,
+                        "fingerprint": fingerprint,
+                        "draft_url": page.url,
+                        "status": "preparing",
+                        "media_count": 0,
+                        "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    },
+                )
                 await _fill_editor_fields(page, platform_id, title, body)
                 media_count = await _upload_images(page, platform_id, images)
                 # vc.ru documents a 10-second autosave interval; wait beyond it
@@ -503,16 +525,19 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
             finally:
                 await context.close()
 
-        state[key] = {
-            "platform": platform_id,
-            "post_public_id": post_public_id,
-            "fingerprint": fingerprint,
-            "draft_url": draft_url,
-            "status": "prepared",
-            "media_count": media_count,
-            "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        }
-        await asyncio.to_thread(_write_state, state)
+        await asyncio.to_thread(
+            _write_state_entry,
+            key,
+            {
+                "platform": platform_id,
+                "post_public_id": post_public_id,
+                "fingerprint": fingerprint,
+                "draft_url": draft_url,
+                "status": "prepared",
+                "media_count": media_count,
+                "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+        )
         log.info("prepared draft-only composition for %s post %s", platform_id, post_public_id)
         return {
             "ok": True,
