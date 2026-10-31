@@ -1473,6 +1473,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
             "/api/platforms/instagram/auth/callback": "tgfarm_instagram_oauth_params",
             "/api/platforms/pinterest/auth/callback": "tgfarm_pinterest_oauth_params",
+            "/api/platforms/facebook/auth/callback": "tgfarm_facebook_oauth_params",
             "/api/platforms/reddit/auth/callback": "tgfarm_reddit_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
@@ -1503,6 +1504,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/tiktok/auth/callback",
             "/api/platforms/instagram/auth/callback",
             "/api/platforms/pinterest/auth/callback",
+            "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
@@ -2641,6 +2643,106 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
+
+    @app.post("/api/platforms/facebook/auth/start")
+    async def facebook_oauth_start(request: Request) -> dict:
+        from tgfarm.facebook_oauth import begin_facebook_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/facebook/auth/callback"
+        try:
+            return await begin_facebook_oauth(
+                settings.facebook_app_id,
+                settings.facebook_app_secret,
+                settings.facebook_page_id,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/facebook/auth/callback")
+    async def facebook_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.facebook_oauth import cancel_facebook_oauth, complete_facebook_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_facebook_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_facebook_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · Facebook</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Facebook Page не подключена</h1><p>Авторизация отменена или ответ Facebook неполный. "
+                "<a href='/'>Вернись в TgFarm и повтори подключение.</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        try:
+            credentials = await complete_facebook_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "facebook",
+                {
+                    "FACEBOOK_APP_ID": credentials["app_id"],
+                    "FACEBOOK_APP_SECRET": credentials["app_secret"],
+                    "FACEBOOK_PAGE_ID": credentials["page_id"],
+                    "FACEBOOK_PAGE_NAME": credentials["page_name"],
+                    "FACEBOOK_PAGE_ACCESS_TOKEN": credentials["page_access_token"],
+                    "FACEBOOK_USER_ACCESS_TOKEN": credentials["user_access_token"],
+                    "FACEBOOK_USER_TOKEN_EXPIRES_AT": credentials["user_token_expires_at"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "facebook",
+                True,
+                account=credentials["page_name"],
+                detail="Facebook Page OAuth подтверждён; Page access token получен для страницы с CREATE_CONTENT.",
+            )
+            _operator("platform-auth-check", "facebook", "OAuth connected")
+            page_name = html.escape(credentials["page_name"])
+            page_id = html.escape(credentials["page_id"])
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Facebook Page подключена</h1><p>Доступ подтверждён: <strong>" + page_name + "</strong>.</p>"
+                "<p>Page ID <code>" + page_id + "</code> сохранён. Публикации доступны только на эту страницу.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=200,
+                headers=headers,
+            )
+        except (ValueError, RuntimeError) as exc:
+            cancel_facebook_oauth(state_value)
+            message = html.escape(redact_sensitive_text(exc, limit=260))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Facebook Page</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400,
+                headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_facebook_oauth(state_value)
+            log.warning("Facebook OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Facebook</h1><p>Проверь настройки приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=headers,
+            )
 
     @app.post("/api/platforms/linkedin/auth/start")
     async def linkedin_oauth_start(request: Request) -> dict:
