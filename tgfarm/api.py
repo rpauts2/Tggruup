@@ -1721,6 +1721,74 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         )
         return {"ok": True, "auth": item}
 
+    @app.post("/api/platforms/{platform_id}/browser-login")
+    async def platform_browser_login(
+        platform_id: str, timeout: int = Query(420, ge=60, le=1800)
+    ) -> dict:
+        """Open a local persistent browser profile for an owner-controlled sign-in."""
+        from tgfarm.platforms import CATALOG
+        from tgfarm.browser_auth import PLATFORM_LOGIN_URLS, login_in_browser
+
+        platform_id = platform_id.lower()
+        if not any(item["id"] == platform_id for item in CATALOG):
+            raise HTTPException(status_code=404, detail="Неизвестная площадка.")
+        if platform_id in {"dzen", "vk"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Для этой площадки есть отдельный сценарий подключения.",
+            )
+        if platform_id not in PLATFORM_LOGIN_URLS:
+            raise HTTPException(status_code=409, detail="Для этой площадки ещё нет браузерного сценария.")
+        try:
+            result = await io(lambda: asyncio.run(login_in_browser(platform_id, timeout)))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=240)) from exc
+        except Exception as exc:  # noqa: BLE001 - browser errors are safe operator diagnostics
+            log.warning("browser sign-in failed for %s (%s)", platform_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось открыть профиль браузера. Проверь установку Chrome/Chromium и журнал диагностики.",
+            ) from exc
+        _operator("platform-browser-login", platform_id, result["state"])
+        return result
+
+    @app.post("/api/platforms/vk/auth/vkhost")
+    async def vkhost_auth(timeout: int = Query(420, ge=60, le=1800)) -> dict:
+        """Capture only the VK OAuth token returned after owner consent in VKHost."""
+        from tgfarm.browser_auth import capture_vkhost_token
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        try:
+            credentials = await io(lambda: asyncio.run(capture_vkhost_token(timeout)))
+            await io(save_credentials, "vk", {"VK_ACCESS_TOKEN": credentials["access_token"]})
+            result = await io(
+                record_auth_check,
+                "vk",
+                True,
+                account=credentials["account"],
+                detail="VK OAuth токен проверен через users.get и сохранён локально. Проверь ID сообщества и права на публикацию.",
+            )
+            _operator("platform-auth-check", "vk", "VKHost OAuth connected")
+            return {
+                "ok": True,
+                "authorized": True,
+                "account": credentials["account"],
+                "user_id": credentials["user_id"],
+                "expires_in": credentials["expires_in"],
+                "auth": result,
+                "detail": "Токен получен, проверен через VK API и сохранён локально. Сам токен в интерфейс не возвращается.",
+            }
+        except TimeoutError as exc:
+            raise HTTPException(status_code=408, detail=redact_sensitive_text(exc, limit=240)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=240)) from exc
+        except Exception as exc:  # noqa: BLE001 - do not expose tokens/provider response
+            log.warning("VKHost OAuth failed (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось завершить VKHost OAuth. Проверь вход, разрешения и доступность VK API.",
+            ) from exc
+
     @app.post("/api/platforms/{platform_id}/auth/check")
     async def check_platform_credentials(platform_id: str) -> dict:
         from tgfarm.platforms import CATALOG
