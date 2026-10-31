@@ -85,10 +85,13 @@ def build_ok_request_params(
 
 
 def _parse_ok_response(response: httpx.Response, method: str):
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise OKAPIError(f"OK {method} returned a non-JSON response (HTTP {response.status_code}).") from exc
+    if not response.content:
+        payload = None
+    else:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise OKAPIError(f"OK {method} returned a non-JSON response (HTTP {response.status_code}).") from exc
     if response.status_code >= 400:
         raise OKAPIError(f"OK {method} returned HTTP {response.status_code}.")
     if isinstance(payload, dict) and (payload.get("error_code") or payload.get("error_msg")):
@@ -117,6 +120,13 @@ async def ok_api_call(
     except httpx.RequestError as exc:
         raise OKAPIError(f"OK {method} network request failed ({type(exc).__name__}).") from exc
     return _parse_ok_response(response, method)
+
+
+async def ok_has_permission(client: httpx.AsyncClient, permission: str) -> bool:
+    result = await ok_api_call(client, "users.hasAppPermission", {"ext_perm": permission})
+    if isinstance(result, dict):
+        result = result.get("result", result.get("value", False))
+    return result is True or str(result).lower() == "true"
 
 
 def _upload_url_allowed(value: str) -> bool:
@@ -176,7 +186,9 @@ class OdnoklassnikiAdapter:
         path_value: str,
         group_id: str,
     ) -> list[str]:
-        path = Path(path_value)
+        from tgfarm.s9_growth.instagram import _ensure_jpeg
+
+        path = await __import__("asyncio").to_thread(_ensure_jpeg, path_value)
         if not path.is_file():
             raise OKAPIError("OK cover image is missing.")
         if not await self._has_permission(client, "PHOTO_CONTENT"):
@@ -308,6 +320,8 @@ class OdnoklassnikiAdapter:
 
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+                if not await self._has_permission(client, "GROUP_CONTENT"):
+                    raise OKAPIError("OK application does not have GROUP_CONTENT permission for this group.")
                 photo_tokens = []
                 video_id = None
                 if payload.video_path:
