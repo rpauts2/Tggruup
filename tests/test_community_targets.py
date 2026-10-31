@@ -221,3 +221,139 @@ def test_target_recommendation_api_requires_auth_and_returns_selected_target(cli
     )
     assert response.status_code == 200
     assert response.json()["selected"]["name"] == "Python"
+
+
+def test_pikabu_requires_global_code_and_community_rules(monkeypatch):
+    async def fake_fetch(url: str):
+        if url == community_targets.PIKABU_DIRECTORY:
+            return _page(url, links=[("/community/python", "Python")])
+        if url == community_targets.PIKABU_RULES:
+            return _page(url, text="")
+        return _page(
+            url,
+            title="Сообщество Python",
+            description="Python programming, developer tools and automation.",
+            chunks=["О сообществе", "Python development.", "Правила сообщества", "Публикуйте материалы о Python."],
+        )
+
+    monkeypatch.setattr(community_targets, "_fetch", fake_fetch)
+    monkeypatch.setattr("tgfarm.community_drafts._load_post", lambda _post_id: _post())
+
+    result = asyncio.run(
+        community_targets.recommend_community_target("pikabu", "published_community_test")
+    )
+
+    assert result["selected"] is None
+    assert result["candidates"][0]["recommended"] is False
+    assert any("общие правила" in blocker.lower() for blocker in result["candidates"][0]["blockers"])
+
+
+def test_vc_requires_global_rules_before_recommending_topic(monkeypatch):
+    async def fake_fetch(url: str):
+        if url == community_targets.VC_DIRECTORY:
+            return _page(url, links=[("/marketing", "Маркетинг")])
+        if url == community_targets.VC_RULES:
+            return _page(url, text="")
+        return _page(
+            url,
+            title="Маркетинг",
+            description="Маркетинг цифровых продуктов, рекламные кампании и продвижение.",
+        )
+
+    post = {
+        "public_id": "published_vc_rules_missing",
+        "title": "Маркетинг цифровых продуктов",
+        "body": "Маркетинг цифровых продуктов, продвижение и аудит рекламных кампаний.",
+        "cta": "",
+        "sources": [],
+        "hashtags": [],
+        "media": [],
+    }
+    monkeypatch.setattr(community_targets, "_fetch", fake_fetch)
+    monkeypatch.setattr("tgfarm.community_drafts._load_post", lambda _post_id: post)
+
+    result = asyncio.run(
+        community_targets.recommend_community_target("vc_ru", "published_vc_rules_missing")
+    )
+
+    assert result["selected"] is None
+    assert result["candidates"][0]["recommended"] is False
+    assert any("общие правила vc.ru" in risk.lower() for risk in result["candidates"][0]["risks"])
+
+
+def test_prepare_api_revalidates_selected_community_before_opening_editor(client, monkeypatch):
+    from tgfarm import community_drafts, community_targets
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    async def stale_recommendation(_platform, _post_id):
+        return {
+            "selected": None,
+            "candidates": [
+                {
+                    "name": "Python",
+                    "url": "https://pikabu.ru/community/python",
+                    "recommended": False,
+                }
+            ],
+        }
+
+    async def never_prepare(*_args, **_kwargs):
+        pytest.fail("browser draft must not open for a target that failed fresh rule checks")
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", stale_recommendation)
+    monkeypatch.setattr(community_drafts, "prepare_community_draft", never_prepare)
+
+    response = client.post(
+        "/api/platform-drafts/pikabu/published_community_test/prepare"
+        "?target_url=https%3A%2F%2Fpikabu.ru%2Fcommunity%2Fpython&target_name=Python",
+        json={},
+        headers={HEADER: ensure_token()},
+    )
+
+    assert response.status_code == 409
+    assert "текущую проверку" in response.json()["detail"].lower()
+
+
+def test_prepare_api_passes_only_freshly_recommended_target_to_editor(client, monkeypatch):
+    from tgfarm import community_drafts, community_targets
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    captured = {}
+
+    async def fresh_recommendation(_platform, _post_id):
+        return {
+            "selected": {
+                "name": "Python",
+                "url": "https://pikabu.ru/community/python",
+                "recommended": True,
+            },
+            "candidates": [
+                {
+                    "name": "Python",
+                    "url": "https://pikabu.ru/community/python",
+                    "recommended": True,
+                }
+            ],
+        }
+
+    async def fake_prepare(platform, post_id, **kwargs):
+        captured.update({"platform": platform, "post_id": post_id, **kwargs})
+        return {"ok": True, "status": "prepared", "target_name": kwargs["target_name"]}
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", fresh_recommendation)
+    monkeypatch.setattr(community_drafts, "prepare_community_draft", fake_prepare)
+
+    response = client.post(
+        "/api/platform-drafts/pikabu/published_community_test/prepare"
+        "?target_url=https%3A%2F%2Fpikabu.ru%2Fcommunity%2Fpython&target_name=Python",
+        json={},
+        headers={HEADER: ensure_token()},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "platform": "pikabu",
+        "post_id": "published_community_test",
+        "target_url": "https://pikabu.ru/community/python",
+        "target_name": "Python",
+    }
