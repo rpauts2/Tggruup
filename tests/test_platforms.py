@@ -28,6 +28,16 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["reddit"]["auth"]["method"] == "oauth"
     assert entries["instagram"]["auth"]["method"] == "oauth"
     assert entries["vk"]["auth"]["method"] == "vkhost"
+    # vc.ru and Pikabu use isolated browser sign-in because no public
+    # publishing API is available. Browser login must not mark them enabled.
+    for platform_id in ("vc_ru", "pikabu"):
+        assert entries[platform_id]["supported"] is False
+        assert entries[platform_id]["planned"] is True
+        assert entries[platform_id]["auth"]["method"] == "browser"
+        assert entries[platform_id]["auth"]["browser_session"]["available"] is True
+        assert "профиле браузера" in entries[platform_id]["auth"]["note"].lower()
+    assert "публичный api" in entries["vc_ru"]["requirements"].lower()
+    assert "публичный api" in entries["pikabu"]["requirements"].lower()
     # Every catalogue entry exposes a first-party sign-in URL. This only
     # creates a local browser profile; it does not claim API publish rights.
     assert all(item["auth"]["browser_session"]["available"] for item in entries.values())
