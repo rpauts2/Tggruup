@@ -45,10 +45,10 @@ class FakeTumblrPublishClient:
 @pytest.mark.asyncio
 async def test_tumblr_adapter_publishes_native_npf_with_tags_and_source(monkeypatch):
     from tgfarm import tumblr_oauth
-    from tgfarm.s9_growth import adapters
+    from tgfarm.s9_growth import adapters, tumblr
 
     FakeTumblrPublishClient.calls = []
-    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+    monkeypatch.setattr(tumblr, "get_settings", lambda: SimpleNamespace(
         tumblr_client_id="client-id",
         tumblr_client_secret="client-secret",
         tumblr_blog_identifier="demo-blog",
@@ -58,7 +58,6 @@ async def test_tumblr_adapter_publishes_native_npf_with_tags_and_source(monkeypa
     ))
     async def token():
         return "access-secret"
-    from tgfarm.s9_growth import tumblr
     monkeypatch.setattr(tumblr, "get_valid_tumblr_access_token", token)
     monkeypatch.setattr(httpx, "AsyncClient", FakeTumblrPublishClient)
 
@@ -90,9 +89,9 @@ async def test_tumblr_adapter_publishes_native_npf_with_tags_and_source(monkeypa
 
 @pytest.mark.asyncio
 async def test_tumblr_adapter_skips_without_credentials(monkeypatch):
-    from tgfarm.s9_growth import adapters
+    from tgfarm.s9_growth import adapters, tumblr
 
-    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+    monkeypatch.setattr(tumblr, "get_settings", lambda: SimpleNamespace(
         tumblr_client_id="", tumblr_client_secret="", tumblr_blog_identifier="",
         tumblr_access_token="", tumblr_refresh_token="",
     ))
