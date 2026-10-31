@@ -141,6 +141,37 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 await to_thread(log_result, post.public_id, results[-1])
             continue
 
+        reddit_submission = None
+        if name == "reddit" and settings.live:
+            # Pick exactly one destination after reading its current community
+            # rules and adapting the post. No fixed subreddit is required.
+            from tgfarm.s9_growth.reddit_scout import (
+                RedditScoutError,
+                build_automatic_submission,
+            )
+
+            try:
+                reddit_submission = await build_automatic_submission(post.public_id)
+            except RedditScoutError as exc:
+                reddit_submission = {
+                    "ok": False,
+                    "reason": f"Reddit community selection failed: {str(exc)[:220]}",
+                }
+            if not reddit_submission.get("ok"):
+                previous = await to_thread(latest_crosspost, post.public_id, name)
+                skipped = CrosspostResult(
+                    platform=name,
+                    status="skipped",
+                    error=redact_sensitive_text(
+                        reddit_submission.get("reason") or "No suitable Reddit community was found.",
+                        limit=300,
+                    ),
+                )
+                results.append(skipped)
+                if previous is None or previous.status != "skipped":
+                    await to_thread(log_result, post.public_id, skipped)
+                continue
+
         attempt = await to_thread(begin_crosspost, post.public_id, name)
         if attempt is None:
             continue
@@ -153,6 +184,14 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
 
         payload = adapt_payload_for_platform(payload, name)
         payload.platform = name
+        if name == "reddit" and reddit_submission:
+            payload.title = reddit_submission["title"]
+            payload.text = reddit_submission["body"]
+            payload.meta = {
+                **(payload.meta or {}),
+                "subreddit": reddit_submission["subreddit"],
+                "reddit_kind": reddit_submission.get("reddit_kind", "self"),
+            }
         if name in video_targets and video_render_error:
             payload.meta = {
                 **(payload.meta or {}),
