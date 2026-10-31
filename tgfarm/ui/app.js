@@ -758,8 +758,11 @@
         : auth.method === "credentials" ? "Настроить доступ" : "Войти / подключить ↗";
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
-      const authConfig = supported && (["x", "threads", "linkedin", "youtube", "tiktok", "vk"].includes(item.id) && (auth.method === "oauth" || item.id === "vk"))
-        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>${item.id === "vk" ? "ID сообщества" : "Настроить приложение"}</button>`
+      const authConfig = supported && (
+        (["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"].includes(item.id) && auth.method === "oauth")
+        || item.id === "vk"
+      )
+        ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>${item.id === "vk" ? "ID сообщества" : item.id === "reddit" ? "App / subreddit" : "Настроить приложение"}</button>`
         : "";
       const authCheck = supported && (auth.method === "credentials" || (auth.method === "oauth" && item.configured) || (auth.method === "vkhost" && item.configured))
         ? `<button type="button" class="btn btn-primary btn-sm platform-auth-check"
