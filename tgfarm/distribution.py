@@ -612,10 +612,16 @@ def build_distribution_plan(
                         # S9 can render a short on demand for configured YouTube accounts.
                         pass
                     if platform_id == "instagram" and not any(
-                        m.kind == "video" or (m.is_primary and m.kind != "article_image")
+                        m.kind == "video" or (m.is_primary and m.kind not in {"video", "article_image"})
                         for m in media_rows
                     ):
                         # Instagram needs a real image or Reel asset; no text-only fallback.
+                        continue
+                    if platform_id == "pinterest" and not any(
+                        m.is_primary and m.kind not in {"video", "article_image"}
+                        for m in media_rows
+                    ):
+                        # Pinterest image Pins need a persistent primary image; videos use a separate API flow.
                         continue
                     score = score_post_for_platform(
                         post,
