@@ -61,8 +61,8 @@ async def test_pinterest_adapter_creates_image_pin_on_selected_board(monkeypatch
         return "https://farm.example/public/media/signed-image.jpg"
 
     monkeypatch.setattr(pinterest_oauth, "get_valid_pinterest_access_token", get_token)
-    monkeypatch.setattr(pinterest, "_signed_media_url", signed_media)
-    monkeypatch.setattr(pinterest, "_ensure_jpeg", lambda path: path)
+    monkeypatch.setattr(instagram, "_signed_media_url", signed_media)
+    monkeypatch.setattr(instagram, "_ensure_jpeg", lambda path: path)
     monkeypatch.setattr(httpx, "AsyncClient", FakePinterestClient)
 
     result = await pinterest.PinterestAdapter().publish(CrosspostPayload(
