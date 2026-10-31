@@ -1783,6 +1783,29 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         _operator("platform-browser-login", platform_id, result["state"])
         return result
 
+    @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/targets")
+    async def recommend_platform_targets(platform_id: str, post_public_id: str) -> dict:
+        """Rank real communities/topics and show their published rules before draft preparation."""
+        from tgfarm.community_drafts import CommunityDraftError
+        from tgfarm.community_targets import recommend_community_target
+
+        try:
+            result = await recommend_community_target(platform_id.lower(), post_public_id)
+        except CommunityDraftError as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=500)) from exc
+        except Exception as exc:  # noqa: BLE001 - public directory changes are recoverable
+            log.warning("community target recommendation failed for %s (%s)", platform_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось получить актуальные сообщества/темы. Попробуй позже; цель не выбрана.",
+            ) from exc
+        _operator(
+            "community-target-recommended",
+            f"{platform_id}:{post_public_id}",
+            str((result.get("selected") or {}).get("name") or "no suitable public target"),
+        )
+        return result
+
     @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/prepare")
     async def prepare_platform_draft(platform_id: str, post_public_id: str) -> dict:
         """Fill a platform-native draft in the owner's saved browser profile; never publish."""
