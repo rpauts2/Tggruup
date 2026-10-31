@@ -81,3 +81,37 @@ def test_provider_retry_after_extends_automatic_crosspost_cooldown():
         row.retry_after_at = datetime.now(UTC) - timedelta(minutes=1)
 
     assert already_done(public_id, "vk") is False
+
+
+def test_editorially_skipped_delivery_respects_retry_after_cooldown(monkeypatch):
+    from tgfarm.core.schemas import CrosspostResult
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth.adapters import ADAPTERS, already_done, log_result
+
+    public_id = "editorial_skip_cooldown_" + uuid.uuid4().hex[:8]
+    monkeypatch.setattr(ADAPTERS["reddit"], "configured", lambda: True)
+
+    log_result(
+        public_id,
+        CrosspostResult(
+            platform="reddit",
+            status="skipped",
+            error="No suitable community passed current rules.",
+            retry_after_seconds=6 * 60 * 60,
+        ),
+        attempt=1,
+    )
+    assert already_done(public_id, "reddit") is True
+
+    with session_scope() as session:
+        row = session.execute(
+            select(CrosspostLog)
+            .where(CrosspostLog.post_public_id == public_id, CrosspostLog.platform == "reddit")
+            .order_by(CrosspostLog.id.desc())
+            .limit(1)
+        ).scalar_one()
+        row.created_at = datetime.now(UTC) - timedelta(days=1)
+        row.retry_after_at = datetime.now(UTC) - timedelta(minutes=1)
+
+    assert already_done(public_id, "reddit") is False
