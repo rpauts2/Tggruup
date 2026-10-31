@@ -149,6 +149,42 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "odnoklassniki":
+            from tgfarm.s9_growth.odnoklassniki import ok_api_call, ok_has_permission
+
+            group_id = str(settings.ok_group_id or "").strip()
+            if not group_id or not settings.ok_access_token:
+                raise RuntimeError("Сначала сохрани OK application key/secret, access token и ID группы.")
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+                current_user = await ok_api_call(client, "users.getCurrentUser")
+                uid = str(current_user or "").strip().strip('"')
+                if not uid:
+                    raise RuntimeError("OK не подтвердил пользователя через users.getCurrentUser.")
+                group = await ok_api_call(
+                    client,
+                    "group.getInfo",
+                    {"uids": group_id, "fields": "NAME,URL"},
+                )
+                if isinstance(group, list):
+                    group_info = group[0] if group else {}
+                elif isinstance(group, dict):
+                    group_info = group.get(group_id) or group
+                else:
+                    group_info = {}
+                if not isinstance(group_info, dict):
+                    raise RuntimeError("OK не вернул информацию о выбранной группе.")
+                group_name = str(group_info.get("name") or group_info.get("NAME") or "")
+                if not await ok_has_permission(client, "GROUP_CONTENT"):
+                    raise RuntimeError("У приложения нет GROUP_CONTENT для публикации в выбранную группу.")
+                photo_permission = await ok_has_permission(client, "PHOTO_CONTENT")
+                video_permission = await ok_has_permission(client, "VIDEO_CONTENT")
+            account = f"OK · {group_name or group_id} · user {uid}"
+            authorized = True
+            detail = (
+                "OK подтвердил текущего пользователя, группу и GROUP_CONTENT. "
+                + ("PHOTO_CONTENT доступен. " if photo_permission else "PHOTO_CONTENT не выдан: публикация без фото. ")
+                + ("VIDEO_CONTENT доступен." if video_permission else "VIDEO_CONTENT не выдан: публикация без видео.")
+            )
         elif platform_id == "pinterest":
             from tgfarm.pinterest_oauth import get_valid_pinterest_access_token
 
