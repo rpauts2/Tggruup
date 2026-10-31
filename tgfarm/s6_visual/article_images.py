@@ -424,6 +424,40 @@ def _file_sha(path: str) -> str:
     return digest.hexdigest()
 
 
+def _dzen_pending_without_inline() -> list[str]:
+    """Scheduled Dzen posts that still have no inline photo.
+
+    Transport backoff can park dozens of Dzen posts for hours; when they retry
+    they republish exactly what they had — a text-template cover. Feeding them
+    through the attach pass gives every retry a real illustration.
+    """
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Channel as ChannelRow
+    from tgfarm.db.models import Media as MediaRow
+    from tgfarm.db.models import Post as PostRow
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostRow.public_id)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(
+                ChannelRow.platform == "dzen",
+                PostRow.status == "scheduled",
+                ~select(MediaRow.id)
+                .where(
+                    MediaRow.post_id == PostRow.id,
+                    MediaRow.kind == "article_image",
+                )
+                .exists(),
+            )
+            .order_by(PostRow.published_at.asc())
+            .limit(40)
+        ).scalars().all()
+    return list(rows)
+
+
 def _recent_image_shas(limit: int = 40) -> set[str]:
     """Shas of inline photos used by recent posts.
 
@@ -451,6 +485,14 @@ async def attach_inline_images(post_public_ids: list[str]) -> int:
         return 0
 
     from tgfarm.core.run import to_thread
+
+    try:
+        backlog = await to_thread(_dzen_pending_without_inline)
+    except Exception as exc:  # noqa: BLE001 - backlog enrichment is optional
+        log.debug("backlog dzen lookup failed: %s", exc)
+        backlog = []
+    if backlog:
+        post_public_ids = list(dict.fromkeys([*post_public_ids, *backlog]))
 
     loaded = await to_thread(_load_posts, post_public_ids)
     if not loaded:
