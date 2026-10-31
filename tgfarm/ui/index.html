@@ -270,6 +270,44 @@
       <p id="platform-note">Проверка ключей показывает только наличие настроек. Реальную авторизацию и публикацию нужно подтверждать отдельным тестом на каждой площадке.</p>
     </div>
 
+    <article class="card distribution-autopilot">
+      <div class="distribution-heading">
+        <div>
+          <div class="distribution-kicker">EDITORIAL AUTOPILOT</div>
+          <h2>Редакторский план фермы</h2>
+          <p>Ферма выбирает подходящие посты, темы и частоту отдельно для каждой включённой площадки. План учитывает свежесть, нишу, качество, историю доставки и сходство публикаций.</p>
+        </div>
+        <div class="distribution-mode-indicator" id="distribution-mode-state">Режим: —</div>
+      </div>
+      <div class="distribution-mode-row">
+        <div>
+          <strong>Глобальный режим</strong>
+          <span>OFF останавливает отправку. DRY показывает план без реальных публикаций. LIVE включает автономную доставку.</span>
+        </div>
+        <div class="distribution-mode-buttons" role="group" aria-label="Режим автопубликации">
+          <button class="btn btn-ghost btn-sm" data-runtime-mode="off" type="button">OFF</button>
+          <button class="btn btn-ghost btn-sm" data-runtime-mode="dry" type="button">DRY</button>
+          <button class="btn btn-primary btn-sm" data-runtime-mode="live" type="button">LIVE</button>
+        </div>
+      </div>
+      <div class="distribution-notice" id="distribution-notice" role="status">Загружаю редакторский план…</div>
+      <div class="distribution-subhead">
+        <h3>Основные каналы</h3>
+        <span>Отдельный график и дневные потолки</span>
+      </div>
+      <div class="distribution-grid" id="distribution-primary-grid">
+        <div class="distribution-empty">План основных каналов появится после обновления.</div>
+      </div>
+      <div class="distribution-subhead">
+        <h3>Автоматическое распределение</h3>
+        <span>Лучший подходящий материал на каждую сеть</span>
+      </div>
+      <div class="distribution-grid" id="distribution-crosspost-grid">
+        <div class="distribution-empty">Подбираю темы и публикации…</div>
+      </div>
+      <p class="distribution-footnote">Включённая площадка не означает успешную авторизацию. Если адаптер отсутствует, аккаунт не настроен или правила требуют ручного согласия, TgFarm не будет имитировать автоматическую публикацию.</p>
+    </article>
+
     <article class="card reddit-studio">
       <div class="reddit-studio-head">
         <div>
