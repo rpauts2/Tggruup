@@ -41,7 +41,7 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Российские", "market": "Россия и СНГ", "priority": "core",
         "mode": "built_in", "roles": ["primary", "crosspost"],
         "description": "Публикации в сообщество и кросспост с переносом доступной обложки.",
-        "requirements": "VK_ACCESS_TOKEN и VK_GROUP_ID.",
+        "requirements": "VK_ACCESS_TOKEN и VK_GROUP_ID. Токен удобно получить через vkhost.github.io (implicit flow, scope: wall,photos,groups,offline) и вставить в поля ниже.",
         "docs_url": "https://dev.vk.com/",
     },
     {
@@ -63,7 +63,7 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Российские", "market": "Россия", "priority": "core",
         "mode": "built_in", "roles": ["primary"],
         "description": "Отдельные статьи через браузерный редактор и сохранённый профиль.",
-        "requirements": "Вход в профиль браузера Дзена; это не публичный API-паблишер.",
+        "requirements": "Вход в профиль браузера Дзена; это не публичный API-паблишер. Вход — кнопка «Войти» в этой карточке (headless-проверка статуса — рядом).",,
         "docs_url": "https://dzen.ru/",
     },
     {

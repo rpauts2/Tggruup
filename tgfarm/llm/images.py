@@ -373,6 +373,9 @@ def get_provider() -> ImageProvider | None:
 
 # ------------------------------------------------------------------ prompting
 ART_DIRECTION = {
+    "general": "playful flat vector editorial illustration, light ironic mood, "
+    "warm colors, simple shapes, one funny visual twist on the news subject, "
+    "no text",
     "tech": "abstract circuit geometry, cool blue and indigo, high contrast, dark background",
     "business": "clean editorial financial abstraction, muted green and graphite, dark background",
     "crypto": "abstract blockchain lattice, amber and near-black, cinematic, dark background",

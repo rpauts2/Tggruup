@@ -489,5 +489,53 @@ async def attach_inline_images(post_public_ids: list[str]) -> int:
 
     results = await asyncio.gather(*(attach_one(post) for post in posts))
     attached_total = sum(results)
+
+    # Fallback: a Dzen post without a single photo still deserves an
+    # illustration — the operator asked for images on every post, humor-toned.
+    # The configured image provider (Pollinations is keyless) draws a light
+    # editorial piece; if it fails, the post keeps its template cover.
+    from tgfarm.config import get_config
+    from tgfarm.core.schemas import MediaAsset
+
+    config = get_config()
+    generated = 0
+    for post, attached in zip(posts, results):
+        if attached > 0:
+            continue
+        persona = config.persona(post["channel_id"])
+        palette = persona.palette if persona else {}
+        niche = persona.niche if persona else "general"
+        try:
+            with session_scope() as session:
+                hook = session.execute(
+                    select(PostRow.hook).where(PostRow.public_id == post["public_id"])
+                ).scalar_one_or_none() or ""
+            from tgfarm.llm.images import generate_cover
+
+            art = await generate_cover(
+                (hook or "новость дня")[:120],
+                "легкая ироничная иллюстрация к новости, без текста",
+                niche,
+                palette,
+            )
+            if art and art.path:
+                await to_thread(
+                    _persist,
+                    post["public_id"],
+                    MediaAsset(
+                        kind="article_image",
+                        path=str(art.path),
+                        width=art.width,
+                        height=art.height,
+                        sha=art.sha,
+                    ),
+                )
+                generated += 1
+        except Exception as exc:  # noqa: BLE001 - a fallback must not fail the stage
+            log.debug("humor image fallback failed for %s: %s", post["public_id"], exc)
+    if generated:
+        log.info("s6: generated %d humor fallback images for imageless posts", generated)
+
+    attached_total += generated
     log.info("s6: attached %d inline article images", attached_total)
     return attached_total
