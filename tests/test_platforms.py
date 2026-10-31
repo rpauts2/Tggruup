@@ -26,6 +26,9 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     }
     assert entries["reddit"]["supported"] is True
     assert entries["reddit"]["auth"]["method"] == "oauth"
+    assert entries["instagram"]["mode"] == "planned"
+    assert entries["instagram"]["supported"] is False
+    assert entries["instagram"]["automation_mode"] == "unavailable"
     assert entries["instagram"]["auth"]["method"] == "oauth"
     assert entries["vk"]["auth"]["method"] == "vkhost"
     # vc.ru and Pikabu use isolated browser sign-in because no public
@@ -90,7 +93,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["vk_clips"]["planned"] is True
     assert entries["vk_clips"]["roles"] == ["video"]
     assert "не реализована" in entries["vk_clips"]["requirements"]
-    assert catalog["summary"]["supported"] == 13
+    assert catalog["summary"]["supported"] == 12
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -184,7 +187,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 13
+    assert payload["summary"]["supported"] == 12
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
