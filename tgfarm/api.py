@@ -1443,6 +1443,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
             "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
             "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
+            "/api/platforms/instagram/auth/callback": "tgfarm_instagram_oauth_params",
+            "/api/platforms/reddit/auth/callback": "tgfarm_reddit_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1470,6 +1472,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/linkedin/auth/callback",
             "/api/platforms/youtube/auth/callback",
             "/api/platforms/tiktok/auth/callback",
+            "/api/platforms/instagram/auth/callback",
+            "/api/platforms/reddit/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -1808,6 +1812,181 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "authorized" if result["authorized"] else "check failed",
         )
         return result
+
+    @app.post("/api/platforms/instagram/auth/start")
+    async def instagram_oauth_start(request: Request) -> dict:
+        from tgfarm.instagram_oauth import begin_instagram_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/instagram/auth/callback"
+        try:
+            return await begin_instagram_oauth(
+                settings.instagram_app_id,
+                settings.instagram_app_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/instagram/auth/callback")
+    async def instagram_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.instagram_oauth import cancel_instagram_oauth, complete_instagram_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_instagram_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_instagram_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · Instagram</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Instagram не подключён</h1><p>Авторизация отменена или ответ Meta неполный. "
+                "<a href='/'>Вернись в TgFarm и повтори подключение.</a></p></body></html>",
+                status_code=400, headers=headers,
+            )
+        try:
+            credentials = await complete_instagram_oauth(state_value, code)
+            await io(
+                save_credentials, "instagram",
+                {
+                    "INSTAGRAM_APP_ID": credentials["app_id"],
+                    "INSTAGRAM_APP_SECRET": credentials["app_secret"],
+                    "INSTAGRAM_ACCESS_TOKEN": credentials["access_token"],
+                    "INSTAGRAM_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "INSTAGRAM_USER_ID": credentials["user_id"],
+                    "INSTAGRAM_USERNAME": credentials["username"],
+                },
+            )
+            await io(
+                record_auth_check, "instagram", True,
+                account=credentials["account"],
+                detail="Instagram Login подтвердил профессиональный профиль, долгоживущий токен и разрешения.",
+            )
+            _operator("platform-auth-check", "instagram", "OAuth connected")
+            account = html.escape(credentials["account"])
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Instagram подключён</h1><p>Профиль подтверждён: <strong>" + account + "</strong>.</p>"
+                "<p>Долгоживущий токен сохранён локально. <a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=200, headers=headers,
+            )
+        except (ValueError, RuntimeError) as exc:
+            cancel_instagram_oauth(state_value)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Instagram</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400, headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_instagram_oauth(state_value)
+            log.warning("Instagram OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Instagram</h1><p>Проверь настройки приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500, headers=headers,
+            )
+
+    @app.post("/api/platforms/reddit/auth/start")
+    async def reddit_oauth_start(request: Request) -> dict:
+        from tgfarm.reddit_oauth import begin_reddit_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/reddit/auth/callback"
+        try:
+            return await begin_reddit_oauth(
+                settings.reddit_client_id,
+                settings.reddit_client_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/reddit/auth/callback")
+    async def reddit_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.reddit_oauth import cancel_reddit_oauth, complete_reddit_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_reddit_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_reddit_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · Reddit</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Reddit не подключён</h1><p>Авторизация отменена или ответ Reddit неполный. "
+                "<a href='/'>Вернись в TgFarm и повтори подключение.</a></p></body></html>",
+                status_code=400, headers=headers,
+            )
+        try:
+            credentials = await complete_reddit_oauth(state_value, code)
+            await io(
+                save_credentials, "reddit",
+                {
+                    "REDDIT_CLIENT_ID": credentials["client_id"],
+                    "REDDIT_CLIENT_SECRET": credentials["client_secret"],
+                    "REDDIT_REFRESH_TOKEN": credentials["refresh_token"],
+                    "REDDIT_USER_AGENT": credentials["user_agent"],
+                },
+            )
+            await io(
+                record_auth_check, "reddit", True,
+                account=credentials["account"],
+                detail="Reddit OAuth подтвердил аккаунт; постоянный refresh token сохранён локально. Осталось указать целевой subreddit.",
+            )
+            _operator("platform-auth-check", "reddit", "OAuth connected")
+            account = html.escape(credentials["account"])
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Reddit подключён</h1><p>Профиль подтверждён: <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Укажи subreddit по умолчанию в карточке Reddit. "
+                "<a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=200, headers=headers,
+            )
+        except (ValueError, RuntimeError) as exc:
+            cancel_reddit_oauth(state_value)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Reddit</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=400, headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_reddit_oauth(state_value)
+            log.warning("Reddit OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Reddit</h1><p>Проверь настройки приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500, headers=headers,
+            )
 
     @app.post("/api/platforms/youtube/auth/start")
     async def youtube_oauth_start(request: Request) -> dict:
