@@ -605,6 +605,54 @@ def build_distribution_plan(
     }
 
 
+def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
+    """Reshape a factual source post to the native length and tone of a network."""
+    from tgfarm.core.text import first_sentence, truncate
+
+    platform_id = str(platform_id or "").lower()
+    title = str(getattr(payload, "title", "") or "").strip()
+    body = str(getattr(payload, "text", "") or "").strip()
+    link = str(getattr(payload, "link", "") or "").strip()
+
+    # Crosspost builder appends a standalone hashtag line. Reddit uses community
+    # flairs/tags and does not benefit from a generic hashtag tail.
+    lines = body.splitlines()
+    if lines and all(re.fullmatch(r"#[0-9a-zа-яё_]+", item.strip(), re.I) for item in lines[-1].split()):
+        body = "\n".join(lines[:-1]).strip()
+
+    if platform_id == "x":
+        title = truncate(title, 72)
+        core = first_sentence(body, 112)
+        body = core
+        if link and link not in body:
+            body = f"{body}\n{link}".strip()
+        payload.title = title
+        payload.text = truncate(body, 160)
+    elif platform_id == "bluesky":
+        title = truncate(title, 96)
+        core = first_sentence(body, 170)
+        if link and link not in core:
+            core = f"{core}\n{link}".strip()
+        payload.title = title
+        payload.text = truncate(core, 195)
+    elif platform_id == "threads":
+        payload.title = truncate(title, 140)
+        payload.text = truncate(body, 330)
+    elif platform_id == "mastodon":
+        payload.title = truncate(title, 160)
+        payload.text = truncate(body, 420)
+    elif platform_id == "reddit":
+        payload.title = truncate(title, 300)
+        payload.text = body
+    elif platform_id == "max":
+        payload.title = truncate(title, 120)
+        payload.text = truncate(body, 3600)
+    elif platform_id == "vk":
+        payload.title = truncate(title, 128)
+        payload.text = truncate(body, 3600)
+    return payload
+
+
 def rules_requires_video(platform_id: str) -> bool:
     return bool(PLATFORM_RULES.get(platform_id, {}).get("requires_video"))
 
