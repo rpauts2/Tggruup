@@ -831,8 +831,11 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             and not parsed.fragment
             and re.fullmatch(r"/api/webhooks/\d{17,22}/[A-Za-z0-9._-]{16,}/?", parsed.path)
         )
-        return (True, "Discord webhook URL задан; read-only проверка подтвердит канал.")
-            if valid else (False, "Вставь полный Discord Webhook URL из принадлежащего тебе канала.")
+        return (
+            True, "Discord webhook URL задан; read-only проверка подтвердит канал."
+        ) if bool(valid) else (
+            False, "Вставь полный Discord Webhook URL из принадлежащего тебе канала."
+        )
     if platform_id == "bluesky":
         if settings.bluesky_handle and settings.bluesky_app_password:
             return True, "Handle и app password заданы; проверь сессию и write-доступ."
