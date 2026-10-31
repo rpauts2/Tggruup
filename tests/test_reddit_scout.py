@@ -447,3 +447,135 @@ def test_reddit_publish_rechecks_global_switch_after_rule_fetch(client, monkeypa
     assert "выключен до отправки" in response.json()["detail"]
     assert len(logs) == 1
     assert logs[0][1].status == "skipped"
+
+
+def test_automatic_submission_selects_one_best_community_and_revalidates_rules(monkeypatch):
+    public_post = {
+        "public_id": "published_123",
+        "status": "published",
+        "title": "Новый инструмент для анализа Python-кода",
+        "body": "Инструмент помогает разработчикам находить ошибки и улучшать качество кода.",
+        "cta": "",
+        "hashtags": ["python", "coding"],
+        "sources": [{"title": "Docs", "url": "https://example.org/docs"}],
+        "channel_id": "tech",
+    }
+    monkeypatch.setattr(scout, "_post_record", lambda _post_id: public_post)
+    monkeypatch.setattr(
+        scout,
+        "search_communities",
+        lambda *args, **kwargs: _async_result({
+            "candidates": [
+                {
+                    "name": "python",
+                    "score": 92,
+                    "over18": False,
+                    "subreddit_type": "public",
+                    "restrict_posting": False,
+                    "submission_type": "any",
+                    "risk_flags": ["Правила упоминают AI-контент"],
+                    "rules": [{"title": "Be kind"}],
+                    "requirements": {},
+                },
+                {
+                    "name": "learnpython",
+                    "title": "Learn Python",
+                    "url": "https://www.reddit.com/r/learnpython/",
+                    "score": 84,
+                    "subscribers": 120000,
+                    "active_user_count": 1200,
+                    "over18": False,
+                    "subreddit_type": "public",
+                    "restrict_posting": False,
+                    "submission_type": "self",
+                    "risk_flags": [],
+                    "rules": [{"title": "Be constructive", "description": "Give context."}],
+                    "requirements": {"body_restriction_policy": "required"},
+                },
+            ]
+        }),
+    )
+    monkeypatch.setattr(
+        scout,
+        "tailor_post",
+        lambda _post_id, subreddit: _async_result({
+            "draft": {
+                "title": "A practical Python code review tool",
+                "body": "The tool finds errors and helps developers improve code quality.",
+            },
+            "adaptation": {"mode": "ai", "provider": "test", "model": "test-model"},
+        }),
+    )
+    monkeypatch.setattr(scout, "inspect_community", lambda subreddit: _async_result({
+        "name": subreddit,
+        "about": {
+            "title": "Learn Python",
+            "over18": False,
+            "subreddit_type": "public",
+            "submission_type": "self",
+            "restrict_posting": False,
+        },
+        "rules": [{"title": "Be constructive"}],
+        "requirements": {"body_restriction_policy": "required"},
+        "risk_flags": [],
+    }))
+    monkeypatch.setattr(scout, "validate_submission", lambda title, body, community: [])
+
+    result = asyncio.run(scout.build_automatic_submission("published_123"))
+
+    assert result["ok"] is True
+    assert result["subreddit"] == "learnpython"
+    assert result["score"] == 84
+    assert result["rules_checked"] == 1
+    assert "AI-контент" not in result["reason"]
+
+
+def _async_result(value):
+    async def _return():
+        return value
+
+    return _return()
+
+
+def test_automatic_submission_fails_closed_when_only_candidates_have_policy_risks(monkeypatch):
+    monkeypatch.setattr(
+        scout,
+        "_post_record",
+        lambda _post_id: {
+            "public_id": "published_123",
+            "status": "published",
+            "title": "A topic worth discussing",
+            "body": "A useful explanation with source-backed facts and context.",
+            "cta": "",
+            "hashtags": [],
+            "sources": [],
+            "channel_id": "general",
+        },
+    )
+    monkeypatch.setattr(
+        scout,
+        "search_communities",
+        lambda *args, **kwargs: _async_result({
+            "candidates": [{
+                "name": "selfpromotion",
+                "score": 95,
+                "over18": False,
+                "subreddit_type": "public",
+                "restrict_posting": False,
+                "submission_type": "any",
+                "risk_flags": ["Self-promotion ограничен."],
+                "rules": [{"title": "No promotion"}],
+                "requirements": {},
+            }]
+        }),
+    )
+    monkeypatch.setattr(
+        scout,
+        "tailor_post",
+        lambda *_args, **_kwargs: pytest.fail("must not tailor a risky community"),
+    )
+
+    result = asyncio.run(scout.build_automatic_submission("published_123"))
+
+    assert result["ok"] is False
+    assert "правила содержат риск-флаги" in result["reason"]
