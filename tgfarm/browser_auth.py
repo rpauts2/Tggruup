@@ -106,7 +106,7 @@ def _state_path(platform_id: str) -> Path:
 def browser_session_status(platform_id: str) -> dict[str, Any]:
     """Return safe status metadata. Never expose cookie/database contents."""
     path = _state_path(platform_id)
-    profile = _profile_dir(platform_id)
+    profile = DATA_DIR / "platform_profiles" / platform_id
     saved = False
     checked_at = None
     state = "not_started"
