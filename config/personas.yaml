@@ -44,7 +44,7 @@ channels:
     platform: dzen
     catch_all: true
     enabled: true
-    posts_per_day: 2
+    posts_per_day: 120
     min_chars: 900
     max_chars: 3000
     audience: "читатели Дзена, которым интересно всё понемногу, 25-60"
@@ -83,7 +83,7 @@ channels:
     platform: vk
     catch_all: true
     enabled: true
-    posts_per_day: 3       # Консервативный общий предел для основной ленты VK.
+    posts_per_day: 48      # Индивидуальная генерация; S7 применяет общий лимит платформы.
     min_chars: 350
     max_chars: 900
     audience: "лента ВК, случайные читатели, которые листают между делами, 20-55"
