@@ -1,8 +1,7 @@
 """Pinterest API v5 image Pin publisher for S9."""
 from __future__ import annotations
 
-import hashlib
-import os
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -77,8 +76,8 @@ class PinterestAdapter:
 
         try:
             from tgfarm.s9_growth.instagram import _ensure_jpeg, _signed_media_url
-            jpeg_path = await __import__("asyncio").to_thread(_ensure_jpeg, image_path)
-            image_url = await __import__("asyncio").to_thread(
+            jpeg_path = await asyncio.to_thread(_ensure_jpeg, image_path)
+            image_url = await asyncio.to_thread(
                 _signed_media_url, str(jpeg_path), post_public_id, "article_image"
             )
         except Exception as exc:
