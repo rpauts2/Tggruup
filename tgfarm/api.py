@@ -2816,31 +2816,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             ),
         }
 
-    @app.get("/api/community-targets/{post_public_id}")
-    async def community_targets(post_public_id: str) -> dict:
-        """Rank real target communities/topics and return current rule checks."""
-        from tgfarm.s9_growth.community_targets import (
-            CommunityTargetError,
-            recommend_places_for_post,
-        )
-
-        if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", post_public_id or ""):
-            raise HTTPException(status_code=422, detail="Некорректный идентификатор поста.")
-        try:
-            return await recommend_places_for_post(post_public_id)
-        except CommunityTargetError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=redact_sensitive_text(exc, limit=360),
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 - public site markup can change
-            log.warning("community destination scouting failed (%s)", type(exc).__name__)
-            raise HTTPException(
-                status_code=502,
-                detail="Не удалось проверить сообщества и темы. Проверь сетевое подключение и повтори запрос.",
-            ) from exc
-
-    @app.get("/api/reddit/metrics")
+        @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:
         from tgfarm.s9_growth.reddit_metrics import get_reddit_metrics_report
 
