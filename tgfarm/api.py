@@ -1763,7 +1763,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         platform_id = platform_id.lower()
         if platform_id not in {"vc_ru", "pikabu"}:
-            raise HTTPException(status_code=404, detail="Подготовка черновиков доступна только для vc.ru и Пикабу.")
+            raise HTTPException(
+                status_code=404,
+                detail="Подготовка черновиков доступна только для vc.ru и Пикабу.",
+            )
         try:
             result = await io(
                 lambda: asyncio.run(prepare_community_draft(platform_id, post_public_id))
