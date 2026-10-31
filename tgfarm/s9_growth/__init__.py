@@ -187,7 +187,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if any(name in {"vk", "instagram", "pinterest"} for name in platforms)
         else None
     )
-    video_targets = {"youtube", "tiktok", "vk_clips", "instagram"}
+    video_targets = {"youtube", "tiktok", "vk_clips", "instagram", "pinterest"}
     video_render_error = None
     video_requested = any(name in video_targets for name in platforms)
     video_path = (
