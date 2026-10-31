@@ -479,7 +479,10 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                 await asyncio.to_thread(_write_state, state)
                 await _fill_editor_fields(page, platform_id, title, body)
                 media_count = await _upload_images(page, platform_id, images)
-                await page.wait_for_timeout(2_500)
+                # vc.ru documents a 10-second autosave interval; wait beyond it
+                # before closing the persistent browser context. Pikabu drafts
+                # are also autosaved, but need no such long debounce window.
+                await page.wait_for_timeout(12_000 if platform_id == "vc_ru" else 3_000)
                 draft_url = page.url
                 if not _safe_editor_url(platform_id, draft_url):
                     raise CommunityDraftError("Не удалось подтвердить безопасный адрес редактора.")
