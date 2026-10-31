@@ -1777,12 +1777,19 @@ def already_done(post_public_id: str, platform: str) -> bool:
         return not get_settings().live
     if row.status == "skipped":
         # Missing credentials wait until configuration changes. A readable but
-        # unsuitable destination may also carry a bounded editorial cooldown.
+        # unsuitable destination may carry an explicit editorial cooldown.
         adapter = ADAPTERS.get(platform)
         if adapter is None or not adapter.configured():
             return True
-        retry_at = crosspost_retry_not_before(row)
-        return retry_at is not None and datetime.now(UTC) < retry_at
+        retry_at = getattr(row, "retry_after_at", None)
+        if retry_at is None:
+            return False
+        retry_at = (
+            retry_at.replace(tzinfo=UTC)
+            if retry_at.tzinfo is None
+            else retry_at.astimezone(UTC)
+        )
+        return datetime.now(UTC) < retry_at
     return False
 
 
@@ -1814,6 +1821,19 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
                 retry_at = crosspost_retry_not_before(row)
                 if retry_at is not None and datetime.now(UTC) < retry_at:
                     return None
+            if row and row.status == "skipped":
+                adapter = ADAPTERS.get(platform)
+                if adapter is None or not adapter.configured():
+                    return None
+                retry_at = row.retry_after_at
+                if retry_at is not None:
+                    retry_at = (
+                        retry_at.replace(tzinfo=UTC)
+                        if retry_at.tzinfo is None
+                        else retry_at.astimezone(UTC)
+                    )
+                    if datetime.now(UTC) < retry_at:
+                        return None
             attempt = (row.attempt + 1) if row else 1
             # Unique constraint is the actual cross-process mutex. The log row
             # and claim are committed together, so a crash cannot leave a
