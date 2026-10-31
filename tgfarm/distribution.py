@@ -378,6 +378,10 @@ def build_distribution_plan(
     current = _utc(now or datetime.now(UTC))
     assert current is not None
     settings = get_settings()
+    from tgfarm.config import get_config
+
+    crosspost_config = get_config().schedule.crosspost or {}
+    min_age_minutes = max(0, int(crosspost_config.get("delay_min", 25)))
     cutoff = current - timedelta(days=max(1, int(max_age_days)))
     day_cutoff = current - timedelta(hours=24)
     logs_cutoff = current - timedelta(days=30)
@@ -503,6 +507,9 @@ def build_distribution_plan(
                 for post, channel in candidates:
                     if channel.platform == platform_id:
                         continue
+                    published_at = _utc(post.published_at)
+                    if published_at is None or published_at > current - timedelta(minutes=min_age_minutes):
+                        continue
                     latest_log = latest.get((post.public_id, platform_id))
                     if latest_log is not None:
                         if latest_log.status in {"posted", "unknown", "publishing", "permanent"}:
@@ -514,8 +521,11 @@ def build_distribution_plan(
                         if latest_log.status == "skipped" and configured:
                             # Credential changes can wake up previously skipped deliveries.
                             pass
-                        if latest_log.status == "dry_run" and settings.live:
-                            pass
+                        if latest_log.status == "dry_run":
+                            # A dry-run is journalled once, but must become
+                            # eligible again when the operator switches to LIVE.
+                            if not settings.live:
+                                continue
                     if platform_id == "reddit" and not settings.reddit_subreddit.strip():
                         continue
                     if rules_requires_video(platform_id) and not settings.video_enabled:
@@ -628,6 +638,7 @@ def set_runtime_mode(mode: str) -> str:
         except OSError:
             pass
         os.replace(temp_name, env_path)
+        os.environ["TGFARM_MODE"] = value
     except Exception:
         try:
             os.unlink(temp_name)
