@@ -237,10 +237,11 @@ def schedule_ready_posts(limit: int = 200) -> int:
             channel = session.get(ChannelRow, post.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
-                today_count = platform_daily_counts.setdefault(
-                    platform,
-                    _posts_platform_today(session, platform, now),
-                )
+                if platform not in platform_daily_counts:
+                    platform_daily_counts[platform] = _posts_platform_today(
+                        session, platform, now
+                    )
+                today_count = platform_daily_counts[platform]
                 daily_cap = PRIMARY_PLATFORM_DAILY_CAPS[platform]
             else:
                 today_count = _posts_today(session, post.channel_id, now)
