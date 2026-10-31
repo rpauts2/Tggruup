@@ -14,7 +14,7 @@ async def test_ok_auth_check_verifies_user_group_and_permissions(monkeypatch):
     async def fake_api(client, method, params=None):
         calls.append((method, params or {}))
         if method == "users.getCurrentUser":
-            return "user-123"
+            return {"uid": "user-123", "name": "Test User"}
         if method == "group.getInfo":
             return [{"uid": "group-456", "name": "TgFarm group", "url": "ok.ru/tgfarm"}]
         raise AssertionError("unexpected OK method " + method)
@@ -51,7 +51,7 @@ async def test_ok_auth_check_verifies_user_group_and_permissions(monkeypatch):
     result = await platform_auth.check_platform_auth("odnoklassniki")
 
     assert result["authorized"] is True
-    assert result["account"] == "OK · TgFarm group · user user-123"
+    assert result["account"] == "OK · TgFarm group · Test User"
     assert "GROUP_CONTENT" in result["detail"]
     assert "PHOTO_CONTENT доступен" in result["detail"]
     assert "VIDEO_CONTENT не выдан" in result["detail"]
