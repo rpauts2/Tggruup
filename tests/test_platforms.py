@@ -436,3 +436,18 @@ def test_platform_credentials_api_never_echoes_submitted_secret(client, monkeypa
     assert response.status_code == 200
     assert captured == {"platform_id": "vk", "values": {"VK_ACCESS_TOKEN": "top-secret"}}
     assert "top-secret" not in response.text
+
+
+def test_community_draft_api_requires_auth_and_rejects_other_platforms(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    url = "/api/platform-drafts/vc_ru/community-post-123/prepare"
+    assert client.post(url, json={}).status_code == 401
+
+    response = client.post(
+        "/api/platform-drafts/vk/community-post-123/prepare",
+        json={},
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 404
+    assert "vc.ru" in response.json()["detail"] or "Пикабу" in response.json()["detail"]
