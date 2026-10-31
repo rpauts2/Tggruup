@@ -313,6 +313,9 @@ class Settings(BaseSettings):
     # When Dzen shows the "I'm not a robot" box, the headed window stays open
     # and the farm waits this long for the operator to click it.
     dzen_captcha_wait_s: int = Field(default=180, alias="DZEN_CAPTCHA_WAIT_S")
+    # Interval mode schedules posts far ahead by design, so the queue is
+    # naturally larger than the old 100-post world; tune to taste.
+    queue_backlog_alert_threshold: int = Field(default=100, alias="QUEUE_BACKLOG_ALERT_THRESHOLD")
     # Numeric publisher id from dzen.ru/profile/editor/id/<id>/... . Optional:
     # when empty the collector discovers it from the authenticated main page.
     dzen_publisher_id: str = Field(default="", alias="DZEN_PUBLISHER_ID")
