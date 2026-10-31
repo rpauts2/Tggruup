@@ -226,7 +226,7 @@ def test_api_cannot_enable_a_platform_without_an_adapter(client, monkeypatch, tm
 
     monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
     response = client.put(
-        "/api/platforms/facebook",
+        "/api/platforms/vk_clips",
         json={"enabled": True},
         headers={HEADER: ensure_token()},
     )

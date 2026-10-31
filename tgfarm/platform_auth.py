@@ -429,7 +429,8 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
     except httpx.RequestError:
         authorized = None
         detail = "Не удалось подключиться к площадке. Проверь интернет и повтори попытку."
-    except Exception as exc:  # noqa: BLE001 - return only a bounded, redacted operator hint
+    except Exception as exc:  # noqa: BLE001 - a provider rejection is a failed check, not a network unknown
+        authorized = False
         detail = redact_sensitive_text(exc, limit=400) or "Проверка доступа не пройдена."
     else:
         pass

@@ -84,7 +84,8 @@ async def test_facebook_adapter_publishes_page_feed_post(monkeypatch):
     assert result.status == "posted"
     assert result.remote_id == "page_123"
     assert result.url == "https://www.facebook.com/page_123"
-    url, kwargs = FakeFacebookClient.calls[0]
+    method, url, kwargs = FakeFacebookClient.calls[0]
+    assert method == "POST"
     assert url == "https://graph.facebook.com/v26.0/123456789012345/feed"
     assert kwargs["headers"]["Authorization"] == "Bearer page-access-token"
     assert kwargs["data"] == {
@@ -104,7 +105,7 @@ async def test_facebook_adapter_publishes_photo_from_signed_media_url(monkeypatc
     async def get_token():
         return "page-access-token"
 
-    async def signed_url(path, post_public_id, kind):
+    async def signed_url(path, post_public_id, kind="article_image"):
         return "https://farm.example/signed-photo.jpg"
 
     monkeypatch.setattr(facebook_oauth, "get_valid_facebook_page_token", get_token)
@@ -122,7 +123,8 @@ async def test_facebook_adapter_publishes_photo_from_signed_media_url(monkeypatc
     assert result.status == "posted"
     assert result.remote_id == "page_456"
     assert result.url == "https://www.facebook.com/page_456"
-    url, kwargs = FakeFacebookClient.calls[0]
+    method, url, kwargs = FakeFacebookClient.calls[0]
+    assert method == "POST"
     assert url.endswith("/123456789012345/photos")
     assert kwargs["data"]["url"] == "https://farm.example/signed-photo.jpg"
     assert kwargs["data"]["caption"] == "Photo update\n\nA useful caption"
@@ -140,7 +142,7 @@ async def test_facebook_adapter_publishes_video_only_after_graph_reports_ready(m
     async def get_token():
         return "page-access-token"
 
-    async def signed_url(path, post_public_id, kind):
+    async def signed_url(path, post_public_id, kind="article_image"):
         return "https://farm.example/signed-video.mp4"
 
     monkeypatch.setattr(facebook_oauth, "get_valid_facebook_page_token", get_token)

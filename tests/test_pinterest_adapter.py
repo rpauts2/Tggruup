@@ -39,7 +39,7 @@ class FakePinterestClient:
 @pytest.mark.asyncio
 async def test_pinterest_adapter_creates_image_pin_on_selected_board(monkeypatch):
     from tgfarm import pinterest_oauth
-    from tgfarm.s9_growth import pinterest
+    from tgfarm.s9_growth import instagram, pinterest
 
     FakePinterestClient.calls = []
     monkeypatch.setattr(
