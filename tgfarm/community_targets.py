@@ -15,7 +15,7 @@ VC_DIRECTORY = "https://vc.ru/support"
 VC_RULES = "https://vc.ru/rules"
 USER_AGENT = "Mozilla/5.0 (compatible; TgFarmEditorial/1.0)"
 MIN_SCORE = 28
-MAX_PIKABU = 8
+MAX_PIKABU = 24
 MAX_VC = 10
 
 
@@ -145,26 +145,36 @@ def _rules(chunks: list[str], full_text: str) -> str:
     return re.sub(r"\s+", " ", match.group(1)).strip()[:3000] if match else ""
 
 
-def _pikabu_risks(rules: str, post: dict[str, Any], global_rules: str) -> list[str]:
+def _pikabu_risks(
+    rules: str,
+    post: dict[str, Any],
+    global_rules: str,
+) -> tuple[list[str], list[str]]:
+    """Return warnings separately from hard policy/fit blockers."""
     joined = normalize(f"{rules}\n{global_rules}")
     content = normalize(f"{post['title']}\n{post['body']}")
-    risks: list[str] = []
+    warnings: list[str] = []
+    blockers: list[str] = []
     if not rules:
-        risks.append("Не удалось прочитать правила этого сообщества.")
+        blockers.append("Не удалось прочитать правила этого сообщества.")
     if any(word in joined for word in ("самореклам", "реклама", "продвижение", "промо")):
-        risks.append("Правила сообщества могут ограничивать рекламу или самопродвижение.")
+        blockers.append("Правила сообщества упоминают ограничения рекламы или самопродвижения.")
+    if any(word in joined for word in ("запрещен ai", "запрещены нейросет", "нейросетевый контент запрещ", "искусственный интеллект запрещ")):
+        blockers.append("Правила сообщества явно запрещают AI-контент.")
     if any(word in joined for word in ("нейросет", "искусственн", "генерац", "ai-контент")):
-        risks.append("Правила упоминают AI-контент; требуется ручная проверка допуска.")
+        warnings.append("Правила упоминают AI-контент; проверь допустимость и специальную маркировку.")
     if any(word in content for word in ("жесть", "смерт", "кров", "увеч", "насили")):
-        risks.append("Проверь специальный тег «Жесть» и требования к небезопасному контенту.")
+        warnings.append("Проверь специальный тег «Жесть» и требования к небезопасному контенту.")
     if any(word in content for word in ("политик", "выбор", "государств", "президент", "войн")):
-        risks.append("Проверь обязательные специальные теги и правила для политических публикаций.")
+        warnings.append("Проверь обязательные специальные теги и правила для политических публикаций.")
     if any(word in content for word in ("нейросет", "сгенерирован", "chatgpt", "искусственн")):
-        risks.append("Проверь специальный тег «Контент нейросетей».")
+        warnings.append("Проверь специальный тег «Контент нейросетей».")
     if re.search(r"https?://", content):
-        risks.append("В материале есть внешняя ссылка: Кодекс Пикабу запрещает посты-ссылки и перенос продолжения на сторонний ресурс.")
-    return list(dict.fromkeys(risks))
-
+        warnings.append(
+            "В материале есть внешние ссылки: Кодекс Пикабу запрещает посты-ссылки и "
+            "перенос продолжения на внешний ресурс. Источники должны быть вспомогательными."
+        )
+    return list(dict.fromkeys(warnings)), list(dict.fromkeys(blockers))
 
 async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError
@@ -203,7 +213,7 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
         rule_text = _rules(page["chunks"], page["text"])
         description = page["description"] or page["text"][:900]
         score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}\n{rule_text}")
-        risks = _pikabu_risks(rule_text, post, global_rules)
+        warnings, blockers = _pikabu_risks(rule_text, post, global_rules)
         candidates.append({
             "target_type": "community",
             "name": label,
@@ -215,8 +225,9 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "rules_available": bool(rule_text),
             "score": max(0, min(100, round(score * .8 + initial * .2))),
             "matches": matches,
-            "risks": risks,
-            "recommended": bool(rule_text) and not risks and score >= MIN_SCORE,
+            "risks": warnings,
+            "blockers": blockers,
+            "recommended": bool(rule_text) and not blockers and score >= MIN_SCORE,
         })
     candidates.sort(key=lambda x: (x["recommended"], x["score"], x["name"]), reverse=True)
     best = next((item for item in candidates if item["recommended"]), None)
