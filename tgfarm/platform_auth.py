@@ -135,6 +135,26 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "instagram":
+            from tgfarm.instagram_oauth import get_valid_instagram_access_token
+
+            expected_user_id = str(settings.instagram_user_id or "").strip()
+            if not expected_user_id or not settings.instagram_access_token:
+                raise RuntimeError("Сначала подключи Instagram через Instagram Login OAuth.")
+            token = await get_valid_instagram_access_token()
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                payload = await _response_json(
+                    client,
+                    "https://graph.instagram.com/v25.0/me",
+                    params={"fields": "user_id,username", "access_token": token},
+                )
+            returned_id = str(payload.get("user_id") or payload.get("id") or "")
+            username = str(payload.get("username") or settings.instagram_username or "").strip()
+            if not returned_id or returned_id != expected_user_id or not username:
+                raise RuntimeError("Instagram не подтвердил ожидаемый профессиональный профиль. Переподключи OAuth.")
+            account = "@" + username
+            authorized = True
+            detail = "Instagram Login OAuth подтверждён read-запросом к профилю; доступ к публикации зависит от instagram_business_content_publish."
         elif platform_id == "threads":
             from tgfarm.threads_oauth import get_valid_threads_access_token
 
