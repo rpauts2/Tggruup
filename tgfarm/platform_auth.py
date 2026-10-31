@@ -149,6 +149,36 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 account = "@" + returned_handle
                 authorized = True
                 detail = "Bluesky app password принят, DID аккаунта подтверждён. Тест публикации отдельно проверяет write-доступ."
+        elif platform_id == "facebook":
+            from tgfarm.facebook_oauth import get_valid_facebook_page_token
+
+            expected_page_id = str(settings.facebook_page_id or "").strip()
+            if not expected_page_id or not settings.facebook_page_access_token:
+                raise RuntimeError("Сначала подключи управляемую Facebook Page через OAuth.")
+            token = await get_valid_facebook_page_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                page = await _response_json(
+                    client,
+                    f"https://graph.facebook.com/v26.0/{quote(expected_page_id, safe='')}",
+                    params={"fields": "id,name,tasks"},
+                )
+            returned_id = str(page.get("id") or "")
+            if not returned_id or returned_id != expected_page_id:
+                raise RuntimeError("Facebook не подтвердил выбранную Page. Переподключи страницу.")
+            tasks = {
+                str(task).upper()
+                for task in (page.get("tasks") or [])
+                if isinstance(task, str)
+            }
+            if tasks and "CREATE_CONTENT" not in tasks and not ({"MANAGE", "ADMINISTER"} & tasks):
+                raise RuntimeError("У текущей роли Facebook Page нет задачи CREATE_CONTENT.")
+            page_name = str(page.get("name") or settings.facebook_page_name or expected_page_id)
+            account = page_name
+            authorized = True
+            detail = "Facebook Page access token подтвердил выбранную страницу; задача CREATE_CONTENT проверена."
         elif platform_id == "odnoklassniki":
             from tgfarm.s9_growth.odnoklassniki import ok_api_call, ok_has_permission
 
