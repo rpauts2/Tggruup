@@ -643,6 +643,131 @@
     not_implemented: "muted",
   };
 
+  function renderDistributionPlan(payload) {
+    const plan = payload || {};
+    const mode = plan.mode || "dry";
+    const modeNames = { off: "OFF · остановлен", dry: "DRY · без отправки", live: "LIVE · автопостинг" };
+    const stateLabel = $("#distribution-mode-state");
+    const notice = $("#distribution-notice");
+    if (stateLabel) stateLabel.textContent = modeNames[mode] || mode;
+    if (notice) {
+      notice.textContent = mode === "off"
+        ? "Автопубликация остановлена глобальным переключателем. Площадки и очереди сохранены."
+        : mode === "dry"
+          ? `Пробный режим: выбранные материалы и лимиты видны ниже, реальные посты не отправляются. Сейчас в плане ${n(plan.selected_total || 0)} доставок.`
+          : `LIVE включён: ферма отправляет только выбранные материалы в подключённые и включённые автоматические площадки. В плане сейчас ${n(plan.selected_total || 0)} доставок.`;
+      if (plan.approval_required) {
+        notice.textContent += " Глобальное ручное одобрение дополнительно блокирует основную очередь публикации.";
+      }
+    }
+    $("#distribution-mode-buttons [data-runtime-mode]").forEach((button) => {
+      const active = button.dataset.runtimeMode === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.disabled = active;
+    });
+
+    const primaryRoot = $("#distribution-primary-grid");
+    const primary = plan.primary_platforms || [];
+    if (primaryRoot) {
+      primaryRoot.innerHTML = primary.map((item) => {
+        const remaining = Math.max(0, Number(item.remaining || 0));
+        const cap = Math.max(0, Number(item.daily_cap || 0));
+        const sent = Math.max(0, Number(item.daily_sent || 0));
+        const channelList = (item.channels || []).map(esc).join(" · ");
+        const topics = (item.topics || []).map(esc).join(", ");
+        const progress = cap ? Math.min(100, sent / cap * 100) : 0;
+        return `
+          <article class="distribution-card ${item.enabled && item.configured ? "is-ready" : "is-paused"}">
+            <div class="distribution-card-top">
+              <strong>${esc(item.name || item.platform)}</strong>
+              <span class="distribution-state">${item.enabled ? (item.configured ? "Основная очередь" : "Нужна настройка") : "ВЫКЛ"}</span>
+            </div>
+            <div class="distribution-budget">
+              <b>${n(sent)} <small>/ ${n(cap)}</small></b>
+              <span>постов за 24 ч · осталось ${n(remaining)}</span>
+            </div>
+            <div class="distribution-track"><i style="width:${progress}%"></i></div>
+            <p class="distribution-topics">${topics || "Темы не заданы"}</p>
+            <p class="distribution-detail">${channelList || esc(item.reason || "")}</p>
+            <small>${esc(item.reason || "")}</small>
+          </article>`;
+      }).join("") || `<div class="distribution-empty">Нет включённых основных каналов.</div>`;
+    }
+
+    const crosspostRoot = $("#distribution-crosspost-grid");
+    const destinations = plan.platforms || [];
+    if (crosspostRoot) {
+      crosspostRoot.innerHTML = destinations.map((item) => {
+        const selected = item.selected || [];
+        const cap = Math.max(0, Number(item.daily_cap || 0));
+        const sent = Math.max(0, Number(item.daily_sent || 0));
+        const remaining = Math.max(0, Number(item.remaining || 0));
+        const progress = cap ? Math.min(100, sent / cap * 100) : 0;
+        const stateText = !item.enabled ? "ВЫКЛ"
+          : item.automation === "manual" ? "Только вручную"
+          : item.automation !== "automatic" ? "Нет адаптера"
+          : !item.configured ? "Нужен вход"
+          : mode === "off" ? "Автопилот остановлен"
+          : "Автоподбор включён";
+        const picks = selected.length ? selected.map((post) => `
+          <div class="distribution-pick">
+            <strong>${esc(post.title || post.post_public_id)}</strong>
+            <span>${esc(post.topic || "подходящая тема")} · совпадение ${Math.round(Number(post.score || 0) * 100)}%</span>
+            <small>${esc(post.reason || "")}</small>
+          </div>`).join("") : `<div class="distribution-no-pick">${esc(item.reason || "На этот тик подходящих материалов нет.")}</div>`;
+        const topics = (item.topics || []).slice(0, 4).map(esc).join(" · ");
+        return `
+          <article class="distribution-card ${item.enabled && item.configured && item.automation === "automatic" ? "is-ready" : "is-paused"}">
+            <div class="distribution-card-top">
+              <strong>${esc(item.name || item.platform)}</strong>
+              <span class="distribution-state">${esc(stateText)}</span>
+            </div>
+            <div class="distribution-budget">
+              <b>${n(sent)} <small>/ ${n(cap)}</small></b>
+              <span>за 24 ч · осталось ${n(remaining)} · пауза ${n(item.min_gap_hours || 0)} ч</span>
+            </div>
+            <div class="distribution-track"><i style="width:${progress}%"></i></div>
+            <p class="distribution-topics">${topics || "Профиль темы уточняется"}</p>
+            <div class="distribution-picks">${picks}</div>
+            <small>${esc(item.reason || item.detail || "")}</small>
+          </article>`;
+      }).join("") || `<div class="distribution-empty">Нет включённых площадок с автоматической доставкой.</div>`;
+    }
+    state.distributionPlan = plan;
+  }
+
+  window.tgfarmSetRuntimeMode = async (mode) => {
+    if (!["off", "dry", "live"].includes(mode)) return;
+    if (mode === "live") {
+      const proceed = confirm(
+        "Включить LIVE-автопостинг?\n\n"
+        + "TgFarm начнёт публиковать реальные материалы в выбранные и подключённые автоматические площадки. "
+        + "Неподключённые, выключенные и площадки с ручным подтверждением будут пропущены. "
+        + "Можно в любой момент выключить LIVE или отдельную площадку."
+      );
+      if (!proceed) return;
+    } else if (mode === "off") {
+      if (!confirm("Остановить все новые автоматические публикации? Очереди и настройки сохранятся.")) return;
+    }
+    try {
+      const result = await put("/api/runtime/mode", {
+        mode,
+        confirm_live: mode === "live",
+      });
+      toast(
+        mode === "live" ? "LIVE включён. Автопостинг работает по редакторскому плану."
+          : mode === "dry" ? "DRY включён. Ферма покажет план без реальных отправок."
+            : "Автопостинг остановлен.",
+        "ok",
+      );
+      renderDistributionPlan(result.plan || {});
+      await refresh();
+    } catch (error) {
+      toast("Не удалось изменить режим автопилота: " + (error?.message || error), "err");
+    }
+  };
+
   function renderPlatforms(payload) {
     state.platformData = payload || { platforms: [], summary: {} };
     const summary = state.platformData.summary || {};
@@ -2398,7 +2523,7 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage, distributionPlan] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
@@ -2406,6 +2531,7 @@
         api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
         api("/api/platforms"), api("/api/reddit/metrics"), api("/api/ai/usage?days=7"),
+        api("/api/distribution/plan"),
       ]);
 
       const mode = status.mode || "?";
@@ -2437,6 +2563,7 @@
       renderMemory(memory || {});
       renderTopicDossier(state.topicDossier);
       renderPlatforms(platforms || {});
+      renderDistributionPlan(distributionPlan || {});
       renderRedditMetrics(redditMetrics || {});
       renderAIUsage(aiUsage || {});
     } catch (e) {
