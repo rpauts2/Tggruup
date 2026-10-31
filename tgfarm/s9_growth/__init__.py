@@ -164,6 +164,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                         reddit_submission.get("reason") or "No suitable Reddit community was found.",
                         limit=300,
                     ),
+                    retry_after_seconds=6 * 60 * 60,
                 )
                 results.append(skipped)
                 if previous is None or previous.status != "skipped":
