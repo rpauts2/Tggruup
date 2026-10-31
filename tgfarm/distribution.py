@@ -337,7 +337,7 @@ def _build_primary_platform_plan(
                         Channel.platform == platform_id,
                         Channel.enabled.is_(True),
                         Post.status.in_(("scheduled", "publishing", "published")),
-                        func.coalesce(Post.scheduled_at, Post.published_at, Post.created_at) >= midnight,
+                        func.coalesce(Post.published_at, Post.scheduled_at, Post.created_at) >= midnight,
                     )
                 ).scalar_one()
             )
