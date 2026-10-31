@@ -1931,6 +1931,19 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         )
         return result
 
+    @app.get("/api/platform-drafts/{platform_id}/{post_public_id}/package")
+    async def manual_platform_package(platform_id: str, post_public_id: str) -> dict:
+        """Build a copyable, destination-specific package. Never publishes."""
+        from tgfarm.manual_drafts import build_manual_package
+
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", str(post_public_id or "")):
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор поста.")
+        try:
+            post = await io(_post_detail, post_public_id)
+            return await io(build_manual_package, platform_id, post)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=400)) from exc
+
     @app.post("/api/platforms/vk/auth/vkhost")
     async def vkhost_auth(timeout: int = Query(420, ge=60, le=1800)) -> dict:
         """Capture only the VK OAuth token returned after owner consent in VKHost."""
