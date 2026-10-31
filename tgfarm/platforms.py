@@ -713,7 +713,7 @@ _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
     "reddit", "tiktok", "vk_clips", "instagram", "threads",
-    "odnoklassniki", "rutube", "linkedin", "pinterest",
+    "odnoklassniki", "rutube", "linkedin",
 ]
 
 
@@ -873,7 +873,13 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
     if platform_id == "pinterest":
-        if settings.pinterest_access_token and settings.pinterest_refresh_token and settings.pinterest_board_id:
+        if (
+            settings.pinterest_app_id
+            and settings.pinterest_app_secret
+            and settings.pinterest_access_token
+            and settings.pinterest_refresh_token
+            and settings.pinterest_board_id
+        ):
             return True, "Pinterest OAuth подключён; токен обновляется автоматически, выбранная доска проверяется перед публикацией."
         if settings.pinterest_app_id and settings.pinterest_app_secret and settings.pinterest_board_id:
             return False, "Pinterest App и доска сохранены; подключи аккаунт через OAuth."
