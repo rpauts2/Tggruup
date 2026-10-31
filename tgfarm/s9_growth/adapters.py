@@ -1341,12 +1341,13 @@ class RedditAdapter:
         )
 
     def configured(self) -> bool:
-        client_id, client_secret, refresh_token, subreddit, user_agent = self._credentials()
+        client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
+        # The S9 scout chooses a different suitable subreddit for each post.
+        # A fixed fallback is optional and is not part of OAuth readiness.
         return bool(
             client_id
             and client_secret
             and refresh_token
-            and subreddit
             and user_agent
             and "/u/YOUR_REDDIT_USERNAME" not in user_agent
         )
