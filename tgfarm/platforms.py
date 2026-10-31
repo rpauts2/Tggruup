@@ -145,10 +145,10 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "facebook", "name": "Facebook Pages", "symbol": "f", "color": "#1877F2",
         "category": "Мировые", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["text", "visual", "video"],
-        "description": "Страницы и публикации для международной аудитории.",
-        "requirements": "Page access token, права Graph API и доступ к странице.",
-        "docs_url": "https://developers.facebook.com/docs/graph-api/",
+        "mode": "built_in", "roles": ["text", "visual", "video", "crosspost"],
+        "description": "Нативные публикации в управляемую Facebook Page: текст, ссылки, фото и видео через Graph API v26.0.",
+        "requirements": "Facebook Login с pages_show_list, pages_read_engagement, pages_manage_posts; Page task CREATE_CONTENT; Facebook App ID/Secret и ID выбранной страницы.",
+        "docs_url": "https://developers.facebook.com/documentation/pages-api/posts",
     },
     {
         "id": "linkedin", "name": "LinkedIn", "symbol": "in", "color": "#0A66C2",
@@ -381,6 +381,15 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "INSTAGRAM_USER_ID", "attribute": "instagram_user_id", "label": "Instagram user ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "INSTAGRAM_USERNAME", "attribute": "instagram_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "facebook": [
+        {"key": "FACEBOOK_APP_ID", "attribute": "facebook_app_id", "label": "Facebook App ID", "secret": False, "placeholder": "App ID из Meta Developer Portal", "help": "Facebook Login должен быть включён в Meta App."},
+        {"key": "FACEBOOK_APP_SECRET", "attribute": "facebook_app_secret", "label": "Facebook App Secret", "secret": True, "placeholder": "App Secret", "help": "Секрет приложения хранится локально и не показывается повторно."},
+        {"key": "FACEBOOK_PAGE_ID", "attribute": "facebook_page_id", "label": "ID Facebook Page", "secret": False, "placeholder": "Числовой ID страницы", "help": "Укажи страницу, которой управляешь и где имеешь задачу CREATE_CONTENT. API не публикует в личный профиль или группу."},
+        {"key": "FACEBOOK_PAGE_ACCESS_TOKEN", "attribute": "facebook_page_access_token", "label": "Page access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний токен страницы."},
+        {"key": "FACEBOOK_PAGE_NAME", "attribute": "facebook_page_name", "label": "Page name", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Название подключённой страницы."},
+        {"key": "FACEBOOK_USER_ACCESS_TOKEN", "attribute": "facebook_user_access_token", "label": "Long-lived user token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний токен для обновления Page token."},
+        {"key": "FACEBOOK_USER_TOKEN_EXPIRES_AT", "attribute": "facebook_user_token_expires_at", "label": "User token expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Срок действия long-lived user token."},
+    ],
     "odnoklassniki": [
         {"key": "OK_APPLICATION_KEY", "attribute": "ok_application_key", "label": "Публичный ключ приложения", "secret": False, "placeholder": "Application key", "help": "Публичный ключ приложения ОК из кабинета разработчика."},
         {"key": "OK_APPLICATION_SECRET", "attribute": "ok_application_secret", "label": "Секрет приложения", "secret": True, "placeholder": "Application secret key", "help": "Секрет используется только для подписи API-запросов и хранится локально."},
@@ -568,7 +577,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "vkhost"
     elif platform_id in {"vc_ru", "pikabu"}:
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest", "facebook"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -708,7 +717,7 @@ _BY_ID = {item["id"]: item for item in CATALOG}
 _SUPPORTED_IDS = {item["id"] for item in CATALOG if item["mode"] == "built_in"}
 _DEFAULT_PLANNED = [
     "reddit", "tiktok", "vk_clips", "threads",
-    "rutube", "linkedin",
+    "rutube",
 ]
 
 
@@ -867,6 +876,17 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if (settings.x_access_token or settings.x_refresh_token) and settings.x_user_id:
             return True, "X OAuth-подключение найдено; проверь доступ к профилю и право tweet.write."
         return False, "Сначала настрой OAuth-приложение X и подключи аккаунт через официальное окно авторизации."
+    if platform_id == "facebook":
+        if (
+            settings.facebook_app_id
+            and settings.facebook_app_secret
+            and settings.facebook_page_id
+            and settings.facebook_page_access_token
+        ):
+            return True, "Facebook Page OAuth connected; read-only check verifies the selected Page and CREATE_CONTENT permission."
+        if settings.facebook_app_id and settings.facebook_app_secret and settings.facebook_page_id:
+            return False, "Facebook App and Page ID saved; connect the Page through Facebook Login OAuth."
+        return False, "Нужны Facebook App ID/Secret и ID страницы, затем подключи управляемую Page через OAuth."
     if platform_id == "odnoklassniki":
         if (
             settings.ok_application_key
@@ -1044,7 +1064,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki",
+    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook",
 })
 
 
