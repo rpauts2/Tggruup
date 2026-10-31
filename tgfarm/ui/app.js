@@ -2556,12 +2556,14 @@
         {},
       );
       const count = Number(result.media_count || 0);
-      toast(
-        result.status === "already_prepared"
-          ? label + ": открыл ранее подготовленный черновик, дубликат не создавался."
-          : label + ": черновик заполнен, изображений: " + count + ". Проверь редактор и опубликуй вручную.",
-        "ok",
-      );
+      const manualSteps = (result.manual_steps || []).join("; ");
+      const statusMessage = result.status === "already_prepared"
+        ? label + ": открыл ранее подготовленный черновик, дубликат не создавался."
+        : result.status === "needs_review"
+          ? label + ": прошлая попытка прервалась. Новый черновик не создавался, проверь открытый редактор."
+          : label + ": черновик заполнен, изображений: " + count + ". Проверь редактор и опубликуй вручную."
+            + (manualSteps ? " Ещё нужно: " + manualSteps + "." : "");
+      toast(statusMessage, "ok");
     } catch (error) {
       toast("Не удалось подготовить " + label + ": " + (error?.message || error), "err");
     }
