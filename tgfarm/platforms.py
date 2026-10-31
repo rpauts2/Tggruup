@@ -123,9 +123,15 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "instagram", "name": "Instagram", "symbol": "IG", "color": "#E4405F",
         "category": "Мировые", "market": "Мировые", "priority": "P1",
-        "mode": "built_in", "roles": ["visual", "crosspost"],
-        "description": "Публикация одиночных изображений в ленту профессионального Instagram-аккаунта через Instagram Login.",
-        "requirements": "Business/Creator аккаунт, Instagram App, scopes instagram_business_basic и instagram_business_content_publish, публичный HTTPS URL для изображения.",
+        "mode": "planned", "roles": ["visual", "crosspost"],
+        "description": (
+            "OAuth-вход Instagram доступен, но проверенного адаптера создания публикаций "
+            "в TgFarm пока нет. Поэтому аккаунт не включается в автономное распределение."
+        ),
+        "requirements": (
+            "Business/Creator аккаунт и Instagram Login OAuth. Для автопостинга нужен отдельный "
+            "проверенный Instagram Content Publishing adapter и публичный HTTPS URL для медиа."
+        ),
         "docs_url": "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/content-publishing/",
     },
     {
@@ -892,6 +898,21 @@ def get_platform_catalog() -> dict[str, Any]:
         platform_id = row["id"]
         supported = row["mode"] == "built_in"
         row["supported"] = supported
+        if platform_id in MANUAL_ONLY_AUTOMATION:
+            row["automation_mode"] = "manual"
+            row["automation_note"] = MANUAL_ONLY_AUTOMATION[platform_id]
+        elif platform_id in AUTOMATIC_CROSSPOST_IDS:
+            row["automation_mode"] = "automatic"
+            row["automation_note"] = "Может участвовать в автоматическом распределении при включённой площадке и подтверждённом подключении."
+        elif "primary" in row.get("roles", []) and supported:
+            row["automation_mode"] = "primary"
+            row["automation_note"] = "Основная очередь площадки; расписание рассчитывается по её каналу."
+        elif supported:
+            row["automation_mode"] = "manual"
+            row["automation_note"] = "Автоматическая доставка для этого формата не включена."
+        else:
+            row["automation_mode"] = "unavailable"
+            row["automation_note"] = "Нет рабочего автоматического адаптера."
         row["enabled"] = bool(state["enabled"].get(platform_id, False)) if supported else False
         row["planned"] = platform_id in state["planned"] if not supported else False
         row["configured"], row["connection_detail"] = (
@@ -957,18 +978,27 @@ def is_platform_enabled(platform_id: str) -> bool:
     return bool(_read_state()["enabled"].get(item["id"], False))
 
 
-def enabled_crosspost_platforms() -> list[str]:
-    """Return explicitly designated background-delivery platforms only.
+MANUAL_ONLY_AUTOMATION: dict[str, str] = {
+    "tiktok": "Каждая публикация требует отдельного выбора настроек и явного согласия автора.",
+    "linkedin": "Условия LinkedIn API запрещают использовать API для автоматизации публикаций.",
+}
 
-    A video-capable adapter is not automatically a background publisher.
-    TikTok, for example, requires a per-video preview and creator consent, and
-    remains video-only in the catalogue. YouTube Shorts opts in explicitly via
-    the crosspost role after its OAuth upload flow has been implemented.
+AUTOMATIC_CROSSPOST_IDS = frozenset({
+    "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
+})
+
+
+def enabled_crosspost_platforms() -> list[str]:
+    """Return only enabled destinations with an unattended publisher.
+
+    Manual-only destinations remain visible and can keep their OAuth connection,
+    but a green toggle never silently turns a consent-gated workflow into a bot.
     """
     return [
         item["id"]
         for item in CATALOG
-        if item["mode"] == "built_in"
+        if item["id"] in AUTOMATIC_CROSSPOST_IDS
+        and item["mode"] == "built_in"
         and "crosspost" in item["roles"]
         and is_platform_enabled(item["id"])
     ]
