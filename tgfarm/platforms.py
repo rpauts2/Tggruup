@@ -393,15 +393,6 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "PINTEREST_TOKEN_EXPIRES_AT", "attribute": "pinterest_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
         {"key": "PINTEREST_REFRESH_TOKEN_EXPIRES_AT", "attribute": "pinterest_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
     ],
-    "pinterest": [
-        {"key": "PINTEREST_APP_ID", "attribute": "pinterest_app_id", "label": "Pinterest App ID", "secret": False, "placeholder": "App ID из Pinterest Developer Portal", "help": "Зарегистрируй приложение и добавь точный callback URL из панели."},
-        {"key": "PINTEREST_APP_SECRET", "attribute": "pinterest_app_secret", "label": "Pinterest App Secret", "secret": True, "placeholder": "App Secret", "help": "Секрет хранится локально и не показывается повторно."},
-        {"key": "PINTEREST_BOARD_ID", "attribute": "pinterest_board_id", "label": "ID доски", "secret": False, "placeholder": "ID существующей Pinterest-доски", "help": "Укажи ID доски, куда будут добавляться Pins. OAuth проверит доступ к этой доске."},
-        {"key": "PINTEREST_ACCESS_TOKEN", "attribute": "pinterest_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
-        {"key": "PINTEREST_REFRESH_TOKEN", "attribute": "pinterest_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний rotating refresh token."},
-        {"key": "PINTEREST_TOKEN_EXPIRES_AT", "attribute": "pinterest_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
-        {"key": "PINTEREST_REFRESH_TOKEN_EXPIRES_AT", "attribute": "pinterest_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
-    ],
     "linkedin": [
         {"key": "LINKEDIN_CLIENT_ID", "attribute": "linkedin_client_id", "label": "LinkedIn Client ID", "secret": False, "placeholder": "Client ID из Developer Portal", "help": "Приложение должно иметь OpenID Connect и Share on LinkedIn."},
         {"key": "LINKEDIN_CLIENT_SECRET", "attribute": "linkedin_client_secret", "label": "LinkedIn Client Secret", "secret": True, "placeholder": "Client Secret из Developer Portal", "help": "Секрет хранится только в локальном .env."},
