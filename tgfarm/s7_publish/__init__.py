@@ -227,20 +227,26 @@ def schedule_ready_posts(limit: int = 200) -> int:
         per_hour: dict[datetime, int] = {}
         capacity = max(1, schedule_capacity())
         cursor: dict[str, datetime] = {}
+        platform_daily_counts: dict[str, int] = {}
 
         for post in posts:
             persona = config.persona(post.channel_id)
             if persona is None or not persona.enabled:
                 continue
 
-            today_count = _posts_today(session, post.channel_id, now)
-            # Dzen is governed only by the publish-time gap (see publish_due);
-            # keep the per-day cap for the other platforms.
-            if getattr(persona, "platform", "telegram") != "dzen" and today_count >= persona.posts_per_day:
-                continue
-
             channel = session.get(ChannelRow, post.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
+            if platform in PRIMARY_PLATFORM_DAILY_CAPS:
+                today_count = platform_daily_counts.setdefault(
+                    platform,
+                    _posts_platform_today(session, platform, now),
+                )
+                daily_cap = PRIMARY_PLATFORM_DAILY_CAPS[platform]
+            else:
+                today_count = _posts_today(session, post.channel_id, now)
+                daily_cap = max(1, int(persona.posts_per_day))
+            if today_count >= daily_cap:
+                continue
 
             if interval_mode:
                 last = cursor.get(post.channel_id) or _last_slot_for(session, post.channel_id)
@@ -264,6 +270,8 @@ def schedule_ready_posts(limit: int = 200) -> int:
             else:
                 post.scheduled_at = slot
             post.status = "scheduled"
+            if platform in PRIMARY_PLATFORM_DAILY_CAPS:
+                platform_daily_counts[platform] = today_count + 1
             scheduled += 1
 
     log.info("s7: scheduled %d posts (mode=%s)", scheduled, "interval" if interval_mode else "weights")
@@ -274,16 +282,45 @@ def schedule_capacity() -> int:
     return max(1, get_config().schedule.fleet_posts_per_hour)
 
 
+PRIMARY_PLATFORM_DAILY_CAPS = {
+    "dzen": 2,
+    "vk": 3,
+}
+
+
+def _day_bucket_expression():
+    return func.coalesce(PostRow.scheduled_at, PostRow.published_at, PostRow.created_at)
+
+
 def _posts_today(session, channel_id: str, now: datetime) -> int:
     midnight = datetime.combine(now.date(), datetime.min.time()).replace(tzinfo=UTC)
-    rows = session.execute(
-        select(PostRow).where(
-            PostRow.channel_id == channel_id,
-            PostRow.status.in_(("scheduled", "publishing", "published")),
-            PostRow.created_at >= midnight,
-        )
-    ).scalars().all()
-    return len(rows)
+    return int(
+        session.execute(
+            select(func.count()).select_from(PostRow).where(
+                PostRow.channel_id == channel_id,
+                PostRow.status.in_(("scheduled", "publishing", "published")),
+                _day_bucket_expression() >= midnight,
+            )
+        ).scalar_one()
+    )
+
+
+def _posts_platform_today(session, platform: str, now: datetime) -> int:
+    """One global primary-channel budget per platform, not one per persona."""
+    midnight = datetime.combine(now.date(), datetime.min.time()).replace(tzinfo=UTC)
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(PostRow)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(
+                ChannelRow.platform == platform,
+                ChannelRow.enabled.is_(True),
+                PostRow.status.in_(("scheduled", "publishing", "published")),
+                _day_bucket_expression() >= midnight,
+            )
+        ).scalar_one()
+    )
 
 
 # ------------------------------------------------------------------- assembly
