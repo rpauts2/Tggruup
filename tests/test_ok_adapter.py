@@ -224,7 +224,6 @@ def test_ok_upload_url_rejects_untrusted_host():
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_ok_adapter_treats_zero_topic_id_as_unapproved_app(ok_settings, monkeypatch):
     from tgfarm.s9_growth import odnoklassniki
 
@@ -232,7 +231,7 @@ async def test_ok_adapter_treats_zero_topic_id_as_unapproved_app(ok_settings, mo
         async def post(self, url, **kwargs):
             method = kwargs.get("data", {}).get("method")
             if method == "mediatopic.post":
-                return FakeResponse('"0"')
+                return FakeResponse("0")
             return await super().post(url, **kwargs)
 
     monkeypatch.setattr(odnoklassniki.httpx, "AsyncClient", ZeroTopicClient)
@@ -249,6 +248,7 @@ async def test_ok_adapter_treats_zero_topic_id_as_unapproved_app(ok_settings, mo
     assert "not approved" in (result.error or "").lower() or "не одобрено" in (result.error or "").lower()
 
 
+@pytest.mark.asyncio
 async def test_ok_ambiguous_group_post_result_is_unknown_and_not_retryable(ok_settings):
     FakeOKClient.publish_status = 504
     result = await ok_settings.OdnoklassnikiAdapter().publish(CrosspostPayload(
