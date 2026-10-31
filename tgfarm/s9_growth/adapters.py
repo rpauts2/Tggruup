@@ -27,6 +27,7 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
+from tgfarm.s9_growth.instagram import InstagramAdapter
 
 log = get_logger(__name__)
 
@@ -1652,18 +1653,17 @@ class ThreadsAdapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
-    "youtube": YouTubeAdapter(),
-    "tiktok": TikTokAdapter(),
-    "mastodon": MastodonAdapter(),
-    "bluesky": BlueskyAdapter(),
-    "threads": ThreadsAdapter(),
-    "linkedin": LinkedInAdapter(),
-    "youtube": YouTubeAdapter(),
-    "tiktok": TikTokAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),
     "reddit": RedditAdapter(),
+    "bluesky": BlueskyAdapter(),
+    "mastodon": MastodonAdapter(),
+    "threads": ThreadsAdapter(),
+    "linkedin": LinkedInAdapter(),
+    "youtube": YouTubeAdapter(),
+    "tiktok": TikTokAdapter(),
+    "instagram": InstagramAdapter(),
 }
 
 
