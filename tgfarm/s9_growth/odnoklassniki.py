@@ -197,7 +197,7 @@ class OdnoklassnikiAdapter:
         payload = await ok_api_call(
             client,
             "photosV2.getUploadUrl",
-            {"gid": group_id, "count": "1", "sizes": str(path.stat().st_size)},
+            {"gid": group_id, "count": "1"},
         )
         upload_url = str(payload.get("upload_url") or "") if isinstance(payload, dict) else ""
         if not _upload_url_allowed(upload_url):
