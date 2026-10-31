@@ -377,6 +377,15 @@ class Settings(BaseSettings):
     ok_session_secret_key: str = Field(default="", alias="OK_SESSION_SECRET_KEY")
     ok_group_id: str = Field(default="", alias="OK_GROUP_ID")
 
+    # Facebook Pages Graph API: user token is retained only for Page-token renewal.
+    facebook_app_id: str = Field(default="", alias="FACEBOOK_APP_ID")
+    facebook_app_secret: str = Field(default="", alias="FACEBOOK_APP_SECRET")
+    facebook_page_id: str = Field(default="", alias="FACEBOOK_PAGE_ID")
+    facebook_page_access_token: str = Field(default="", alias="FACEBOOK_PAGE_ACCESS_TOKEN")
+    facebook_page_name: str = Field(default="", alias="FACEBOOK_PAGE_NAME")
+    facebook_user_access_token: str = Field(default="", alias="FACEBOOK_USER_ACCESS_TOKEN")
+    facebook_user_token_expires_at: int = Field(default=0, alias="FACEBOOK_USER_TOKEN_EXPIRES_AT")
+
     # YouTube Data API upload and metadata.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
     youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
