@@ -1931,6 +1931,15 @@
 
       <div class="drawer-block"><h4>Текст</h4><div class="drawer-text">${esc(p.text)}</div></div>
 
+      <div class="drawer-block short-video-tools">
+        <h4>Подготовить публикацию · vc.ru / Пикабу</h4>
+        <p class="drawer-meta">TgFarm заполнит заголовок, текст и подходящее фото в редакторе площадки. Черновик не будет опубликован автоматически: проверь его и нажми «Опубликовать» самостоятельно.</p>
+        <div class="short-video-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmPrepareCommunityDraft('${esc(p.id)}','vc_ru')">Подготовить для vc.ru</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareCommunityDraft('${esc(p.id)}','pikabu')">Подготовить для Пикабу</button>
+        </div>
+      </div>
+
       ${p.status === "published" ? `<div class="drawer-block short-video-tools">
         <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
         <p class="drawer-meta">Из текущего поста можно собрать оригинальный вертикальный MP4. YouTube загружает Shorts автоматически только при включённой площадке и live-режиме. TikTok всегда просит подтверждение перед каждой отправкой.</p>
@@ -2534,6 +2543,27 @@
       refresh();
     } catch (e) {
       toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
+    }
+  };
+
+  window.tgfarmPrepareCommunityDraft = async (id, platform) => {
+    if (!id || !["vc_ru", "pikabu"].includes(platform)) return;
+    const label = platform === "vc_ru" ? "vc.ru" : "Пикабу";
+    if (!confirm("Подготовить черновик для " + label + "? TgFarm заполнит редактор и прикрепит изображение, но НЕ будет нажимать «Опубликовать».")) return;
+    try {
+      const result = await post(
+        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/prepare",
+        {},
+      );
+      const count = Number(result.media_count || 0);
+      toast(
+        result.status === "already_prepared"
+          ? label + ": открыл ранее подготовленный черновик, дубликат не создавался."
+          : label + ": черновик заполнен, изображений: " + count + ". Проверь редактор и опубликуй вручную.",
+        "ok",
+      );
+    } catch (error) {
+      toast("Не удалось подготовить " + label + ": " + (error?.message || error), "err");
     }
   };
 
