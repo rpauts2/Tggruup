@@ -1823,6 +1823,40 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 detail="Подготовка черновиков доступна только для vc.ru и Пикабу.",
             )
         try:
+            if target_url:
+                # Re-read the live catalogue/rules server-side immediately
+                # before opening the editor. A stale UI recommendation or a
+                # hand-crafted API request must not bypass this check.
+                from tgfarm.community_targets import recommend_community_target
+
+                current_plan = await recommend_community_target(
+                    platform_id,
+                    post_public_id,
+                )
+                candidates = current_plan.get("candidates") or []
+                target_key = str(target_url).strip().rstrip("/")
+                current_target = next(
+                    (
+                        item for item in candidates
+                        if str(item.get("url") or "").strip().rstrip("/") == target_key
+                    ),
+                    None,
+                )
+                if not current_target or not current_target.get("recommended"):
+                    raise CommunityDraftError(
+                        "Выбранная тема/сообщество больше не проходит текущую проверку правил. "
+                        "Подбери цель заново; черновик не открывался."
+                    )
+                current_name = str(
+                    current_target.get("name") or current_target.get("title") or ""
+                ).strip()
+                if target_name and current_name and target_name.strip() != current_name:
+                    raise CommunityDraftError(
+                        "Название выбранной цели изменилось. Обнови рекомендацию перед подготовкой."
+                    )
+                target_url = str(current_target.get("url") or target_url)
+                target_name = current_name or target_name
+
             result = await io(
                 lambda: asyncio.run(
                     prepare_community_draft(
