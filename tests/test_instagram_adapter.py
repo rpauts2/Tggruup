@@ -73,6 +73,7 @@ async def test_instagram_adapter_publishes_image_container(monkeypatch):
         return "access-token"
 
     monkeypatch.setattr(instagram_oauth, "get_valid_instagram_access_token", get_token)
+    monkeypatch.setattr(instagram, "_ensure_jpeg", lambda path: path)
     monkeypatch.setattr(instagram, "_signed_media_url", lambda path, post_id, kind: "https://farm.example/signed.jpg")
     monkeypatch.setattr(httpx, "AsyncClient", FakeInstagramClient)
 
