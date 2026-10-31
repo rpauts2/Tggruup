@@ -28,6 +28,7 @@ from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.s9_growth.instagram import InstagramAdapter
+from tgfarm.s9_growth.facebook import FacebookPageAdapter
 from tgfarm.s9_growth.pinterest import PinterestAdapter
 from tgfarm.s9_growth.odnoklassniki import OdnoklassnikiAdapter
 
