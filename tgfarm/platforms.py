@@ -328,6 +328,9 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "discord": [
         {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
     ],
+    "discord": [
+        {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
+    ],
     "bluesky": [
         {"key": "BLUESKY_HANDLE", "attribute": "bluesky_handle", "label": "Handle", "secret": False, "placeholder": "name.bsky.social", "help": "Handle аккаунта Bluesky, можно с собственным доменом."},
         {"key": "BLUESKY_APP_PASSWORD", "attribute": "bluesky_app_password", "label": "App password", "secret": True, "placeholder": "xxxx-xxxx-xxxx-xxxx", "help": "Создай отдельный пароль приложения в Settings → Privacy and Security → App passwords. Не вводи основной пароль."},
