@@ -389,7 +389,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "reddit": [
         {"key": "REDDIT_CLIENT_ID", "attribute": "reddit_client_id", "label": "Client ID", "secret": False, "placeholder": "Reddit app client ID", "help": "Создаётся в настройках Reddit developer app."},
         {"key": "REDDIT_CLIENT_SECRET", "attribute": "reddit_client_secret", "label": "Client secret", "secret": True, "placeholder": "Reddit app client secret", "help": "Секрет приложения, не пароль Reddit."},
-        {"key": "REDDIT_REFRESH_TOKEN", "attribute": "reddit_refresh_token", "label": "Refresh token", "secret": True, "placeholder": "Permanent OAuth refresh token", "help": "OAuth-токен с нужными scope, например read и submit."},
+        {"key": "REDDIT_REFRESH_TOKEN", "attribute": "reddit_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Выдаётся автоматически через Reddit OAuth и хранится локально."},
         {"key": "REDDIT_SUBREDDIT", "attribute": "reddit_subreddit", "label": "Сообщество по умолчанию", "secret": False, "placeholder": "learnpython", "help": "Название без префикса r/."},
         {"key": "REDDIT_USER_AGENT", "attribute": "reddit_user_agent", "label": "User-Agent", "secret": False, "placeholder": "python:tgfarm:1.0 (by /u/your_name)", "help": "Уникальная описательная строка. Не оставляй шаблонное имя."},
     ],
@@ -528,7 +528,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "browser"
     elif platform_id == "vk":
         method = "vkhost"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -565,6 +565,10 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "dzen" else
             "VKHost откроется в отдельном окне. После подтверждения VK вернёт токен, TgFarm проверит его и сохранит локально. ID сообщества задаётся отдельно."
             if platform_id == "vk" else
+            "Instagram Login откроет официальное окно Meta. Нужен профессиональный аккаунт Business или Creator, Instagram App ID/Secret и разрешения instagram_business_basic + instagram_business_content_publish."
+            if platform_id == "instagram" else
+            "Reddit OAuth откроет официальное окно согласия. Нужен Web App Client ID/Secret и redirect URL из панели; постоянный refresh token будет сохранён автоматически. После подключения укажи subreddit."
+            if platform_id == "reddit" else
             "Можно войти в сайт в отдельном локальном профиле браузера. Эта сессия не заменяет OAuth/API-разрешения и не включает публикацию без рабочего адаптера."
             if not supported else
             "Сайт откроется отдельно, но сам по себе вход на сайт не подключает API к TgFarm."
@@ -573,8 +577,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "youtube" else
             "Для TikTok требуется одобренный Content Posting API и video.publish. Перед каждой прямой публикацией TgFarm показывает актуальные privacy options и ждёт отдельного подтверждения оператора."
             if platform_id == "tiktok" else
-            ("Для X, Threads или LinkedIn сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
-            if platform_id in {"x", "threads", "linkedin", "youtube", "tiktok"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
+            ("Для X, Threads, LinkedIn, Instagram или Reddit сохрани Client/App ID и Secret, затем нажми «Подключить через OAuth». Callback URL должен быть разрешён в кабинете разработчика; проверка API не заменяет тест публикации."
+            if platform_id in {"x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"} else "После сохранения ключей нажми «Проверить доступ». Проверка API не заменяет тест публикации.")
         ),
     }
 
