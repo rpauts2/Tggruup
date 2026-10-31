@@ -849,12 +849,8 @@
       }
       const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/instagram/auth/callback";
       const proceed = window.confirm(
-        "В Meta Developer Portal добавь Instagram API with Instagram Login, укажи этот Redirect URI и включи разрешения instagram_business_basic и instagram_business_content_publish. Нужен профессиональный Business или Creator аккаунт.
-
-"
-        + callbackUri + "
-
-Продолжить официальный Instagram Login?",
+        "В Meta Developer Portal добавь Instagram API with Instagram Login, укажи этот Redirect URI и включи разрешения instagram_business_basic и instagram_business_content_publish. Нужен профессиональный Business или Creator аккаунт.\n\n"
+        + callbackUri + "\n\nПродолжить официальный Instagram Login?",
       );
       if (!proceed) return;
       try {
@@ -880,12 +876,8 @@
       }
       const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/reddit/auth/callback";
       const proceed = window.confirm(
-        "В Reddit Developer Apps создай приложение типа Web App и добавь этот Redirect URI. TgFarm запросит identity, read и submit; постоянный refresh token сохранится автоматически.
-
-"
-        + callbackUri + "
-
-Продолжить официальный Reddit OAuth?",
+        "В Reddit Developer Apps создай приложение типа Web App и добавь этот Redirect URI. TgFarm запросит identity, read и submit; постоянный refresh token сохранится автоматически.\n\n"
+        + callbackUri + "\n\nПродолжить официальный Reddit OAuth?",
       );
       if (!proceed) return;
       try {
