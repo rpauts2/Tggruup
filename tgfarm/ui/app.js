@@ -752,7 +752,8 @@
       const authStyle = authStatus === "authorized" ? "is-authorized"
         : authStatus === "failed" ? "is-failed"
         : authStatus === "not_integrated" ? "is-not-integrated" : "is-pending";
-      const authSetupLabel = auth.method === "browser" ? "Войти в Дзен"
+      const authSetupLabel = auth.method === "browser"
+        ? (item.id === "dzen" ? "Войти в Дзен" : item.id === "vc_ru" ? "Войти в vc.ru" : item.id === "pikabu" ? "Войти в Пикабу" : "Войти в браузере")
         : auth.method === "vkhost" ? "Получить токен VK"
         : auth.method === "oauth" ? "Подключить через OAuth"
         : auth.method === "credentials" ? "Настроить доступ" : "Войти / подключить ↗";
@@ -772,7 +773,7 @@
       const browserSessionMarkup = browserSession.profile_saved
         ? `<small class="platform-auth-checked">${browserSession.verified ? "Сессия сайта сохранена и распознана" : "Профиль сайта сохранён, вход не подтверждён"}</small>`
         : "";
-      const browserLoginButton = browserSession.available && !["dzen", "vk"].includes(item.id)
+      const browserLoginButton = browserSession.available && !["dzen", "vk", "vc_ru", "pikabu"].includes(item.id)
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
       const readyHint = supported
@@ -837,6 +838,11 @@
     const auth = item.auth || {};
     if (auth.method === "browser" && platformId === "dzen") {
       window.tgfarmDzenLogin();
+      return;
+    }
+    if (auth.method === "browser" && ["vc_ru", "pikabu"].includes(platformId)) {
+      const button = $(`[data-platform-auth="${platformId}"]`);
+      await startPlatformBrowserLogin(platformId, button);
       return;
     }
     if (auth.method === "vkhost" && !forceCredentials) {
