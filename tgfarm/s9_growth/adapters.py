@@ -1772,6 +1772,7 @@ ADAPTERS: dict[str, Adapter] = {
     "discord": DiscordAdapter(),
     "pinterest": PinterestAdapter(),
     "odnoklassniki": OdnoklassnikiAdapter(),
+    "facebook": FacebookPageAdapter(),
 }
 
 
