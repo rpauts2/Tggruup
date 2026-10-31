@@ -370,6 +370,13 @@ class Settings(BaseSettings):
     pinterest_refresh_token_expires_at: int = Field(default=0, alias="PINTEREST_REFRESH_TOKEN_EXPIRES_AT")
     pinterest_board_id: str = Field(default="", alias="PINTEREST_BOARD_ID")
 
+    # Odnoklassniki REST API group publishing.
+    ok_application_key: str = Field(default="", alias="OK_APPLICATION_KEY")
+    ok_application_secret: str = Field(default="", alias="OK_APPLICATION_SECRET")
+    ok_access_token: str = Field(default="", alias="OK_ACCESS_TOKEN")
+    ok_session_secret_key: str = Field(default="", alias="OK_SESSION_SECRET_KEY")
+    ok_group_id: str = Field(default="", alias="OK_GROUP_ID")
+
     # YouTube Data API upload and metadata.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
     youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
