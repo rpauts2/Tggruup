@@ -912,15 +912,30 @@ async def _publish_one(
 
     await _stop_publish_heartbeat(heartbeat_task)
     with session_scope() as session:
-        post = session.get(PostRow, post_id)
-        if post:
-            post.status = "published"
-            post.published_at = datetime.now(UTC)
-            post.tg_message_id = message_id
-            post.publish_heartbeat_at = None
-            if platform == "telegram":
-                post.tg_chat_id = int(target)
-            post.publish_error = None
+        # A lock here loses the publish outcome: the platform already has the
+        # post, so the DB write retries hard before admitting "unknown".
+        import time as _time
+
+        from sqlalchemy.exc import OperationalError as _OpErr
+
+        for attempt in range(3):
+            try:
+                row = session.get(PostRow, post_id)
+                if row:
+                    row.status = "published"
+                    row.published_at = datetime.now(UTC)
+                    row.tg_message_id = message_id
+                    row.publish_heartbeat_at = None
+                    if platform == "telegram":
+                        row.tg_chat_id = int(target)
+                    row.publish_error = None
+                break
+            except _OpErr as exc:
+                if "locked" not in str(exc) or attempt == 2:
+                    log.error("publish outcome UNKNOWN for %s: %s", post_id, exc)
+                    raise
+                session.rollback()
+                _time.sleep(5 * (attempt + 1))
 
     return {"ok": True, "message_id": message_id, "post_id": post_id}
 
