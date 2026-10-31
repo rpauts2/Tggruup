@@ -133,7 +133,7 @@ def compose_editor_text(post: dict[str, Any], platform_id: str) -> str:
         for tag in (post.get("hashtags") or [])[:8]
     ]
     hashtags = [tag for tag in hashtags if tag != "#"]
-    if hashtags:
+    if hashtags and platform_id != "pikabu":
         additions.append(" ".join(hashtags))
     if additions:
         body = "\n\n".join(part for part in (body, *additions) if part)
@@ -300,6 +300,11 @@ async def _first_file_input(page):
         count = await locator.count()
         if count:
             return locator.first
+    generic = page.locator('input[type="file"]')
+    # Editors sometimes omit the accept attribute. Only use an untyped input
+    # when it is the only file control on the page, never guess between uploads.
+    if await generic.count() == 1:
+        return generic.first
     return None
 
 
@@ -435,7 +440,7 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                 page = pages[0] if pages else await context.new_page()
                 if existing_url:
                     await page.goto(existing_url, wait_until="domcontentloaded", timeout=60_000)
-                    if same_version:
+                    if same_version and previous.get("status") == "prepared":
                         return {
                             "ok": True,
                             "platform": platform_id,
@@ -445,11 +450,34 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
                             "media_count": int(previous.get("media_count") or 0),
                             "detail": "Открыл ранее подготовленный черновик. Повторно ничего не создавал.",
                         }
+                    if same_version:
+                        return {
+                            "ok": True,
+                            "platform": platform_id,
+                            "post_public_id": post_public_id,
+                            "status": "needs_review",
+                            "draft_url": page.url if _safe_editor_url(platform_id, page.url) else existing_url,
+                            "media_count": int(previous.get("media_count") or 0),
+                            "detail": "Предыдущая попытка прервалась. Открыл тот же редактор, новый пост не создавал. Проверь поля и медиа вручную.",
+                        }
                 else:
                     await page.goto(spec["start_url"], wait_until="domcontentloaded", timeout=60_000)
                     await _click_editor_entry(page, platform_id)
                 if not _safe_editor_url(platform_id, page.url):
                     raise CommunityDraftError("После открытия редактора браузер оказался вне домена площадки.")
+                # Persist the editor URL before any form interaction. If the
+                # browser crashes mid-fill, the next click reopens this draft
+                # instead of creating another one.
+                state[key] = {
+                    "platform": platform_id,
+                    "post_public_id": post_public_id,
+                    "fingerprint": fingerprint,
+                    "draft_url": page.url,
+                    "status": "preparing",
+                    "media_count": 0,
+                    "prepared_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
+                await asyncio.to_thread(_write_state, state)
                 await _fill_editor_fields(page, platform_id, title, body)
                 media_count = await _upload_images(page, platform_id, images)
                 await page.wait_for_timeout(2_500)
@@ -477,9 +505,14 @@ async def prepare_community_draft(platform_id: str, post_public_id: str) -> dict
             "status": "prepared",
             "draft_url": draft_url,
             "media_count": media_count,
+            "manual_steps": (
+                ["выбрать тему vc.ru", "проверить обложку и блоки"]
+                if platform_id == "vc_ru"
+                else ["выбрать теги Пикабу", "при необходимости выбрать сообщество"]
+            ),
             "detail": (
-                "Черновик заполнен и сохранён на площадке. TgFarm не нажимал «Опубликовать». "
-                "Открой редактор, проверь оформление и отправь материал вручную."
+                "Черновик заполнен в редакторе. TgFarm не нажимал «Опубликовать». "
+                "Проверь оформление и заверши публикацию вручную."
             ),
         }
     finally:
