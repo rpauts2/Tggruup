@@ -185,9 +185,9 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "discord", "name": "Discord", "symbol": "DC", "color": "#5865F2",
         "category": "Сообщества", "market": "Мировые", "priority": "P2",
-        "mode": "planned", "roles": ["community"],
-        "description": "Публикации в принадлежащие владельцу серверы и каналы через бота или webhook.",
-        "requirements": "Bot token или webhook в выбранном сервере; права на канал.",
+        "mode": "built_in", "roles": ["community", "crosspost"],
+        "description": "Нативные текстовые сообщения в принадлежащие владельцу каналы через Discord Execute Webhook API.",
+        "requirements": "DISCORD_WEBHOOK_URL: URL webhook из принадлежащего владельцу Discord-канала. Массовые mentions отключены.",
         "docs_url": "https://discord.com/developers/docs/resources/webhook",
     },
     {
@@ -324,6 +324,9 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     "max": [
         {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен сохраняется в локальном .env и не показывается повторно."},
         {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала или чата", "secret": False, "placeholder": "ID канала", "help": "Бот должен иметь права публикации в целевом канале."},
+    ],
+    "discord": [
+        {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
     ],
     "bluesky": [
         {"key": "BLUESKY_HANDLE", "attribute": "bluesky_handle", "label": "Handle", "secret": False, "placeholder": "name.bsky.social", "help": "Handle аккаунта Bluesky, можно с собственным доменом."},
@@ -814,6 +817,19 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.max_access_token and settings.max_channel_id:
             return True, "Данные MAX заданы; реальную публикацию нужно проверить."
         return False, "Нужны MAX_ACCESS_TOKEN и MAX_CHANNEL_ID."
+    if platform_id == "discord":
+        from urllib.parse import urlsplit
+        webhook = str(settings.discord_webhook_url or "").strip()
+        parsed = urlsplit(webhook)
+        valid = (
+            parsed.scheme == "https"
+            and parsed.hostname == "discord.com"
+            and not parsed.query
+            and not parsed.fragment
+            and re.fullmatch(r"/api/webhooks/\d{17,22}/[A-Za-z0-9._-]{16,}/?", parsed.path)
+        )
+        return (True, "Discord webhook URL задан; read-only проверка подтвердит канал.")
+            if valid else (False, "Вставь полный Discord Webhook URL из принадлежащего тебе канала.")
     if platform_id == "bluesky":
         if settings.bluesky_handle and settings.bluesky_app_password:
             return True, "Handle и app password заданы; проверь сессию и write-доступ."
@@ -984,11 +1000,11 @@ def is_platform_enabled(platform_id: str) -> bool:
 
 MANUAL_ONLY_AUTOMATION: dict[str, str] = {
     "tiktok": "Каждая публикация требует отдельного выбора настроек и явного согласия автора.",
-    "linkedin": "Условия LinkedIn API запрещают использовать API для автоматизации публикаций.",
 }
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
+    "instagram", "linkedin", "discord",
 })
 
 
