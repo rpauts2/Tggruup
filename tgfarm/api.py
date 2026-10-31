@@ -2850,7 +2850,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             ),
         }
 
-        @app.get("/api/reddit/metrics")
+    @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:
         from tgfarm.s9_growth.reddit_metrics import get_reddit_metrics_report
 
