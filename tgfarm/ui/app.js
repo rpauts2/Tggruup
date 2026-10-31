@@ -1145,6 +1145,35 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "tumblr" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "TUMBLR_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "TUMBLR_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала сохрани Tumblr Client ID и Client Secret.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/tumblr/auth/callback";
+      const proceed = window.confirm(
+        "В Tumblr OAuth Apps добавь этот Callback URL и разреши scopes basic, write и offline_access. " +
+        "При желании заранее укажи Blog identifier в карточке; иначе подключится основной блог аккаунта.\n\n"
+        + callbackUri
+        + "\n\nПродолжить?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/tumblr/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Tumblr вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Tumblr OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "linkedin" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "LINKEDIN_CLIENT_SECRET");

@@ -393,6 +393,35 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 "Настройки приватности обновляются перед каждой публикацией; "
                 "отправка запускается только вручную из карточки поста."
             )
+        elif platform_id == "tumblr":
+            from tgfarm.tumblr_oauth import USER_AGENT, get_valid_tumblr_access_token
+
+            expected_blog = str(settings.tumblr_blog_identifier or "").strip().lower()
+            if not expected_blog:
+                raise RuntimeError("Сначала подключи Tumblr и выбери блог для публикации.")
+            token = await get_valid_tumblr_access_token()
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+            ) as client:
+                payload = await _response_json(client, "https://api.tumblr.com/v2/user/info")
+            user = payload.get("response") or {}
+            blogs = user.get("blogs") or []
+            matched = next(
+                (
+                    blog for blog in blogs
+                    if isinstance(blog, dict)
+                    and str(blog.get("name") or "").strip().lower() == expected_blog
+                ),
+                None,
+            )
+            if not matched:
+                raise RuntimeError("Tumblr OAuth прошёл, но выбранный блог не найден среди доступных для публикации.")
+            username = str(user.get("name") or settings.tumblr_username or "").strip()
+            blog_title = str(matched.get("title") or settings.tumblr_blog_title or expected_blog).strip()
+            account = (("@" + username + " · ") if username else "") + blog_title
+            authorized = True
+            detail = "Tumblr OAuth подтвердил профиль и доступ к выбранному блогу; write-доступ отдельно проверяется первой публикацией."
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 

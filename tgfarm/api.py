@@ -1475,6 +1475,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/pinterest/auth/callback": "tgfarm_pinterest_oauth_params",
             "/api/platforms/facebook/auth/callback": "tgfarm_facebook_oauth_params",
             "/api/platforms/reddit/auth/callback": "tgfarm_reddit_oauth_params",
+            "/api/platforms/tumblr/auth/callback": "tgfarm_tumblr_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if callback_scope:
@@ -1506,6 +1507,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/pinterest/auth/callback",
             "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
+            "/api/platforms/tumblr/auth/callback",
         }:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -2742,6 +2744,105 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=500,
                 headers=headers,
+            )
+
+    @app.post("/api/platforms/tumblr/auth/start")
+    async def tumblr_oauth_start(request: Request) -> dict:
+        from tgfarm.tumblr_oauth import begin_tumblr_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/tumblr/auth/callback"
+        try:
+            return await begin_tumblr_oauth(
+                settings.tumblr_client_id,
+                settings.tumblr_client_secret,
+                redirect_uri,
+                preferred_blog=settings.tumblr_blog_identifier,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/tumblr/auth/callback")
+    async def tumblr_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        from tgfarm.tumblr_oauth import cancel_tumblr_oauth, complete_tumblr_oauth
+
+        params = request.scope.get("tgfarm_tumblr_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_tumblr_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение Tumblr не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_tumblr_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "tumblr",
+                {
+                    "TUMBLR_CLIENT_ID": credentials["client_id"],
+                    "TUMBLR_CLIENT_SECRET": credentials["client_secret"],
+                    "TUMBLR_ACCESS_TOKEN": credentials["access_token"],
+                    "TUMBLR_REFRESH_TOKEN": credentials["refresh_token"],
+                    "TUMBLR_TOKEN_EXPIRES_AT": credentials["expires_at"],
+                    "TUMBLR_BLOG_IDENTIFIER": credentials["blog_identifier"],
+                    "TUMBLR_BLOG_TITLE": credentials["blog_title"],
+                    "TUMBLR_BLOG_URL": credentials["blog_url"],
+                    "TUMBLR_USERNAME": credentials["username"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "tumblr",
+                True,
+                account=credentials["account"],
+                detail="Tumblr OAuth подтвердил профиль и выбранный блог; токены сохранены локально.",
+            )
+            _operator("platform-auth-check", "tumblr", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Tumblr подключён</h1><p>Доступ подтверждён для <strong>" + account + "</strong>.</p>"
+                "<p>OAuth refresh token сохранён локально. Публикация выключена до включения Tumblr в карточке площадки.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_tumblr_oauth(state_value)
+            log.warning("Tumblr OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Tumblr</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_tumblr_oauth(state_value)
+            log.warning("Tumblr OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Tumblr</h1><p>Проверь настройки OAuth-приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=page_headers,
             )
 
     @app.post("/api/platforms/linkedin/auth/start")
