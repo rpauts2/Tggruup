@@ -12,6 +12,7 @@ enabled:
   mastodon: false
   threads: false
   linkedin: false
+  instagram: false
   youtube: false
   tiktok: false
 
