@@ -46,7 +46,7 @@ PUBLIC_PATHS = (
     "/api/platforms/youtube/auth/callback",
     "/api/platforms/tiktok/auth/callback",
 )
-PUBLIC_PREFIXES = ("/ui/",)
+PUBLIC_PREFIXES = ("/ui/", "/public/instagram-media/")
 
 
 def token_path() -> Path:
