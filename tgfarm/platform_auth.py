@@ -156,8 +156,15 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             if not group_id or not settings.ok_access_token:
                 raise RuntimeError("Сначала сохрани OK application key/secret, access token и ID группы.")
             async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
-                current_user = await ok_api_call(client, "users.getCurrentUser")
-                uid = str(current_user or "").strip().strip('"')
+                current_user = await ok_api_call(
+                    client, "users.getCurrentUser", {"fields": "UID,NAME"}
+                )
+                if isinstance(current_user, dict):
+                    uid = str(current_user.get("uid") or current_user.get("UID") or "")
+                    user_name = str(current_user.get("name") or current_user.get("NAME") or "")
+                else:
+                    uid = str(current_user or "").strip().strip('"')
+                    user_name = ""
                 if not uid:
                     raise RuntimeError("OK не подтвердил пользователя через users.getCurrentUser.")
                 group = await ok_api_call(
@@ -178,7 +185,7 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                     raise RuntimeError("У приложения нет GROUP_CONTENT для публикации в выбранную группу.")
                 photo_permission = await ok_has_permission(client, "PHOTO_CONTENT")
                 video_permission = await ok_has_permission(client, "VIDEO_CONTENT")
-            account = f"OK · {group_name or group_id} · user {uid}"
+            account = f"OK · {group_name or group_id} · {user_name or uid}"
             authorized = True
             detail = (
                 "OK подтвердил текущего пользователя, группу и GROUP_CONTENT. "
