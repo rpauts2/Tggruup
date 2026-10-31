@@ -274,44 +274,63 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
 
 
 async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
-    config = get_config()
-    get_settings()
-    cfg = config.schedule.crosspost
-    if not cfg.get("enabled", True):
-        return {"posted": 0, "skipped": 0}
+    """Execute the deterministic editorial distribution plan.
 
-    from tgfarm.platforms import enabled_crosspost_platforms
+    One best-fit post per automatic destination is selected per tick. The plan
+    already accounts for each platform's 24-hour budget, minimum gap, enabled
+    switch, configured credentials, age, topic fit and near-duplicate history.
+    """
+    cfg = get_config().schedule.crosspost
+    settings = get_settings()
+    empty = {
+        "posted": 0,
+        "skipped": 0,
+        "failed": 0,
+        "permanent_failure": 0,
+        "unknown": 0,
+        "considered": 0,
+    }
+    if not cfg.get("enabled", True) or settings.mode == "off":
+        return empty
 
-    platforms = enabled_crosspost_platforms()
-    sample_rate = float(cfg.get("sample_rate", 0.8))
-    delay_min = int(cfg.get("delay_min", 25))
+    from tgfarm.distribution import build_distribution_plan
 
     with StageTimer("s9_crosspost") as timer:
-        candidates = await to_thread(_pending_crossposts, sample_rate, 720, None, platforms)
-        # only cross-post posts old enough to have settled in the feed
-        cutoff = datetime.now(UTC) - timedelta(minutes=delay_min)
-        due: list[tuple[int, list[str]]] = []
-        target_limit = max(1, int(limit))
-        for post_pk, public_id in candidates:
-            post = await to_thread(_load_post, post_pk)
-            published_at = ensure_utc(post.published_at) if post else None
-            if not post or not published_at or published_at > cutoff:
-                continue
-            # Don't consume batch slots on posts that have already reached every
-            # enabled target. Otherwise old successful rows can starve new posts.
-            pending_platforms = [
-                name for name in platforms
-                if not await to_thread(already_done, public_id, name)
-            ]
-            if not pending_platforms:
-                continue
-            due.append((post_pk, pending_platforms))
-            if len(due) >= target_limit:
-                break
+        plan = await to_thread(
+            build_distribution_plan,
+            max_selected_per_platform=1,
+        )
+        # Group destinations by source post so one DB load/heartbeat/claim
+        # handles multiple independent destination claims for the same post.
+        by_post: dict[int, list[tuple[str, float]]] = {}
+        for item in plan.get("platforms", []):
+            for chosen in item.get("selected", []):
+                by_post.setdefault(int(chosen["post_id"]), []).append(
+                    (str(item["platform"]), float(chosen.get("score") or 0))
+                )
 
-        posted = skipped = failed = permanent_failure = unknown = 0
-        for post_pk, pending_platforms in due:
-            for result in await crosspost_post(post_pk, pending_platforms):
+        due = sorted(
+            by_post.items(),
+            key=lambda entry: (-max(score for _name, score in entry[1]), entry[0]),
+        )
+        max_targets = max(0, int(limit))
+        posted = skipped = failed = permanent_failure = unknown = considered = 0
+        sent_targets = 0
+        for post_pk, targets in due:
+            if sent_targets >= max_targets:
+                break
+            # The UI toggle is checked again inside crosspost_post immediately
+            # before the adapter call, protecting against a switch-off race.
+            available = [
+                name for name, _score in sorted(targets, key=lambda value: -value[1])
+                if name in ADAPTERS
+            ][: max_targets - sent_targets]
+            if not available:
+                continue
+            considered += len(available)
+            outcomes = await crosspost_post(post_pk, available)
+            sent_targets += len(outcomes)
+            for result in outcomes:
                 if result.status == "posted":
                     posted += 1
                 elif result.status == "skipped":
@@ -323,10 +342,15 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
                 elif result.status == "unknown":
                     unknown += 1
 
-        timer.items_in = len(candidates)
+        timer.items_in = sum(
+            int(item.get("eligible_count") or 0)
+            for item in plan.get("platforms", [])
+        )
         timer.items_out = posted
+
     log.info(
-        "s9: crosspost posted=%d skipped=%d failed=%d permanent_failure=%d unknown=%d",
+        "s9 editorial distribution: selected=%d posted=%d skipped=%d failed=%d permanent=%d unknown=%d",
+        considered,
         posted,
         skipped,
         failed,
@@ -339,9 +363,8 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
         "failed": failed,
         "permanent_failure": permanent_failure,
         "unknown": unknown,
-        "considered": len(due),
+        "considered": considered,
     }
-
 
 # Serialize the background crosspost tick against the full farm cycle.
 _active_crosspost_task: asyncio.Task | None = None
