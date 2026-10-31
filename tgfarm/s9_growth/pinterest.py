@@ -17,6 +17,8 @@ API_ROOT = "https://api.pinterest.com/v5"
 
 
 def _error_result(exc: BaseException, operation: str) -> CrosspostResult:
+    from tgfarm.s9_growth.adapters import crosspost_error_status, crosspost_retry_after_seconds
+
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     if status == 429:
