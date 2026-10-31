@@ -341,6 +341,30 @@ def _build_primary_platform_plan(
                     )
                 ).scalar_one()
             )
+            queued_rows = session.execute(
+                select(Post, Channel)
+                .join(Channel, Channel.id == Post.channel_id)
+                .where(
+                    Channel.platform == platform_id,
+                    Channel.enabled.is_(True),
+                    Post.status.in_(("gated", "scheduled")),
+                )
+                .order_by(Post.scheduled_at.asc().nullsfirst(), Post.created_at.asc())
+                .limit(5)
+            ).all()
+            queue_preview = [
+                {
+                    "post_public_id": post.public_id,
+                    "title": str(post.hook or "")[:160],
+                    "channel": channel.title,
+                    "status": post.status,
+                    "scheduled_at": (
+                        _utc(post.scheduled_at).isoformat(timespec="minutes")
+                        if post.scheduled_at else None
+                    ),
+                }
+                for post, channel in queued_rows
+            ]
         item = platform_catalog.get(platform_id, {})
         enabled = bool(item.get("enabled"))
         configured = bool(item.get("configured"))
@@ -369,6 +393,7 @@ def _build_primary_platform_plan(
             "remaining": max(0, daily_cap - sent),
             "channels": [persona.title for persona in active],
             "topics": topics,
+            "queue_preview": queue_preview,
             "reason": reason,
         })
     return result
