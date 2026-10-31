@@ -26,6 +26,7 @@ log = get_logger(__name__)
 PLATFORM_LOGIN_URLS: dict[str, str] = {
     "telegram": "https://web.telegram.org/",
     "vk": "https://vk.com/",
+    "vk_clips": "https://vk.com/clips",
     "dzen": "https://dzen.ru/profile/editor/",
     "max": "https://web.max.ru/",
     "x": "https://x.com/",
