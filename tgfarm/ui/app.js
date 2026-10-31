@@ -840,6 +840,68 @@
       await startVkHostAuthorization();
       return;
     }
+    if (auth.method === "oauth" && platformId === "instagram" && !forceCredentials) {
+      const appId = (auth.fields || []).find((field) => field.key === "INSTAGRAM_APP_ID");
+      const appSecret = (auth.fields || []).find((field) => field.key === "INSTAGRAM_APP_SECRET");
+      if (!appId?.has_value || !appSecret?.has_value) {
+        toast("Сначала сохрани Instagram App ID и App Secret из Meta Developer Portal.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/instagram/auth/callback";
+      const proceed = window.confirm(
+        "В Meta Developer Portal добавь Instagram API with Instagram Login, укажи этот Redirect URI и включи разрешения instagram_business_basic и instagram_business_content_publish. Нужен профессиональный Business или Creator аккаунт.
+
+"
+        + callbackUri + "
+
+Продолжить официальный Instagram Login?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/instagram/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Instagram вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Instagram OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
+    if (auth.method === "oauth" && platformId === "reddit" && !forceCredentials) {
+      const clientId = (auth.fields || []).find((field) => field.key === "REDDIT_CLIENT_ID");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "REDDIT_CLIENT_SECRET");
+      if (!clientId?.has_value || !clientSecret?.has_value) {
+        toast("Сначала сохрани Reddit Client ID и Client Secret. Создай приложение типа Web App.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/reddit/auth/callback";
+      const proceed = window.confirm(
+        "В Reddit Developer Apps создай приложение типа Web App и добавь этот Redirect URI. TgFarm запросит identity, read и submit; постоянный refresh token сохранится автоматически.
+
+"
+        + callbackUri + "
+
+Продолжить официальный Reddit OAuth?",
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/reddit/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Reddit вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Reddit OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "mastodon" && !forceCredentials) {
       const instance = window.prompt(
         "Укажи адрес Mastodon-сервера (например mastodon.social). Откроется официальное окно согласия на чтение профиля и публикацию постов.",
@@ -1019,6 +1081,10 @@
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
       : platformId === "threads"
         ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
+      : platformId === "instagram"
+        ? "Введи Instagram App ID и App Secret из Meta Developer Portal. Включи Instagram API with Instagram Login и добавь callback URI панели. Для входа нужен профессиональный аккаунт Business или Creator."
+      : platformId === "reddit"
+        ? "Введи Client ID и Client Secret приложения Reddit типа Web App. После сохранения TgFarm откроет официальный экран Reddit, получит permanent refresh token и сохранит его локально. Subreddit укажешь отдельно."
         : platformId === "linkedin"
           ? "Введи LinkedIn Client ID и Client Secret. Добавь callback URL панели в Developer Portal и включи OpenID Connect + Share on LinkedIn; для публикации нужен w_member_social."
           : "Новые значения будут сохранены в локальный .env. Секреты не возвращаются в интерфейс и не пишутся в журнал.";
@@ -1045,8 +1111,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube"].includes(platformId);
+    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube", "instagram", "reddit"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
