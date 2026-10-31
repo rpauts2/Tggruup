@@ -2711,7 +2711,10 @@
       const renderCandidate = (item, isBest = false) => {
         const url = safeExternalUrl(item.url);
         const score = Math.max(0, Math.min(100, Number(item.score || 0)));
-        const risks = item.risks || [];
+        const risks = [
+          ...(item.risks || []),
+          ...(item.blockers || []).map((value) => "Не рекомендуется: " + value),
+        ];
         return `
           <article class="community-target-card ${isBest ? "is-best" : ""}">
             <div class="community-target-head">
@@ -2752,13 +2755,13 @@
     state.communityTargetPlans = state.communityTargetPlans || {};
     let plan = state.communityTargetPlans[id + ":" + platform] || null;
     try {
-      if (!plan) {
-        plan = await post(
-          "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/targets",
-          {},
-        );
-        state.communityTargetPlans[id + ":" + platform] = plan;
-      }
+      // Rules and public catalogues can change, so re-read them immediately
+      // before opening the destination-specific editor.
+      plan = await post(
+        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/targets",
+        {},
+      );
+      state.communityTargetPlans[id + ":" + platform] = plan;
     } catch (error) {
       plan = null;
     }
