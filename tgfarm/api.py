@@ -1958,9 +1958,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         source_urls = list(dict.fromkeys(str(item["url"]) for item in sources))[:8]
         body = str(post.get("body") or "").strip()
         if post.get("cta") and str(post["cta"]).strip() not in body:
-            body = f"{body}\\n\\n{str(post['cta']).strip()}".strip()
+            body = f"{body}\n\n{str(post['cta']).strip()}".strip()
         hashtags = [str(item).strip().lstrip("#") for item in (post.get("hashtags") or []) if str(item).strip()]
-        body = "\\n\\n".join(part for part in (body, "Источники: " + ", ".join(source_urls) if source_urls else "") if part)
+        body = "\n\n".join(part for part in (body, "Источники: " + ", ".join(source_urls) if source_urls else "") if part)
         payload = CrosspostPayload(
             platform=platform_id,
             title=str(post.get("hook") or ""),
