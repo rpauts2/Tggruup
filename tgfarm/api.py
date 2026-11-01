@@ -1977,6 +1977,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             media_kinds=media_kinds,
             topic=str(post.get("hook") or ""),
             source_angle=str(post.get("angle") or ""),
+            content_chars=len(body),
         )
         if not brief["format_eligible"]:
             return {
