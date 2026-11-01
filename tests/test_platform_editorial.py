@@ -78,7 +78,6 @@ def test_reddit_and_consent_platforms_keep_their_special_workflows(monkeypatch):
 
 
 def test_preview_only_consent_format_can_be_ai_adapted_and_keeps_sources(monkeypatch):
-    from tgfarm import llm
     from tgfarm.llm import policy
     from tgfarm.platform_editorial import adapt_payload_with_ai
 
