@@ -44,12 +44,12 @@ PROFILES: dict[str, dict[str, Any]] = {
         "hashtags": "только релевантные",
     },
     "dzen": {
-        "format": "article", "label": "Статья Дзена",
+        "format": "article_or_post", "label": "Пост или статья Дзена",
         "audience": "широкая рекомендательная аудитория; читатель без контекста канала",
         "goal": "раскрыть тему, удержать чтением и дать проверяемый вывод",
         "voice": "профессиональный объясняющий стиль, ясные подзаголовки, факты и источники",
-        "text_format": "структурированная статья", "image_format": "статья с обложкой",
-        "video_format": "видеоматериал/ролик", "target_type": "channel",
+        "text_format": "пост до 1200 символов или статья от 1200 символов",
+        "image_format": "пост/статья с иллюстрацией", "video_format": None, "target_type": "channel",
         "target_selection": "подключённый канал/профиль Дзена", "rule_gate": "редактор и ограничения Дзена",
         "max_chars": 10000, "hashtags": "0-5 по теме",
     },
@@ -165,7 +165,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "goal": "вечнозелёная полезная идея с сильным визуалом и понятным destination URL",
         "voice": "поисково-понятный заголовок, описательная подпись, без новостного шума",
         "text_format": None, "image_format": "image Pin с обложкой и ссылкой",
-        "video_format": "video Pin", "target_type": "board",
+        "video_format": "video Pin", "video_requires_cover": True, "target_type": "board",
         "target_selection": "доска, ID которой владелец указал в настройках; OAuth отдельно подтверждает доступ к ней",
         "rule_gate": "доступ к доске, право pins:write, права на изображение/видео и destination URL",
         "max_chars": 800, "hashtags": "0-5 описательных",
@@ -356,13 +356,37 @@ def get_editorial_profile(platform_id: str) -> dict[str, Any]:
     return {**profile, "platform_id": key}
 
 
-def choose_native_format(platform_id: str, media_kinds: set[str] | list[str] | tuple[str, ...]) -> dict[str, Any]:
+def choose_native_format(
+    platform_id: str,
+    media_kinds: set[str] | list[str] | tuple[str, ...],
+    *,
+    content_chars: int = 0,
+) -> dict[str, Any]:
     """Choose a format that the available source media can actually support."""
     profile = get_editorial_profile(platform_id)
     media = {str(item).strip().lower() for item in media_kinds}
     has_video = "video" in media
     has_image = bool(media & {"image", "article_image", "ai_art", "template", "infographic", "quote"})
-    if has_video and profile.get("video_format"):
+
+    if platform_id == "dzen":
+        selected_kind = "article" if int(content_chars or 0) >= 1200 else "post"
+        label = "Статья Дзена" if selected_kind == "article" else "Пост Дзена"
+        if has_image:
+            selected = f"{label} с иллюстрацией"
+            media_kind = "image"
+        else:
+            selected = label
+            media_kind = "text"
+    elif has_video and profile.get("video_format"):
+        if profile.get("video_requires_cover") and not has_image:
+            return {
+                "eligible": False,
+                "format": profile["video_format"],
+                "label": profile["label"],
+                "media_kind": "missing",
+                "reason": "Для Pinterest Video Pin нужны и видео, и отдельная обложка.",
+                "requires_media": True,
+            }
         selected = profile["video_format"]
         media_kind = "video"
     elif has_image and profile.get("image_format"):
@@ -383,23 +407,22 @@ def choose_native_format(platform_id: str, media_kinds: set[str] | list[str] | t
     return {
         "eligible": True,
         "format": selected,
-        "label": profile["label"],
+        "label": label if platform_id == "dzen" else profile["label"],
         "media_kind": media_kind,
         "reason": f"Выбран формат: {selected}.",
         "requires_media": media_kind in {"image", "video"},
     }
-
-
 def build_editorial_brief(
     platform_id: str,
     *,
     media_kinds: set[str] | list[str] | tuple[str, ...] = (),
     topic: str = "",
     source_angle: str = "",
+    content_chars: int = 0,
 ) -> dict[str, Any]:
     """Return a machine-readable editorial/target brief for planner and dashboard."""
     profile = get_editorial_profile(platform_id)
-    native = choose_native_format(platform_id, media_kinds)
+    native = choose_native_format(platform_id, media_kinds, content_chars=content_chars)
     return {
         "platform_id": profile["platform_id"],
         "platform_label": profile["label"],
@@ -446,7 +469,7 @@ async def adapt_payload_with_ai(
         media_kinds.add("image")
     if getattr(payload, "video_path", None):
         media_kinds.add("video")
-    native = choose_native_format(platform_id, media_kinds)
+    native = choose_native_format(platform_id, media_kinds, content_chars=len(title) + len(body))
     if not native["eligible"]:
         payload.meta = {
             **(getattr(payload, "meta", None) or {}),
@@ -503,7 +526,7 @@ async def adapt_payload_with_ai(
     )
     prompt = (
         f"DESTINATION: {platform_id}\n"
-        f"FORMAT: {profile['format']}\n"
+        f"FORMAT: {native['format']}\n"
         f"AUDIENCE: {profile['audience']}\n"
         f"GOAL: {profile['goal']}\n"
         f"VOICE: {profile['voice']}\n"
@@ -552,7 +575,7 @@ async def adapt_payload_with_ai(
             "editorial_adaptation": {
                 "status": "ai_native",
                 "platform": platform_id,
-                "format": profile["format"],
+                "format": native["format"],
                 "model": response.model,
             },
         }
