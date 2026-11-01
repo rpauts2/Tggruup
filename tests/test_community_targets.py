@@ -191,6 +191,9 @@ def test_vc_recommender_reads_current_topics_and_selects_best_description(monkey
     assert result["selected"]["slug"] == "marketing"
     assert result["selected"]["target_type"] == "topic"
     assert result["selected"]["score"] >= community_targets.MIN_SCORE
+    assert result["selected"]["topic_rules_available"] is False
+    assert result["selected"]["global_rules_available"] is True
+    assert any("отдельные правила темы" in item.lower() for item in result["selected"]["risks"])
     assert "личный блог" in " ".join(result["general_notes"]).lower()
     assert result["auto_publish_supported"] is False
 
@@ -357,3 +360,60 @@ def test_prepare_api_passes_only_freshly_recommended_target_to_editor(client, mo
         "target_url": "https://pikabu.ru/community/python",
         "target_name": "Python",
     }
+
+
+def test_vc_skips_topic_with_explicit_promotion_ban_and_selects_next_safe_match(monkeypatch):
+    async def fake_fetch(url: str):
+        if url == community_targets.VC_DIRECTORY:
+            return _page(
+                url,
+                links=[
+                    ("/marketing", "Маркетинг"),
+                    ("/business", "Бизнес и продукты"),
+                ],
+            )
+        if url == community_targets.VC_RULES:
+            return _page(url, text="Общие правила vc.ru: запрещены спам и манипуляции.")
+        if url.endswith("/marketing"):
+            return _page(
+                url,
+                title="Маркетинг цифровых продуктов",
+                description="Маркетинг цифровых продуктов, рекламные кампании и продвижение.",
+                chunks=[
+                    "О теме",
+                    "Материалы о маркетинге и продвижении.",
+                    "Правила темы",
+                    "Реклама запрещена. Самореклама запрещена.",
+                ],
+            )
+        if url.endswith("/business"):
+            return _page(
+                url,
+                title="Бизнес и продукты",
+                description="Бизнес, цифровые продукты и стратегии развития компаний.",
+                chunks=["О теме", "Обсуждения бизнеса и цифровых продуктов."],
+            )
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    post = {
+        "public_id": "published_vc_promotion_policy",
+        "title": "Маркетинг цифровых продуктов",
+        "body": "Купите наш продукт со скидкой. Используйте промокод для заказа.",
+        "cta": "",
+        "sources": [],
+        "hashtags": [],
+        "media": [],
+    }
+    monkeypatch.setattr(community_targets, "_fetch", fake_fetch)
+    monkeypatch.setattr("tgfarm.community_drafts._load_post", lambda _post_id: post)
+
+    result = asyncio.run(
+        community_targets.recommend_community_target("vc_ru", "published_vc_promotion_policy")
+    )
+
+    marketing = next(item for item in result["candidates"] if item["slug"] == "marketing")
+    assert marketing["recommended"] is False
+    assert marketing["topic_rules_available"] is True
+    assert marketing["blockers"]
+    assert result["selected"]["slug"] == "business"
+    assert result["selected"]["recommended"] is True
