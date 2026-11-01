@@ -334,7 +334,7 @@ def _load_posts(post_public_ids: list[str]) -> tuple[list[dict], dict[int, list[
         return [], {}
     config = get_config()
     with session_scope() as session:
-        posts = session.execute(
+        rows = session.execute(
             select(
                 PostRow.id,
                 PostRow.public_id,
@@ -342,12 +342,16 @@ def _load_posts(post_public_ids: list[str]) -> tuple[list[dict], dict[int, list[
                 PostRow.cluster_public_id,
             ).where(PostRow.public_id.in_(post_public_ids))
         ).all()
+        posts = [
+            {"id": r[0], "public_id": r[1], "channel_id": r[2], "cluster_public_id": r[3]}
+            for r in rows
+        ]
         if not posts:
             return [], {}
         with_inline = {}
         for post_id, path in session.execute(
             select(MediaRow.post_id, MediaRow.path).where(
-                MediaRow.post_id.in_([post.id for post in posts]),
+                MediaRow.post_id.in_([post["id"] for post in posts]),
                 MediaRow.kind == "article_image",
             )
         ).all():
