@@ -114,3 +114,47 @@ def test_preview_only_consent_format_can_be_ai_adapted_and_keeps_sources(monkeyp
     assert payload.title == "Native video title"
     assert "https://example.org/source" in payload.text
     assert payload.meta["editorial_adaptation"]["status"] == "ai_native"
+
+
+def test_profiles_do_not_advertise_media_the_current_adapter_cannot_publish():
+    from tgfarm.platform_editorial import PROFILES, choose_native_format
+
+    text_only = ("max", "x", "bluesky", "threads", "linkedin", "mastodon", "discord", "tumblr")
+    for platform_id in text_only:
+        profile = PROFILES[platform_id]
+        assert profile["text_format"]
+        assert profile["image_format"] is None, platform_id
+        assert profile["video_format"] is None, platform_id
+        assert choose_native_format(platform_id, {"image"})["media_kind"] == "text"
+        assert choose_native_format(platform_id, {"video"})["media_kind"] == "text"
+
+    assert PROFILES["vk"]["image_format"]
+    assert PROFILES["vk"]["video_format"] is None
+    assert choose_native_format("vk", {"image", "video"})["media_kind"] == "image"
+    assert choose_native_format("vk", {"video"})["media_kind"] == "text"
+
+    assert PROFILES["instagram"]["image_format"] == "одна фотография с caption"
+    assert PROFILES["instagram"]["video_format"] == "один Reel с caption"
+    assert PROFILES["pinterest"]["image_format"]
+    assert PROFILES["pinterest"]["video_format"]
+    assert PROFILES["facebook"]["image_format"]
+    assert PROFILES["facebook"]["video_format"]
+    assert PROFILES["odnoklassniki"]["image_format"]
+    assert PROFILES["odnoklassniki"]["video_format"]
+
+    assert PROFILES["tiktok"]["image_format"] is None
+    assert PROFILES["tiktok"]["video_format"]
+    assert choose_native_format("tiktok", {"image"})["eligible"] is False
+    assert choose_native_format("tiktok", {"video"})["eligible"] is True
+    assert PROFILES["douyin"]["image_format"] is None
+    assert PROFILES["douyin"]["video_format"]
+
+
+def test_owner_selected_destination_is_not_claimed_to_be_auto_discovered():
+    from tgfarm.platform_editorial import PROFILES
+
+    assert "указал в настройках" in PROFILES["pinterest"]["target_selection"]
+    assert "ID" in PROFILES["pinterest"]["target_selection"]
+    assert "доску" in PROFILES["pinterest"]["target_selection"]
+    assert "Facebook Page" in PROFILES["facebook"]["target_selection"]
+    assert "ID" not in PROFILES["facebook"]["target_selection"]
