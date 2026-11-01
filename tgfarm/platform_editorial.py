@@ -71,7 +71,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "text_format": "короткий тезис", "image_format": None,
         "video_format": None, "target_type": "profile",
         "target_selection": "подтверждённый профиль X", "rule_gate": "ограничения длины, ссылки и медиа",
-        "max_chars": 280, "hashtags": "обычно 0-1",
+        "max_chars": 160, "hashtags": "обычно 0-1",
     },
     "reddit": {
         "format": "community_submission", "label": "Публикация в subreddit",
@@ -135,7 +135,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "text_format": "короткий разговорный пост", "image_format": None,
         "video_format": None, "target_type": "profile",
         "target_selection": "подключённый Threads профиль", "rule_gate": "лимит текста, тип вложения и права Threads API",
-        "max_chars": 500, "hashtags": "0-2",
+        "max_chars": 330, "hashtags": "0-2",
     },
     "facebook": {
         "format": "page_post", "label": "Публикация Facebook Page",
@@ -211,7 +211,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "video_format": None, "target_type": "instance_profile",
         "target_selection": "подключённый пользователь и его инстанс",
         "rule_gate": "лимит символов конкретного инстанса, content warning и медиаправа",
-        "max_chars": 500, "hashtags": "2-4 осмысленных",
+        "max_chars": 420, "hashtags": "2-4 осмысленных",
     },
     "whatsapp_channels": {
         "format": "channel_update", "label": "Обновление WhatsApp Channels",
@@ -470,7 +470,7 @@ async def adapt_payload_with_ai(
         "s9_platform_native_rewrite",
         generation_provider="manual",
         angle="analysis",
-        source_count=max(1, len(getattr(payload, "hashtags", []) or [])),
+        source_count=max(1, len(sources)),
         offline_chars=len(title) + len(body),
     )
     if not use_ai:
