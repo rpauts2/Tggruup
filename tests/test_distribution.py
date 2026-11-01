@@ -289,6 +289,9 @@ def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
         body="Detailed source-backed explanation.",
     )
     no_media = choose_post_native_format("youtube", post, [])
+    secondary_video = choose_post_native_format(
+        "youtube", post, [SimpleNamespace(kind="video", is_primary=False)]
+    )
     youtube_render = choose_post_native_format("youtube", post, [], allow_youtube_render=True)
     image_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image", is_primary=True)])
     secondary_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image", is_primary=False)])
@@ -301,6 +304,7 @@ def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
     text_only_with_image = choose_post_native_format("x", post, [SimpleNamespace(kind="image")])
 
     assert no_media["eligible"] is False
+    assert secondary_video["eligible"] is False
     assert youtube_render["eligible"] is True
     assert youtube_render["render_on_demand"] is True
     assert youtube_render["media_kind"] == "video"
