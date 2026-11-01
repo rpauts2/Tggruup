@@ -292,7 +292,11 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             media_kinds.add("image")
         if payload.video_path:
             media_kinds.add("video")
-        native = choose_native_format(name, media_kinds)
+        native = choose_native_format(
+            name,
+            media_kinds,
+            content_chars=len(str(payload.title or "")) + len(str(payload.text or "")),
+        )
         payload.meta = {
             **(payload.meta or {}),
             "editorial_plan": {
