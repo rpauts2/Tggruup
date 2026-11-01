@@ -1510,7 +1510,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/youtube/auth/callback",
             "/api/platforms/tiktok/auth/callback",
             "/api/platforms/douyin/auth/callback",
-            "/api/platforms/instagram/auth/callback"
+            "/api/platforms/instagram/auth/callback",
             "/api/platforms/pinterest/auth/callback",
             "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
