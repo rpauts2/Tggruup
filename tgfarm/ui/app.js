@@ -932,6 +932,13 @@
             <div class="platform-card-action">${switchMarkup}</div>
           </div>
           <p class="platform-description">${esc(item.description)}</p>
+          ${item.editorial ? `<div class="platform-editorial-meta">
+            <span>РЕДАКЦИОННЫЙ ПРОФИЛЬ</span>
+            <p><strong>${esc(item.editorial.label || item.editorial.format)}</strong> · ${esc(item.editorial.audience || "")}</p>
+            <small>Задача: ${esc(item.editorial.goal || "")}</small>
+            <small>Адресат: ${esc(item.editorial.target_selection || "")}</small>
+            <small>Проверка: ${esc(item.editorial.rule_gate || "")}</small>
+          </div>` : ""}
           <div class="platform-badge-row">
             <span class="platform-status status-${statusClass}"><i></i>${esc(item.status_label || "Статус неизвестен")}</span>
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
@@ -1229,6 +1236,34 @@
       return;
     }
 
+    if (auth.method === "oauth" && platformId === "douyin" && !forceCredentials) {
+      const clientKey = (auth.fields || []).find((field) => field.key === "DOUYIN_CLIENT_KEY");
+      const clientSecret = (auth.fields || []).find((field) => field.key === "DOUYIN_CLIENT_SECRET");
+      if (!clientKey?.has_value || !clientSecret?.has_value) {
+        toast("Сначала сохрани Douyin Client Key и Client Secret из Douyin Open Platform.", "err");
+        return;
+      }
+      const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/douyin/auth/callback";
+      const proceed = window.confirm(
+        "В Douyin Open Platform создай Web App, добавь этот Redirect URI и запроси scopes user_info и video.create. "
+        + "Приложение должно иметь доступ к созданию видео; каждое видео всё равно требует отдельного preview и подтверждения владельца.\n\n"
+        + callbackUri + "\n\nПродолжить официальный Douyin OAuth?"
+      );
+      if (!proceed) return;
+      try {
+        const result = await post("/api/platforms/douyin/auth/start", {});
+        if (result.redirect_uri !== callbackUri) {
+          throw new Error("Callback URL отличается от адреса панели: " + result.redirect_uri);
+        }
+        const authorizeUrl = safeExternalUrl(result.authorize_url);
+        if (!authorizeUrl) throw new Error("Douyin вернул некорректную ссылку авторизации.");
+        window.location.assign(authorizeUrl);
+      } catch (error) {
+        toast("Не удалось начать Douyin OAuth: " + (error?.message || error), "err");
+      }
+      return;
+    }
+
     if (auth.method === "oauth" && platformId === "youtube" && !forceCredentials) {
       const clientId = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_ID");
       const clientSecret = (auth.fields || []).find((field) => field.key === "YOUTUBE_CLIENT_SECRET");
@@ -1311,7 +1346,9 @@
         ? "Введи Threads App ID и App Secret из Meta Developer Portal. Добавь callback URI панели и разрешения threads_basic, threads_content_publish. После сохранения нажми «Подключить через OAuth»."
       : platformId === "instagram"
         ? "Введи Instagram App ID и App Secret из Meta Developer Portal. Включи Instagram API with Instagram Login и добавь callback URI панели. Для входа нужен профессиональный аккаунт Business или Creator."
-      : platformId === "reddit"
+      : platformId === "douyin"
+         ? "Введи Douyin Client Key и Client Secret из Douyin Open Platform. Добавь callback URI панели и включи scopes user_info и video.create. Каждое видео будет требовать отдельного подтверждения."
+       : platformId === "reddit"
         ? "Введи Client ID и Client Secret приложения Reddit типа Web App. После сохранения TgFarm откроет официальный экран Reddit, получит permanent refresh token и сохранит его локально. Subreddit укажешь отдельно."
         : platformId === "linkedin"
           ? "Введи LinkedIn Client ID и Client Secret. Добавь callback URL панели в Developer Portal и включи OpenID Connect + Share on LinkedIn; для публикации нужен w_member_social."
@@ -1339,8 +1376,8 @@
     const save = $("#platform-auth-save");
     save.hidden = false;
     save.disabled = false;
-    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
-    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube", "instagram", "reddit"].includes(platformId);
+    save.textContent = ["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "douyin"].includes(platformId) ? "Сохранить приложение" : "Сохранить и проверить";
+    $("#platform-auth-check").hidden = ["x", "threads", "linkedin", "youtube", "instagram", "reddit", "douyin"].includes(platformId);
     setPlatformAuthMessage(
       (auth.fields || []).some((field) => field.has_value)
         ? "Часть полей уже сохранена. Оставь их пустыми, если не хочешь менять."
