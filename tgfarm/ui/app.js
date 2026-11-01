@@ -2204,6 +2204,18 @@
       <div class="drawer-block"><h4>Текст</h4><div class="drawer-text">${esc(p.text)}</div></div>
 
       <div class="drawer-block short-video-tools">
+        <h4>Нативная версия для любой площадки</h4>
+        <p class="drawer-meta">TgFarm учитывает аудиторию, формат, адресата и редакционные ограничения. Для Reddit, vc.ru и Пикабу дополнительно проверяет доступные правила. Это только предпросмотр, публикация не запускается.</p>
+        <div class="short-video-actions">
+          <select id="editorial-preview-platform-${esc(p.id)}" aria-label="Площадка для нативной версии">
+            ${(state.platformData?.platforms || []).map((item) => `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.supported ? "адаптер есть" : "ручной режим")}</option>`).join("")}
+          </select>
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmBuildEditorialPreview('${esc(p.id)}')">Собрать нативную версию</button>
+        </div>
+        <div class="community-target-result" id="editorial-preview-result-${esc(p.id)}"></div>
+      </div>
+
+      <div class="drawer-block short-video-tools">
         <h4>Подготовить публикацию · vc.ru / Пикабу</h4>
         <p class="drawer-meta">Сначала TgFarm может подобрать конкретную тему vc.ru или сообщество Пикабу, прочитать их публичное описание и правила, а затем заполнить редактор. Автопубликация через API не подтверждена: черновик не будет отправлен без твоего участия.</p>
         <div class="short-video-actions">
@@ -2909,6 +2921,70 @@
     } catch (error) {
       root.textContent = "Не удалось подобрать место: " + (error?.message || error);
       toast("Подбор " + label + " не выполнен: " + (error?.message || error), "err");
+    }
+  };
+
+  window.tgfarmBuildEditorialPreview = async (id) => {
+    const platform = document.getElementById("editorial-preview-platform-" + id)?.value || "";
+    const root = document.getElementById("editorial-preview-result-" + id);
+    if (!root || !platform) return;
+    const label = (state.platformData?.platforms || []).find((item) => item.id === platform)?.name || platform;
+    root.innerHTML = '<div class="empty">Анализирую тему, формат и ограничения ' + esc(label) + '…</div>';
+    try {
+      const result = await post(
+        "/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/editorial",
+        {},
+      );
+      if (!result.ok) {
+        const candidates = (result.candidates || []).slice(0, 4).map((item) => `
+          <article class="community-target-card">
+            <strong>${esc(item.name || item.title || "Вариант")}</strong>
+            <p>${esc(item.description || "")}</p>
+            <small>Совпадение ${Number(item.score || 0)}/100 · ${esc((item.blockers || item.risks || []).join("; "))}</small>
+          </article>`).join("");
+        root.innerHTML = `
+          <div class="community-target-summary">
+            <strong>${esc(result.status === "blocked_missing_media" ? "Нужен другой медиаформат" : "Подходящий адресат не найден")}</strong>
+            <p>${esc(result.detail || result.brief?.format_reason || "Публикация не подготовлена.")}</p>
+          </div>
+          ${candidates}
+          <small>Публикация не выполнялась.</small>`;
+        toast(label + ": " + (result.detail || "нужна дополнительная подготовка."), "warn");
+        return;
+      }
+      const draft = result.draft || {};
+      const notes = (result.adaptation?.notes || []).map((item) => `<li>${esc(item)}</li>`).join("");
+      const target = result.target?.name || result.target?.title || "";
+      const targetUrl = safeExternalUrl(result.target?.url || "");
+      const status = result.adaptation?.status === "ai_native" ? "AI-версия" : "детерминированный черновик";
+      root.innerHTML = `
+        <div class="community-target-summary">
+          <strong>${esc(result.brief?.format || result.profile?.format || "Нативный формат")}</strong>
+          <p>${esc(result.profile?.audience || "")}</p>
+          <small>${esc(result.adaptation?.reason || status)} · обязательна ручная проверка перед отправкой</small>
+          ${target ? `<p>Адресат: <strong>${esc(target)}</strong> ${targetUrl ? `<a href="${esc(targetUrl)}" target="_blank" rel="noopener noreferrer">Открыть ↗</a>` : ""}</p>` : ""}
+        </div>
+        <label class="field"><span>Заголовок</span><textarea rows="2" readonly>${esc(draft.title || "")}</textarea></label>
+        <div class="short-video-actions">
+          <button class="btn btn-ghost btn-sm" type="button" data-editorial-copy="title">Копировать заголовок</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-editorial-copy="body">Копировать текст</button>
+        </div>
+        <label class="field"><span>Текст</span><textarea rows="8" readonly>${esc(draft.body || "")}</textarea></label>
+        ${(draft.hashtags || []).length ? `<p class="drawer-meta">Теги: ${esc(draft.hashtags.map((tag) => "#" + tag).join(" "))}</p>` : ""}
+        ${notes ? `<ul class="manual-draft-notes">${notes}</ul>` : ""}
+        <small>Черновик не отправлен. Публикация отключена на этом этапе.</small>`;
+      root.dataset.editorialTitle = draft.title || "";
+      root.dataset.editorialBody = draft.body || "";
+      root.querySelectorAll("[data-editorial-copy]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const value = button.dataset.editorialCopy === "title" ? root.dataset.editorialTitle : root.dataset.editorialBody;
+          navigator.clipboard?.writeText(value).then(() => toast("Скопировано", "ok")).catch(() => toast("Не удалось скопировать", "err"));
+        });
+      });
+      toast(label + ": нативный предпросмотр готов.", "ok");
+    } catch (error) {
+      root.textContent = "Не удалось подготовить нативную версию: " + (error?.message || error);
+      toast(label + ": " + (error?.message || error), "err");
     }
   };
 
