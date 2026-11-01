@@ -270,7 +270,9 @@ def choose_post_native_format(
         kind = str(getattr(media, "kind", "") or "").strip().lower()
         if kind == "video":
             media_kinds.add("video")
-        elif kind in {"image", "article_image", "ai_art", "template", "infographic", "quote", "cover"}:
+        elif bool(getattr(media, "is_primary", True)) and kind in {
+            "image", "article_image", "ai_art", "template", "infographic", "quote", "cover"
+        }:
             media_kinds.add("image")
     render_on_demand = False
     if platform_id == "youtube" and "video" not in media_kinds and allow_youtube_render:
