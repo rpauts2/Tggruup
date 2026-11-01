@@ -290,7 +290,8 @@ def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
     )
     no_media = choose_post_native_format("youtube", post, [])
     youtube_render = choose_post_native_format("youtube", post, [], allow_youtube_render=True)
-    image_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image")])
+    image_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image", is_primary=True)])
+    secondary_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image", is_primary=False)])
     pinterest_video_without_cover = choose_post_native_format(
         "pinterest", post, [SimpleNamespace(kind="video")]
     )
@@ -305,6 +306,7 @@ def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
     assert youtube_render["media_kind"] == "video"
     assert image_only["eligible"] is True
     assert image_only["media_kind"] == "image"
+    assert secondary_only["eligible"] is False
     assert pinterest_video_without_cover["eligible"] is False
     assert pinterest_video_with_cover["eligible"] is True
     assert pinterest_video_with_cover["media_kind"] == "video"
