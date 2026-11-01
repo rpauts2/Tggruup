@@ -136,6 +136,9 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["douyin"]["automation_mode"] == "manual"
     assert entries["douyin"]["auth"]["method"] == "oauth"
     assert {field["key"] for field in entries["douyin"]["auth"]["fields"]} == {"DOUYIN_CLIENT_KEY", "DOUYIN_CLIENT_SECRET"}
+    assert entries["douyin"]["editorial"]["format"] == "vertical_video"
+    assert "preview" in entries["douyin"]["editorial"]["rule_gate"].lower()
+    assert all("editorial" in item for item in entries.values())
     assert catalog["summary"]["supported"] == 19
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
