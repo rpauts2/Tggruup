@@ -489,6 +489,7 @@ async def adapt_payload_with_ai(
     from tgfarm.llm import policy
     from tgfarm.llm.client import get_llm
 
+    sources = sorted(set(_URL_RE.findall(body + "\n" + str(getattr(payload, "link", "") or ""))))
     use_ai, reason = policy.should_use_ai(
         "s9_platform_native_rewrite",
         generation_provider="manual",
@@ -514,7 +515,6 @@ async def adapt_payload_with_ai(
     if not decision.allowed:
         return {"used_ai": False, "status": "deterministic", "reason": decision.reason}
 
-    sources = sorted(set(_URL_RE.findall(body + "\n" + str(getattr(payload, "link", "") or ""))))
     fallback = {"title": title, "body": body, "notes": []}
     system = (
         "You are a strict platform-native editor for an owner's legitimate content account. "
