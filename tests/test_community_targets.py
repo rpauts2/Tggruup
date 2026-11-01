@@ -398,7 +398,7 @@ def test_vc_skips_topic_with_explicit_promotion_ban_and_selects_next_safe_match(
     post = {
         "public_id": "published_vc_promotion_policy",
         "title": "Маркетинг цифровых продуктов",
-        "body": "Купите наш продукт со скидкой. Используйте промокод для заказа.",
+        "body": "Купите наш продукт со скидкой. Используйте промокод для заказа. Это решение для бизнеса и оценки стратегий роста.",
         "cta": "",
         "sources": [],
         "hashtags": [],
