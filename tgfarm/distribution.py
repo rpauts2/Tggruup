@@ -251,6 +251,40 @@ def _angle_fit(platform_id: str, angle: str) -> float:
     return preferences.get(platform_id, {}).get(angle, 0.72)
 
 
+def choose_post_native_format(
+    platform_id: str,
+    post: Any,
+    media_rows: list[Any] | tuple[Any, ...] = (),
+    *,
+    allow_youtube_render: bool = False,
+) -> dict[str, Any]:
+    """Describe the real native delivery format for one stored post.
+
+    YouTube may render a short on demand in S9 when video generation is enabled.
+    Pinterest video always needs a separate primary cover image.
+    """
+    from tgfarm.platform_editorial import choose_native_format
+
+    media_kinds: set[str] = set()
+    for media in media_rows or ():
+        kind = str(getattr(media, "kind", "") or "").strip().lower()
+        if kind == "video":
+            media_kinds.add("video")
+        elif kind in {"image", "article_image", "ai_art", "template", "infographic", "quote", "cover"}:
+            media_kinds.add("image")
+    render_on_demand = False
+    if platform_id == "youtube" and "video" not in media_kinds and allow_youtube_render:
+        media_kinds.add("video")
+        render_on_demand = True
+
+    brief = choose_native_format(
+        platform_id,
+        media_kinds,
+        content_chars=len(str(getattr(post, "hook", "") or "")) + len(str(getattr(post, "body", "") or "")),
+    )
+    return {**brief, "render_on_demand": render_on_demand}
+
+
 def score_post_for_platform(
     post: Any,
     platform_id: str,
@@ -661,6 +695,15 @@ def build_distribution_plan(
                     )
                     if not score["eligible"]:
                         continue
+                    native = choose_post_native_format(
+                        platform_id,
+                        post,
+                        media_rows,
+                        allow_youtube_render=bool(settings.video_enabled),
+                    )
+                    if not native["eligible"]:
+                        continue
+                    editorial = platform_catalog.get(platform_id, {}).get("editorial") or {}
                     eligible.append({
                         "post_id": post.id,
                         "post_public_id": post.public_id,
@@ -669,6 +712,14 @@ def build_distribution_plan(
                         "score": score["score"],
                         "topic": score.get("topic", "—"),
                         "reason": score["reason"],
+                        "native_format": native["format"],
+                        "native_format_label": native["label"],
+                        "native_media_kind": native["media_kind"],
+                        "render_on_demand": native["render_on_demand"],
+                        "audience": editorial.get("audience", ""),
+                        "target_type": editorial.get("target_type", ""),
+                        "target_selection": editorial.get("target_selection", ""),
+                        "rule_gate": editorial.get("rule_gate", ""),
                     })
         eligible.sort(key=lambda item: (-item["score"], item["post_public_id"]))
         limit = min(remaining, max(0, int(max_selected_per_platform)))
@@ -694,6 +745,7 @@ def build_distribution_plan(
             "reason": reason,
             "detail": detail,
             "topics": list(rule["topics"]),
+            "editorial": platform_catalog.get(platform_id, {}).get("editorial") or {},
         })
 
     primary_platforms = _build_primary_platform_plan(
