@@ -333,6 +333,58 @@ def _vc_risks(post: dict[str, Any], rules_text: str = "") -> list[str]:
     return list(dict.fromkeys(risks))
 
 
+def _vc_rule_assessment(
+    post: dict[str, Any],
+    global_rules: str,
+    topic_rules: str,
+) -> tuple[list[str], list[str]]:
+    """Separate review warnings from explicit topic-policy blockers."""
+    warnings = _vc_risks(post, global_rules)
+    blockers: list[str] = []
+    if not topic_rules:
+        warnings.append(
+            "Отдельные правила темы не удалось распознать; проверены только общие правила vc.ru."
+        )
+
+    policy_text = normalize(f"{global_rules}\n{topic_rules}")
+    content = normalize(f"{post['title']}\n{post['body']}")
+    promotion_bans = (
+        "реклама запрещена",
+        "запрещена реклама",
+        "самореклама запрещена",
+        "запрещено самопродвижение",
+        "самопродвижение запрещено",
+        "не допускается реклама",
+        "реклама не допускается",
+        "рекламные публикации запрещены",
+        "коммерческая реклама запрещена",
+    )
+    promotional_signals = (
+        "купи",
+        "купить",
+        "покупайте",
+        "закажи",
+        "заказать",
+        "оформить заказ",
+        "промокод",
+        "скидка",
+        "оставьте заявку",
+        "запишитесь",
+        "регистрируйтесь",
+        "переходите на сайт",
+        "наш сервис доступен",
+        "наш продукт доступен",
+    )
+    has_promotion = any(signal in content for signal in promotional_signals)
+    has_promotion_ban = any(rule in policy_text for rule in promotion_bans)
+    if has_promotion and has_promotion_ban:
+        blockers.append(
+            "В общих правилах или правилах этой темы найден прямой запрет рекламы/самопродвижения, "
+            "а текст содержит призыв к покупке или заказу."
+        )
+    return list(dict.fromkeys(warnings)), list(dict.fromkeys(blockers))
+
+
 async def _vc(post: dict[str, Any]) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError
 
@@ -363,8 +415,9 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 return None
         description = page["description"] or page["text"][:1000]
-        score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}")
-        risks = _vc_risks(post, rules_text)
+        topic_rules = _rules(page["chunks"], page["text"])
+        score, matches = _score(post_text, f"{label}\n{page['title']}\n{description}\n{topic_rules}")
+        risks, blockers = _vc_rule_assessment(post, rules_text, topic_rules)
         if not rules_text:
             risks.append("Не удалось прочитать общие правила vc.ru. Автоматическая рекомендация заблокирована.")
         return {
@@ -374,11 +427,15 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "title": page["title"] or label,
             "url": url,
             "description": description[:1000],
+            "rules": topic_rules[:2200],
+            "topic_rules_available": bool(topic_rules),
+            "global_rules_available": bool(rules_text),
             "score": max(0, min(100, round(score * .82 + initial * .18))),
             "matches": matches,
-            "risks": risks,
+            "risks": list(dict.fromkeys(risks)),
+            "blockers": blockers,
             "rules_available": bool(rules_text),
-            "recommended": bool(rules_text) and score >= MIN_SCORE,
+            "recommended": bool(rules_text) and not blockers and score >= MIN_SCORE,
         }
 
     candidates = [
@@ -388,8 +445,11 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
         ))
         if item is not None
     ]
-    candidates.sort(key=lambda x: (x["score"], x["name"]), reverse=True)
-    best = candidates[0] if candidates and candidates[0]["recommended"] else None
+    candidates.sort(
+        key=lambda x: (x["recommended"], x["score"], x["name"]),
+        reverse=True,
+    )
+    best = next((item for item in candidates if item["recommended"]), None)
     return {
         "platform": "vc_ru",
         "post_public_id": post["public_id"],
