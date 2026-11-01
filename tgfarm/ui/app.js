@@ -723,9 +723,15 @@
           <div class="distribution-pick">
             <strong>${esc(post.title || post.post_public_id)}</strong>
             <span>${esc(post.topic || "подходящая тема")} · совпадение ${Math.round(Number(post.score || 0) * 100)}%</span>
+            <small>Формат: ${esc(post.native_format_label || post.native_format || "уточняется")}${post.render_on_demand ? " · видео будет создано в S9" : ""}</small>
             <small>${esc(post.reason || "")}</small>
           </div>`).join("") : `<div class="distribution-no-pick">${esc(item.reason || "На этот тик подходящих материалов нет.")}</div>`;
         const topics = (item.topics || []).slice(0, 4).map(esc).join(" · ");
+        const editorial = item.editorial || {};
+        const editorialHint = editorial.audience
+          ? `<small>Аудитория: ${esc(editorial.audience)} · Адресат: ${esc(editorial.target_selection || editorial.target_type || "профиль")}</small>
+             <small>Проверка: ${esc(editorial.rule_gate || "")}</small>`
+          : "";
         return `
           <article class="distribution-card ${item.enabled && item.configured && item.automation === "automatic" ? "is-ready" : "is-paused"}">
             <div class="distribution-card-top">
@@ -738,6 +744,7 @@
             </div>
             <div class="distribution-track"><i style="width:${progress}%"></i></div>
             <p class="distribution-topics">${topics || "Профиль темы уточняется"}</p>
+            ${editorialHint}
             <div class="distribution-picks">${picks}</div>
             <small>${esc(item.reason || item.detail || "")}</small>
           </article>`;
