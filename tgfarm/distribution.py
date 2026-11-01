@@ -268,7 +268,7 @@ def choose_post_native_format(
     media_kinds: set[str] = set()
     for media in media_rows or ():
         kind = str(getattr(media, "kind", "") or "").strip().lower()
-        if kind == "video":
+        if kind == "video" and bool(getattr(media, "is_primary", True)):
             media_kinds.add("video")
         elif bool(getattr(media, "is_primary", True)) and kind in {
             "image", "article_image", "ai_art", "template", "infographic", "quote", "cover"
