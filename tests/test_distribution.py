@@ -98,6 +98,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
 
     enabled = set(enabled_crosspost_platforms())
     assert "tiktok" in MANUAL_ONLY
+    assert "douyin" in MANUAL_ONLY
     assert "linkedin" not in MANUAL_ONLY
     assert "linkedin" in PLATFORM_RULES
     assert "instagram" in PLATFORM_RULES
