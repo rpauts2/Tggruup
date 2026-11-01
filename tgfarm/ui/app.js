@@ -2837,13 +2837,21 @@
           <article class="community-target-card ${isBest ? "is-best" : ""}">
             <div class="community-target-head">
               <div><strong>${esc(item.name || item.title || "Без названия")}</strong>
-                <span>${isBest ? "Лучший вариант" : "Альтернатива"} · совпадение ${score}/100</span></div>
+                <span>${isBest ? "Лучший вариант" : item.recommended ? "Подходит для ручной проверки" : "Не рекомендуется"} · совпадение ${score}/100</span></div>
               ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Открыть ↗</a>` : ""}
             </div>
             <p>${esc(item.description || "Описание не получено.")}</p>
             ${(item.suggested_tags || item.matches || []).length ? `<div class="community-target-tags">${(item.suggested_tags || item.matches || []).map((value) => `<span>${esc(value)}</span>`).join("")}</div>` : ""}
             ${risks.length ? `<div class="community-target-risks">${risks.map((value) => `<p>! ${esc(value)}</p>`).join("")}</div>` : ""}
-            ${item.rules ? `<details><summary>Правила этого места</summary><p>${esc(item.rules)}</p></details>` : `<small>Правила не удалось распознать, рекомендация не подтверждена.</small>`}
+            ${item.target_type === "topic"
+              ? (item.topic_rules_available && item.rules
+                ? `<details><summary>Правила темы</summary><p>${esc(item.rules)}</p></details>`
+                : `<small>${item.global_rules_available
+                  ? "Отдельные правила темы не распознаны. Проверены общие правила vc.ru, перед отправкой нужна ручная проверка."
+                  : "Не удалось прочитать общие правила vc.ru. Тема не подтверждена."}</small>`)
+              : (item.rules
+                ? `<details><summary>Правила сообщества</summary><p>${esc(item.rules)}</p></details>`
+                : `<small>Правила сообщества не удалось распознать; место не рекомендуется.</small>`)}
           </article>`;
       };
       state.communityTargetPlans = state.communityTargetPlans || {};
