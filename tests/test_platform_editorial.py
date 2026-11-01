@@ -158,3 +158,30 @@ def test_owner_selected_destination_is_not_claimed_to_be_auto_discovered():
     assert "доску" in PROFILES["pinterest"]["target_selection"]
     assert "Facebook Page" in PROFILES["facebook"]["target_selection"]
     assert "ID" not in PROFILES["facebook"]["target_selection"]
+
+
+def test_dzen_chooses_post_or_article_from_the_real_1200_character_cutoff():
+    from tgfarm.platform_editorial import choose_native_format
+
+    short = choose_native_format("dzen", set(), content_chars=1199)
+    article = choose_native_format("dzen", set(), content_chars=1200)
+    illustrated = choose_native_format("dzen", {"image"}, content_chars=1600)
+
+    assert short["format"] == "Пост Дзена"
+    assert short["media_kind"] == "text"
+    assert article["format"] == "Статья Дзена"
+    assert article["media_kind"] == "text"
+    assert illustrated["format"] == "Статья Дзена с иллюстрацией"
+    assert illustrated["media_kind"] == "image"
+
+
+def test_pinterest_video_pin_requires_a_real_cover_image():
+    from tgfarm.platform_editorial import choose_native_format
+
+    without_cover = choose_native_format("pinterest", {"video"})
+    with_cover = choose_native_format("pinterest", {"video", "image"})
+
+    assert without_cover["eligible"] is False
+    assert "обложка" in without_cover["reason"].lower()
+    assert with_cover["eligible"] is True
+    assert with_cover["media_kind"] == "video"
