@@ -96,6 +96,11 @@ class TikTokPublishRequest(BaseModel):
     consent: bool = False
 
 
+class DouyinPublishRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=1000)
+    consent: bool = False
+
+
 class MastodonOAuthStartRequest(BaseModel):
     instance: str = Field(min_length=1, max_length=300)
 
@@ -1471,6 +1476,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
             "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
             "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
+            "/api/platforms/douyin/auth/callback": "tgfarm_douyin_oauth_params",
             "/api/platforms/instagram/auth/callback": "tgfarm_instagram_oauth_params",
             "/api/platforms/pinterest/auth/callback": "tgfarm_pinterest_oauth_params",
             "/api/platforms/facebook/auth/callback": "tgfarm_facebook_oauth_params",
@@ -1503,7 +1509,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/linkedin/auth/callback",
             "/api/platforms/youtube/auth/callback",
             "/api/platforms/tiktok/auth/callback",
-            "/api/platforms/instagram/auth/callback",
+            "/api/platforms/douyin/auth/callback",
+            "/api/platforms/instagram/auth/callback"
             "/api/platforms/pinterest/auth/callback",
             "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
@@ -3052,6 +3059,84 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 headers=headers,
             )
 
+    @app.post("/api/platforms/douyin/auth/start")
+    async def douyin_oauth_start(request: Request) -> dict:
+        from tgfarm.douyin_oauth import begin_douyin_oauth
+        settings = get_settings()
+        origin = str(settings.public_base_url or request.base_url).rstrip("/")
+        redirect_uri = origin + "/api/platforms/douyin/auth/callback"
+        try:
+            return await begin_douyin_oauth(settings.douyin_client_key, settings.douyin_client_secret, redirect_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/douyin/auth/callback")
+    async def douyin_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+        from tgfarm.douyin_oauth import cancel_douyin_oauth, complete_douyin_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+        params = request.scope.get("tgfarm_douyin_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        headers = {
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_douyin_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение Douyin не завершено</h1><p>Авторизация отменена или ответ OAuth неполный.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>", status_code=400, headers=headers,
+            )
+        try:
+            credentials = await complete_douyin_oauth(state_value, code)
+            await io(save_credentials, "douyin", {
+                "DOUYIN_CLIENT_KEY": credentials["client_key"],
+                "DOUYIN_CLIENT_SECRET": credentials["client_secret"],
+                "DOUYIN_ACCESS_TOKEN": credentials["access_token"],
+                "DOUYIN_REFRESH_TOKEN": credentials["refresh_token"],
+                "DOUYIN_TOKEN_EXPIRES_AT": credentials["token_expires_at"],
+                "DOUYIN_REFRESH_TOKEN_EXPIRES_AT": credentials["refresh_token_expires_at"],
+                "DOUYIN_OPEN_ID": credentials["open_id"],
+                "DOUYIN_USERNAME": credentials["username"],
+            })
+            await io(record_auth_check, "douyin", True, account=credentials["account"],
+                detail="Douyin OAuth и user_info подтверждены; каждое создание видео отдельно подтверждается владельцем.")
+            _operator("platform-oauth-complete", "douyin", "Douyin account OAuth completed")
+            account = html.escape(credentials["account"] or "Douyin creator")
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Douyin подключён</h1><p>OAuth подтвердил аккаунт <strong>" + account + "</strong>.</p>"
+                "<p>Токены сохранены локально. Создание каждого видео запускается только после просмотра и отдельного подтверждения.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>", headers=headers,
+            )
+        except (ValueError, RuntimeError) as exc:
+            cancel_douyin_oauth(state_value)
+            log.warning("Douyin OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Douyin</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>", status_code=400, headers=headers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cancel_douyin_oauth(state_value)
+            log.warning("Douyin OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+                "<title>TgFarm OAuth</title><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Douyin</h1><p>Внутренняя ошибка. Проверь настройки и повтори попытку.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>", status_code=500, headers=headers,
+            )
+
     @app.post("/api/posts/{post_public_id}/video/render")
     async def render_post_video(post_public_id: str) -> dict:
         """Render an original vertical MP4 from an already-published post."""
@@ -3220,6 +3305,94 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "error": result.error,
             "detail": message,
         }
+
+    @app.post("/api/posts/{post_public_id}/douyin/prepare")
+    async def prepare_douyin_post(post_public_id: str) -> dict:
+        from tgfarm.douyin_oauth import get_douyin_user_info
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, primary_video_path
+        if not is_platform_enabled("douyin"):
+            raise HTTPException(409, "Сначала включи Douyin в разделе «Площадки».")
+        adapter = ADAPTERS.get("douyin")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "Сначала подключи Douyin через Open Platform OAuth.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Подготовка Douyin доступна после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(select(Post.id).where(Post.public_id == post_public_id)).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        artifact = None
+        if not video_path:
+            from tgfarm.s11_video.renderer import render_post_short
+            try:
+                artifact = await io(render_post_short, post_public_id)
+                video_path = artifact.path
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=422, detail=redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)) from exc
+            detail = await io(_post_detail, post_public_id)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(410, "Видео не найдено после подготовки.")
+        try:
+            profile = await get_douyin_user_info()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=redact_sensitive_text(exc, limit=300) or "Не удалось проверить Douyin OAuth.") from exc
+        caption = "\n\n".join(part for part in (str(detail.get("hook") or ""), str(detail.get("body") or "")) if part)[:1000]
+        return {
+            "ok": True, "post": post_public_id, "caption": caption,
+            "account": profile.get("nickname") or get_settings().douyin_username or "Douyin creator",
+            "video": detail.get("video"),
+            "download_url": f"/api/media/{detail['video']['id']}" if detail.get("video") and detail["video"].get("id") else None,
+            "artifact": artifact.as_dict() if artifact else None,
+            "live": get_settings().live,
+            "warning": "После создания видео проходит модерацию и временно может быть видно только владельцу. Проверь оригинальный MP4 и подпись.",
+        }
+
+    @app.post("/api/posts/{post_public_id}/douyin/publish")
+    async def publish_douyin_post(post_public_id: str, request: DouyinPublishRequest) -> dict:
+        from tgfarm.core.schemas import CrosspostResult
+        from tgfarm.douyin_publish import publish_douyin_video
+        from tgfarm.platforms import is_platform_enabled
+        from tgfarm.s9_growth.adapters import ADAPTERS, begin_crosspost, log_result, primary_video_path
+        if not request.consent:
+            raise HTTPException(400, "Подтверди создание именно этого видео в Douyin.")
+        if not get_settings().live:
+            raise HTTPException(409, "TGFARM_MODE не live. Сначала проверь подготовку в dry-режиме.")
+        if not is_platform_enabled("douyin"):
+            raise HTTPException(409, "Douyin выключен в разделе «Площадки».")
+        adapter = ADAPTERS.get("douyin")
+        if adapter is None or not adapter.configured():
+            raise HTTPException(409, "Douyin OAuth не настроен. Подключи аккаунт и проверь доступ.")
+        detail = await io(_post_detail, post_public_id)
+        if detail.get("status") != "published":
+            raise HTTPException(409, "Создание Douyin-видео доступно только после подтверждённой основной публикации.")
+        with session_scope() as session:
+            post_pk = session.execute(select(Post.id).where(Post.public_id == post_public_id)).scalar_one_or_none()
+        if post_pk is None:
+            raise HTTPException(404, "post not found")
+        video_path = await io(primary_video_path, post_pk)
+        if not video_path or not Path(video_path).is_file():
+            raise HTTPException(409, "Сначала создай и проверь готовый вертикальный MP4.")
+        attempt = await io(begin_crosspost, post_public_id, "douyin")
+        if attempt is None:
+            raise HTTPException(409, "Для этого поста уже есть доставка или блокировка. Проверь историю Douyin перед повтором.")
+        try:
+            result = await publish_douyin_video(video_path, caption=request.caption)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Douyin video creation failed unexpectedly (%s)", type(exc).__name__)
+            result = CrosspostResult(platform="douyin", status="unknown", error="Результат создания видео не подтверждён. Проверь Douyin перед повтором.")
+        await io(log_result, post_public_id, result, attempt)
+        _operator("douyin-video-create", post_public_id, f"status={result.status}")
+        detail = (
+            "Douyin подтвердил создание видео. Оно проходит модерацию и временно может быть видно только автору."
+            if result.status == "posted" else
+            "Результат не подтверждён. Проверь Douyin вручную и не запускай повтор, пока не установишь исход."
+            if result.status == "unknown" else
+            "Douyin не подтвердил создание видео. Исправь причину перед новой отправкой."
+        )
+        return {"ok": result.status == "posted", "status": result.status, "remote_id": result.remote_id, "url": result.url, "error": result.error, "detail": detail}
 
     @app.get("/api/reddit/metrics")
     async def reddit_metrics() -> dict:

@@ -1758,7 +1758,20 @@ class DiscordAdapter:
         )
 
 
+class DouyinAdapter:
+    """Connection-only adapter; create_video requires a separate UI action."""
+    platform = "douyin"
+
+    def configured(self) -> bool:
+        settings = get_settings()
+        return bool(settings.douyin_client_key and settings.douyin_client_secret and settings.douyin_refresh_token and settings.douyin_open_id)
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        return CrosspostResult(platform=self.platform, status="skipped", error="Douyin video creation requires explicit preview and owner confirmation.")
+
+
 ADAPTERS: dict[str, Adapter] = {
+    "douyin": DouyinAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
     "x": XAdapter(),

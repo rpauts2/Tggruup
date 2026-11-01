@@ -293,11 +293,14 @@ CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "douyin", "name": "Douyin", "symbol": "抖", "color": "#111111",
-        "category": "Азиатские", "market": "Китай", "priority": "P3",
-        "mode": "planned", "roles": ["video"],
-        "description": "Китайская отдельная платформа коротких видео; не путать с международным TikTok.",
-        "requirements": "Региональный аккаунт и допуск к Open Platform.",
-        "docs_url": "https://developer.open-douyin.com/",
+        "category": "Азиатские", "market": "Китай", "priority": "P2",
+        "mode": "built_in", "roles": ["video"],
+        "description": (
+            "Официальный Douyin Open Platform: загрузка оригинального MP4 и создание видео. "
+            "Каждая отправка требует отдельного просмотра и подтверждения владельца."
+        ),
+        "requirements": "Douyin Web App, OAuth scopes user_info + video.create и доступ к API создания видео.",
+        "docs_url": "https://open.douyin.com/platform/resource/docs/openapi/video-management/douyin/create/create-video",
     },
     {
         "id": "rednote", "name": "RedNote / Xiaohongshu", "symbol": "红", "color": "#FF2442",
@@ -364,6 +367,16 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "TIKTOK_REFRESH_TOKEN_EXPIRES_AT", "attribute": "tiktok_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
         {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
         {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
+    ],
+    "douyin": [
+        {"key": "DOUYIN_CLIENT_KEY", "attribute": "douyin_client_key", "label": "Douyin Client Key", "secret": False, "placeholder": "Client Key из Open Platform", "help": "Создай Web App и запроси разрешения user_info и video.create."},
+        {"key": "DOUYIN_CLIENT_SECRET", "attribute": "douyin_client_secret", "label": "Douyin Client Secret", "secret": True, "placeholder": "Client Secret", "help": "Секрет сохраняется только в локальном .env."},
+        {"key": "DOUYIN_ACCESS_TOKEN", "attribute": "douyin_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
+        {"key": "DOUYIN_REFRESH_TOKEN", "attribute": "douyin_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний refresh token."},
+        {"key": "DOUYIN_TOKEN_EXPIRES_AT", "attribute": "douyin_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
+        {"key": "DOUYIN_REFRESH_TOKEN_EXPIRES_AT", "attribute": "douyin_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+        {"key": "DOUYIN_OPEN_ID", "attribute": "douyin_open_id", "label": "Open ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подключённого аккаунта."},
+        {"key": "DOUYIN_USERNAME", "attribute": "douyin_username", "label": "Nickname", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
     "threads": [
         {"key": "THREADS_APP_ID", "attribute": "threads_app_id", "label": "Threads App ID", "secret": False, "placeholder": "Meta App ID", "help": "Идентификатор Meta-приложения с добавленным продуктом Threads API."},
@@ -588,7 +601,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         method = "vkhost"
     elif platform_id in {"vc_ru", "pikabu"}:
         method = "browser"
-    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest", "facebook", "tumblr"}:
+    elif platform_id in {"mastodon", "x", "threads", "linkedin", "youtube", "tiktok", "douyin", "instagram", "reddit", "pinterest", "facebook", "tumblr"}:
         method = "oauth"
     elif fields:
         method = "credentials"
@@ -945,6 +958,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.tiktok_client_key and settings.tiktok_client_secret:
             return False, "TikTok App настроено; подключи аккаунт через OAuth и проверь scope video.publish."
         return False, "Нужны TikTok Client Key/Secret и подключение аккаунта через OAuth."
+    if platform_id == "douyin":
+        if settings.douyin_client_key and settings.douyin_client_secret and settings.douyin_refresh_token and settings.douyin_open_id:
+            return True, "Douyin OAuth подключён; каждое создание видео требует отдельного подтверждения и проходит модерацию."
+        if settings.douyin_client_key and settings.douyin_client_secret:
+            return False, "Douyin App настроено; подключи аккаунт через OAuth с разрешениями user_info и video.create."
+        return False, "Нужны Douyin Client Key/Secret и подключение через Open Platform OAuth."
     if platform_id == "reddit":
         user_agent = settings.reddit_user_agent.strip()
         configured = all((
@@ -1085,6 +1104,7 @@ def is_platform_enabled(platform_id: str) -> bool:
 
 MANUAL_ONLY_AUTOMATION: dict[str, str] = {
     "tiktok": "Каждая публикация требует отдельного выбора настроек и явного согласия автора.",
+    "douyin": "Каждое создание видео требует отдельного просмотра ролика и явного подтверждения владельца.",
 }
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({

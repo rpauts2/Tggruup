@@ -419,6 +419,16 @@ class Settings(BaseSettings):
     tiktok_open_id: str = Field(default="", alias="TIKTOK_OPEN_ID")
     tiktok_username: str = Field(default="", alias="TIKTOK_USERNAME")
 
+    # Douyin Open Platform. Video creation is never run by the background scheduler.
+    douyin_client_key: str = Field(default="", alias="DOUYIN_CLIENT_KEY")
+    douyin_client_secret: str = Field(default="", alias="DOUYIN_CLIENT_SECRET")
+    douyin_access_token: str = Field(default="", alias="DOUYIN_ACCESS_TOKEN")
+    douyin_refresh_token: str = Field(default="", alias="DOUYIN_REFRESH_TOKEN")
+    douyin_token_expires_at: int = Field(default=0, alias="DOUYIN_TOKEN_EXPIRES_AT")
+    douyin_refresh_token_expires_at: int = Field(default=0, alias="DOUYIN_REFRESH_TOKEN_EXPIRES_AT")
+    douyin_open_id: str = Field(default="", alias="DOUYIN_OPEN_ID")
+    douyin_username: str = Field(default="", alias="DOUYIN_USERNAME")
+
     # --- verification -------------------------------------------------------
     # Enables the S5 external verification gate, and the `websearch` source
     # collector when a source of that kind is configured.

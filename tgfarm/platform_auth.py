@@ -393,6 +393,15 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 "Настройки приватности обновляются перед каждой публикацией; "
                 "отправка запускается только вручную из карточки поста."
             )
+        elif platform_id == "douyin":
+            from tgfarm.douyin_oauth import get_douyin_user_info
+            profile = await get_douyin_user_info()
+            expected = str(settings.douyin_open_id or "").strip()
+            if not expected or str(profile.get("open_id") or "") != expected:
+                raise RuntimeError("Douyin не подтвердил ожидаемый профиль. Переподключи OAuth.")
+            account = str(profile.get("nickname") or settings.douyin_username or "Douyin creator")[:160]
+            authorized = True
+            detail = "Douyin OAuth и user_info подтверждены; video.create запускается только после отдельного согласия владельца."
         elif platform_id == "tumblr":
             from tgfarm.tumblr_oauth import USER_AGENT, get_valid_tumblr_access_token
 

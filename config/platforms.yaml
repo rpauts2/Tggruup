@@ -20,6 +20,7 @@ enabled:
   odnoklassniki: false
   youtube: false
   tiktok: false
+  douyin: false
 
 # Рекомендуемые следующие интеграции. Это план, не утверждение о готовности API.
 planned:
