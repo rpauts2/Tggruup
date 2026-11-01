@@ -512,3 +512,18 @@ def test_community_draft_api_requires_auth_and_rejects_other_platforms(client):
     )
     assert response.status_code == 404
     assert "vc.ru" in response.json()["detail"] or "Пикабу" in response.json()["detail"]
+
+
+def test_douyin_oauth_button_uses_official_oauth_start_route(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    response = client.get("/", headers={HEADER: ensure_token()})
+    script = client.get("/ui/app.js", headers={HEADER: ensure_token()})
+
+    assert response.status_code == 200
+    assert script.status_code == 200
+    assert 'platformId === "douyin"' in script.text
+    assert '"/api/platforms/douyin/auth/start"' in script.text
+    assert '"/api/platforms/douyin/auth/callback"' in script.text
+    assert "video.create" in script.text
+    assert "window.location.assign(authorizeUrl)" in script.text
