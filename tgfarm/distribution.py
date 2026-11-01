@@ -172,6 +172,7 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
 # unattended background sends. The platform's own consent flow is separate.
 MANUAL_ONLY: dict[str, str] = {
     "tiktok": "Каждая публикация TikTok требует отдельного просмотра, выбора приватности и согласия автора.",
+    "douyin": "Каждое создание видео требует отдельного просмотра и подтверждения владельца.",
 }
 MIN_SCORE = 0.38
 MAX_CANDIDATES = 180
