@@ -1862,6 +1862,153 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         )
         return result
 
+    @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/editorial")
+    async def platform_editorial_preview(platform_id: str, post_public_id: str) -> dict:
+        """Create a native editorial preview for any catalogue destination; never publishes."""
+        from tgfarm.platform_editorial import (
+            adapt_payload_with_ai,
+            build_editorial_brief,
+            choose_native_format,
+            get_editorial_profile,
+        )
+        from tgfarm.core.schemas import CrosspostPayload
+        from tgfarm.distribution import adapt_payload_for_platform
+        from tgfarm.platforms import CATALOG
+
+        platform_id = str(platform_id or "").strip().lower()
+        if not any(item["id"] == platform_id for item in CATALOG):
+            raise HTTPException(status_code=404, detail="Неизвестная площадка.")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", str(post_public_id or "")):
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор поста.")
+        post = await io(_post_detail, post_public_id)
+        if post.get("status") != "published":
+            raise HTTPException(status_code=409, detail="Нативную версию можно собирать только из опубликованного и проверенного материала.")
+
+        if platform_id == "reddit":
+            from tgfarm.s9_growth.reddit_scout import build_automatic_submission
+
+            result = await build_automatic_submission(post_public_id)
+            if not result.get("ok"):
+                return {
+                    "ok": False,
+                    "status": "needs_target",
+                    "platform": platform_id,
+                    "detail": result.get("reason") or "Не найден подходящий subreddit.",
+                    "profile": get_editorial_profile(platform_id),
+                    "review_required": True,
+                    "publish_action": "none",
+                }
+            brief = build_editorial_brief(platform_id, media_kinds=(), topic=post.get("hook", ""), source_angle=post.get("angle", ""))
+            return {
+                "ok": True,
+                "status": "preview_ready",
+                "platform": platform_id,
+                "profile": get_editorial_profile(platform_id),
+                "brief": {**brief, "format": "self-post", "format_eligible": True},
+                "target": result.get("community"),
+                "draft": {"title": result.get("title", ""), "body": result.get("body", "")},
+                "adaptation": {"status": "ai_native", "reason": result.get("reason", "")},
+                "review_required": True,
+                "publish_action": "none",
+            }
+
+        media_items = [item for item in (post.get("media") or []) if isinstance(item, dict)]
+        video = next((item for item in reversed(media_items) if item.get("kind") == "video" and item.get("path") and Path(str(item["path"])).is_file()), None)
+        image = next((item for item in media_items if item.get("kind") != "video" and item.get("path") and Path(str(item["path"])).is_file()), None)
+        image_path = str(image["path"]) if image else None
+        video_path = str(video["path"]) if video else None
+        media_kinds = {"image"} if image_path else set()
+        if video_path:
+            media_kinds.add("video")
+
+        target_context: dict[str, Any] | None = None
+        target: dict[str, Any] | None = None
+        if platform_id in {"vc_ru", "pikabu"}:
+            from tgfarm.community_targets import recommend_community_target
+
+            plan = await recommend_community_target(platform_id, post_public_id)
+            target = plan.get("selected")
+            if not target:
+                return {
+                    "ok": False,
+                    "status": "needs_target",
+                    "platform": platform_id,
+                    "detail": plan.get("detail") or "Подходящая тема/сообщество с подтверждёнными правилами не найдено.",
+                    "profile": get_editorial_profile(platform_id),
+                    "candidates": plan.get("candidates") or [],
+                    "general_notes": plan.get("general_notes") or [],
+                    "rules_source": plan.get("rules_source"),
+                    "review_required": True,
+                    "publish_action": "none",
+                }
+            target_context = {
+                "name": target.get("name"),
+                "url": target.get("url"),
+                "description": target.get("description"),
+                "rules": target.get("rules"),
+                "risks": target.get("risks"),
+                "blockers": target.get("blockers"),
+                "target_type": target.get("target_type"),
+            }
+
+        sources = [
+            item for item in (post.get("sources") or [])
+            if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
+        ]
+        source_urls = list(dict.fromkeys(str(item["url"]) for item in sources))[:8]
+        body = str(post.get("body") or "").strip()
+        if post.get("cta") and str(post["cta"]).strip() not in body:
+            body = f"{body}\\n\\n{str(post['cta']).strip()}".strip()
+        hashtags = [str(item).strip().lstrip("#") for item in (post.get("hashtags") or []) if str(item).strip()]
+        body = "\\n\\n".join(part for part in (body, "Источники: " + ", ".join(source_urls) if source_urls else "") if part)
+        payload = CrosspostPayload(
+            platform=platform_id,
+            title=str(post.get("hook") or ""),
+            text=body,
+            link=source_urls[0] if source_urls else None,
+            image_path=image_path,
+            video_path=video_path,
+            hashtags=hashtags,
+            meta={"post_public_id": post_public_id, "preview_only": True},
+        )
+        payload = adapt_payload_for_platform(payload, platform_id)
+        brief = build_editorial_brief(
+            platform_id,
+            media_kinds=media_kinds,
+            topic=str(post.get("hook") or ""),
+            source_angle=str(post.get("angle") or ""),
+        )
+        if not brief["format_eligible"]:
+            return {
+                "ok": False,
+                "status": "blocked_missing_media",
+                "platform": platform_id,
+                "detail": brief["format_reason"],
+                "profile": get_editorial_profile(platform_id),
+                "brief": brief,
+                "review_required": True,
+                "publish_action": "none",
+            }
+        adaptation = await adapt_payload_with_ai(
+            payload,
+            allow_ai=True,
+            preview_only=True,
+            target_context=target_context,
+        )
+        payload = adapt_payload_for_platform(payload, platform_id)
+        return {
+            "ok": True,
+            "status": "preview_ready",
+            "platform": platform_id,
+            "profile": get_editorial_profile(platform_id),
+            "brief": brief,
+            "target": target,
+            "draft": {"title": payload.title, "body": payload.text, "hashtags": payload.hashtags},
+            "adaptation": adaptation,
+            "review_required": True,
+            "publish_action": "none",
+        }
+
     @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/prepare")
     async def prepare_platform_draft(
         platform_id: str,
