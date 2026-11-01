@@ -279,3 +279,34 @@ async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypat
     assert calls == [(123, ["x", "reddit"])]
     assert result["posted"] == 2
     assert result["considered"] == 2
+
+
+def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
+    from tgfarm.distribution import choose_post_native_format
+
+    post = SimpleNamespace(
+        hook="A useful technical explainer",
+        body="Detailed source-backed explanation.",
+    )
+    no_media = choose_post_native_format("youtube", post, [])
+    youtube_render = choose_post_native_format("youtube", post, [], allow_youtube_render=True)
+    image_only = choose_post_native_format("instagram", post, [SimpleNamespace(kind="image")])
+    pinterest_video_without_cover = choose_post_native_format(
+        "pinterest", post, [SimpleNamespace(kind="video")]
+    )
+    pinterest_video_with_cover = choose_post_native_format(
+        "pinterest", post, [SimpleNamespace(kind="video"), SimpleNamespace(kind="image")]
+    )
+    text_only_with_image = choose_post_native_format("x", post, [SimpleNamespace(kind="image")])
+
+    assert no_media["eligible"] is False
+    assert youtube_render["eligible"] is True
+    assert youtube_render["render_on_demand"] is True
+    assert youtube_render["media_kind"] == "video"
+    assert image_only["eligible"] is True
+    assert image_only["media_kind"] == "image"
+    assert pinterest_video_without_cover["eligible"] is False
+    assert pinterest_video_with_cover["eligible"] is True
+    assert pinterest_video_with_cover["media_kind"] == "video"
+    assert text_only_with_image["eligible"] is True
+    assert text_only_with_image["media_kind"] == "text"
