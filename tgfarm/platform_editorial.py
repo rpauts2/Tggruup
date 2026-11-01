@@ -166,7 +166,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "voice": "поисково-понятный заголовок, описательная подпись, без новостного шума",
         "text_format": None, "image_format": "image Pin с обложкой и ссылкой",
         "video_format": "video Pin", "video_requires_cover": True, "target_type": "board",
-        "target_selection": "доска, ID которой владелец указал в настройках; OAuth отдельно подтверждает доступ к ней",
+        "target_selection": "доску, ID которой владелец указал в настройках; OAuth отдельно подтверждает доступ к ней",
         "rule_gate": "доступ к доске, право pins:write, права на изображение/видео и destination URL",
         "max_chars": 800, "hashtags": "0-5 описательных",
     },
