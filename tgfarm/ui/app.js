@@ -2871,38 +2871,38 @@
     const platform = document.getElementById("manual-platform-" + id)?.value || "";
     const root = document.getElementById("manual-draft-result-" + id);
     if (!root || !platform) return;
-    root.innerHTML = \`<div class="empty">Подготавливаю пакет…</div>\`;
+    root.innerHTML = `<div class="empty">Подготавливаю пакет…</div>`;
     try {
       const result = await api("/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/package");
-      const media = (result.media || []).map((item) => \`
-        <a class="btn btn-ghost btn-sm" href="\${esc(item.url)}" download="\${esc(item.filename)}">Скачать \${item.kind === "video" ? "MP4" : "изображение"}</a>
-      \`).join("");
-      const notes = (result.notes || []).map((item) => \`<li>\${esc(item)}</li>\`).join("");
+      const media = (result.media || []).map((item) => `
+        <a class="btn btn-ghost btn-sm" href="${esc(item.url)}" download="${esc(item.filename)}">Скачать ${item.kind === "video" ? "MP4" : "изображение"}</a>
+      `).join("");
+      const notes = (result.notes || []).map((item) => `<li>${esc(item)}</li>`).join("");
       const ready = result.ready
-        ? \`<span class="tag tag-ok">Пакет готов</span>\`
-        : \`<span class="tag tag-warn">Нужна медиа-подготовка</span>\`;
+        ? `<span class="tag tag-ok">Пакет готов</span>`
+        : `<span class="tag tag-warn">Нужна медиа-подготовка</span>`;
       const externalUrl = safeExternalUrl(result.url) || "#";
-      root.innerHTML = \`
+      root.innerHTML = `
         <div class="manual-draft-head">
-          \${ready}
-          <a class="btn btn-ghost btn-sm" href="\${esc(externalUrl)}" target="_blank" rel="noopener noreferrer">Открыть \${esc(result.name)} ↗</a>
+          ${ready}
+          <a class="btn btn-ghost btn-sm" href="${esc(externalUrl)}" target="_blank" rel="noopener noreferrer">Открыть ${esc(result.name)} ↗</a>
         </div>
-        <p class="drawer-meta">\${esc(result.format)} · \${Number(result.body.length || 0)} символов · ручная отправка</p>
-        <label class="field"><span>Заголовок</span><textarea rows="2" readonly id="manual-title-\${esc(id)}">\${esc(result.title)}</textarea></label>
+        <p class="drawer-meta">${esc(result.format)} · ${Number(result.body.length || 0)} символов · ручная отправка</p>
+        <label class="field"><span>Заголовок</span><textarea rows="2" readonly id="manual-title-${esc(id)}">${esc(result.title)}</textarea></label>
         <div class="short-video-actions">
-          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','title')">Копировать заголовок</button>
-          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','body')">Копировать текст</button>
-          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('\${esc(id)}','tags')">Копировать теги</button>
-          \${result.needs_video && !result.has_video ? \`<button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('\${esc(id)}')">Создать MP4</button>\` : ""}
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('${esc(id)}','title')">Копировать заголовок</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('${esc(id)}','body')">Копировать текст</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('${esc(id)}','tags')">Копировать теги</button>
+          ${result.needs_video && !result.has_video ? `<button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(id)}')">Создать MP4</button>` : ""}
         </div>
-        <label class="field"><span>Текст</span><textarea rows="8" readonly id="manual-body-\${esc(id)}">\${esc(result.body)}</textarea></label>
-        <label class="field"><span>Теги</span><textarea rows="2" readonly id="manual-tags-\${esc(id)}">\${esc((result.hashtags || []).map((tag) => "#" + tag).join(" "))}</textarea></label>
-        <div class="short-video-actions">\${media}</div>
-        <ul class="manual-draft-notes">\${notes}</ul>
+        <label class="field"><span>Текст</span><textarea rows="8" readonly id="manual-body-${esc(id)}">${esc(result.body)}</textarea></label>
+        <label class="field"><span>Теги</span><textarea rows="2" readonly id="manual-tags-${esc(id)}">${esc((result.hashtags || []).map((tag) => "#" + tag).join(" "))}</textarea></label>
+        <div class="short-video-actions">${media}</div>
+        <ul class="manual-draft-notes">${notes}</ul>
         <small class="drawer-meta">Запрос публикации не выполнялся. Проверь правила и отправляй только через официальный редактор выбранной площадки.</small>
-      \`;
+      `;
     } catch (error) {
-      root.innerHTML = \`<div class="empty">\${esc(error?.message || error)}</div>\`;
+      root.innerHTML = `<div class="empty">${esc(error?.message || error)}</div>`;
       toast("Не удалось подготовить пакет: " + (error?.message || error), "err");
     }
   };
