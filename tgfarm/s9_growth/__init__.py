@@ -281,6 +281,40 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
 
         payload = adapt_payload_for_platform(payload, name)
         payload.platform = name
+        from tgfarm.platform_editorial import (
+            adapt_payload_with_ai,
+            choose_native_format,
+            get_editorial_profile,
+        )
+
+        media_kinds = set()
+        if payload.image_path:
+            media_kinds.add("image")
+        if payload.video_path:
+            media_kinds.add("video")
+        native = choose_native_format(name, media_kinds)
+        payload.meta = {
+            **(payload.meta or {}),
+            "editorial_plan": {
+                "format": native["format"],
+                "eligible": native["eligible"],
+                "reason": native["reason"],
+                "target_type": get_editorial_profile(name)["target_type"],
+            },
+        }
+        if not native["eligible"]:
+            skipped = CrosspostResult(
+                platform=name,
+                status="skipped",
+                error=redact_sensitive_text(native["reason"], limit=280),
+                retry_after_seconds=6 * 60 * 60,
+            )
+            await to_thread(log_result, post.public_id, skipped, attempt)
+            results.append(skipped)
+            continue
+        if name not in {"reddit", "tiktok", "douyin"}:
+            await adapt_payload_with_ai(payload, allow_ai=settings.live)
+            payload = adapt_payload_for_platform(payload, name)
         if name == "reddit" and reddit_submission:
             payload.title = reddit_submission["title"]
             payload.text = reddit_submission["body"]
