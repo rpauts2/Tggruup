@@ -1059,6 +1059,10 @@ def get_platform_catalog() -> dict[str, Any]:
             1 for persona in cfg.personas if persona.platform == platform_id and persona.enabled
         )
         row["auth"] = _auth_descriptor(platform_id)
+        # Editorial guidance is independent from publisher/API availability.
+        from tgfarm.platform_editorial import get_editorial_profile
+
+        row["editorial"] = get_editorial_profile(platform_id)
         row["roles_label"] = ", ".join({
             "primary": "Основная публикация",
             "crosspost": "Кросспостинг",
