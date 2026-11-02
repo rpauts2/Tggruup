@@ -2245,12 +2245,32 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
     @app.get("/api/platforms/max/destinations")
     async def max_destinations() -> dict:
-        """Return chat IDs received only from authenticated MAX lifecycle events."""
-        from tgfarm.max_api import parse_max_discovered_chats
+        """Return discovered chat IDs and confirm the configured subscription is still active."""
+        from tgfarm.max_api import max_webhook_subscription_active, parse_max_discovered_chats
 
         settings = get_settings()
         items = parse_max_discovered_chats(settings.max_discovered_chats)
-        return {"platform": "max", "destinations": items, "webhook_registered": bool(settings.max_webhook_url)}
+        registered = False
+        subscription_detail = "Webhook ещё не подключён."
+        if settings.max_access_token and settings.max_webhook_url:
+            try:
+                registered = await max_webhook_subscription_active(
+                    settings.max_access_token,
+                    settings.max_webhook_url,
+                )
+                subscription_detail = (
+                    "MAX подтвердил активную подписку и нужные события."
+                    if registered
+                    else "Подписка не найдена или её список событий неполный. Подключи webhook повторно."
+                )
+            except (ValueError, RuntimeError) as exc:
+                subscription_detail = redact_sensitive_text(exc, limit=240)
+        return {
+            "platform": "max",
+            "destinations": items,
+            "webhook_registered": registered,
+            "webhook_detail": subscription_detail,
+        }
 
     @app.post("/api/platforms/max/destination")
     async def max_select_destination(payload: dict) -> dict:
