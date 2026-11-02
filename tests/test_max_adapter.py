@@ -203,3 +203,29 @@ async def test_max_adapter_caps_total_text_not_just_body(monkeypatch):
 
     assert result.status == "posted"
     assert len(FakeMAXClient.calls[0][1]["json"]["text"]) <= 4000
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_retries_temporary_preflight_outage_without_sending(monkeypatch):
+    from tgfarm.s9_growth import adapters
+    from tgfarm.max_api import MaxTemporaryError
+
+    FakeMAXClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=False,
+    ))
+
+    async def temporary_outage(_token, _chat_id):
+        raise MaxTemporaryError("MAX rate limited the permission check")
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", temporary_outage)
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+
+    result = await adapters.MaxAdapter().publish(_payload())
+
+    assert result.status == "failed"
+    assert result.retry_after_seconds == 60
+    assert "temporarily unavailable" in (result.error or "").lower()
+    assert FakeMAXClient.calls == []
