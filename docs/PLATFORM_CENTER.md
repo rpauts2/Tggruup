@@ -29,7 +29,7 @@ Pinterest и Facebook больше не требуют заранее угады
 ## MAX: поиск каналов и групп через webhook
 
 MAX не предоставляет готовый API-список всех чатов, куда добавлен бот. TgFarm использует официальный событийный механизм:
-1. Владелец сохраняет MAX bot token и задаёт `TGFARM_PUBLIC_BASE_URL=https://farm.example` на публичный домен.
+1. Владелец сохраняет MAX bot token и задаёт публичный URL в карточке MAX (или `TGFARM_PUBLIC_BASE_URL=https://farm.example` в .env). Это домен reverse proxy, указывающий на TgFarm, с доверенным полным TLS-сертификатом на 443, не localhost.
 2. Нажатие «Подключить поиск чатов» создаёт `POST /subscriptions` на `platform-api2.max.ru` для событий `bot_added`, `bot_removed`, `chat_title_changed` и `bot_admin_permissions_changed`.
 3. MAX отправляет HTTPS POST на `/api/platforms/max/webhook`. Callback доступен без токена панели, но принимает запрос только с секретом `X-Max-Bot-Api-Secret`, сохранённым локально. Порт должен быть 443, сертификат доверенный и полная TLS-цепочка.
 4. После добавления бота в канал или групповой чат приходит `bot_added` с `chat_id` и `is_channel`. События приватного диалога `bot_started` не используются как цели публикации. Удаление бота удаляет адресат из списка.
