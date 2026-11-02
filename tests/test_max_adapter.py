@@ -63,6 +63,7 @@ async def test_max_adapter_uses_current_messages_endpoint_and_never_puts_token_i
     monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
         max_access_token="max-private-token",
         max_channel_id="10001",
+        max_channel_blocked=False,
     ))
     monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
 
@@ -77,3 +78,21 @@ async def test_max_adapter_uses_current_messages_endpoint_and_never_puts_token_i
     assert FakeMAXClient.init_kwargs["headers"]["Authorization"] == "max-private-token"
     assert "max-private-token" not in FakeMAXClient.calls[0][0]
     assert "max-private-token" not in str(params)
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_refuses_to_publish_after_target_permission_revocation(monkeypatch):
+    from tgfarm.s9_growth import adapters
+
+    FakeMAXClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=True,
+    ))
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+
+    result = await adapters.MaxAdapter().publish(_payload())
+
+    assert result.status == "skipped"
+    assert FakeMAXClient.calls == []
