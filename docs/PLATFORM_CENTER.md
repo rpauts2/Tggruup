@@ -66,7 +66,7 @@ TgFarm не считает найденный ID разрешением на п�
 | Telegram | Основная публикация | TELEGRAM_BOT_TOKEN и целевой канал |
 | ВКонтакте | Основные посты и кросспост | VK_ACCESS_TOKEN, VK_GROUP_ID |
 | Дзен | Основные статьи через браузерный профиль | Авторизованный профиль браузера Дзена |
-| MAX | Кросспост | MAX_ACCESS_TOKEN, MAX_CHANNEL_ID |
+| MAX | Кросспост в выбранный канал/чат | MAX_ACCESS_TOKEN, TGFARM_PUBLIC_BASE_URL, webhook и подтверждённый через API адресат с write |
 | X | Кросспост | OAuth 2.0 + PKCE, Client ID/Secret, user token with tweet.write and offline.access |
 | Reddit | Кросспост в один выбранный subreddit | Reddit OAuth client ID/secret, постоянный refresh token, subreddit и User-Agent |
 | Mastodon | Кросспост текстовых статусов | OAuth 2.0 + PKCE, пользовательский токен на выбранном HTTPS-инстансе |
