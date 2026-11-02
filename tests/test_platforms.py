@@ -535,10 +535,66 @@ def test_facebook_and_pinterest_destination_discovery_is_available_in_dashboard(
     response = client.get("/ui/app.js", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     source = response.text
-    assert 'data-platform-destinations="\${esc(item.id)}"' in source
+    assert 'data-platform-destinations="${esc(item.id)}"' in source
     assert '["pinterest", "facebook"].includes(item.id)' in source
     assert '{ page_id: selectedId }' in source
     assert '{ board_id: selectedId }' in source
     assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destinations"' in source
     assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destination"' in source
     assert "CREATE_CONTENT" in source
+
+
+def test_facebook_and_pinterest_destination_api_requires_authentication(client):
+    assert client.get("/api/platforms/facebook/destinations").status_code == 401
+    assert client.post("/api/platforms/facebook/destination", json={"page_id": "123"}).status_code == 401
+    assert client.get("/api/platforms/pinterest/destinations").status_code == 401
+    assert client.post("/api/platforms/pinterest/destination", json={"board_id": "board-1"}).status_code == 401
+
+
+def test_facebook_destination_api_never_returns_page_access_tokens(client, monkeypatch):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    async def fake_pages():
+        return [{
+            "id": "123456789012345",
+            "name": "My Page",
+            "tasks": ["CREATE_CONTENT"],
+            "can_publish": True,
+        }]
+
+    monkeypatch.setattr("tgfarm.facebook_oauth.list_facebook_pages", fake_pages)
+    response = client.get(
+        "/api/platforms/facebook/destinations",
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 200
+    assert response.json()["destinations"][0]["name"] == "My Page"
+    assert "access_token" not in response.text
+    assert "secret" not in response.text.lower()
+
+
+def test_pinterest_destination_api_never_returns_oauth_tokens(client, monkeypatch):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    async def fake_boards():
+        return [{"id": "board-1", "name": "Ideas", "privacy": "PUBLIC"}]
+
+    monkeypatch.setattr("tgfarm.pinterest_oauth.list_pinterest_boards", fake_boards)
+    response = client.get(
+        "/api/platforms/pinterest/destinations",
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 200
+    assert response.json()["destinations"][0]["name"] == "Ideas"
+    assert "access_token" not in response.text
+    assert "refresh_token" not in response.text
+
+
+def test_facebook_oauth_fields_mark_page_id_as_optional(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    descriptor = platforms._auth_descriptor("facebook")
+    fields = {item["key"]: item for item in descriptor["fields"]}
+    assert fields["FACEBOOK_PAGE_ID"]["secret"] is False
+    assert "после входа" in fields["FACEBOOK_PAGE_ID"]["help"].lower()
