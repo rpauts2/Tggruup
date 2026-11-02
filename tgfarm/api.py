@@ -1379,6 +1379,26 @@ def _config_payload() -> dict:
     }
 
 
+def _is_trusted_host_request(
+    host: str,
+    trusted_hosts: set[str],
+    public_webhook_host: str | None,
+    *,
+    method: str,
+    path: str,
+) -> bool:
+    """Expose only MAX's secret-protected callback on the public webhook host."""
+    value = str(host or "").strip().lower()
+    if not value or value in trusted_hosts:
+        return True
+    return bool(
+        public_webhook_host
+        and value == public_webhook_host.strip().lower()
+        and str(method or "").upper() == "POST"
+        and path == "/api/platforms/max/webhook"
+    )
+
+
 def create_app(with_scheduler: bool = False) -> FastAPI:
     """Build the admin app.
 
@@ -1422,17 +1442,24 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         if h.strip()
     }
     from urllib.parse import urlsplit
-    public_host = urlsplit(str(settings.public_base_url or "")).hostname
-    if public_host:
-        trusted.add(public_host.lower())
+    public_host = (urlsplit(str(settings.public_base_url or "")).hostname or "").lower()
 
     @app.middleware("http")
     async def trusted_host_guard(request: Request, call_next):
-        """A public page cannot read the token, but DNS rebinding can: an
-        attacker domain resolving to 127.0.0.1 lands here with the operator's
-        cookies. Only trusted Host values get answers at all."""
+        """Allow the public host only for MAX's secret-protected webhook POST.
+
+        The operator dashboard embeds its API token, so trusting the whole
+        public domain would expose the control plane to anyone who can reach
+        the webhook hostname. All other paths stay on the local/allowlisted host set.
+        """
         host = (request.url.hostname or "").lower()
-        if host and host not in trusted:
+        if not _is_trusted_host_request(
+            host,
+            trusted,
+            public_host,
+            method=request.method,
+            path=request.url.path,
+        ):
             log.warning("403 untrusted host header %s", host)
             return JSONResponse({"error": "untrusted host"}, status_code=403)
         return await call_next(request)
