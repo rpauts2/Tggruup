@@ -185,3 +185,45 @@ def test_pinterest_video_pin_requires_a_real_cover_image():
     assert "обложка" in without_cover["reason"].lower()
     assert with_cover["eligible"] is True
     assert with_cover["media_kind"] == "video"
+
+
+def test_native_rewrite_provider_failure_keeps_deterministic_payload(monkeypatch):
+    from tgfarm.llm import policy
+    from tgfarm.platform_editorial import adapt_payload_with_ai
+
+    payload = SimpleNamespace(
+        platform="bluesky",
+        title="Original factual title",
+        text="Original source-backed text. https://example.org/source",
+        image_path=None,
+        video_path=None,
+        link="https://example.org/source",
+        hashtags=[],
+        meta={"post_public_id": "published_ai_failure_123", "source_marker": "keep"},
+    )
+    finalized = []
+    monkeypatch.setattr(policy, "should_use_ai", lambda *args, **kwargs: (True, "test"))
+    monkeypatch.setattr(
+        policy,
+        "reserve",
+        lambda *args, **kwargs: SimpleNamespace(allowed=True, usage_id=456, reason="reserved"),
+    )
+    monkeypatch.setattr(
+        policy,
+        "finalize",
+        lambda *args, **kwargs: finalized.append(kwargs.get("used")),
+    )
+
+    class BrokenLLM:
+        async def complete_json(self, *args, **kwargs):
+            raise RuntimeError("provider temporarily unavailable")
+
+    monkeypatch.setattr("tgfarm.llm.client.get_llm", lambda: BrokenLLM())
+    result = asyncio.run(adapt_payload_with_ai(payload, allow_ai=True))
+
+    assert result["used_ai"] is False
+    assert result["status"] == "deterministic_fallback"
+    assert payload.title == "Original factual title"
+    assert payload.text == "Original source-backed text. https://example.org/source"
+    assert payload.meta == {"post_public_id": "published_ai_failure_123", "source_marker": "keep"}
+    assert finalized == [False]
