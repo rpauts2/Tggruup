@@ -68,3 +68,34 @@ def test_malformed_excessive_query_drops_possible_token() -> None:
 
     query = b"token=secret&" + b"&".join([b"x=1"] * 1025)
     assert strip_token_from_query(query) == b""
+
+
+def test_public_max_webhook_host_is_not_trusted_for_the_dashboard():
+    from tgfarm.api import _is_trusted_host_request
+
+    trusted = {"127.0.0.1", "localhost", "::1"}
+    public_host = "farm.example"
+
+    assert _is_trusted_host_request(
+        "localhost", trusted, public_host, method="GET", path="/"
+    )
+    assert _is_trusted_host_request(
+        public_host,
+        trusted,
+        public_host,
+        method="POST",
+        path="/api/platforms/max/webhook",
+    )
+    assert not _is_trusted_host_request(
+        public_host, trusted, public_host, method="GET", path="/"
+    )
+    assert not _is_trusted_host_request(
+        public_host, trusted, public_host, method="GET", path="/api/status"
+    )
+    assert not _is_trusted_host_request(
+        public_host,
+        trusted,
+        public_host,
+        method="POST",
+        path="/api/platforms/max/webhook/register",
+    )
