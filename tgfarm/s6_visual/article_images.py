@@ -402,7 +402,7 @@ def _load_posts(post_public_ids: list[str]) -> tuple[list[dict], dict[int, list[
         return (
             [
                 {
-                    "public_id": post.public_id,
+                    "public_id": post["public_id"],
                     "channel_id": post["channel_id"],
                     "cluster_id": clusters.get(post["cluster_public_id"]),
                     "inline_count": with_inline.get(post["id"], 0),
