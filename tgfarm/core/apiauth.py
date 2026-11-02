@@ -48,6 +48,7 @@ PUBLIC_PATHS = (
     "/api/platforms/pinterest/auth/callback",
     "/api/platforms/facebook/auth/callback",
     "/api/platforms/tumblr/auth/callback",
+    "/api/platforms/max/webhook",
 )
 PUBLIC_PREFIXES = ("/ui/", "/public/instagram-media/")
 
