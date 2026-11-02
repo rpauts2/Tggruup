@@ -1442,7 +1442,6 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         if h.strip()
     }
     from urllib.parse import urlsplit
-    public_host = (urlsplit(str(settings.public_base_url or "")).hostname or "").lower()
 
     @app.middleware("http")
     async def trusted_host_guard(request: Request, call_next):
@@ -1453,6 +1452,11 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         the webhook hostname. All other paths stay on the local/allowlisted host set.
         """
         host = (request.url.hostname or "").lower()
+        # The owner may configure TGFARM_PUBLIC_BASE_URL from the MAX
+        # card without restarting the app. Read the live settings cache here.
+        public_host = (
+            urlsplit(str(get_settings().public_base_url or "")).hostname or ""
+        ).lower()
         if not _is_trusted_host_request(
             host,
             trusted,
