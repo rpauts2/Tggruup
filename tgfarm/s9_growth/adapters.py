@@ -216,9 +216,25 @@ class MaxAdapter:
         if not self.configured():
             return CrosspostResult(platform=self.platform, status="skipped")
         payload = _clip(payload, self.max_title, self.max_body)
+        # The API's 4,000-character limit applies to the complete message,
+        # including the heading separator, not to the body alone.
+        from tgfarm.max_api import select_max_chat
+        from tgfarm.core.text import truncate
+
+        try:
+            await select_max_chat(token, str(channel))
+        except Exception as exc:  # noqa: BLE001 - do not send without fresh write permission
+            log.warning("max preflight permission failed: %s", redact_sensitive_text(exc, limit=180))
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="MAX no longer confirms the bot's write permission for the selected destination. Re-select the chat after restoring permissions.",
+            )
+
         import httpx
 
         url = "https://platform-api2.max.ru/messages"
+        message_text = truncate(f"{payload.title}\n\n{payload.text}", 4000)
         try:
             async with httpx.AsyncClient(
                 timeout=25.0,
@@ -228,7 +244,7 @@ class MaxAdapter:
                 resp = await client.post(
                     url,
                     params={"chat_id": str(channel), "disable_link_preview": "false"},
-                    json={"text": f"{payload.title}\n\n{payload.text}"},
+                    json={"text": message_text},
                 )
                 resp.raise_for_status()
             body = resp.json()
