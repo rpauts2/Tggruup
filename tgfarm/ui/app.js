@@ -925,10 +925,13 @@
       const browserLoginButton = browserSession.available && !["dzen", "vk", "vc_ru", "pikabu"].includes(item.id)
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
-      const destinationTools = ["pinterest", "facebook", "vk"].includes(item.id)
+      const maxHasToken = (auth.fields || []).some((field) => field.key === "MAX_ACCESS_TOKEN" && field.has_value);
+      const destinationTools = ["pinterest", "facebook", "vk", "max"].includes(item.id)
         ? `<div class="platform-destination-tools">
-             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}">${item.id === "facebook" ? "Найти мои Pages" : item.id === "vk" ? "Найти мои сообщества" : "Найти мои доски"}</button>
+             ${item.id === "max" ? `<button type="button" class="btn btn-ghost btn-sm" data-platform-max-webhook ${!maxHasToken || busy ? "disabled" : ""}>Подключить поиск чатов</button>` : ""}
+             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}" ${item.id === "max" && !maxHasToken ? "disabled" : ""}>${item.id === "facebook" ? "Найти мои Pages" : item.id === "vk" ? "Найти мои сообщества" : item.id === "max" ? "Найти мои чаты" : "Найти мои доски"}</button>
              <div id="platform-destination-${esc(item.id)}"></div>
+             ${item.id === "max" ? "<small class='platform-destination-note'>Нужен публичный HTTPS-домен на 443. После подписки добавь бота в свой канал/чат и выдай право write.</small>" : ""}
            </div>`
         : "";
       const readyHint = supported
@@ -999,12 +1002,36 @@
     state.authSaving = false;
   }
 
+  async function registerMaxWebhook(button = null) {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Подключаю webhook…";
+    }
+    try {
+      const result = await post("/api/platforms/max/webhook/register", {});
+      toast(
+        "MAX webhook подключён для " + (result.bot_name || "бота")
+          + ". Добавь бота в свой канал или групповой чат, выдай право write, затем нажми «Найти мои чаты».",
+        "ok",
+      );
+      await refresh();
+    } catch (error) {
+      toast("Не удалось подключить MAX webhook: " + (error?.message || error), "err");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Подключить поиск чатов";
+      }
+    }
+  }
+
   async function discoverPlatformDestinations(platformId, button) {
     const root = document.getElementById("platform-destination-" + platformId);
     if (!root) return;
     const isFacebook = platformId === "facebook";
     const isVk = platformId === "vk";
-    const noun = isFacebook ? "страниц" : isVk ? "сообществ" : "досок";
+    const isMax = platformId === "max";
+    const noun = isFacebook ? "страниц" : isVk ? "сообществ" : isMax ? "чатов/каналов" : "досок";
     const previousText = button?.textContent || "";
     if (button) {
       button.disabled = true;
@@ -1015,12 +1042,17 @@
       const result = await api("/api/platforms/" + encodeURIComponent(platformId) + "/destinations");
       const destinations = result.destinations || [];
       if (!destinations.length) {
-        root.innerHTML = '<p class="platform-destination-note">API не вернул доступных ' + noun + '. Проверь разрешения приложения и права аккаунта.</p>';
+        const note = isMax && !result.webhook_registered
+          ? "Сначала нажми «Подключить поиск чатов» и настрой публичный HTTPS webhook на порту 443."
+          : isMax
+            ? "Подписка активна. Теперь добавь бота в свой MAX-канал или групповой чат и выдай ему право write. Через событие bot_added появится chat_id."
+            : "API не вернул доступных " + noun + ". Проверь разрешения приложения и права аккаунта.";
+        root.innerHTML = '<p class="platform-destination-note">' + esc(note) + '</p>';
         return;
       }
       const selectId = "platform-destination-select-" + platformId;
       const options = destinations.map((item) => `
-        <option value="${esc(item.id)}">${esc(item.name)}${item.privacy ? " · " + esc(item.privacy) : item.role ? " · " + esc(item.role) : ""}</option>
+        <option value="${esc(item.id)}">${esc(item.name)}${item.privacy ? " · " + esc(item.privacy) : item.role ? " · " + esc(item.role) : isMax ? " · " + (item.kind === "channel" ? "канал" : "чат") : ""}</option>
       `).join("");
       root.innerHTML = `
         <label class="field platform-destination-field">
@@ -1039,13 +1071,15 @@
             ? { page_id: selectedId }
             : isVk
               ? { group_id: selectedId }
-              : { board_id: selectedId };
+              : isMax
+                ? { chat_id: selectedId }
+                : { board_id: selectedId };
           const saved = await post(
             "/api/platforms/" + encodeURIComponent(platformId) + "/destination",
             payload,
           );
           const name = saved.destination?.name || selectedId;
-          toast((isFacebook ? "Страница подключена: " : isVk ? "Сообщество VK подключено: " : "Доска подключена: ") + name, "ok");
+          toast((isFacebook ? "Страница подключена: " : isVk ? "Сообщество VK подключено: " : isMax ? "MAX назначение проверено и подключено: " : "Доска подключена: ") + name, "ok");
           await refresh();
         } catch (error) {
           toast("Не удалось выбрать место: " + (error?.message || error), "err");
@@ -3367,6 +3401,11 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const maxWebhook = event.target.closest("[data-platform-max-webhook]");
+    if (maxWebhook) {
+      await registerMaxWebhook(maxWebhook);
+      return;
+    }
     const destinationLookup = event.target.closest("[data-platform-destinations]");
     if (destinationLookup) {
       await discoverPlatformDestinations(destinationLookup.dataset.platformDestinations, destinationLookup);
