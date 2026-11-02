@@ -129,6 +129,55 @@ async def _get_json(client: httpx.AsyncClient, url: str, params: dict[str, str] 
     return payload
 
 
+async def _list_pages_with_tokens(
+    client: httpx.AsyncClient,
+    user_token: str,
+    *,
+    max_pages: int = 10,
+) -> list[dict]:
+    """Read the current owner's Pages; keep their access tokens server-side only."""
+    url = f"{GRAPH_ROOT}/me/accounts"
+    params: dict[str, str] | None = {
+        "fields": "id,name,access_token,tasks",
+        "limit": "100",
+        "access_token": user_token,
+    }
+    result: list[dict] = []
+    seen: set[str] = set()
+    for _ in range(max(1, min(10, int(max_pages)))):
+        payload = await _get_json(client, url, params)
+        for row in payload.get("data") or []:
+            if not isinstance(row, dict):
+                continue
+            page_id = str(row.get("id") or "").strip()
+            if not page_id or page_id in seen:
+                continue
+            seen.add(page_id)
+            tasks = sorted({
+                str(task).strip().upper()
+                for task in (row.get("tasks") or [])
+                if isinstance(task, str)
+            })
+            result.append({
+                "id": page_id,
+                "name": str(row.get("name") or page_id)[:160],
+                "tasks": tasks,
+                "access_token": str(row.get("access_token") or ""),
+            })
+        next_url = str(((payload.get("paging") or {}).get("next")) or "")
+        if not next_url:
+            break
+        parsed = urlsplit(next_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "graph.facebook.com"
+            or not parsed.path.startswith(f"/{GRAPH_VERSION}/")
+        ):
+            raise RuntimeError("Facebook вернул недопустимый URL следующей страницы.")
+        url, params = next_url, None
+    return result
+
+
 async def _page_from_accounts(
     client: httpx.AsyncClient, user_token: str, page_id: str
 ) -> dict:
