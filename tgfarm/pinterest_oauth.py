@@ -112,8 +112,8 @@ async def complete_pinterest_oauth(state: str, code: str) -> dict[str, str]:
     from tgfarm.core.settings import get_settings
 
     board_id = str(get_settings().pinterest_board_id or "").strip()
-    if not board_id or len(board_id) > 64:
-        raise ValueError("Сначала сохрани ID Pinterest-доски, в которую будут добавляться Pins.")
+    if board_id and (len(board_id) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", board_id)):
+        raise ValueError("Сохранён ID Pinterest-доски неверного формата.")
 
     try:
         async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
@@ -139,22 +139,34 @@ async def complete_pinterest_oauth(state: str, code: str) -> dict[str, str]:
             refresh_token = str(token_payload.get("refresh_token") or "")
             if not access_token or not refresh_token:
                 raise RuntimeError("Pinterest не выдал access и refresh токены. Переподключи приложение.")
-            board_response = await client.get(
-                f"{API_ROOT}/boards/{board_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            if board_response.status_code >= 400:
-                raise _safe_error(board_response.status_code, "board verification")
-            try:
-                board = board_response.json()
-            except ValueError as exc:
-                raise RuntimeError("Pinterest вернул неожиданные данные доски.") from exc
+            board = {}
+            if board_id:
+                board_response = await client.get(
+                    f"{API_ROOT}/boards/{board_id}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if board_response.status_code >= 400:
+                    raise _safe_error(board_response.status_code, "board verification")
+                try:
+                    board = board_response.json()
+                except ValueError as exc:
+                    raise RuntimeError("Pinterest вернул неожиданные данные доски.") from exc
+            else:
+                # OAuth can be completed before choosing a destination. Confirm
+                # that the requested boards:read scope works without guessing IDs.
+                list_response = await client.get(
+                    f"{API_ROOT}/boards",
+                    params={"page_size": "1"},
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if list_response.status_code >= 400:
+                    raise _safe_error(list_response.status_code, "board discovery")
     except httpx.TimeoutException as exc:
         raise RuntimeError("Pinterest не ответил вовремя. Запусти OAuth-подключение ещё раз.") from exc
     except httpx.RequestError as exc:
         raise RuntimeError("Не удалось подключиться к Pinterest. Проверь сеть и повтори попытку.") from exc
 
-    if not isinstance(board, dict) or str(board.get("id") or "") != board_id:
+    if board_id and (not isinstance(board, dict) or str(board.get("id") or "") != board_id):
         raise RuntimeError("Pinterest не подтвердил выбранную доску. Проверь её ID и права доступа.")
     try:
         expires_in = max(60, int(token_payload.get("expires_in") or 2592000))
@@ -164,7 +176,7 @@ async def complete_pinterest_oauth(state: str, code: str) -> dict[str, str]:
         refresh_expires_in = int(token_payload.get("refresh_token_expires_in") or 0)
     except (TypeError, ValueError):
         refresh_expires_in = 0
-    board_name = str(board.get("name") or board_id)
+    board_name = str(board.get("name") or board_id or "Доска ещё не выбрана")
     owner = board.get("owner") or {}
     username = str(owner.get("username") or "")
     return {
@@ -251,4 +263,94 @@ __all__ = [
     "cancel_pinterest_oauth",
     "complete_pinterest_oauth",
     "get_valid_pinterest_access_token",
+    "list_pinterest_boards",
+    "select_pinterest_board",
 ]
+
+
+async def list_pinterest_boards(*, page_size: int = 100, max_pages: int = 10) -> list[dict[str, str]]:
+    """List boards visible to the connected user; never expose OAuth data."""
+    access_token = await get_valid_pinterest_access_token()
+    size = max(1, min(100, int(page_size)))
+    pages = max(1, min(10, int(max_pages)))
+    bookmark = ""
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+            for _ in range(pages):
+                params: dict[str, str] = {"page_size": str(size)}
+                if bookmark:
+                    params["bookmark"] = bookmark
+                try:
+                    response = await client.get(
+                        f"{API_ROOT}/boards",
+                        params=params,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                except httpx.TimeoutException as exc:
+                    raise RuntimeError("Pinterest не ответил при загрузке списка досок.") from exc
+                except httpx.RequestError as exc:
+                    raise RuntimeError("Не удалось получить список Pinterest-досок.") from exc
+                if response.status_code >= 400:
+                    raise _safe_error(response.status_code, "board listing")
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise RuntimeError("Pinterest вернул неожиданный список досок.") from exc
+                if not isinstance(payload, dict):
+                    raise RuntimeError("Pinterest вернул неожиданный список досок.")
+                for item in payload.get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    board_id = str(item.get("id") or "").strip()
+                    name = str(item.get("name") or "").strip()
+                    if not board_id or board_id in seen or not name:
+                        continue
+                    seen.add(board_id)
+                    results.append({
+                        "id": board_id[:64],
+                        "name": name[:160],
+                        "description": str(item.get("description") or "")[:240],
+                        "privacy": str(item.get("privacy") or "")[:32],
+                        "url": str(item.get("url") or "")[:500],
+                    })
+                bookmark = str(payload.get("bookmark") or "").strip()
+                if not bookmark:
+                    break
+    except RuntimeError:
+        raise
+    return results[:1000]
+
+
+async def select_pinterest_board(board_id: str) -> dict[str, str]:
+    """Verify one owner-selected board with the current account token."""
+    board_id = str(board_id or "").strip()
+    if not board_id or len(board_id) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", board_id):
+        raise ValueError("Некорректный ID Pinterest-доски.")
+    access_token = await get_valid_pinterest_access_token()
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+            response = await client.get(
+                f"{API_ROOT}/boards/{board_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("Pinterest не ответил при проверке доски.") from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError("Не удалось проверить Pinterest-доску.") from exc
+    if response.status_code >= 400:
+        raise _safe_error(response.status_code, "board selection")
+    try:
+        board = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Pinterest вернул неожиданные данные доски.") from exc
+    if not isinstance(board, dict) or str(board.get("id") or "") != board_id:
+        raise RuntimeError("Pinterest не подтвердил доступ к выбранной доске.")
+    return {
+        "id": board_id,
+        "name": str(board.get("name") or board_id)[:160],
+        "description": str(board.get("description") or "")[:240],
+        "privacy": str(board.get("privacy") or "")[:32],
+        "url": str(board.get("url") or "")[:500],
+    }
