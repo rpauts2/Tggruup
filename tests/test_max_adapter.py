@@ -178,6 +178,12 @@ async def test_max_adapter_caps_total_text_not_just_body(monkeypatch):
     from tgfarm.s9_growth import adapters
 
     FakeMAXClient.calls = []
+    FakeMAXClient.response_payload = {
+        "message": {
+            "body": {"mid": "max-message-77"},
+            "recipient": {"chat_id": 10001},
+        }
+    }
     monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
         max_access_token="max-private-token",
         max_channel_id="10001",
