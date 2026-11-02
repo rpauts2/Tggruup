@@ -94,6 +94,8 @@ class FakeMAXResponse:
 class FakeMAXClient:
     calls = []
     headers = {}
+    subscription_url = ""
+    subscription_events = []
 
     def __init__(self, *args, **kwargs):
         self.__class__.headers = kwargs.get("headers") or {}
@@ -108,8 +110,18 @@ class FakeMAXClient:
         self.__class__.calls.append((method, url, kwargs))
         if url.endswith("/me"):
             return FakeMAXResponse({"user_id": 77, "name": "Farm bot"})
-        if url.endswith("/subscriptions"):
+        if url.endswith("/subscriptions") and method == "POST":
+            self.__class__.subscription_url = str((kwargs.get("json") or {}).get("url") or "")
+            self.__class__.subscription_events = list((kwargs.get("json") or {}).get("update_types") or [])
             return FakeMAXResponse({"success": True})
+        if url.endswith("/subscriptions") and method == "GET":
+            return FakeMAXResponse({
+                "subscriptions": [{
+                    "url": self.__class__.subscription_url,
+                    "time": 1760000000000,
+                    "update_types": self.__class__.subscription_events,
+                }] if self.__class__.subscription_url else [],
+            })
         if url.endswith("/chats/10001/members/me"):
             return FakeMAXResponse({
                 "is_admin": True,
