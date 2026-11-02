@@ -110,3 +110,76 @@ def test_facebook_oauth_callback_requires_https_outside_loopback():
     assert _validate_redirect_uri(
         "http://127.0.0.1:8000/api/platforms/facebook/auth/callback"
     ).startswith("http://127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_facebook_oauth_can_connect_before_page_selection(monkeypatch):
+    from tgfarm import facebook_oauth
+
+    FakeFacebookOAuthClient.calls = []
+    FakeFacebookOAuthClient.tasks = ["CREATE_CONTENT", "MODERATE"]
+    monkeypatch.setattr(httpx, "AsyncClient", FakeFacebookOAuthClient)
+
+    started = await facebook_oauth.begin_facebook_oauth(
+        "app-id",
+        "app-secret",
+        "",
+        "https://farm.example/api/platforms/facebook/auth/callback",
+    )
+    query = parse_qs(urlsplit(started["authorize_url"]).query)
+    assert query["client_id"] == ["app-id"]
+
+    result = await facebook_oauth.complete_facebook_oauth(query["state"][0], "auth-code")
+    assert result["page_id"] == ""
+    assert result["page_access_token"] == ""
+    assert result["user_access_token"] == "long-user-token"
+    assert result["available_pages"] == [{
+        "id": "123456789012345",
+        "name": "TgFarm Page",
+        "tasks": ["CREATE_CONTENT", "MODERATE"],
+        "can_publish": True,
+    }]
+    assert all("access_token" not in item for item in result["available_pages"])
+
+
+@pytest.mark.asyncio
+async def test_facebook_page_discovery_never_returns_page_tokens(monkeypatch):
+    from tgfarm import facebook_oauth
+
+    FakeFacebookOAuthClient.calls = []
+    FakeFacebookOAuthClient.tasks = ["CREATE_CONTENT", "MODERATE"]
+    monkeypatch.setattr(httpx, "AsyncClient", FakeFacebookOAuthClient)
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(facebook_user_access_token="long-user-token"),
+    )
+
+    pages = await facebook_oauth.list_facebook_pages()
+    assert pages == [{
+        "id": "123456789012345",
+        "name": "TgFarm Page",
+        "tasks": ["CREATE_CONTENT", "MODERATE"],
+        "can_publish": True,
+    }]
+    assert all("access_token" not in page for page in pages)
+
+
+@pytest.mark.asyncio
+async def test_facebook_page_selection_rechecks_create_content(monkeypatch):
+    from tgfarm import facebook_oauth
+
+    FakeFacebookOAuthClient.calls = []
+    FakeFacebookOAuthClient.tasks = ["CREATE_CONTENT", "MODERATE"]
+    monkeypatch.setattr(httpx, "AsyncClient", FakeFacebookOAuthClient)
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(facebook_user_access_token="long-user-token"),
+    )
+
+    page = await facebook_oauth.select_facebook_page("123456789012345")
+    assert page == {
+        "id": "123456789012345",
+        "name": "TgFarm Page",
+        "page_access_token": "page-access-token",
+    }
+
