@@ -114,6 +114,10 @@ async def test_max_adapter_does_not_claim_posted_without_message_id(monkeypatch)
         max_channel_id="10001",
         max_channel_blocked=False,
     ))
+    async def verify_permission(_token, _chat_id):
+        return {"id": "10001", "name": "News channel", "role": "admin"}
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", verify_permission)
     monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
 
     result = await adapters.MaxAdapter().publish(_payload())
@@ -133,6 +137,10 @@ async def test_max_adapter_treats_explicit_provider_rejection_as_permanent(monke
         max_channel_id="10001",
         max_channel_blocked=False,
     ))
+    async def verify_permission(_token, _chat_id):
+        return {"id": "10001", "name": "News channel", "role": "admin"}
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", verify_permission)
     monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
 
     result = await adapters.MaxAdapter().publish(_payload())
