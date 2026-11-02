@@ -322,7 +322,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     ],
     "vk": [
         {"key": "VK_ACCESS_TOKEN", "attribute": "vk_access_token", "label": "Access token", "secret": True, "placeholder": "VK access token", "help": "Токен с разрешениями, нужными для публикации в сообщество."},
-        {"key": "VK_GROUP_ID", "attribute": "vk_group_id", "label": "ID сообщества", "secret": False, "placeholder": "123456789", "help": "Числовой ID сообщества без знака минус."},
+        {"key": "VK_GROUP_ID", "attribute": "vk_group_id", "label": "ID сообщества (необязательно)", "secret": False, "placeholder": "Можно оставить пустым и выбрать после OAuth", "help": "После VKHost OAuth нажми «Найти мои сообщества»: TgFarm покажет группы с ролью администратора или редактора и повторно проверит выбор."},
     ],
     "max": [
         {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен сохраняется в локальном .env и не показывается повторно."},
