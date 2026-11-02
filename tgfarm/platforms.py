@@ -71,7 +71,7 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Мессенджеры", "market": "Россия", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
         "description": "Кросспост через API бота MAX.",
-        "requirements": "MAX_ACCESS_TOKEN и MAX_CHANNEL_ID.",
+        "requirements": "MAX_ACCESS_TOKEN, TGFARM_PUBLIC_BASE_URL и выбранный через webhook чат/канал с правом write.",
         "docs_url": "https://dev.max.ru/",
     },
     {
@@ -641,6 +641,8 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
         "note": (
             "Вход выполняется в отдельном окне браузера и сохраняется в профиле Дзена."
             if platform_id == "dzen" else
+            "MAX использует официальный Bot API. Укажи TGFARM_PUBLIC_BASE_URL на публичный HTTPS-домен без порта/пути, нажми «Подключить поиск чатов», добавь бота в канал или групповой чат и выбери пришедший chat_id. Перед сохранением TgFarm проверяет администраторское право write."
+            if platform_id == "max" else
             "VKHost откроется в отдельном окне. После подтверждения VK вернёт токен, TgFarm проверит его и сохранит локально. ID сообщества задаётся отдельно."
             if platform_id == "vk" else
             "Instagram Login откроет официальное окно Meta. Нужен профессиональный аккаунт Business или Creator, Instagram App ID/Secret и разрешения instagram_business_basic + instagram_business_content_publish."
@@ -870,7 +872,7 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
     if platform_id == "max":
         if settings.max_access_token and settings.max_channel_id:
             return True, "Данные MAX заданы; реальную публикацию нужно проверить."
-        return False, "Нужны MAX_ACCESS_TOKEN и MAX_CHANNEL_ID."
+        return False, "Нужен MAX_ACCESS_TOKEN и выбранный через webhook чат/канал. Для webhook настрой TGFARM_PUBLIC_BASE_URL."
     if platform_id == "discord":
         from urllib.parse import urlsplit
         webhook = str(settings.discord_webhook_url or "").strip()
