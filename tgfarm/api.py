@@ -1421,6 +1421,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         ))
         if h.strip()
     }
+    from urllib.parse import urlsplit
+    public_host = urlsplit(str(settings.public_base_url or "")).hostname
+    if public_host:
+        trusted.add(public_host.lower())
 
     @app.middleware("http")
     async def trusted_host_guard(request: Request, call_next):
@@ -2135,6 +2139,137 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 status_code=502,
                 detail="Не удалось завершить VKHost OAuth. Проверь вход, разрешения и доступность VK API.",
             ) from exc
+
+    @app.post("/api/platforms/max/webhook/register")
+    async def max_webhook_register() -> dict:
+        """Register the official MAX webhook for discovering group/channel IDs."""
+        import secrets
+
+        from tgfarm.max_api import build_max_webhook_url, register_max_webhook
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        current = get_settings()
+        if not current.max_access_token:
+            raise HTTPException(status_code=409, detail="Сначала сохрани MAX_ACCESS_TOKEN.")
+        try:
+            webhook_url = build_max_webhook_url(current.public_base_url)
+            secret = str(current.max_webhook_secret or "").strip() or secrets.token_urlsafe(32)
+            # Persist the receiver secret BEFORE creating the subscription, because
+            # MAX may deliver a bot_added event as soon as the subscription is live.
+            await io(
+                save_credentials,
+                "max",
+                {
+                    "MAX_WEBHOOK_SECRET": secret,
+                    "MAX_WEBHOOK_URL": webhook_url,
+                },
+            )
+            result = await register_max_webhook(current.max_access_token, webhook_url, secret)
+            await io(
+                record_auth_check,
+                "max",
+                None,
+                account=str(result.get("bot_name") or "MAX bot"),
+                detail="MAX webhook подписан. Добавь бота в нужный канал/чат, затем выбери его в TgFarm.",
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        _operator("platform-webhook-registered", "max", webhook_url)
+        return {
+            "ok": True,
+            "platform": "max",
+            "bot_name": result.get("bot_name") or "MAX bot",
+            "webhook_url": webhook_url,
+            "events": result.get("events") or [],
+            "detail": (
+                "Webhook подключён. Теперь добавь бота в свой канал или групповой чат, "
+                "выдай право write, затем нажми «Найти мои чаты»."
+            ),
+        }
+
+    @app.post("/api/platforms/max/webhook")
+    async def max_webhook_receiver(request: Request) -> dict:
+        """Public MAX callback secured by the per-subscription secret header."""
+        from tgfarm.max_api import (
+            apply_max_webhook_event,
+            parse_max_discovered_chats,
+            verify_max_webhook_secret,
+        )
+        from tgfarm.platforms import save_platform_credentials as save_credentials
+
+        current = get_settings()
+        if not verify_max_webhook_secret(
+            request.headers.get("X-Max-Bot-Api-Secret"),
+            current.max_webhook_secret,
+        ):
+            raise HTTPException(status_code=401, detail="MAX webhook secret не совпадает.")
+        body = await request.body()
+        if len(body) > 64 * 1024:
+            raise HTTPException(status_code=413, detail="Слишком большой webhook payload.")
+        try:
+            update = json.loads(body or b"{}")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="MAX webhook прислал некорректный JSON.") from exc
+        if not isinstance(update, dict):
+            raise HTTPException(status_code=400, detail="MAX webhook payload должен быть объектом.")
+        previous = parse_max_discovered_chats(current.max_discovered_chats)
+        discovered, changed = apply_max_webhook_event(previous, update)
+        if changed:
+            await io(
+                save_credentials,
+                "max",
+                {"MAX_DISCOVERED_CHATS": json.dumps(discovered, ensure_ascii=False, separators=(",", ":"))},
+            )
+        return {"ok": True}
+
+    @app.get("/api/platforms/max/destinations")
+    async def max_destinations() -> dict:
+        """Return chat IDs received only from authenticated MAX lifecycle events."""
+        from tgfarm.max_api import parse_max_discovered_chats
+
+        settings = get_settings()
+        items = parse_max_discovered_chats(settings.max_discovered_chats)
+        return {"platform": "max", "destinations": items, "webhook_registered": bool(settings.max_webhook_url)}
+
+    @app.post("/api/platforms/max/destination")
+    async def max_select_destination(payload: dict) -> dict:
+        """Select a chat/channel only after MAX confirms the bot has write permission."""
+        from tgfarm.max_api import select_max_chat
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        current = get_settings()
+        chat_id = str(payload.get("chat_id") or "").strip()
+        try:
+            selected = await select_max_chat(current.max_access_token, chat_id)
+            await io(
+                save_credentials,
+                "max",
+                {
+                    "MAX_CHANNEL_ID": str(selected["id"]),
+                    "MAX_CHANNEL_NAME": str(selected["name"]),
+                    "MAX_CHANNEL_IS_CHANNEL": "true" if selected["is_channel"] else "false",
+                },
+            )
+            await io(
+                record_auth_check,
+                "max",
+                True,
+                account=str(selected["name"]),
+                detail="MAX подтвердил членство бота и право write в выбранном чате/канале.",
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        _operator("platform-destination-selected", "max", selected["id"])
+        return {
+            "ok": True,
+            "platform": "max",
+            "destination": {
+                "id": selected["id"],
+                "name": selected["name"],
+                "kind": "channel" if selected["is_channel"] else "chat",
+                "role": selected["role"],
+            },
+        }
 
     @app.get("/api/platforms/vk/destinations")
     async def vk_destinations() -> dict:
