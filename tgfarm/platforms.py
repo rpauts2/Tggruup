@@ -71,7 +71,7 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Мессенджеры", "market": "Россия", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
         "description": "Кросспост через API бота MAX.",
-        "requirements": "MAX_ACCESS_TOKEN, TGFARM_PUBLIC_BASE_URL и выбранный через webhook чат/канал с правом write.",
+        "requirements": "MAX_ACCESS_TOKEN, публичный TGFARM_PUBLIC_BASE_URL (HTTPS:443) и выбранный через webhook чат/канал с правом write.",
         "docs_url": "https://dev.max.ru/",
     },
     {
@@ -326,6 +326,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
     ],
     "max": [
         {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен хранится локально. После сохранения нажми «Подключить поиск чатов»: потребуется публичный HTTPS webhook на порту 443."},
+        {"key": "TGFARM_PUBLIC_BASE_URL", "attribute": "public_base_url", "label": "Публичный URL фермы для webhook", "secret": False, "placeholder": "https://farm.example", "help": "Внешний HTTPS-домен за reverse proxy, с валидным TLS и портом 443. Не указывай localhost, внутренний IP, путь или порт."},
         {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала/чата (необязательно)", "secret": False, "placeholder": "Выбери найденный чат после webhook", "help": "Не нужно вводить вручную. TgFarm получит chat_id после того, как ты добавишь бота в канал или групповой чат."},
         {"key": "MAX_CHANNEL_NAME", "attribute": "max_channel_name", "label": "Название места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_CHANNEL_IS_CHANNEL", "attribute": "max_channel_is_channel", "label": "Тип места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
