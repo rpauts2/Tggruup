@@ -304,6 +304,20 @@ class VkAdapter:
         if not (token and group):
             return CrosspostResult(platform=self.platform, status="skipped")
         payload = _clip(payload, self.max_title, self.max_body)
+        try:
+            owner_id = -abs(int(str(group).strip()))
+        except (TypeError, ValueError):
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="VK community ID must be numeric; enter it without a leading minus sign.",
+            )
+        if owner_id == 0:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="VK community ID must be a positive numeric identifier.",
+            )
         import httpx
 
         attachment = None
@@ -316,7 +330,7 @@ class VkAdapter:
         try:
             data = {
                 "access_token": token,
-                "owner_id": group,
+                "owner_id": owner_id,
                 "message": f"{payload.title}\n\n{payload.text}",
                 "publish_date": 0,
                 "from_group": 1,
@@ -353,7 +367,7 @@ class VkAdapter:
                 platform=self.platform,
                 status="posted",
                 remote_id=post_id,
-                url=f"https://vk.com/wall{group}_{post_id}" if post_id else None,
+                url=f"https://vk.com/wall{owner_id}_{post_id}" if post_id else None,
             )
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
