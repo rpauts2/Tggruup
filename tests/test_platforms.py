@@ -740,3 +740,73 @@ def test_vk_destination_selection_rechecks_role_before_saving(client, monkeypatc
     assert "access_token" not in response.text
     assert saved == [("vk", {"VK_GROUP_ID": "101"})]
     assert checks[0][0:2] == ("vk", True)
+
+
+def test_vk_destination_api_requires_auth_and_returns_no_credentials(client, monkeypatch):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    assert client.get("/api/platforms/vk/destinations").status_code == 401
+    assert client.post("/api/platforms/vk/destination", json={"group_id": "101"}).status_code == 401
+
+    async def fake_groups():
+        return [{
+            "id": "101",
+            "name": "Owner community",
+            "screen_name": "owner_community",
+            "role": "admin",
+            "can_publish": True,
+        }]
+
+    monkeypatch.setattr("tgfarm.platform_auth.list_vk_groups", fake_groups)
+    response = client.get(
+        "/api/platforms/vk/destinations",
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 200
+    assert response.json()["destinations"][0]["name"] == "Owner community"
+    assert "access_token" not in response.text
+
+
+def test_vk_destination_api_revalidates_role_before_saving_group_id(client, monkeypatch):
+    import tgfarm.api as api_module
+    import tgfarm.platforms as platform_module
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    saved = []
+    checks = []
+
+    async def inline_io(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def select_group(group_id):
+        assert group_id == "101"
+        return {"id": "101", "name": "Owner community", "role": "admin"}
+
+    def save_credentials(platform_id, values):
+        saved.append((platform_id, values))
+        return {}
+
+    def record_check(platform_id, ok, **kwargs):
+        checks.append((platform_id, ok, kwargs))
+        return {}
+
+    monkeypatch.setattr(api_module, "io", inline_io)
+    monkeypatch.setattr(api_module, "_operator", lambda *args, **kwargs: None)
+    monkeypatch.setattr(platform_module, "save_platform_credentials", save_credentials)
+    monkeypatch.setattr(platform_module, "record_auth_check", record_check)
+    monkeypatch.setattr("tgfarm.platform_auth.select_vk_group", select_group)
+
+    response = client.post(
+        "/api/platforms/vk/destination",
+        json={"group_id": "101"},
+        headers={HEADER: ensure_token()},
+    )
+    assert response.status_code == 200
+    assert response.json()["destination"] == {
+        "id": "101",
+        "name": "Owner community",
+        "role": "admin",
+    }
+    assert "access_token" not in response.text
+    assert saved == [("vk", {"VK_GROUP_ID": "101"})]
+    assert checks[0][0:2] == ("vk", True)
