@@ -460,3 +460,53 @@ def test_max_permission_change_for_another_bot_does_not_block_selected_target(cl
     assert response.status_code == 200
     assert state.max_channel_blocked is False
     assert not any("MAX_CHANNEL_BLOCKED" in values for _, values in saved)
+
+
+@pytest.mark.asyncio
+async def test_max_api_classifies_rate_limit_and_service_outage_as_temporary(monkeypatch):
+    from tgfarm import max_api
+
+    class ErrorResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def json(self):
+            return {"message": "temporary"}
+
+    class ErrorClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def request(self, *args, **kwargs):
+            return ErrorResponse(429)
+
+    with pytest.raises(max_api.MaxTemporaryError):
+        await max_api._json_request(ErrorClient(), "GET", "/me")
+
+    class ServerErrorClient(ErrorClient):
+        async def request(self, *args, **kwargs):
+            return ErrorResponse(503)
+
+    with pytest.raises(max_api.MaxTemporaryError):
+        await max_api._json_request(ServerErrorClient(), "GET", "/me")
+
+
+@pytest.mark.asyncio
+async def test_max_api_classifies_missing_write_permission_as_permanent(monkeypatch):
+    from tgfarm import max_api
+
+    class ErrorResponse:
+        status_code = 403
+
+        def json(self):
+            return {"message": "forbidden"}
+
+    class ErrorClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def request(self, *args, **kwargs):
+            return ErrorResponse()
+
+    with pytest.raises(max_api.MaxPermissionError):
+        await max_api._json_request(ErrorClient(), "GET", "/chats/10001/members/me")
