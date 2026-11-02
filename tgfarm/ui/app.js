@@ -921,10 +921,10 @@
       const browserLoginButton = browserSession.available && !["dzen", "vk", "vc_ru", "pikabu"].includes(item.id)
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
-      const destinationTools = item.id === "pinterest"
+      const destinationTools = ["pinterest", "facebook"].includes(item.id)
         ? `<div class="platform-destination-tools">
-             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="pinterest">Найти мои доски</button>
-             <div id="platform-destination-pinterest"></div>
+             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}">${item.id === "facebook" ? "Найти мои Pages" : "Найти мои доски"}</button>
+             <div id="platform-destination-${esc(item.id)}"></div>
            </div>`
         : "";
       const readyHint = supported
@@ -998,6 +998,8 @@
   async function discoverPlatformDestinations(platformId, button) {
     const root = document.getElementById("platform-destination-" + platformId);
     if (!root) return;
+    const isFacebook = platformId === "facebook";
+    const noun = isFacebook ? "страниц" : "досок";
     const previousText = button?.textContent || "";
     if (button) {
       button.disabled = true;
@@ -1008,7 +1010,7 @@
       const result = await api("/api/platforms/" + encodeURIComponent(platformId) + "/destinations");
       const destinations = result.destinations || [];
       if (!destinations.length) {
-        root.innerHTML = '<p class="platform-destination-note">API не вернул доступных досок. Проверь разрешение boards:read и права приложения.</p>';
+        root.innerHTML = '<p class="platform-destination-note">API не вернул доступных ' + noun + '. Проверь разрешения приложения и права аккаунта.</p>';
         return;
       }
       const selectId = "platform-destination-select-" + platformId;
@@ -1020,19 +1022,24 @@
           <span>Куда публиковать</span>
           <select id="${esc(selectId)}">${options}</select>
         </label>
-        <button type="button" class="btn btn-primary btn-sm" data-platform-destination-save="${esc(platformId)}">Сохранить выбранную доску</button>
-        <small class="platform-destination-note">Найдено: ${n(destinations.length)}. Доступ будет проверен ещё раз.</small>
+        <button type="button" class="btn btn-primary btn-sm" data-platform-destination-save="${esc(platformId)}">Сохранить выбранное место</button>
+        <small class="platform-destination-note">Найдено: ${n(destinations.length)}. Доступ будет проверен ещё раз перед сохранением.</small>
       `;
       const save = root.querySelector("[data-platform-destination-save]");
       save?.addEventListener("click", async () => {
         const selectedId = document.getElementById(selectId)?.value || "";
         save.disabled = true;
         try {
-          const saved = await post("/api/platforms/" + encodeURIComponent(platformId) + "/destination", { board_id: selectedId });
-          toast("Доска подключена: " + (saved.destination?.name || selectedId), "ok");
+          const payload = isFacebook ? { page_id: selectedId } : { board_id: selectedId };
+          const saved = await post(
+            "/api/platforms/" + encodeURIComponent(platformId) + "/destination",
+            payload,
+          );
+          const name = saved.destination?.name || selectedId;
+          toast((isFacebook ? "Страница подключена: " : "Доска подключена: ") + name, "ok");
           await refresh();
         } catch (error) {
-          toast("Не удалось выбрать доску: " + (error?.message || error), "err");
+          toast("Не удалось выбрать место: " + (error?.message || error), "err");
         } finally {
           save.disabled = false;
         }
@@ -1193,14 +1200,13 @@
     if (auth.method === "oauth" && platformId === "facebook" && !forceCredentials) {
       const appId = (auth.fields || []).find((field) => field.key === "FACEBOOK_APP_ID");
       const appSecret = (auth.fields || []).find((field) => field.key === "FACEBOOK_APP_SECRET");
-      const pageId = (auth.fields || []).find((field) => field.key === "FACEBOOK_PAGE_ID");
-      if (!appId?.has_value || !appSecret?.has_value || !pageId?.has_value) {
-        toast("Сначала сохрани Facebook App ID, App Secret и ID своей Page.", "err");
+      if (!appId?.has_value || !appSecret?.has_value) {
+        toast("Сначала сохрани Facebook App ID и App Secret. Список доступных Pages ферма получит сама после OAuth.", "err");
         return;
       }
       const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/facebook/auth/callback";
       const proceed = window.confirm(
-        "В Meta Developer Portal включи Facebook Login, Pages API и добавь этот Redirect URI. Нужны permissions pages_show_list, pages_read_engagement и pages_manage_posts. Твой профиль должен иметь задачу CREATE_CONTENT на выбранной Page. Личные профили и группы не поддерживаются.\n\n"
+        "В Meta Developer Portal включи Facebook Login, Pages API и добавь этот Redirect URI. Нужны permissions pages_show_list, pages_read_engagement и pages_manage_posts. После OAuth TgFarm покажет только Pages, где твой профиль имеет CREATE_CONTENT или эквивалентную административную задачу. Личные профили и группы не поддерживаются.\n\n"
         + callbackUri + "\n\nПродолжить Facebook Login?",
       );
       if (!proceed) return;
