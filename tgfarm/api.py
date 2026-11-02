@@ -2854,6 +2854,51 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
             return HTMLResponse(body, status_code=500, headers=page_headers)
 
+    @app.get("/api/platforms/facebook/destinations")
+    async def facebook_destinations() -> dict:
+        """List managed Facebook Pages with an actual publishing task."""
+        from tgfarm.facebook_oauth import list_facebook_pages
+
+        try:
+            pages = await list_facebook_pages()
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        return {"platform": "facebook", "destinations": pages}
+
+    @app.post("/api/platforms/facebook/destination")
+    async def facebook_select_destination(payload: dict) -> dict:
+        """Select a Page only after rechecking the owner's current CREATE_CONTENT task."""
+        from tgfarm.facebook_oauth import select_facebook_page
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        page_id = str(payload.get("page_id") or "").strip()
+        try:
+            page = await select_facebook_page(page_id)
+            await io(
+                save_credentials,
+                "facebook",
+                {
+                    "FACEBOOK_PAGE_ID": page["id"],
+                    "FACEBOOK_PAGE_NAME": page["name"],
+                    "FACEBOOK_PAGE_ACCESS_TOKEN": page["page_access_token"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "facebook",
+                True,
+                account=page["name"],
+                detail="Facebook Page подтверждена через /me/accounts; задача CREATE_CONTENT проверена повторно.",
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        _operator("platform-destination-selected", "facebook", page["id"])
+        return {
+            "ok": True,
+            "platform": "facebook",
+            "destination": {"id": page["id"], "name": page["name"]},
+        }
+
     @app.post("/api/platforms/facebook/auth/start")
     async def facebook_oauth_start(request: Request) -> dict:
         from tgfarm.facebook_oauth import begin_facebook_oauth
@@ -2899,35 +2944,53 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
         try:
             credentials = await complete_facebook_oauth(state_value, code)
-            await io(
-                save_credentials,
-                "facebook",
-                {
-                    "FACEBOOK_APP_ID": credentials["app_id"],
-                    "FACEBOOK_APP_SECRET": credentials["app_secret"],
+            common = {
+                "FACEBOOK_APP_ID": credentials["app_id"],
+                "FACEBOOK_APP_SECRET": credentials["app_secret"],
+                "FACEBOOK_USER_ACCESS_TOKEN": credentials["user_access_token"],
+                "FACEBOOK_USER_TOKEN_EXPIRES_AT": credentials["user_token_expires_at"],
+            }
+            if credentials.get("page_id"):
+                common.update({
                     "FACEBOOK_PAGE_ID": credentials["page_id"],
                     "FACEBOOK_PAGE_NAME": credentials["page_name"],
                     "FACEBOOK_PAGE_ACCESS_TOKEN": credentials["page_access_token"],
-                    "FACEBOOK_USER_ACCESS_TOKEN": credentials["user_access_token"],
-                    "FACEBOOK_USER_TOKEN_EXPIRES_AT": credentials["user_token_expires_at"],
-                },
-            )
-            await io(
-                record_auth_check,
+                })
+            await io(save_credentials, "facebook", common)
+            _operator(
+                "platform-auth-check",
                 "facebook",
-                True,
-                account=credentials["page_name"],
-                detail="Facebook Page OAuth подтверждён; Page access token получен для страницы с CREATE_CONTENT.",
+                "OAuth connected; Page selection pending" if not credentials.get("page_id") else "OAuth connected",
             )
-            _operator("platform-auth-check", "facebook", "OAuth connected")
-            page_name = html.escape(credentials["page_name"])
-            page_id = html.escape(credentials["page_id"])
+            if credentials.get("page_id"):
+                await io(
+                    record_auth_check,
+                    "facebook",
+                    True,
+                    account=credentials["page_name"],
+                    detail="Facebook Page OAuth подтверждён; Page access token получен для страницы с CREATE_CONTENT.",
+                )
+                message = (
+                    "<h1>Facebook Page подключена</h1><p>Доступ подтверждён: <strong>"
+                    + html.escape(credentials["page_name"])
+                    + "</strong>.</p><p>Page ID <code>"
+                    + html.escape(credentials["page_id"])
+                    + "</code> сохранён.</p>"
+                )
+            else:
+                page_count = len(credentials.get("available_pages") or [])
+                message = (
+                    "<h1>Facebook OAuth подтверждён</h1><p>Доступ к управляемым страницам получен.</p>"
+                    "<p>Найдено Pages с правом публикации: <strong>"
+                    + str(page_count)
+                    + "</strong>. Вернись в TgFarm, нажми «Найти мои Pages» и выбери нужную страницу. "
+                    "Page token будет сохранён только после повторной проверки прав.</p>"
+                )
             return HTMLResponse(
-                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
-                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
-                "<h1>Facebook Page подключена</h1><p>Доступ подтверждён: <strong>" + page_name + "</strong>.</p>"
-                "<p>Page ID <code>" + page_id + "</code> сохранён. Публикации доступны только на эту страницу.</p>"
-                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключение</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                + message
+                + "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=200,
                 headers=headers,
             )
