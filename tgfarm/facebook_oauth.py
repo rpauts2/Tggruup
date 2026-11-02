@@ -51,15 +51,15 @@ def _prune_pending(now: float) -> None:
 async def begin_facebook_oauth(
     app_id: str, app_secret: str, page_id: str, redirect_uri: str
 ) -> dict[str, object]:
-    """Create a state-bound Facebook Login consent URL for a preselected Page."""
+    """Create a state-bound Facebook Login flow; Page selection may happen after OAuth."""
     app_id = str(app_id or "").strip()
     app_secret = str(app_secret or "").strip()
     page_id = str(page_id or "").strip()
     redirect_uri = _validate_redirect_uri(redirect_uri)
     if not app_id or not app_secret:
         raise ValueError("Сначала сохрани Facebook App ID и App Secret.")
-    if not page_id or not page_id.isdigit():
-        raise ValueError("Сначала сохрани числовой ID Facebook Page.")
+    if page_id and not page_id.isdigit():
+        raise ValueError("ID Facebook Page должен состоять только из цифр.")
     if len(app_id) > 1024 or len(app_secret) > 4096 or len(page_id) > 32:
         raise ValueError("Параметры Facebook OAuth имеют недопустимый размер.")
 
@@ -132,36 +132,20 @@ async def _get_json(client: httpx.AsyncClient, url: str, params: dict[str, str] 
 async def _page_from_accounts(
     client: httpx.AsyncClient, user_token: str, page_id: str
 ) -> dict:
-    url = f"{GRAPH_ROOT}/me/accounts"
-    params = {"fields": "id,name,access_token,tasks", "limit": "100", "access_token": user_token}
-    for _ in range(5):
-        payload = await _get_json(client, url, params)
-        for item in payload.get("data") or []:
-            if not isinstance(item, dict) or str(item.get("id") or "") != page_id:
-                continue
-            tasks = {
-                str(task).upper()
-                for task in (item.get("tasks") or [])
-                if isinstance(task, str)
-            }
-            if "CREATE_CONTENT" not in tasks and not ({"MANAGE", "ADMINISTER"} & tasks):
-                raise RuntimeError(
-                    "Твой Facebook-профиль не имеет задачи CREATE_CONTENT для выбранной страницы."
-                )
-            token = str(item.get("access_token") or "")
-            if not token:
-                raise RuntimeError("Facebook не выдал Page access token для выбранной страницы.")
-            return item
-
-        paging = payload.get("paging") or {}
-        next_url = str(paging.get("next") or "")
-        parsed = urlsplit(next_url)
-        if not next_url:
-            break
-        if parsed.scheme != "https" or parsed.hostname != "graph.facebook.com" or not parsed.path.startswith(f"/{GRAPH_VERSION}/"):
-            raise RuntimeError("Facebook вернул недопустимый URL следующей страницы.")
-        url, params = next_url, None
-    raise RuntimeError("Выбранная Facebook Page не найдена среди страниц, которыми ты управляешь.")
+    if not page_id or not str(page_id).isdigit():
+        raise ValueError("Некорректный ID Facebook Page.")
+    pages = await _list_pages_with_tokens(client, user_token)
+    item = next((row for row in pages if row["id"] == page_id), None)
+    if not item:
+        raise RuntimeError("Выбранная Facebook Page не найдена среди страниц, которыми ты управляешь.")
+    tasks = set(item.get("tasks") or [])
+    if "CREATE_CONTENT" not in tasks and not ({"MANAGE", "ADMINISTER"} & tasks):
+        raise RuntimeError(
+            "Твой Facebook-профиль не имеет задачи CREATE_CONTENT для выбранной страницы."
+        )
+    if not item.get("access_token"):
+        raise RuntimeError("Facebook не выдал Page access token для выбранной страницы.")
+    return item
 
 
 async def complete_facebook_oauth(state: str, code: str) -> dict[str, str]:
@@ -204,17 +188,84 @@ async def complete_facebook_oauth(state: str, code: str) -> dict[str, str]:
             expires_in = max(60, int(long_payload.get("expires_in") or short.get("expires_in") or 0))
         except (TypeError, ValueError):
             expires_in = 0
-        page = await _page_from_accounts(client, user_token, page_id)
+        if page_id:
+            page = await _page_from_accounts(client, user_token, page_id)
+            available_pages = []
+        else:
+            rows = await _list_pages_with_tokens(client, user_token)
+            available_pages = [
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "tasks": row["tasks"],
+                    "can_publish": (
+                        "CREATE_CONTENT" in row["tasks"]
+                        or bool({"MANAGE", "ADMINISTER"} & set(row["tasks"]))
+                    ),
+                }
+                for row in rows
+            ]
+            available_pages = [row for row in available_pages if row["can_publish"]]
+            if not available_pages:
+                raise RuntimeError(
+                    "Facebook OAuth выполнен, но не найдено ни одной Page с задачей CREATE_CONTENT. "
+                    "Проверь роли и разрешения приложения."
+                )
+            page = None
 
     return {
         "app_id": app_id,
         "app_secret": app_secret,
         "page_id": page_id,
-        "page_name": str(page.get("name") or page_id),
-        "page_access_token": str(page["access_token"]),
+        "page_name": str(page.get("name") or page_id) if page else "",
+        "page_access_token": str(page["access_token"]) if page else "",
         "user_access_token": user_token,
         "user_token_expires_at": str(int(time.time()) + expires_in) if expires_in else "0",
-        "account": str(page.get("name") or page_id),
+        "available_pages": available_pages,
+        "account": str(page.get("name") or page_id) if page else "Facebook · выбери Page",
+    }
+
+
+
+async def list_facebook_pages() -> list[dict[str, object]]:
+    """List Pages with publish permission; never return Page access tokens."""
+    from tgfarm.core.settings import get_settings
+
+    settings = get_settings()
+    user_token = str(settings.facebook_user_access_token or "").strip()
+    if not user_token:
+        raise RuntimeError("Сначала подключи Facebook через OAuth.")
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+        rows = await _list_pages_with_tokens(client, user_token)
+    result = []
+    for row in rows:
+        tasks = list(row.get("tasks") or [])
+        can_publish = "CREATE_CONTENT" in tasks or bool({"MANAGE", "ADMINISTER"} & set(tasks))
+        if not can_publish:
+            continue
+        result.append({
+            "id": row["id"],
+            "name": row["name"],
+            "tasks": tasks,
+            "can_publish": True,
+        })
+    return result
+
+
+async def select_facebook_page(page_id: str) -> dict[str, str]:
+    """Verify the selected Page against the current owner's live permissions."""
+    from tgfarm.core.settings import get_settings
+
+    settings = get_settings()
+    user_token = str(settings.facebook_user_access_token or "").strip()
+    if not user_token:
+        raise RuntimeError("Facebook OAuth не подключён. Повтори вход.")
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+        page = await _page_from_accounts(client, user_token, str(page_id or "").strip())
+    return {
+        "id": str(page["id"]),
+        "name": str(page.get("name") or page["id"])[:160],
+        "page_access_token": str(page["access_token"]),
     }
 
 
@@ -274,4 +325,6 @@ __all__ = [
     "cancel_facebook_oauth",
     "complete_facebook_oauth",
     "get_valid_facebook_page_token",
+    "list_facebook_pages",
+    "select_facebook_page",
 ]
