@@ -1345,7 +1345,11 @@
     state.authPlatformId = platformId;
     const dialog = $("#platform-auth-dialog");
     $("#platform-auth-title").textContent = item.name + " · подключение";
-    $("#platform-auth-description").textContent = platformId === "youtube"
+    $("#platform-auth-description").textContent = platformId === "pinterest"
+      ? "Введи Pinterest App ID и App Secret. После OAuth TgFarm покажет доступные доски и проверит выбранную доску."
+      : platformId === "facebook"
+        ? "Введи Facebook App ID и App Secret. После OAuth TgFarm сможет найти управляемые Pages и выбрать страницу с CREATE_CONTENT."
+        : platformId === "youtube"
       ? "Введи Google OAuth Client ID и Client Secret из Google Cloud Console. Создай Web application client, включи YouTube Data API v3 и добавь callback URI панели. После сохранения нажми «Подключить через OAuth»."
       : platformId === "x"
       ? "Введи Client ID и Client Secret из X Developer Portal. Эти ключи хранятся локально, пароль X не нужен. После сохранения нажми «Подключить через OAuth»."
