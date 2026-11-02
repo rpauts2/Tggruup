@@ -10,6 +10,20 @@ from urllib.parse import urlsplit
 import httpx
 
 API_ROOT = "https://platform-api2.max.ru"
+
+
+class MaxApiError(RuntimeError):
+    """Provider rejected a request or returned an invalid response."""
+
+
+class MaxTemporaryError(MaxApiError):
+    """A network, rate-limit or service outage that is safe to retry."""
+
+
+class MaxPermissionError(MaxApiError):
+    """The configured bot/chat is not currently allowed to publish."""
+
+
 WEBHOOK_PATH = "/api/platforms/max/webhook"
 WEBHOOK_EVENTS = (
     "bot_added",
@@ -151,27 +165,27 @@ async def _json_request(
             json=json_body,
         )
     except httpx.TimeoutException as exc:
-        raise RuntimeError("MAX не ответил вовремя. Повтори проверку позже.") from exc
+        raise MaxTemporaryError("MAX не ответил вовремя. Повтори проверку позже.") from exc
     except httpx.RequestError as exc:
-        raise RuntimeError("Не удалось связаться с MAX API.") from exc
+        raise MaxTemporaryError("Не удалось связаться с MAX API.") from exc
+    if response.status_code >= 400:
+        if response.status_code in (408, 425, 429) or response.status_code >= 500:
+            raise MaxTemporaryError(f"MAX временно ответил HTTP {response.status_code}.")
+        if response.status_code in (401, 403):
+            raise MaxPermissionError("MAX отклонил доступ. Проверь токен бота и его права.")
+        if response.status_code == 404:
+            raise MaxPermissionError("MAX не нашёл выбранный чат или канал.")
+        raise MaxApiError(f"MAX API ответил HTTP {response.status_code}.")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise RuntimeError(f"MAX API вернул некорректный ответ (HTTP {response.status_code}).") from exc
-    if response.status_code >= 400:
-        if response.status_code in (401, 403):
-            raise RuntimeError("MAX отклонил доступ. Проверь токен бота и его права.")
-        if response.status_code == 404:
-            raise RuntimeError("MAX не нашёл выбранный чат или канал.")
-        if response.status_code == 429:
-            raise RuntimeError("MAX временно ограничил запросы. Повтори позже.")
-        raise RuntimeError(f"MAX API ответил HTTP {response.status_code}.")
+        raise MaxApiError(f"MAX API вернул некорректный ответ (HTTP {response.status_code}).") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("MAX API вернул неожиданный формат ответа.")
     if payload.get("success") is False:
         message = str(payload.get("message") or "").lower()
         if "already" not in message and "exist" not in message:
-            raise RuntimeError("MAX не подтвердил выполнение запроса.")
+            raise MaxApiError("MAX не подтвердил выполнение запроса.")
     return payload
 
 
@@ -319,6 +333,9 @@ def verify_max_webhook_secret(received: str | None, expected: str | None) -> boo
 
 __all__ = [
     "API_ROOT",
+    "MaxApiError",
+    "MaxPermissionError",
+    "MaxTemporaryError",
     "WEBHOOK_EVENTS",
     "WEBHOOK_PATH",
     "apply_max_webhook_event",
