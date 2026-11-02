@@ -148,8 +148,32 @@ async def test_max_webhook_registration_uses_authorization_header_and_provider_s
 async def test_max_chat_selection_rechecks_write_permission(monkeypatch):
     from tgfarm import max_api
 
-    FakeMAXClient.calls = []
-    monkeypatch.setattr(max_api.httpx, "AsyncClient", FakeMAXClient)
+    observed = []
+    allow_write = True
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.headers = kwargs.get("headers") or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def fake_request(client, method, path, *, params=None, json_body=None):
+        observed.append((method, path, client.headers))
+        if path.endswith("/members/me"):
+            return {
+                "is_admin": True,
+                "is_owner": False,
+                "permissions": ["read_all_messages", "write"] if allow_write else ["read_all_messages"],
+            }
+        return {"chat_id": 10001, "title": "News channel", "type": "channel"}
+
+    monkeypatch.setattr(max_api.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(max_api, "_json_request", fake_request)
+
     selected = await max_api.select_max_chat("max-private-token", "10001")
     assert selected == {
         "id": "10001",
@@ -158,26 +182,12 @@ async def test_max_chat_selection_rechecks_write_permission(monkeypatch):
         "role": "admin",
         "permissions": ["read_all_messages", "write"],
     }
-    member_call = next(call for call in FakeMAXClient.calls if call[1].endswith("/members/me"))
-    assert member_call[0] == "GET"
-    assert member_call[1] == "https://platform-api2.max.ru/chats/10001/members/me"
+    assert observed[0][0:2] == ("GET", "/chats/10001/members/me")
+    assert observed[0][2]["Authorization"] == "max-private-token"
 
-    async def no_write(*args, **kwargs):
-        return {"is_admin": True, "is_owner": False, "permissions": ["read_all_messages"]}
-
-    async def fake_client(*args, **kwargs):
-        raise AssertionError("the real client fake below should be used")
-
-    class NoWriteClient(FakeMAXClient):
-        async def request(self, method, url, **kwargs):
-            if url.endswith("/members/me"):
-                return FakeMAXResponse(await no_write())
-            return FakeMAXResponse({"title": "News channel", "type": "channel"})
-
-    monkeypatch.setattr(max_api.httpx, "AsyncClient", NoWriteClient)
+    allow_write = False
     with pytest.raises(RuntimeError, match="право write"):
         await max_api.select_max_chat("max-private-token", "10001")
-
 
 def test_max_webhook_public_callback_is_secret_protected_and_persists_events(client, monkeypatch):
     import tgfarm.api as api_module
