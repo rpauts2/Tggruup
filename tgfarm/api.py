@@ -2165,6 +2165,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 },
             )
             result = await register_max_webhook(current.max_access_token, webhook_url, secret)
+            if result.get("bot_id"):
+                await io(save_credentials, "max", {"MAX_BOT_ID": str(result["bot_id"])})
             await io(
                 record_auth_check,
                 "max",
@@ -2223,7 +2225,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         event_type = str(update.get("update_type") or "")
         selected_id = str(current.max_channel_id or "").strip()
         event_chat_id = str(update.get("chat_id") or "").strip()
-        if selected_id and event_chat_id == selected_id and event_type in {"bot_removed", "bot_admin_permissions_changed"}:
+        changed_bot_id = str(update.get("bot_id") or "").strip()
+        own_bot_id = str(current.max_bot_id or "").strip()
+        selected_was_removed = event_type == "bot_removed"
+        own_bot_permissions_changed = (
+            event_type == "bot_admin_permissions_changed"
+            and own_bot_id
+            and changed_bot_id == own_bot_id
+        )
+        if selected_id and event_chat_id == selected_id and (selected_was_removed or own_bot_permissions_changed):
             await io(
                 save_credentials,
                 "max",
