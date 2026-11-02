@@ -157,6 +157,8 @@ def _pikabu_risks(
 ) -> tuple[list[str], list[str]]:
     """Return warnings separately from hard policy/fit blockers."""
     joined = normalize(rules)
+    global_policy = normalize(global_rules or "")
+    combined_policy = f"{global_policy} {joined}".strip()
     content = normalize(f"{post['title']}\n{post['body']}")
     warnings: list[str] = []
     blockers: list[str] = []
@@ -168,25 +170,25 @@ def _pikabu_risks(
         "реклама не допускается", "продвижение запрещено", "запрещено продвижение",
     )
     explicit_promotion_ban = (
-        "самопродвижение" in joined
-        and any(word in joined for word in ("запрещ", "не допуска", "не разреш"))
+        "самопродвижение" in combined_policy
+        and any(word in combined_policy for word in ("запрещ", "не допуска", "не разреш"))
     )
     explicit_advertising_ban = (
-        "реклама" in joined
-        and any(word in joined for word in ("запрещ", "не допуска", "не разреш"))
+        "реклама" in combined_policy
+        and any(word in combined_policy for word in ("запрещ", "не допуска", "не разреш"))
     )
-    if any(phrase in joined for phrase in advertising_bans) or explicit_promotion_ban or explicit_advertising_ban:
-        blockers.append("Правила сообщества содержат запрет рекламы и самопродвижения.")
-    elif any(word in joined for word in ("самореклам", "реклама", "продвижение", "промо")):
+    if any(phrase in combined_policy for phrase in advertising_bans) or explicit_promotion_ban or explicit_advertising_ban:
+        blockers.append("Общий Кодекс Пикабу или правила сообщества запрещают рекламу и самопродвижение.")
+    elif any(word in combined_policy for word in ("самореклам", "реклама", "продвижение", "промо")):
         warnings.append("В правилах есть требования к рекламе или самопродвижению; проверь соответствие.")
     ai_bans = (
         "нейросетевый контент запрещ", "контент нейросетей запрещ",
         "генерация нейросетью запрещ", "запрещены нейросети",
         "запрещен ai-контент", "ai-контент запрещен",
     )
-    if any(phrase in joined for phrase in ai_bans):
-        blockers.append("Правила сообщества явно запрещают AI-контент.")
-    elif any(word in joined for word in ("нейросет", "искусственн", "генерац", "ai-контент")):
+    if any(phrase in combined_policy for phrase in ai_bans):
+        blockers.append("Общий Кодекс Пикабу или правила сообщества явно запрещают AI-контент.")
+    elif any(word in combined_policy for word in ("нейросет", "искусственн", "генерац", "ai-контент")):
         warnings.append("Правила упоминают AI-контент; проверь допустимость и специальную маркировку.")
     if any(word in content for word in ("жесть", "смерт", "кров", "увеч", "насили")):
         warnings.append("Проверь специальный тег «Жесть» и требования к небезопасному контенту.")
@@ -342,8 +344,8 @@ def _vc_rule_assessment(
     warnings = _vc_risks(post, global_rules)
     blockers: list[str] = []
     if not topic_rules:
-        warnings.append(
-            "Отдельные правила темы не удалось распознать; проверены только общие правила vc.ru."
+        blockers.append(
+            "Не удалось прочитать правила выбранной темы vc.ru; автоматический выбор этой темы запрещён."
         )
 
     policy_text = normalize(f"{global_rules}\n{topic_rules}")
@@ -435,7 +437,7 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "risks": list(dict.fromkeys(risks)),
             "blockers": blockers,
             "rules_available": bool(rules_text),
-            "recommended": bool(rules_text) and not blockers and score >= MIN_SCORE,
+            "recommended": bool(rules_text) and bool(topic_rules) and not blockers and score >= MIN_SCORE,
         }
 
     candidates = [
