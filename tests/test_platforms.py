@@ -823,3 +823,17 @@ def test_max_chat_discovery_controls_are_available_in_dashboard(client):
     assert '"/api/platforms/max/webhook/register"' in source
     assert '{ chat_id: selectedId }' in source
     assert "TGFARM_PUBLIC_BASE_URL" in source
+
+
+def test_max_auth_form_exposes_public_webhook_origin_and_hides_internal_secrets(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    descriptor = platforms._auth_descriptor("max")
+    fields = {item["key"]: item for item in descriptor["fields"]}
+
+    assert fields["TGFARM_PUBLIC_BASE_URL"]["secret"] is False
+    assert fields["TGFARM_PUBLIC_BASE_URL"]["attribute"] == "public_base_url"
+    assert "443" in fields["TGFARM_PUBLIC_BASE_URL"]["help"]
+    assert "MAX_WEBHOOK_SECRET" not in fields
+    assert "MAX_BOT_ID" not in fields
