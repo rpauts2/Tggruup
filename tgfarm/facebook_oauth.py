@@ -233,11 +233,11 @@ async def get_valid_facebook_user_token() -> str:
     from tgfarm.platforms import save_platform_credentials
 
     settings = get_settings()
-    user_token = str(settings.facebook_user_access_token or "").strip()
-    app_id = str(settings.facebook_app_id or "").strip()
-    app_secret = str(settings.facebook_app_secret or "").strip()
+    user_token = str(getattr(settings, "facebook_user_access_token", "") or "").strip()
+    app_id = str(getattr(settings, "facebook_app_id", "") or "").strip()
+    app_secret = str(getattr(settings, "facebook_app_secret", "") or "").strip()
     try:
-        expires_at = int(settings.facebook_user_token_expires_at or 0)
+        expires_at = int(getattr(settings, "facebook_user_token_expires_at", 0) or 0)
     except (TypeError, ValueError):
         expires_at = 0
     now = int(time.time())
