@@ -2306,16 +2306,23 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "pinterest",
                 True,
                 account=credentials["account"],
-                detail="Pinterest OAuth подтвердил доступ к выбранной доске через API v5.",
+                detail=(
+                    "Pinterest OAuth подтверждён. Выбери доступную доску в карточке Pinterest."
+                    if not credentials["board_id"]
+                    else "Pinterest OAuth подтвердил доступ к выбранной доске через API v5."
+                ),
             )
             _operator("platform-auth-check", "pinterest", "OAuth connected")
             account = html.escape(credentials["account"])
-            board_id = html.escape(credentials["board_id"])
+            if credentials["board_id"]:
+                message = "Доска <code>" + html.escape(credentials["board_id"]) + "</code> уже подтверждена."
+            else:
+                message = "Теперь вернись в TgFarm и нажми «Найти мои доски», чтобы выбрать место публикации."
             return HTMLResponse(
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
                 "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
-                "<h1>Pinterest подключён</h1><p>Доступ подтверждён: <strong>" + account + "</strong>.</p>"
-                "<p>Доска <code>" + board_id + "</code> сохранена. Токены хранятся локально и обновляются автоматически.</p>"
+                "<h1>Pinterest подключён</h1><p>OAuth подтверждён: <strong>" + account + "</strong>.</p>"
+                "<p>" + message + " Токены хранятся локально и обновляются автоматически.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=200,
                 headers=headers,
@@ -2429,6 +2436,39 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=500, headers=headers,
             )
+
+    @app.get("/api/platforms/pinterest/destinations")
+    async def pinterest_destinations() -> dict:
+        """List boards visible to the authenticated Pinterest user."""
+        from tgfarm.pinterest_oauth import list_pinterest_boards
+
+        try:
+            items = await list_pinterest_boards()
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        return {"platform": "pinterest", "destinations": items}
+
+    @app.post("/api/platforms/pinterest/destination")
+    async def pinterest_select_destination(payload: dict) -> dict:
+        """Select one board only after the live API verifies it is accessible."""
+        from tgfarm.pinterest_oauth import select_pinterest_board
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        board_id = str(payload.get("board_id") or "").strip()
+        try:
+            board = await select_pinterest_board(board_id)
+            await io(save_credentials, "pinterest", {"PINTEREST_BOARD_ID": board["id"]})
+            await io(
+                record_auth_check,
+                "pinterest",
+                True,
+                account=board["name"],
+                detail="Pinterest OAuth и выбранная доска повторно подтверждены через API v5.",
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        _operator("platform-destination-selected", "pinterest", board["id"])
+        return {"ok": True, "platform": "pinterest", "destination": board}
 
     @app.post("/api/platforms/youtube/auth/start")
     async def youtube_oauth_start(request: Request) -> dict:
