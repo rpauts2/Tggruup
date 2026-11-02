@@ -209,7 +209,7 @@ class MaxAdapter:
     def configured(self) -> bool:
         settings = get_settings()
         token, channel = self._credentials()
-        return bool(token and channel and not settings.max_channel_blocked)
+        return bool(token and channel and not getattr(settings, "max_channel_blocked", False))
 
     async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
         token, channel = self._credentials()
