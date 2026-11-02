@@ -2223,10 +2223,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 {"MAX_DISCOVERED_CHATS": json.dumps(discovered, ensure_ascii=False, separators=(",", ":"))},
             )
         event_type = str(update.get("update_type") or "")
-        selected_id = str(current.max_channel_id or "").strip()
+        selected_id = str(getattr(current, "max_channel_id", "") or "").strip()
         event_chat_id = str(update.get("chat_id") or "").strip()
         changed_bot_id = str(update.get("bot_id") or "").strip()
-        own_bot_id = str(current.max_bot_id or "").strip()
+        own_bot_id = str(getattr(current, "max_bot_id", "") or "").strip()
         selected_was_removed = event_type == "bot_removed"
         own_bot_permissions_changed = (
             event_type == "bot_admin_permissions_changed"
@@ -2245,7 +2245,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 record_auth_check,
                 "max",
                 False,
-                account=str(current.max_channel_name or ""),
+                account=str(getattr(current, "max_channel_name", "") or ""),
                 detail=(
                     "MAX сообщил об удалении бота или изменении его прав. "
                     "Фоновая публикация заблокирована до повторной проверки write."
