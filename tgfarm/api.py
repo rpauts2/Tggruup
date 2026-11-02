@@ -2136,6 +2136,46 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 detail="Не удалось завершить VKHost OAuth. Проверь вход, разрешения и доступность VK API.",
             ) from exc
 
+    @app.get("/api/platforms/vk/destinations")
+    async def vk_destinations() -> dict:
+        """List VK communities administered or edited by the connected account."""
+        from tgfarm.platform_auth import list_vk_groups
+
+        try:
+            groups = await list_vk_groups()
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        return {"platform": "vk", "destinations": groups}
+
+    @app.post("/api/platforms/vk/destination")
+    async def vk_select_destination(payload: dict) -> dict:
+        """Store only a VK community revalidated against the current owner's role."""
+        from tgfarm.platform_auth import select_vk_group
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        group_id = str(payload.get("group_id") or "").strip()
+        try:
+            group = await select_vk_group(group_id)
+            await io(save_credentials, "vk", {"VK_GROUP_ID": group["id"]})
+            await io(
+                record_auth_check,
+                "vk",
+                True,
+                account=group["name"],
+                detail=(
+                    "VK подтвердил административную/редакторскую роль в сообществе. "
+                    "Фактическое право wall.post дополнительно проверяется при отправке."
+                ),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=redact_sensitive_text(exc, limit=320)) from exc
+        _operator("platform-destination-selected", "vk", group["id"])
+        return {
+            "ok": True,
+            "platform": "vk",
+            "destination": {"id": group["id"], "name": group["name"], "role": group["role"]},
+        }
+
     @app.post("/api/platforms/{platform_id}/auth/check")
     async def check_platform_credentials(platform_id: str) -> dict:
         from tgfarm.platforms import CATALOG
