@@ -871,7 +871,7 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return False, "TikTok App настроено; подключи аккаунт через OAuth и проверь scope video.publish."
         return False, "Нужны TIKTOK_CLIENT_KEY и TIKTOK_CLIENT_SECRET из Developer Portal."
     if platform_id == "max":
-        if settings.max_access_token and settings.max_channel_id and not settings.max_channel_blocked:
+        if settings.max_access_token and settings.max_channel_id and not bool(getattr(settings, "max_channel_blocked", False)):
             return True, "MAX Bot API и выбранный чат/канал настроены; право write проверяется при доступе и отправке."
         if settings.max_channel_blocked:
             return False, "MAX изменил права бота или удалил его из чата. Повторно выбери адресат после проверки write."
