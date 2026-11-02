@@ -1454,8 +1454,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         host = (request.url.hostname or "").lower()
         # The owner may configure TGFARM_PUBLIC_BASE_URL from the MAX
         # card without restarting the app. Read the live settings cache here.
+        live_settings = get_settings()
         public_host = (
-            urlsplit(str(get_settings().public_base_url or "")).hostname or ""
+            urlsplit(str(getattr(live_settings, "public_base_url", "") or "")).hostname or ""
         ).lower()
         if not _is_trusted_host_request(
             host,
