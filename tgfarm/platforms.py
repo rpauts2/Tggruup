@@ -325,8 +325,13 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "VK_GROUP_ID", "attribute": "vk_group_id", "label": "ID сообщества (необязательно)", "secret": False, "placeholder": "Можно оставить пустым и выбрать после OAuth", "help": "После VKHost OAuth нажми «Найти мои сообщества»: TgFarm покажет группы с ролью администратора или редактора и повторно проверит выбор."},
     ],
     "max": [
-        {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен сохраняется в локальном .env и не показывается повторно."},
-        {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала или чата", "secret": False, "placeholder": "ID канала", "help": "Бот должен иметь права публикации в целевом канале."},
+        {"key": "MAX_ACCESS_TOKEN", "attribute": "max_access_token", "label": "Токен бота MAX", "secret": True, "placeholder": "Токен из кабинета разработчика MAX", "help": "Токен хранится локально. После сохранения нажми «Подключить поиск чатов»: потребуется публичный HTTPS webhook на порту 443."},
+        {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала/чата (необязательно)", "secret": False, "placeholder": "Выбери найденный чат после webhook", "help": "Не нужно вводить вручную. TgFarm получит chat_id после того, как ты добавишь бота в канал или групповой чат."},
+        {"key": "MAX_CHANNEL_NAME", "attribute": "max_channel_name", "label": "Название места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_CHANNEL_IS_CHANNEL", "attribute": "max_channel_is_channel", "label": "Тип места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_WEBHOOK_SECRET", "attribute": "max_webhook_secret", "label": "Webhook secret (служебное)", "secret": True, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_WEBHOOK_URL", "attribute": "max_webhook_url", "label": "Webhook URL (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_DISCOVERED_CHATS", "attribute": "max_discovered_chats", "label": "Найденные чаты (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
     ],
     "discord": [
         {"key": "DISCORD_WEBHOOK_URL", "attribute": "discord_webhook_url", "label": "Discord Webhook URL", "secret": True, "placeholder": "https://discord.com/api/webhooks/…", "help": "Создай webhook в принадлежащем тебе канале. Ссылка включает секрет; не публикуй её. Пинги @everyone и массовые mentions отключены."},
