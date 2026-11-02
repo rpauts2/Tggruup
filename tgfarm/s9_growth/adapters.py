@@ -225,11 +225,8 @@ class MaxAdapter:
             ) as client:
                 resp = await client.post(
                     url,
-                    params={"chat_id": str(channel)},
-                    json={
-                        "text": f"{payload.title}\n\n{payload.text}",
-                        "disable_link_preview": False,
-                    },
+                    params={"chat_id": str(channel), "disable_link_preview": "false"},
+                    json={"text": f"{payload.title}\n\n{payload.text}"},
                 )
                 resp.raise_for_status()
             body = resp.json()
