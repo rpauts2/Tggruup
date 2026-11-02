@@ -1,6 +1,7 @@
 """Pinterest API v5 OAuth 2.0 with rotating access/refresh tokens."""
 from __future__ import annotations
 
+import re
 import secrets
 import threading
 import time
