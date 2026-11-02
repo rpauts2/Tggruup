@@ -329,6 +329,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "MAX_CHANNEL_ID", "attribute": "max_channel_id", "label": "ID канала/чата (необязательно)", "secret": False, "placeholder": "Выбери найденный чат после webhook", "help": "Не нужно вводить вручную. TgFarm получит chat_id после того, как ты добавишь бота в канал или групповой чат."},
         {"key": "MAX_CHANNEL_NAME", "attribute": "max_channel_name", "label": "Название места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_CHANNEL_IS_CHANNEL", "attribute": "max_channel_is_channel", "label": "Тип места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_CHANNEL_BLOCKED", "attribute": "max_channel_blocked", "label": "Блокировка места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_WEBHOOK_SECRET", "attribute": "max_webhook_secret", "label": "Webhook secret (служебное)", "secret": True, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_WEBHOOK_URL", "attribute": "max_webhook_url", "label": "Webhook URL (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_DISCOVERED_CHATS", "attribute": "max_discovered_chats", "label": "Найденные чаты (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
@@ -870,8 +871,10 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return False, "TikTok App настроено; подключи аккаунт через OAuth и проверь scope video.publish."
         return False, "Нужны TIKTOK_CLIENT_KEY и TIKTOK_CLIENT_SECRET из Developer Portal."
     if platform_id == "max":
-        if settings.max_access_token and settings.max_channel_id:
-            return True, "Данные MAX заданы; реальную публикацию нужно проверить."
+        if settings.max_access_token and settings.max_channel_id and not settings.max_channel_blocked:
+            return True, "MAX Bot API и выбранный чат/канал настроены; право write проверяется при доступе и отправке."
+        if settings.max_channel_blocked:
+            return False, "MAX изменил права бота или удалил его из чата. Повторно выбери адресат после проверки write."
         return False, "Нужен MAX_ACCESS_TOKEN и выбранный через webhook чат/канал. Для webhook настрой TGFARM_PUBLIC_BASE_URL."
     if platform_id == "discord":
         from urllib.parse import urlsplit
