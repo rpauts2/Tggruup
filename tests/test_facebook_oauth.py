@@ -183,3 +183,38 @@ async def test_facebook_page_selection_rechecks_create_content(monkeypatch):
         "page_access_token": "page-access-token",
     }
 
+
+
+@pytest.mark.asyncio
+async def test_facebook_user_token_refreshes_before_page_discovery(monkeypatch):
+    from tgfarm import facebook_oauth
+
+    FakeFacebookOAuthClient.calls = []
+    FakeFacebookOAuthClient.tasks = ["CREATE_CONTENT", "MODERATE"]
+    saved = {}
+    monkeypatch.setattr(httpx, "AsyncClient", FakeFacebookOAuthClient)
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(
+            facebook_user_access_token="expired-soon-user-token",
+            facebook_app_id="app-id",
+            facebook_app_secret="app-secret",
+            facebook_user_token_expires_at=1,
+        ),
+    )
+
+    def save_credentials(platform_id, values):
+        saved.update(values)
+        return {}
+
+    monkeypatch.setattr("tgfarm.platforms.save_platform_credentials", save_credentials)
+    token = await facebook_oauth.get_valid_facebook_user_token()
+
+    assert token == "long-user-token"
+    assert saved["FACEBOOK_USER_ACCESS_TOKEN"] == "long-user-token"
+    assert int(saved["FACEBOOK_USER_TOKEN_EXPIRES_AT"]) > 1
+    refresh_call = next(
+        call for call in FakeFacebookOAuthClient.calls
+        if (call[2].get("params") or {}).get("grant_type") == "fb_exchange_token"
+    )
+    assert refresh_call[2]["params"]["fb_exchange_token"] == "expired-soon-user-token"
