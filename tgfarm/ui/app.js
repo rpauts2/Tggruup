@@ -905,7 +905,7 @@
       const authSetup = `<button type="button" class="btn btn-ghost btn-sm platform-auth-button"
           data-platform-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>${authSetupLabel}</button>`;
       const authConfig = supported && (
-        (["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit"].includes(item.id) && auth.method === "oauth")
+        (["x", "threads", "linkedin", "youtube", "tiktok", "instagram", "reddit", "pinterest", "facebook"].includes(item.id) && auth.method === "oauth")
         || item.id === "vk"
       )
         ? `<button type="button" class="btn btn-ghost btn-sm platform-auth-config" data-platform-auth-config="${esc(item.id)}" ${busy ? "disabled" : ""}>${item.id === "vk" ? "ID сообщества" : item.id === "reddit" ? "App / subreddit" : "Настроить приложение"}</button>`
@@ -920,6 +920,12 @@
         : "";
       const browserLoginButton = browserSession.available && !["dzen", "vk", "vc_ru", "pikabu"].includes(item.id)
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
+        : "";
+      const destinationTools = item.id === "pinterest"
+        ? `<div class="platform-destination-tools">
+             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="pinterest">Найти мои доски</button>
+             <div id="platform-destination-pinterest"></div>
+           </div>`
         : "";
       const readyHint = supported
         ? item.connection_detail
@@ -963,6 +969,7 @@
               <div><strong>${esc(authLabel)}</strong><p>${esc(auth.detail || auth.note || (supported ? "Статус доступа ещё не проверен." : "Открытие сайта не подключает публикацию к ферме."))}</p>${authCheckedMarkup}${browserSessionMarkup}</div>
             </div>
             <div class="platform-auth-actions">${authConfig}${authSetup}${authCheck}${browserLoginButton}</div>
+           ${destinationTools}
           </div>
           <div class="platform-requirements"><span>ТРЕБУЕТСЯ</span><p>${esc(item.requirements || "Информация уточняется.")}</p></div>
           <div class="platform-card-footer">
@@ -986,6 +993,59 @@
     if (dialog?.open) dialog.close();
     state.authPlatformId = "";
     state.authSaving = false;
+  }
+
+  async function discoverPlatformDestinations(platformId, button) {
+    const root = document.getElementById("platform-destination-" + platformId);
+    if (!root) return;
+    const previousText = button?.textContent || "";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Ищу доступные места…";
+    }
+    root.innerHTML = "";
+    try {
+      const result = await api("/api/platforms/" + encodeURIComponent(platformId) + "/destinations");
+      const destinations = result.destinations || [];
+      if (!destinations.length) {
+        root.innerHTML = '<p class="platform-destination-note">API не вернул доступных досок. Проверь разрешение boards:read и права приложения.</p>';
+        return;
+      }
+      const selectId = "platform-destination-select-" + platformId;
+      const options = destinations.map((item) => `
+        <option value="${esc(item.id)}">${esc(item.name)}${item.privacy ? " · " + esc(item.privacy) : ""}</option>
+      `).join("");
+      root.innerHTML = `
+        <label class="field platform-destination-field">
+          <span>Куда публиковать</span>
+          <select id="${esc(selectId)}">${options}</select>
+        </label>
+        <button type="button" class="btn btn-primary btn-sm" data-platform-destination-save="${esc(platformId)}">Сохранить выбранную доску</button>
+        <small class="platform-destination-note">Найдено: ${n(destinations.length)}. Доступ будет проверен ещё раз.</small>
+      `;
+      const save = root.querySelector("[data-platform-destination-save]");
+      save?.addEventListener("click", async () => {
+        const selectedId = document.getElementById(selectId)?.value || "";
+        save.disabled = true;
+        try {
+          const saved = await post("/api/platforms/" + encodeURIComponent(platformId) + "/destination", { board_id: selectedId });
+          toast("Доска подключена: " + (saved.destination?.name || selectedId), "ok");
+          await refresh();
+        } catch (error) {
+          toast("Не удалось выбрать доску: " + (error?.message || error), "err");
+        } finally {
+          save.disabled = false;
+        }
+      });
+    } catch (error) {
+      root.innerHTML = '<p class="platform-destination-note is-error">' + esc(error?.message || error) + '</p>';
+      toast("Не удалось получить список назначений: " + (error?.message || error), "err");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = previousText;
+      }
+    }
   }
 
   async function openPlatformAuthorization(platformId, forceCredentials = false) {
@@ -1035,14 +1095,13 @@
     if (auth.method === "oauth" && platformId === "pinterest" && !forceCredentials) {
       const appId = (auth.fields || []).find((field) => field.key === "PINTEREST_APP_ID");
       const appSecret = (auth.fields || []).find((field) => field.key === "PINTEREST_APP_SECRET");
-      const boardId = (auth.fields || []).find((field) => field.key === "PINTEREST_BOARD_ID");
-      if (!appId?.has_value || !appSecret?.has_value || !boardId?.has_value) {
-        toast("Сначала сохрани Pinterest App ID, App Secret и ID доски.", "err");
+      if (!appId?.has_value || !appSecret?.has_value) {
+        toast("Сначала сохрани Pinterest App ID и App Secret. Доску ферма найдёт сама после OAuth.", "err");
         return;
       }
       const callbackUri = window.location.origin.replace(/\/$/, "") + "/api/platforms/pinterest/auth/callback";
       const proceed = window.confirm(
-        "В Pinterest Developer Portal добавь этот Redirect URI и включи разрешения boards:read, pins:read и pins:write. TgFarm проверит доступ к выбранной доске и сможет создавать image Pins.\n\n"
+        "В Pinterest Developer Portal добавь этот Redirect URI и включи разрешения boards:read, pins:read и pins:write. После входа TgFarm покажет все доступные доски, чтобы ты выбрал нужную.\n\n"
         + callbackUri + "\n\nПродолжить официальный Pinterest OAuth?",
       );
       if (!proceed) return;
@@ -3293,6 +3352,11 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const destinationLookup = event.target.closest("[data-platform-destinations]");
+    if (destinationLookup) {
+      await discoverPlatformDestinations(destinationLookup.dataset.platformDestinations, destinationLookup);
+      return;
+    }
     const authConfig = event.target.closest("[data-platform-auth-config]");
     if (authConfig) {
       await openPlatformAuthorization(authConfig.dataset.platformAuthConfig, true);
