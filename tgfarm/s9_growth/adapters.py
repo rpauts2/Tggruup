@@ -216,20 +216,39 @@ class MaxAdapter:
         payload = _clip(payload, self.max_title, self.max_body)
         import httpx
 
-        url = f"https://botapi.max.ru/bot{token}/sendMessage"
+        url = "https://platform-api2.max.ru/messages"
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(
+                timeout=25.0,
+                follow_redirects=False,
+                headers={"Authorization": token, "Accept": "application/json"},
+            ) as client:
                 resp = await client.post(
                     url,
+                    params={"chat_id": str(channel)},
                     json={
-                        "chat_id": channel,
                         "text": f"{payload.title}\n\n{payload.text}",
-                        "link_preview_options": {"is_disabled": False},
+                        "disable_link_preview": False,
                     },
                 )
                 resp.raise_for_status()
-            message_id = str(resp.json().get("message_id", ""))
-            return CrosspostResult(platform=self.platform, status="posted", remote_id=message_id)
+            body = resp.json()
+            message = body.get("message") if isinstance(body, dict) else {}
+            message = message if isinstance(message, dict) else {}
+            message_body = message.get("body") if isinstance(message.get("body"), dict) else {}
+            message_id = str(
+                message_body.get("mid")
+                or message.get("mid")
+                or message.get("message_id")
+                or body.get("message_id")
+                or ""
+            )
+            return CrosspostResult(
+                platform=self.platform,
+                status="posted",
+                remote_id=message_id or None,
+                url=str(message.get("url") or "") or None,
+            )
         except Exception as exc:  # noqa: BLE001
             status = crosspost_error_status(exc)
             log.warning("max crosspost %s: %s", status, redact_sensitive_text(exc, limit=180))
