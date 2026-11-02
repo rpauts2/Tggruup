@@ -207,11 +207,13 @@ class MaxAdapter:
         return settings.max_access_token, settings.max_channel_id
 
     def configured(self) -> bool:
-        return all(self._credentials())
+        settings = get_settings()
+        token, channel = self._credentials()
+        return bool(token and channel and not settings.max_channel_blocked)
 
     async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
         token, channel = self._credentials()
-        if not (token and channel):
+        if not self.configured():
             return CrosspostResult(platform=self.platform, status="skipped")
         payload = _clip(payload, self.max_title, self.max_body)
         import httpx
