@@ -157,6 +157,26 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
             "практика и карьера": ("проект", "опыт", "карьер", "управлен", "продукт", "процесс"),
         },
     },
+    "tiktok": {
+        "daily": 1, "max_daily": 1, "min_gap_hours": 24,
+        "age_days": 5, "broad": False,
+        "topics": {
+            "короткие объяснения": ("почему", "как", "объясн", "разбор", "совет", "инструкц"),
+            "технологии и AI": ("технолог", "ai", "нейросет", "робот", "программ", "гаджет"),
+            "истории и визуальные идеи": ("истор", "культур", "искусств", "дизайн", "путешеств"),
+        },
+        "requires_video": True,
+    },
+    "douyin": {
+        "daily": 1, "max_daily": 1, "min_gap_hours": 24,
+        "age_days": 5, "broad": False,
+        "topics": {
+            "локальные видеообъяснения": ("почему", "как", "объясн", "истор", "инструкц", "совет"),
+            "технологии и открытия": ("технолог", "ai", "нейросет", "робот", "наук", "открыт"),
+            "культура и визуальные истории": ("культур", "истор", "искусств", "дизайн", "путешеств"),
+        },
+        "requires_video": True,
+    },
     "tumblr": {
         "daily": 1, "max_daily": 2, "min_gap_hours": 12,
         "age_days": 10, "broad": False,
@@ -504,6 +524,20 @@ def _build_primary_platform_plan(
     return result
 
 
+def _route_delivery_candidates(
+    automation: str,
+    candidates: list[dict[str, Any]],
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep per-post-consent destinations out of the unattended queue."""
+    count = max(0, int(limit))
+    if automation == "automatic":
+        return candidates[:count], []
+    if automation == "manual":
+        return [], candidates[:count]
+    return [], []
+
+
 def build_distribution_plan(
     *,
     now: datetime | None = None,
@@ -634,8 +668,20 @@ def build_distribution_plan(
         elif not allowed_now:
             reason = f"Пауза между публикациями до {next_allowed.isoformat(timespec='minutes')}."
         eligible: list[dict[str, Any]] = []
-        if enabled and automation == "automatic" and configured and not auto_primary:
-            if settings.mode != "off" and not settings.approval_required and remaining and allowed_now:
+        can_prepare = (
+            enabled
+            and automation in {"automatic", "manual"}
+            and configured
+            and not auto_primary
+        )
+        if can_prepare:
+            may_show_candidates = (
+                settings.mode != "off"
+                and remaining
+                and allowed_now
+                and (automation == "manual" or not settings.approval_required)
+            )
+            if may_show_candidates:
                 recent_texts = [
                     f"{post.hook}\n{post.body}"
                     for post, _channel in candidates
@@ -725,9 +771,14 @@ def build_distribution_plan(
                     })
         eligible.sort(key=lambda item: (-item["score"], item["post_public_id"]))
         limit = min(remaining, max(0, int(max_selected_per_platform)))
-        selected = eligible[:limit]
+        selected, manual_suggestions = _route_delivery_candidates(automation, eligible, limit)
         if selected:
-            reason = f"Подобраны {len(selected)} подходящих материала(ов); лимит {cap}/24 ч."
+            reason = f"Подобраны {len(selected)} подходящих материалов; лимит {cap}/24 ч."
+        elif manual_suggestions:
+            reason = (
+                f"Подобраны {len(manual_suggestions)} материала для ручной подготовки. "
+                "Фоновая отправка отключена; каждый ролик требует отдельного подтверждения."
+            )
         elif not reason:
             reason = "Пока нет свежих материалов, подходящих аудитории этой площадки."
         selected_by_platform[platform_id] = selected
@@ -743,7 +794,9 @@ def build_distribution_plan(
             "min_gap_hours": int(rule["min_gap_hours"]),
             "next_allowed_at": next_allowed.isoformat(timespec="minutes") if next_allowed > current else None,
             "selected": selected,
-            "eligible_count": len(eligible),
+            "manual_suggestions": manual_suggestions,
+            "eligible_count": len(eligible) if automation == "automatic" else 0,
+            "manual_candidate_count": len(manual_suggestions),
             "reason": reason,
             "detail": detail,
             "topics": list(rule["topics"]),
