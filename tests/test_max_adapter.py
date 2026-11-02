@@ -21,6 +21,12 @@ class FakeMAXResponse:
 class FakeMAXClient:
     calls = []
     init_kwargs = {}
+    response_payload = {
+        "message": {
+            "body": {"mid": "max-message-77"},
+            "recipient": {"chat_id": 10001},
+        }
+    }
 
     def __init__(self, *args, **kwargs):
         self.__class__.init_kwargs = kwargs
@@ -33,12 +39,7 @@ class FakeMAXClient:
 
     async def post(self, url, **kwargs):
         self.__class__.calls.append((url, kwargs))
-        return FakeMAXResponse({
-            "message": {
-                "body": {"mid": "max-message-77"},
-                "recipient": {"chat_id": 10001},
-            }
-        })
+        return FakeMAXResponse(self.__class__.response_payload)
 
 
 def _payload():
@@ -96,3 +97,41 @@ async def test_max_adapter_refuses_to_publish_after_target_permission_revocation
 
     assert result.status == "skipped"
     assert FakeMAXClient.calls == []
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_does_not_claim_posted_without_message_id(monkeypatch):
+    from tgfarm.s9_growth import adapters
+
+    FakeMAXClient.calls = []
+    FakeMAXClient.response_payload = {"message": {"body": {"text": "sent"}}}
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=False,
+    ))
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+
+    result = await adapters.MaxAdapter().publish(_payload())
+
+    assert result.status == "unknown"
+    assert not result.remote_id
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_treats_explicit_provider_rejection_as_permanent(monkeypatch):
+    from tgfarm.s9_growth import adapters
+
+    FakeMAXClient.calls = []
+    FakeMAXClient.response_payload = {"success": False, "message": "permission denied"}
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=False,
+    ))
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+
+    result = await adapters.MaxAdapter().publish(_payload())
+
+    assert result.status == "permanent"
+    assert "rejected" in (result.error or "").lower()
