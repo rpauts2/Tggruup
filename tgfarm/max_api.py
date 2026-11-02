@@ -175,6 +175,50 @@ async def _json_request(
     return payload
 
 
+async def list_max_webhook_subscriptions(token: str) -> list[dict[str, object]]:
+    """Read currently active subscriptions without returning their secrets."""
+    value = str(token or "").strip()
+    if not value:
+        raise ValueError("Введи MAX_ACCESS_TOKEN.")
+    headers = {"Authorization": value, "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=False, headers=headers) as client:
+        payload = await _json_request(client, "GET", "/subscriptions")
+    rows = payload.get("subscriptions") or []
+    if not isinstance(rows, list):
+        raise RuntimeError("MAX вернул неожиданный список webhook-подписок.")
+    result: list[dict[str, object]] = []
+    for row in rows[:100]:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        result.append({
+            "url": url[:500],
+            "time": int(row.get("time") or 0),
+            "update_types": sorted({
+                str(item).strip()
+                for item in (row.get("update_types") or [])
+                if isinstance(item, str)
+            }),
+        })
+    return result
+
+
+async def max_webhook_subscription_active(
+    token: str,
+    webhook_url: str,
+    required_events: tuple[str, ...] = WEBHOOK_EVENTS,
+) -> bool:
+    """Confirm that the exact configured webhook and required lifecycle events are live."""
+    rows = await list_max_webhook_subscriptions(token)
+    wanted = set(required_events)
+    return any(
+        row["url"] == webhook_url and wanted.issubset(set(row.get("update_types") or []))
+        for row in rows
+    )
+
+
 async def register_max_webhook(
     token: str,
     webhook_url: str,
@@ -215,12 +259,21 @@ async def register_max_webhook(
                 "secret": secret,
             },
         )
+    if result.get("success") is False:
+        raise RuntimeError("MAX не подтвердил создание webhook-подписки.")
+    active = await max_webhook_subscription_active(token, url)
+    if not active:
+        raise RuntimeError(
+            "MAX ответил на создание подписки, но GET /subscriptions не подтвердил активный webhook "
+            "с нужными событиями."
+        )
     return {
         "url": url,
         "events": list(WEBHOOK_EVENTS),
         "bot_name": str(bot.get("name") or bot.get("username") or "MAX bot")[:160],
         "bot_id": str(bot.get("user_id") or bot.get("id") or "")[:40],
-        "success": result.get("success") is not False,
+        "success": True,
+        "webhook_registered": True,
     }
 
 
@@ -272,6 +325,8 @@ __all__ = [
     "build_max_webhook_url",
     "parse_max_discovered_chats",
     "register_max_webhook",
+    "list_max_webhook_subscriptions",
+    "max_webhook_subscription_active",
     "select_max_chat",
     "verify_max_webhook_secret",
 ]
