@@ -709,6 +709,9 @@
     if (crosspostRoot) {
       crosspostRoot.innerHTML = destinations.map((item) => {
         const selected = item.selected || [];
+        const manualSuggestions = item.manual_suggestions || [];
+        const recommendations = selected.length ? selected : manualSuggestions;
+        const manualOnly = item.automation === "manual";
         const cap = Math.max(0, Number(item.daily_cap || 0));
         const sent = Math.max(0, Number(item.daily_sent || 0));
         const remaining = Math.max(0, Number(item.remaining || 0));
@@ -719,11 +722,12 @@
           : !item.configured ? "Нужен вход"
           : mode === "off" ? "Автопилот остановлен"
           : "Автоподбор включён";
-        const picks = selected.length ? selected.map((post) => `
+        const picks = recommendations.length ? recommendations.map((post) => `
           <div class="distribution-pick">
             <strong>${esc(post.title || post.post_public_id)}</strong>
             <span>${esc(post.topic || "подходящая тема")} · совпадение ${Math.round(Number(post.score || 0) * 100)}%</span>
             <small>Формат: ${esc(post.native_format_label || post.native_format || "уточняется")}${post.render_on_demand ? " · видео будет создано в S9" : ""}</small>
+            ${manualOnly ? "<small>Только рекомендация для ручной подготовки. Фоновая отправка отключена.</small>" : ""}
             <small>${esc(post.reason || "")}</small>
           </div>`).join("") : `<div class="distribution-no-pick">${esc(item.reason || "На этот тик подходящих материалов нет.")}</div>`;
         const topics = (item.topics || []).slice(0, 4).map(esc).join(" · ");
