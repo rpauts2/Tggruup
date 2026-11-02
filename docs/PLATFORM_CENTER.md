@@ -28,7 +28,7 @@ Pinterest и Facebook больше не требуют заранее угады
 
 ## Авторизация: API и браузер — разные уровни
 
-- VK использует отдельное VKHost OAuth-окно, захватывает только официальный OAuth redirect, валидирует токен read-only запросом и сохраняет его локально.
+- VK использует отдельное VKHost OAuth-окно, захватывает только официальный OAuth redirect и сохраняет токен локально. После входа TgFarm получает через `groups.get` список сообществ с ролью администратора/редактора. Выбранное сообщество повторно проверяется перед сохранением ID; publisher отправляет `wall.post` на отрицательный `owner_id`, как требует стена сообщества.
 - Дзен открывает отдельный persistent Chrome/Chromium profile. Вход выполняется владельцем; Yandex cookies остаются внутри локального браузерного профиля. При публикации DzenWebPublisher проверяет живую сессию. CAPTCHA не решается и не обходится: процесс останавливается для ручного действия.
 - OAuth площадок (X, Reddit, Instagram, Threads, Facebook, LinkedIn, YouTube, TikTok, Pinterest, Mastodon, Tumblr, Douyin) использует отдельные callback/state/PKCE или provider flow. Внешние App ID/Secret и redirect URI всё равно должны быть созданы и настроены владельцем в кабинете площадки.
 - MAX, Discord, Bluesky и OK используют типы credentials, предусмотренные их текущими адаптерами.
