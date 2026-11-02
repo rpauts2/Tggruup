@@ -178,7 +178,7 @@ def _pikabu_risks(
         and any(word in combined_policy for word in ("запрещ", "не допуска", "не разреш"))
     )
     if any(phrase in combined_policy for phrase in advertising_bans) or explicit_promotion_ban or explicit_advertising_ban:
-        blockers.append("Общий Кодекс Пикабу или правила сообщества запрещают рекламу и самопродвижение.")
+        blockers.append("Общий Кодекс Пикабу или правила сообщества содержат запрет рекламы и самопродвижения.")
     elif any(word in combined_policy for word in ("самореклам", "реклама", "продвижение", "промо")):
         warnings.append("В правилах есть требования к рекламе или самопродвижению; проверь соответствие.")
     ai_bans = (
