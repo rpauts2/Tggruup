@@ -32,6 +32,78 @@ async def _response_json(
     raise RuntimeError("Площадка вернула неожиданный формат ответа.")
 
 
+async def list_vk_groups() -> list[dict[str, object]]:
+    """List communities the current VK account can administer or edit.
+
+    OAuth tokens are used only on the server; the returned rows contain public
+    destination metadata and the role needed to explain why a group is eligible.
+    """
+    settings = get_settings()
+    token = str(settings.vk_access_token or "").strip()
+    if not token:
+        raise RuntimeError("Сначала подключи VK через официальное OAuth-окно.")
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        payload = await _response_json(
+            client,
+            "https://api.vk.com/method/groups.get",
+            params={
+                "access_token": token,
+                "filter": "admin,editor",
+                "extended": "1",
+                "fields": "is_admin,is_editor",
+                "count": "1000",
+                "v": "5.199",
+            },
+        )
+    if payload.get("error"):
+        error = payload.get("error") or {}
+        code = error.get("error_code") if isinstance(error, dict) else None
+        raise RuntimeError(
+            "VK не разрешил получить список управляемых сообществ."
+            + (f" Код API: {code}." if code else "")
+        )
+    response = payload.get("response") or {}
+    items = response.get("items") or [] if isinstance(response, dict) else []
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        group_id = str(item.get("id") or "").strip()
+        if not group_id.isdigit():
+            continue
+        is_admin = bool(item.get("is_admin"))
+        is_editor = bool(item.get("is_editor"))
+        if not (is_admin or is_editor):
+            continue
+        role = "admin" if is_admin else "editor"
+        result.append({
+            "id": group_id,
+            "name": str(item.get("name") or f"Сообщество {group_id}")[:160],
+            "screen_name": str(item.get("screen_name") or "")[:100],
+            "role": role,
+            "can_publish": True,
+        })
+    result.sort(key=lambda row: (row["role"] != "admin", str(row["name"]).casefold(), str(row["id"])))
+    return result[:1000]
+
+
+async def select_vk_group(group_id: str) -> dict[str, str]:
+    """Re-read VK's managed-community list before storing the destination."""
+    value = str(group_id or "").strip().lstrip("-")
+    if not value.isdigit():
+        raise ValueError("ID VK-сообщества должен быть числовым.")
+    groups = await list_vk_groups()
+    selected = next((item for item in groups if item["id"] == value), None)
+    if selected is None:
+        raise RuntimeError("VK не подтвердил административную или редакторскую роль в выбранном сообществе.")
+    return {
+        "id": str(selected["id"]),
+        "name": str(selected["name"]),
+        "role": str(selected["role"]),
+    }
+
+
 async def check_platform_auth(platform_id: str) -> dict[str, Any]:
     """Make one read-only provider request and remember only redacted results."""
     platform_id = str(platform_id or "").strip().lower()
