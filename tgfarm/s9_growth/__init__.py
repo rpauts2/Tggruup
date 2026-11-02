@@ -427,6 +427,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
         timer.items_in = sum(
             int(item.get("eligible_count") or 0)
             for item in plan.get("platforms", [])
+            if item.get("automation") == "automatic"
         )
         timer.items_out = posted
 
