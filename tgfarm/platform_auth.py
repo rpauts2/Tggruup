@@ -168,19 +168,21 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             channel_id = str(settings.max_channel_id or "").strip()
             if not token:
                 raise RuntimeError("Введи MAX_ACCESS_TOKEN.")
-            headers = {"Authorization": token}
-            async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            async with httpx.AsyncClient(timeout=15.0, headers={"Authorization": token}) as client:
                 bot = await _response_json(client, "https://platform-api2.max.ru/me")
-                account = str(bot.get("username") or bot.get("name") or bot.get("first_name") or bot.get("user_id") or "MAX bot")
-                if channel_id:
-                    await _response_json(
-                        client, f"https://platform-api2.max.ru/chats/{quote(channel_id, safe='')}"
-                    )
+            account = str(bot.get("username") or bot.get("name") or bot.get("first_name") or bot.get("user_id") or "MAX bot")
+            if not channel_id:
+                raise RuntimeError(
+                    "Токен MAX принят, но место публикации ещё не выбрано. "
+                    "Подключи webhook и выбери найденный чат или канал."
+                )
+            from tgfarm.max_api import select_max_chat
+
+            selected = await select_max_chat(token, channel_id)
+            account = str(selected.get("name") or account)
             authorized = True
             detail = (
-                "Токен принят; целевой чат/канал тоже найден."
-                if channel_id else
-                "Токен принят. Добавь ID целевого канала и проверь права бота."
+                "MAX подтвердил актуальный доступ бота и право write в выбранном чате/канале."
             )
         elif platform_id == "discord":
             webhook = str(settings.discord_webhook_url or "").strip()
