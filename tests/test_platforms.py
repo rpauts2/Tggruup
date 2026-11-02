@@ -598,3 +598,73 @@ def test_facebook_oauth_fields_mark_page_id_as_optional(tmp_path, monkeypatch):
     fields = {item["key"]: item for item in descriptor["fields"]}
     assert fields["FACEBOOK_PAGE_ID"]["secret"] is False
     assert "после входа" in fields["FACEBOOK_PAGE_ID"]["help"].lower()
+
+
+def test_destination_selection_revalidates_permissions_and_never_echoes_tokens(client, monkeypatch):
+    import tgfarm.api as api_module
+    import tgfarm.platforms as platform_module
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    saved = []
+    checks = []
+
+    async def inline_io(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def select_page(page_id):
+        assert page_id == "123456789012345"
+        return {
+            "id": page_id,
+            "name": "My Page",
+            "page_access_token": "facebook-page-secret",
+        }
+
+    async def select_board(board_id):
+        assert board_id == "board-123"
+        return {
+            "id": board_id,
+            "name": "My Board",
+            "privacy": "PUBLIC",
+            "url": "https://www.pinterest.com/pinner/my-board/",
+        }
+
+    def save_credentials(platform_id, values):
+        saved.append((platform_id, values))
+        return {}
+
+    def record_check(platform_id, ok, **kwargs):
+        checks.append((platform_id, ok, kwargs))
+        return {}
+
+    monkeypatch.setattr(api_module, "io", inline_io)
+    monkeypatch.setattr(api_module, "_operator", lambda *args, **kwargs: None)
+    monkeypatch.setattr(platform_module, "save_platform_credentials", save_credentials)
+    monkeypatch.setattr(platform_module, "record_auth_check", record_check)
+    monkeypatch.setattr("tgfarm.facebook_oauth.select_facebook_page", select_page)
+    monkeypatch.setattr("tgfarm.pinterest_oauth.select_pinterest_board", select_board)
+
+    headers = {HEADER: ensure_token()}
+    facebook = client.post(
+        "/api/platforms/facebook/destination",
+        json={"page_id": "123456789012345"},
+        headers=headers,
+    )
+    pinterest = client.post(
+        "/api/platforms/pinterest/destination",
+        json={"board_id": "board-123"},
+        headers=headers,
+    )
+
+    assert facebook.status_code == 200
+    assert facebook.json()["destination"] == {"id": "123456789012345", "name": "My Page"}
+    assert "facebook-page-secret" not in facebook.text
+    assert pinterest.status_code == 200
+    assert pinterest.json()["destination"]["id"] == "board-123"
+    assert "access_token" not in pinterest.text.lower()
+    assert saved[0][0] == "facebook"
+    assert saved[0][1]["FACEBOOK_PAGE_ACCESS_TOKEN"] == "facebook-page-secret"
+    assert saved[1] == ("pinterest", {"PINTEREST_BOARD_ID": "board-123"})
+    assert checks == [
+        ("facebook", True, {"account": "My Page", "detail": checks[0][2]["detail"]}),
+        ("pinterest", True, {"account": "My Board", "detail": checks[1][2]["detail"]}),
+    ]
