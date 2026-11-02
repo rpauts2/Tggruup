@@ -810,3 +810,16 @@ def test_vk_destination_api_revalidates_role_before_saving_group_id(client, monk
     assert "access_token" not in response.text
     assert saved == [("vk", {"VK_GROUP_ID": "101"})]
     assert checks[0][0:2] == ("vk", True)
+
+
+def test_max_chat_discovery_controls_are_available_in_dashboard(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    response = client.get("/ui/app.js", headers={HEADER: ensure_token()})
+    assert response.status_code == 200
+    source = response.text
+    assert 'data-platform-max-webhook' in source
+    assert 'data-platform-destinations="${esc(item.id)}"' in source
+    assert '"/api/platforms/max/webhook/register"' in source
+    assert '{ chat_id: selectedId }' in source
+    assert "TGFARM_PUBLIC_BASE_URL" in source
