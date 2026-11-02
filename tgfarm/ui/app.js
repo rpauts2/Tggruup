@@ -1043,7 +1043,7 @@
       const destinations = result.destinations || [];
       if (!destinations.length) {
         const note = isMax && !result.webhook_registered
-          ? "Сначала нажми «Подключить поиск чатов» и настрой публичный HTTPS webhook на порту 443."
+          ? (result.webhook_detail || "Сначала нажми «Подключить поиск чатов» и настрой публичный HTTPS webhook на порту 443.")
           : isMax
             ? "Подписка активна. Теперь добавь бота в свой MAX-канал или групповой чат и выдай ему право write. Через событие bot_added появится chat_id."
             : "API не вернул доступных " + noun + ". Проверь разрешения приложения и права аккаунта.";
