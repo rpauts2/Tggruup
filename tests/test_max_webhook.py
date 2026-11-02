@@ -5,6 +5,15 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture()
+def client():
+    from tgfarm.api import create_app
+
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1") as test_client:
+        yield test_client
 
 
 def test_max_webhook_url_requires_public_https_origin_on_443():
