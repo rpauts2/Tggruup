@@ -316,3 +316,25 @@ def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
     assert pinterest_video_with_cover["media_kind"] == "video"
     assert text_only_with_image["eligible"] is True
     assert text_only_with_image["media_kind"] == "text"
+
+
+def test_consent_gated_video_platforms_get_recommendations_but_never_auto_selections():
+    from tgfarm.distribution import (
+        MANUAL_ONLY,
+        PLATFORM_RULES,
+        _route_delivery_candidates,
+    )
+
+    candidate = {"post_public_id": "manual-video-1", "native_format": "vertical video"}
+    for platform_id in ("tiktok", "douyin"):
+        assert platform_id in MANUAL_ONLY
+        assert PLATFORM_RULES[platform_id]["requires_video"] is True
+        assert PLATFORM_RULES[platform_id]["topics"]
+        selected, suggestions = _route_delivery_candidates("manual", [candidate], 1)
+        assert selected == []
+        assert suggestions == [candidate]
+
+    automatic, suggestions = _route_delivery_candidates("automatic", [candidate], 1)
+    assert automatic == [candidate]
+    assert suggestions == []
+    assert _route_delivery_candidates("unavailable", [candidate], 1) == ([], [])
