@@ -2220,6 +2220,27 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "max",
                 {"MAX_DISCOVERED_CHATS": json.dumps(discovered, ensure_ascii=False, separators=(",", ":"))},
             )
+        event_type = str(update.get("update_type") or "")
+        selected_id = str(current.max_channel_id or "").strip()
+        event_chat_id = str(update.get("chat_id") or "").strip()
+        if selected_id and event_chat_id == selected_id and event_type in {"bot_removed", "bot_admin_permissions_changed"}:
+            await io(
+                save_credentials,
+                "max",
+                {"MAX_CHANNEL_BLOCKED": "true"},
+            )
+            from tgfarm.platforms import record_auth_check
+
+            await io(
+                record_auth_check,
+                "max",
+                False,
+                account=str(current.max_channel_name or ""),
+                detail=(
+                    "MAX сообщил об удалении бота или изменении его прав. "
+                    "Фоновая публикация заблокирована до повторной проверки write."
+                ),
+            )
         return {"ok": True}
 
     @app.get("/api/platforms/max/destinations")
@@ -2248,6 +2269,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                     "MAX_CHANNEL_ID": str(selected["id"]),
                     "MAX_CHANNEL_NAME": str(selected["name"]),
                     "MAX_CHANNEL_IS_CHANNEL": "true" if selected["is_channel"] else "false",
+                    "MAX_CHANNEL_BLOCKED": "false",
                 },
             )
             await io(
