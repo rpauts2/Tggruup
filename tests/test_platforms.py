@@ -536,9 +536,10 @@ def test_facebook_and_pinterest_destination_discovery_is_available_in_dashboard(
     assert response.status_code == 200
     source = response.text
     assert 'data-platform-destinations="${esc(item.id)}"' in source
-    assert '["pinterest", "facebook"].includes(item.id)' in source
+    assert '["pinterest", "facebook", "vk"].includes(item.id)' in source
     assert '{ page_id: selectedId }' in source
     assert '{ board_id: selectedId }' in source
+    assert '{ group_id: selectedId }' in source
     assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destinations"' in source
     assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destination"' in source
     assert "CREATE_CONTENT" in source
