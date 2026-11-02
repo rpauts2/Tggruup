@@ -833,7 +833,14 @@ def test_max_auth_form_exposes_public_webhook_origin_and_hides_internal_secrets(
     fields = {item["key"]: item for item in descriptor["fields"]}
 
     assert fields["TGFARM_PUBLIC_BASE_URL"]["secret"] is False
-    assert fields["TGFARM_PUBLIC_BASE_URL"]["attribute"] == "public_base_url"
+    assert fields["TGFARM_PUBLIC_BASE_URL"]["has_value"] is False
     assert "443" in fields["TGFARM_PUBLIC_BASE_URL"]["help"]
+    # Internal settings attributes are deliberately never exposed in API metadata.
+    spec = next(
+        item for item in platforms._AUTH_FIELDS["max"]
+        if item["key"] == "TGFARM_PUBLIC_BASE_URL"
+    )
+    assert spec["attribute"] == "public_base_url"
     assert "MAX_WEBHOOK_SECRET" not in fields
     assert "MAX_BOT_ID" not in fields
+    assert "attribute" not in fields["TGFARM_PUBLIC_BASE_URL"]
