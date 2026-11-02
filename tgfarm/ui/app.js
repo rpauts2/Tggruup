@@ -931,7 +931,7 @@
              ${item.id === "max" ? `<button type="button" class="btn btn-ghost btn-sm" data-platform-max-webhook ${!maxHasToken || busy ? "disabled" : ""}>Подключить поиск чатов</button>` : ""}
              <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}" ${item.id === "max" && !maxHasToken ? "disabled" : ""}>${item.id === "facebook" ? "Найти мои Pages" : item.id === "vk" ? "Найти мои сообщества" : item.id === "max" ? "Найти мои чаты" : "Найти мои доски"}</button>
              <div id="platform-destination-${esc(item.id)}"></div>
-             ${item.id === "max" ? "<small class='platform-destination-note'>Нужен публичный HTTPS-домен на 443. После подписки добавь бота в свой канал/чат и выдай право write.</small>" : ""}
+             ${item.id === "max" ? "<small class='platform-destination-note'>Укажи TGFARM_PUBLIC_BASE_URL=https://твой-домен на сервере. Нужен публичный HTTPS на 443. После подписки добавь бота в канал/чат и выдай право write.</small>" : ""}
            </div>`
         : "";
       const readyHint = supported
