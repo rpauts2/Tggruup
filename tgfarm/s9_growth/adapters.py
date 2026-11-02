@@ -232,8 +232,19 @@ class MaxAdapter:
                 )
                 resp.raise_for_status()
             body = resp.json()
-            message = body.get("message") if isinstance(body, dict) else {}
-            message = message if isinstance(message, dict) else {}
+            if not isinstance(body, dict):
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="unknown",
+                    error="MAX returned an unrecognized success response; verify the chat before retrying.",
+                )
+            if body.get("success") is False:
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="permanent",
+                    error="MAX explicitly rejected the message; review the bot permissions and message.",
+                )
+            message = body.get("message") if isinstance(body.get("message"), dict) else {}
             message_body = message.get("body") if isinstance(message.get("body"), dict) else {}
             message_id = str(
                 message_body.get("mid")
@@ -242,10 +253,19 @@ class MaxAdapter:
                 or body.get("message_id")
                 or ""
             )
+            if not message_id:
+                return CrosspostResult(
+                    platform=self.platform,
+                    status="unknown",
+                    error=(
+                        "MAX did not return a message ID. The result may be ambiguous; "
+                        "check the destination before authorizing a retry."
+                    ),
+                )
             return CrosspostResult(
                 platform=self.platform,
                 status="posted",
-                remote_id=message_id or None,
+                remote_id=message_id,
                 url=str(message.get("url") or "") or None,
             )
         except Exception as exc:  # noqa: BLE001
