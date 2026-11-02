@@ -66,6 +66,10 @@ async def test_max_adapter_uses_current_messages_endpoint_and_never_puts_token_i
         max_channel_id="10001",
         max_channel_blocked=False,
     ))
+    async def verify_permission(_token, _chat_id):
+        return {"id": "10001", "name": "News channel", "role": "admin"}
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", verify_permission)
     monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
 
     result = await adapters.MaxAdapter().publish(_payload())
@@ -135,3 +139,53 @@ async def test_max_adapter_treats_explicit_provider_rejection_as_permanent(monke
 
     assert result.status == "permanent"
     assert "rejected" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_refuses_to_send_when_write_permission_is_revoked(monkeypatch):
+    from tgfarm.s9_growth import adapters
+
+    FakeMAXClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=False,
+    ))
+
+    async def no_permission(_token, _chat_id):
+        raise RuntimeError("MAX permission denied")
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", no_permission)
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+
+    result = await adapters.MaxAdapter().publish(_payload())
+
+    assert result.status == "permanent"
+    assert "write permission" in (result.error or "").lower()
+    assert FakeMAXClient.calls == []
+
+
+@pytest.mark.asyncio
+async def test_max_adapter_caps_total_text_not_just_body(monkeypatch):
+    from tgfarm.s9_growth import adapters
+
+    FakeMAXClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        max_access_token="max-private-token",
+        max_channel_id="10001",
+        max_channel_blocked=False,
+    ))
+
+    async def verify_permission(_token, _chat_id):
+        return {"id": "10001", "name": "News channel", "role": "admin"}
+
+    monkeypatch.setattr("tgfarm.max_api.select_max_chat", verify_permission)
+    monkeypatch.setattr("httpx.AsyncClient", FakeMAXClient)
+    payload = _payload()
+    payload.title = "Title " * 100
+    payload.text = "Body " * 1000
+
+    result = await adapters.MaxAdapter().publish(payload)
+
+    assert result.status == "posted"
+    assert len(FakeMAXClient.calls[0][1]["json"]["text"]) <= 4000
