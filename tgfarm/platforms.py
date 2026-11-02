@@ -330,6 +330,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "MAX_CHANNEL_NAME", "attribute": "max_channel_name", "label": "Название места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_CHANNEL_IS_CHANNEL", "attribute": "max_channel_is_channel", "label": "Тип места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_CHANNEL_BLOCKED", "attribute": "max_channel_blocked", "label": "Блокировка места (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
+        {"key": "MAX_BOT_ID", "attribute": "max_bot_id", "label": "ID бота MAX (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_WEBHOOK_SECRET", "attribute": "max_webhook_secret", "label": "Webhook secret (служебное)", "secret": True, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_WEBHOOK_URL", "attribute": "max_webhook_url", "label": "Webhook URL (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
         {"key": "MAX_DISCOVERED_CHATS", "attribute": "max_discovered_chats", "label": "Найденные чаты (служебное)", "secret": False, "placeholder": "", "help": "", "hidden": True, "fingerprint": False},
