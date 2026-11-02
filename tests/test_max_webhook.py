@@ -381,6 +381,7 @@ def test_max_permission_change_blocks_the_current_target_until_reselected(client
         max_channel_id="10001",
         max_channel_name="News channel",
         max_channel_blocked=False,
+        max_bot_id="77",
     )
     saved = []
     checks = []
@@ -407,7 +408,7 @@ def test_max_permission_change_blocks_the_current_target_until_reselected(client
 
     response = client.post(
         "/api/platforms/max/webhook",
-        json={"update_type": "bot_admin_permissions_changed", "chat_id": 10001},
+        json={"update_type": "bot_admin_permissions_changed", "chat_id": 10001, "bot_id": 77},
         headers={"X-Max-Bot-Api-Secret": "max-hook-secret"},
     )
 
@@ -415,3 +416,47 @@ def test_max_permission_change_blocks_the_current_target_until_reselected(client
     assert state.max_channel_blocked is True
     assert ("max", {"MAX_CHANNEL_BLOCKED": "true"}) in saved
     assert checks[0][0:2] == ("max", False)
+
+
+def test_max_permission_change_for_another_bot_does_not_block_selected_target(client, monkeypatch):
+    import json
+    import tgfarm.api as api_module
+    import tgfarm.platforms as platform_module
+
+    state = SimpleNamespace(
+        max_webhook_secret="max-hook-secret",
+        max_discovered_chats=json.dumps([{
+            "id": "10001",
+            "name": "News channel",
+            "is_channel": True,
+            "needs_permission_check": False,
+        }]),
+        max_channel_id="10001",
+        max_channel_name="News channel",
+        max_channel_blocked=False,
+        max_bot_id="77",
+    )
+    saved = []
+
+    async def inline_io(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    def fake_save(platform_id, values):
+        saved.append((platform_id, values))
+        if "MAX_CHANNEL_BLOCKED" in values:
+            state.max_channel_blocked = values["MAX_CHANNEL_BLOCKED"] == "true"
+        return {}
+
+    monkeypatch.setattr(api_module, "get_settings", lambda: state)
+    monkeypatch.setattr(api_module, "io", inline_io)
+    monkeypatch.setattr(platform_module, "save_platform_credentials", fake_save)
+
+    response = client.post(
+        "/api/platforms/max/webhook",
+        json={"update_type": "bot_admin_permissions_changed", "chat_id": 10001, "bot_id": 88},
+        headers={"X-Max-Bot-Api-Secret": "max-hook-secret"},
+    )
+
+    assert response.status_code == 200
+    assert state.max_channel_blocked is False
+    assert not any("MAX_CHANNEL_BLOCKED" in values for _, values in saved)
