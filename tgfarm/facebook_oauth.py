@@ -227,14 +227,54 @@ async def complete_facebook_oauth(state: str, code: str) -> dict[str, str]:
 
 
 
-async def list_facebook_pages() -> list[dict[str, object]]:
-    """List Pages with publish permission; never return Page access tokens."""
+async def get_valid_facebook_user_token() -> str:
+    """Refresh the long-lived user token when close to expiry, also before a Page is selected."""
     from tgfarm.core.settings import get_settings
+    from tgfarm.platforms import save_platform_credentials
 
     settings = get_settings()
     user_token = str(settings.facebook_user_access_token or "").strip()
+    app_id = str(settings.facebook_app_id or "").strip()
+    app_secret = str(settings.facebook_app_secret or "").strip()
+    try:
+        expires_at = int(settings.facebook_user_token_expires_at or 0)
+    except (TypeError, ValueError):
+        expires_at = 0
+    now = int(time.time())
     if not user_token:
         raise RuntimeError("Сначала подключи Facebook через OAuth.")
+    if not expires_at or expires_at > now + 7 * 86400:
+        return user_token
+    if not app_id or not app_secret:
+        raise RuntimeError("Нужны Facebook App ID и App Secret для обновления пользовательского токена.")
+
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+        payload = await _get_json(client, TOKEN_URL, {
+            "grant_type": "fb_exchange_token",
+            "client_id": app_id,
+            "client_secret": app_secret,
+            "fb_exchange_token": user_token,
+        })
+    refreshed = str(payload.get("access_token") or "")
+    if not refreshed:
+        raise RuntimeError("Facebook не обновил long-lived user token.")
+    try:
+        expires_in = max(60, int(payload.get("expires_in") or 0))
+    except (TypeError, ValueError):
+        expires_in = 0
+    save_platform_credentials(
+        "facebook",
+        {
+            "FACEBOOK_USER_ACCESS_TOKEN": refreshed,
+            "FACEBOOK_USER_TOKEN_EXPIRES_AT": str(now + expires_in) if expires_in else "0",
+        },
+    )
+    return refreshed
+
+
+async def list_facebook_pages() -> list[dict[str, object]]:
+    """List Pages with publish permission; never return Page access tokens."""
+    user_token = await get_valid_facebook_user_token()
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
         rows = await _list_pages_with_tokens(client, user_token)
     result = []
@@ -254,12 +294,7 @@ async def list_facebook_pages() -> list[dict[str, object]]:
 
 async def select_facebook_page(page_id: str) -> dict[str, str]:
     """Verify the selected Page against the current owner's live permissions."""
-    from tgfarm.core.settings import get_settings
-
-    settings = get_settings()
-    user_token = str(settings.facebook_user_access_token or "").strip()
-    if not user_token:
-        raise RuntimeError("Facebook OAuth не подключён. Повтори вход.")
+    user_token = await get_valid_facebook_user_token()
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
         page = await _page_from_accounts(client, user_token, str(page_id or "").strip())
     return {
