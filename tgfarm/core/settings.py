@@ -275,6 +275,7 @@ class Settings(BaseSettings):
     max_channel_name: str = Field(default="", alias="MAX_CHANNEL_NAME")
     max_channel_is_channel: bool = Field(default=False, alias="MAX_CHANNEL_IS_CHANNEL")
     max_channel_blocked: bool = Field(default=False, alias="MAX_CHANNEL_BLOCKED")
+    max_bot_id: str = Field(default="", alias="MAX_BOT_ID")
     max_webhook_secret: str = Field(default="", alias="MAX_WEBHOOK_SECRET")
     max_webhook_url: str = Field(default="", alias="MAX_WEBHOOK_URL")
     max_discovered_chats: str = Field(default="[]", alias="MAX_DISCOVERED_CHATS")
