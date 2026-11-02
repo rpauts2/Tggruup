@@ -921,9 +921,9 @@
       const browserLoginButton = browserSession.available && !["dzen", "vk", "vc_ru", "pikabu"].includes(item.id)
         ? `<button type="button" class="btn btn-ghost btn-sm platform-browser-login" data-platform-browser-auth="${esc(item.id)}" ${busy ? "disabled" : ""}>Войти в браузере</button>`
         : "";
-      const destinationTools = ["pinterest", "facebook"].includes(item.id)
+      const destinationTools = ["pinterest", "facebook", "vk"].includes(item.id)
         ? `<div class="platform-destination-tools">
-             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}">${item.id === "facebook" ? "Найти мои Pages" : "Найти мои доски"}</button>
+             <button type="button" class="btn btn-ghost btn-sm" data-platform-destinations="${esc(item.id)}">${item.id === "facebook" ? "Найти мои Pages" : item.id === "vk" ? "Найти мои сообщества" : "Найти мои доски"}</button>
              <div id="platform-destination-${esc(item.id)}"></div>
            </div>`
         : "";
@@ -999,7 +999,8 @@
     const root = document.getElementById("platform-destination-" + platformId);
     if (!root) return;
     const isFacebook = platformId === "facebook";
-    const noun = isFacebook ? "страниц" : "досок";
+    const isVk = platformId === "vk";
+    const noun = isFacebook ? "страниц" : isVk ? "сообществ" : "досок";
     const previousText = button?.textContent || "";
     if (button) {
       button.disabled = true;
@@ -1015,7 +1016,7 @@
       }
       const selectId = "platform-destination-select-" + platformId;
       const options = destinations.map((item) => `
-        <option value="${esc(item.id)}">${esc(item.name)}${item.privacy ? " · " + esc(item.privacy) : ""}</option>
+        <option value="${esc(item.id)}">${esc(item.name)}${item.privacy ? " · " + esc(item.privacy) : item.role ? " · " + esc(item.role) : ""}</option>
       `).join("");
       root.innerHTML = `
         <label class="field platform-destination-field">
@@ -1030,13 +1031,17 @@
         const selectedId = document.getElementById(selectId)?.value || "";
         save.disabled = true;
         try {
-          const payload = isFacebook ? { page_id: selectedId } : { board_id: selectedId };
+          const payload = isFacebook
+            ? { page_id: selectedId }
+            : isVk
+              ? { group_id: selectedId }
+              : { board_id: selectedId };
           const saved = await post(
             "/api/platforms/" + encodeURIComponent(platformId) + "/destination",
             payload,
           );
           const name = saved.destination?.name || selectedId;
-          toast((isFacebook ? "Страница подключена: " : "Доска подключена: ") + name, "ok");
+          toast((isFacebook ? "Страница подключена: " : isVk ? "Сообщество VK подключено: " : "Доска подключена: ") + name, "ok");
           await refresh();
         } catch (error) {
           toast("Не удалось выбрать место: " + (error?.message || error), "err");
@@ -1472,7 +1477,7 @@
       const result = await post("/api/platforms/vk/auth/vkhost?timeout=420", {});
       toast(
         "VK подключён: " + (result.account || "аккаунт подтверждён")
-          + ". Теперь укажи ID сообщества в карточке VK.",
+          + ". Теперь нажми «Найти мои сообщества» в карточке VK и выбери нужное.",
         "ok",
       );
       await refresh();
