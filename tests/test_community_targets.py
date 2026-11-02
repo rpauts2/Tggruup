@@ -125,9 +125,9 @@ def test_pikabu_rule_blocker_prevents_a_recommendation_but_warnings_do_not():
     assert any("внешняя ссылка" in item.lower() for item in warning_only)
 
     _warnings, blockers = community_targets._pikabu_risks(
-        "Правила сообщества: реклама и самопродвижение запрещены.",
+        "Правила сообщества: публикуйте оригинальные материалы.",
         post,
-        "Общие правила Пикабу.",
+        "Общий Кодекс Пикабу: реклама и самопродвижение запрещены.",
     )
     assert blockers
     assert any("рекламы" in item.lower() or "самопродвижения" in item.lower() for item in blockers)
@@ -188,12 +188,11 @@ def test_vc_recommender_reads_current_topics_and_selects_best_description(monkey
         community_targets.recommend_community_target("vc_ru", "published_vc_test")
     )
 
-    assert result["selected"]["slug"] == "marketing"
-    assert result["selected"]["target_type"] == "topic"
-    assert result["selected"]["score"] >= community_targets.MIN_SCORE
-    assert result["selected"]["topic_rules_available"] is False
-    assert result["selected"]["global_rules_available"] is True
-    assert any("отдельные правила темы" in item.lower() for item in result["selected"]["risks"])
+    assert result["selected"] is None
+    assert result["candidates"][0]["recommended"] is False
+    assert result["candidates"][0]["topic_rules_available"] is False
+    assert result["candidates"][0]["global_rules_available"] is True
+    assert any("правила выбранной темы" in item.lower() for item in result["candidates"][0]["blockers"])
     assert "личный блог" in " ".join(result["general_notes"]).lower()
     assert result["auto_publish_supported"] is False
 
@@ -391,7 +390,7 @@ def test_vc_skips_topic_with_explicit_promotion_ban_and_selects_next_safe_match(
                 url,
                 title="Бизнес и продукты",
                 description="Бизнес, цифровые продукты и стратегии развития компаний.",
-                chunks=["О теме", "Обсуждения бизнеса и цифровых продуктов."],
+                chunks=["О теме", "Обсуждения бизнеса и цифровых продуктов.", "Правила темы", "Только практические материалы о бизнесе и продуктах."],
             )
         raise AssertionError(f"Unexpected URL: {url}")
 
@@ -417,3 +416,39 @@ def test_vc_skips_topic_with_explicit_promotion_ban_and_selects_next_safe_match(
     assert marketing["blockers"]
     assert result["selected"]["slug"] == "business"
     assert result["selected"]["recommended"] is True
+
+
+def test_vc_refuses_to_recommend_any_topic_without_topic_specific_rules(monkeypatch):
+    async def fake_fetch(url: str):
+        if url == community_targets.VC_DIRECTORY:
+            return _page(url, links=[("/technology", "Технологии")])
+        if url == community_targets.VC_RULES:
+            return _page(url, text="Общие правила vc.ru запрещают спам.")
+        return _page(
+            url,
+            title="Технологии",
+            description="Технологии, программирование и искусственный интеллект.",
+            chunks=["О теме", "Обсуждение технологий и программирования."],
+        )
+
+    post = {
+        "public_id": "published_vc_missing_topic_rules",
+        "title": "Технологии искусственного интеллекта",
+        "body": "Практический разбор технологий и программирования.",
+        "cta": "",
+        "sources": [],
+        "hashtags": [],
+        "media": [],
+    }
+    monkeypatch.setattr(community_targets, "_fetch", fake_fetch)
+    monkeypatch.setattr("tgfarm.community_drafts._load_post", lambda _post_id: post)
+
+    result = asyncio.run(
+        community_targets.recommend_community_target("vc_ru", "published_vc_missing_topic_rules")
+    )
+
+    assert result["selected"] is None
+    assert result["candidates"]
+    assert all(item["recommended"] is False for item in result["candidates"])
+    assert all(item["topic_rules_available"] is False for item in result["candidates"])
+    assert all(item["blockers"] for item in result["candidates"])
