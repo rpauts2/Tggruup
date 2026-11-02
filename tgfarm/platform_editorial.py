@@ -544,6 +544,7 @@ async def adapt_payload_with_ai(
     )
     response_provider = "offline"
     response_model = "none"
+    original_meta = dict(getattr(payload, "meta", None) or {})
     try:
         parsed, response = await get_llm().complete_json(
             system,
@@ -594,12 +595,29 @@ async def adapt_payload_with_ai(
             "model": response_model,
             "notes": [str(item)[:240] for item in (parsed.get("notes") or [])[:4]],
         }
-    except Exception:
-        await to_thread(
-            policy.finalize,
-            decision.usage_id,
-            provider=response_provider,
-            model=response_model,
-            used=False,
-        )
-        raise
+    except Exception as exc:
+        # A provider outage must not cancel the rest of the crosspost batch.
+        # Restore the deterministic source variant even if an error happened
+        # after the temporary AI result was assigned to the payload.
+        payload.title = title
+        payload.text = body
+        payload.meta = original_meta
+        try:
+            await to_thread(
+                policy.finalize,
+                decision.usage_id,
+                provider=response_provider,
+                model=response_model,
+                used=False,
+            )
+        except Exception:
+            pass
+        return {
+            "used_ai": False,
+            "status": "deterministic_fallback",
+            "reason": (
+                "AI-переписывание временно недоступно ("
+                + type(exc).__name__
+                + "); сохранена детерминированная версия."
+            ),
+        }
