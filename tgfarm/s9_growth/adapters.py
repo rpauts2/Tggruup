@@ -218,7 +218,7 @@ class MaxAdapter:
         payload = _clip(payload, self.max_title, self.max_body)
         # The API's 4,000-character limit applies to the complete message,
         # including the heading separator, not to the body alone.
-        from tgfarm.max_api import MaxPermissionError, MaxTemporaryError, select_max_chat
+        from tgfarm.max_api import MaxTemporaryError, select_max_chat
         from tgfarm.core.text import truncate
 
         try:
