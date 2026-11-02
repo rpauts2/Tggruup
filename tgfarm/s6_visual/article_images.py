@@ -360,15 +360,15 @@ def _load_posts(post_public_ids: list[str]) -> tuple[list[dict], dict[int, list[
         wanted = [
             post
             for post in posts
-            if with_inline.get(post.id, 0) < MAX_INLINE_IMAGES
-            and (persona := config.persona(post.channel_id)) is not None
+            if with_inline.get(post["id"], 0) < MAX_INLINE_IMAGES
+            and (persona := config.persona(post["channel_id"])) is not None
             and persona.platform == "dzen"
             and persona.enabled
         ]
         if not wanted:
             return [], {}
 
-        cluster_ids = {post.cluster_public_id for post in wanted if post.cluster_public_id}
+        cluster_ids = {post["cluster_public_id"] for post in wanted if post["cluster_public_id"]}
         clusters = {
             row.public_id: row.id
             for row in session.execute(
@@ -403,9 +403,9 @@ def _load_posts(post_public_ids: list[str]) -> tuple[list[dict], dict[int, list[
             [
                 {
                     "public_id": post.public_id,
-                    "channel_id": post.channel_id,
-                    "cluster_id": clusters.get(post.cluster_public_id),
-                    "inline_count": with_inline.get(post.id, 0),
+                    "channel_id": post["channel_id"],
+                    "cluster_id": clusters.get(post["cluster_public_id"]),
+                    "inline_count": with_inline.get(post["id"], 0),
                 }
                 for post in wanted
             ],
