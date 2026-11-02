@@ -527,3 +527,18 @@ def test_douyin_oauth_button_uses_official_oauth_start_route(client):
     assert '"/api/platforms/douyin/auth/callback"' in script.text
     assert "video.create" in script.text
     assert "window.location.assign(authorizeUrl)" in script.text
+
+
+def test_facebook_and_pinterest_destination_discovery_is_available_in_dashboard(client):
+    from tgfarm.core.apiauth import HEADER, ensure_token
+
+    response = client.get("/ui/app.js", headers={HEADER: ensure_token()})
+    assert response.status_code == 200
+    source = response.text
+    assert 'data-platform-destinations="\${esc(item.id)}"' in source
+    assert '["pinterest", "facebook"].includes(item.id)' in source
+    assert '{ page_id: selectedId }' in source
+    assert '{ board_id: selectedId }' in source
+    assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destinations"' in source
+    assert '"/api/platforms/" + encodeURIComponent(platformId) + "/destination"' in source
+    assert "CREATE_CONTENT" in source
