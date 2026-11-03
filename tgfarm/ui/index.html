@@ -85,6 +85,35 @@
       <div id="ai-usage-breakdown" class="kv"></div>
     </article>
 
+    <article class="card agent-benchmark-card">
+      <header class="card-head">
+        <h2>Редакционная команда: контроль качества</h2>
+        <span class="card-sub" id="agent-benchmark-meta">Эксперименты ещё не запускались</span>
+      </header>
+      <div class="agent-benchmark-body">
+        <div class="agent-benchmark-controls">
+          <label class="field">
+            <span>Готовый кластер для сравнения</span>
+            <select id="agent-benchmark-cluster" class="input" aria-label="Кластер для парного сравнения">
+              <option value="">Загружаю кластеры…</option>
+            </select>
+          </label>
+          <div class="agent-benchmark-actions">
+            <button type="button" class="btn btn-primary" id="agent-benchmark-run">Сравнить версии</button>
+            <button type="button" class="btn btn-ghost" id="agent-benchmark-refresh">Обновить отчёт</button>
+          </div>
+        </div>
+        <p class="agent-benchmark-note" id="agent-benchmark-note" role="status" aria-live="polite">
+          Один материал, один маршрут и одинаковые условия: обычный автор против автора со стратегом.
+          Черновики не сохраняются и не публикуются. Ориентир бюджета: до 13 онлайн-вызовов на пару.
+        </p>
+        <div id="agent-benchmark-summary" class="agent-benchmark-summary" aria-live="polite">
+          <div class="empty">Ожидаю данные экспериментов.</div>
+        </div>
+        <div id="agent-benchmark-history" class="agent-benchmark-history"></div>
+      </div>
+    </article>
+
     <div class="grid-2">
       <article class="card">
         <header class="card-head">

@@ -33,6 +33,8 @@
     tiktokBusy: false,
     tiktokResultStatus: "",
     shortVideoBusy: new Set(),
+    agentBenchmarkCluster: "",
+    agentBenchmarkBusy: false,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -452,6 +454,129 @@
     $("#ai-usage-breakdown").innerHTML =
       kv("Провайдеры", providerLine) + kv("Этапы", stageLine) +
       (stale ? kv("Требует внимания", `${n(stale)} резерв(ов) не завершены больше 15 минут. Проверь зависший процесс.`) : "");
+  }
+
+
+  function renderAgentBenchmark(data, trends = []) {
+    const select = $("#agent-benchmark-cluster");
+    const runButton = $("#agent-benchmark-run");
+    if (!select) return;
+    const ready = (trends || []).filter((item) => item.status === "ready" && item.id);
+    const selected = state.agentBenchmarkCluster || select.value;
+    select.innerHTML = ready.length
+      ? ready.map((item) => "<option value=\\"" + esc(item.id) + "\\">"
+          + esc(item.label || item.id) + " · " + esc(item.niche || "общая тема")
+          + " · " + n(item.items) + " источн.</option>").join("")
+      : '<option value="">Нет готовых кластеров</option>';
+    if (ready.some((item) => item.id === selected)) select.value = selected;
+    else if (ready.length) select.value = ready[0].id;
+    state.agentBenchmarkCluster = select.value || "";
+    if (runButton) runButton.disabled = state.agentBenchmarkBusy || !ready.length;
+
+    const valid = Number(data.valid_pairs) || 0;
+    const total = Number(data.pairs_total) || 0;
+    const labels = {
+      insufficient_sample: "Недостаточно пар для вывода",
+      positive_signal: "Положительный практический сигнал",
+      negative_signal: "Отрицательный практический сигнал",
+      inconclusive: "Результат неоднозначен",
+    };
+    const tone = data.conclusion === "positive_signal" ? "tag-ok"
+      : data.conclusion === "negative_signal" ? "tag-warn" : "";
+    const meta = $("#agent-benchmark-meta");
+    if (meta) meta.textContent = total
+      ? n(valid) + " валидных пар · " + n(total) + " запусков"
+      : "Эксперименты ещё не запускались";
+
+    const delta = typeof data.mean_quality_delta === "number" ? data.mean_quality_delta : NaN;
+    const factDelta = typeof data.mean_verified_claim_ratio_delta === "number"
+      ? data.mean_verified_claim_ratio_delta : NaN;
+    const signed = (value) => (value > 0 ? "+" : "") + (value * 100).toFixed(1) + " п.п.";
+    const summary = $("#agent-benchmark-summary");
+    if (summary) {
+      summary.innerHTML =
+        '<div class="agent-benchmark-status"><span class="tag ' + tone + '">'
+        + esc(labels[data.conclusion] || "Нет итогового сигнала")
+        + '</span><span class="card-sub">' + n(valid) + " / "
+        + n(data.minimum_pairs_for_signal || 10) + ' валидных пар для оценки</span></div>'
+        + '<div class="agent-benchmark-stats">'
+        + '<div><span>Победы стратега</span><strong>' + n(data.strategy_wins || 0) + '</strong></div>'
+        + '<div><span>Победы контроля</span><strong>' + n(data.control_wins || 0) + '</strong></div>'
+        + '<div><span>Ничьи</span><strong>' + n(data.ties || 0) + '</strong></div>'
+        + '<div><span>Разница оценок</span><strong>' + (Number.isFinite(delta) ? esc(signed(delta)) : "—") + '</strong></div>'
+        + '<div><span>Изменение фактологии</span><strong>' + (Number.isFinite(factDelta) ? esc(signed(factDelta)) : "—") + '</strong></div>'
+        + '</div><p class="agent-benchmark-disclaimer">Практический сигнал не является статистическим доказательством. Денежная стоимость и токены провайдера в текущем журнале недоступны.</p>';
+    }
+
+    const history = $("#agent-benchmark-history");
+    const recent = Array.isArray(data.recent_runs) ? data.recent_runs : [];
+    if (history) {
+      if (!recent.length) {
+        history.innerHTML = '<div class="empty">Здесь появится история парных сравнений.</div>';
+      } else {
+        const statusLabel = (item) => item.status === "completed"
+          ? (item.winner === "strategy" ? "стратег лучше" : item.winner === "control" ? "контроль лучше" : "ничья")
+          : item.status === "inconclusive" ? "недостаточно данных" : "ошибка запуска";
+        history.innerHTML = '<div class="agent-benchmark-history-title">Последние сравнения</div>'
+          + recent.slice(0, 5).map((item) => {
+            const runDelta = typeof item.quality_delta === "number" ? item.quality_delta : NaN;
+            const detail = [
+              item.channel_id,
+              item.angle,
+              item.format,
+              "вызовов: " + n((item.calls || {}).control || 0) + " + " + n((item.calls || {}).strategy || 0),
+            ].filter(Boolean).join(" · ");
+            return '<div class="agent-benchmark-run"><div class="agent-benchmark-run-main">'
+              + '<strong>' + esc(item.cluster_public_id || item.run_id || "эксперимент") + '</strong>'
+              + '<span>' + esc(statusLabel(item)) + '</span>'
+              + '<small>' + esc(detail) + '</small></div><div class="agent-benchmark-run-side">'
+              + '<b>' + (Number.isFinite(runDelta) ? esc(signed(runDelta)) : "—") + '</b>'
+              + '<small>' + esc(dt(item.started_at)) + '</small></div></div>';
+          }).join("");
+      }
+    }
+  }
+
+  async function refreshAgentBenchmark() {
+    try {
+      const [report, trends] = await Promise.all([
+        api("/api/agents/benchmark"),
+        api("/api/trends?limit=40"),
+      ]);
+      renderAgentBenchmark(report || {}, trends.trends || []);
+    } catch (error) {
+      const note = $("#agent-benchmark-note");
+      if (note) note.textContent = "Не удалось загрузить отчёт: " + error.message;
+    }
+  }
+
+  async function runAgentBenchmark() {
+    const cluster = $("#agent-benchmark-cluster")?.value || "";
+    if (!cluster || state.agentBenchmarkBusy) return;
+    const button = $("#agent-benchmark-run");
+    const note = $("#agent-benchmark-note");
+    state.agentBenchmarkBusy = true;
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-busy");
+    }
+    if (note) note.textContent = "Сравнение запущено. Две версии одного материала проходят одинаковые проверки; публикации не выполняются.";
+    try {
+      const result = await post("/api/agents/benchmark", { cluster_public_id: cluster });
+      if (result.status === "completed") toast("Парное сравнение завершено и сохранено.", "ok");
+      else if (result.status === "inconclusive") toast("Сравнение завершено, но данных недостаточно для честного вывода.", "warn");
+      else toast("Эксперимент не завершён: " + (result.failure_type || "ошибка"), "err");
+      await refreshAgentBenchmark();
+    } catch (error) {
+      if (note) note.textContent = error.message;
+      toast("Benchmark не запустился: " + error.message, "err");
+    } finally {
+      state.agentBenchmarkBusy = false;
+      if (button) {
+        button.classList.remove("is-busy");
+        button.disabled = !($("#agent-benchmark-cluster")?.value);
+      }
+    }
   }
 
   function renderPipeline(runs) {
@@ -2918,7 +3043,7 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage, distributionPlan] = await Promise.all([
+      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage, distributionPlan, agentBenchmark] = await Promise.all([
         api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
         api("/api/trends?limit=25"),
         api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
@@ -2926,7 +3051,7 @@
         api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
         api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
         api("/api/platforms"), api("/api/reddit/metrics"), api("/api/ai/usage?days=7"),
-        api("/api/distribution/plan"),
+        api("/api/distribution/plan"), api("/api/agents/benchmark"),
       ]);
 
       const mode = status.mode || "?";
@@ -2961,6 +3086,7 @@
       renderDistributionPlan(distributionPlan || {});
       renderRedditMetrics(redditMetrics || {});
       renderAIUsage(aiUsage || {});
+      renderAgentBenchmark(agentBenchmark || {}, trends.trends || []);
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -3423,6 +3549,14 @@
       $$("#post-filters button").forEach((x) => x.classList.toggle("is-active", x === b));
       refresh();
     }));
+
+  $("#agent-benchmark-cluster")?.addEventListener("change", (event) => {
+    state.agentBenchmarkCluster = event.target.value || "";
+    const button = $("#agent-benchmark-run");
+    if (button) button.disabled = !state.agentBenchmarkCluster || state.agentBenchmarkBusy;
+  });
+  $("#agent-benchmark-run")?.addEventListener("click", runAgentBenchmark);
+  $("#agent-benchmark-refresh")?.addEventListener("click", refreshAgentBenchmark);
 
   $("#reddit-scout-form")?.addEventListener("submit", (event) => {
     event.preventDefault();

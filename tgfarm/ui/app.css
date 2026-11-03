@@ -1579,3 +1579,120 @@ main {
 .platform-destination-note.is-error {
   color: #e7a2a2;
 }
+
+
+/* --------------------------------------------------------- agent benchmark */
+.agent-benchmark-body {
+  padding: 16px 18px 18px;
+}
+.agent-benchmark-controls {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+.agent-benchmark-controls .field {
+  margin: 0;
+  min-width: 0;
+}
+.agent-benchmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-benchmark-note {
+  margin-top: 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.agent-benchmark-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+.agent-benchmark-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 9px;
+}
+.agent-benchmark-stats > div {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255,255,255,.018);
+}
+.agent-benchmark-stats span,
+.agent-benchmark-stats strong {
+  display: block;
+}
+.agent-benchmark-stats span {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+.agent-benchmark-stats strong {
+  margin-top: 4px;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.agent-benchmark-disclaimer {
+  margin-top: 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.agent-benchmark-history {
+  margin-top: 14px;
+}
+.agent-benchmark-history-title {
+  margin-bottom: 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.agent-benchmark-run {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.agent-benchmark-run-main,
+.agent-benchmark-run-side {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.agent-benchmark-run-main strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.agent-benchmark-run-main span,
+.agent-benchmark-run-side b {
+  font-size: 11px;
+}
+.agent-benchmark-run-main small,
+.agent-benchmark-run-side small {
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+.agent-benchmark-run-side {
+  text-align: right;
+  flex: 0 0 auto;
+}
+@media (max-width: 650px) {
+  .agent-benchmark-controls {
+    grid-template-columns: 1fr;
+  }
+  .agent-benchmark-actions .btn {
+    flex: 1 1 auto;
+  }
+}
