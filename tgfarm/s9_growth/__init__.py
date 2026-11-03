@@ -421,7 +421,16 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 "reason": "Площадка использует отдельный workflow выбора цели или согласия.",
             }
         else:
-            adaptation = await adapt_payload_with_ai(payload, allow_ai=settings.live)
+            adaptation_result = await adapt_payload_with_ai(payload, allow_ai=settings.live)
+            adaptation = (
+                dict(adaptation_result)
+                if isinstance(adaptation_result, dict)
+                else {
+                    "status": "deterministic",
+                    "used_ai": False,
+                    "reason": "Нативный редактор не вернул результат; сохранена базовая адаптация.",
+                }
+            )
             adaptation_meta = (payload.meta or {}).get("editorial_adaptation") or {}
             adaptation = {
                 **adaptation,
