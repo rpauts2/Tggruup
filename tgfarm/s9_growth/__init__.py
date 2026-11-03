@@ -301,6 +301,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         )
         payload.meta = {
             **(payload.meta or {}),
+            "post_public_id": post.public_id,
             "editorial_plan": {
                 "format": native["format"],
                 "eligible": native["eligible"],
@@ -368,6 +369,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
     settings = get_settings()
     empty = {
         "posted": 0,
+        "scheduled": 0,
         "skipped": 0,
         "failed": 0,
         "permanent_failure": 0,
@@ -398,7 +400,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
             key=lambda entry: (-max(score for _name, score in entry[1]), entry[0]),
         )
         max_targets = max(0, int(limit))
-        posted = skipped = failed = permanent_failure = unknown = considered = 0
+        posted = scheduled = skipped = failed = permanent_failure = unknown = considered = 0
         sent_targets = 0
         for post_pk, targets in due:
             if sent_targets >= max_targets:
@@ -419,6 +421,8 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
             for result in outcomes:
                 if result.status == "posted":
                     posted += 1
+                elif result.status == "scheduled":
+                    scheduled += 1
                 elif result.status == "skipped":
                     skipped += 1
                 elif result.status == "failed":
@@ -433,12 +437,13 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
             for item in plan.get("platforms", [])
             if item.get("automation") == "automatic"
         )
-        timer.items_out = posted
+        timer.items_out = posted + scheduled
 
     log.info(
-        "s9 editorial distribution: selected=%d posted=%d skipped=%d failed=%d permanent=%d unknown=%d",
+        "s9 editorial distribution: selected=%d posted=%d scheduled=%d skipped=%d failed=%d permanent=%d unknown=%d",
         considered,
         posted,
+        scheduled,
         skipped,
         failed,
         permanent_failure,
@@ -446,6 +451,7 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
     )
     return {
         "posted": posted,
+        "scheduled": scheduled,
         "skipped": skipped,
         "failed": failed,
         "permanent_failure": permanent_failure,

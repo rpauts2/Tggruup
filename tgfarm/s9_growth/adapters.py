@@ -1856,7 +1856,65 @@ class DouyinAdapter:
         return CrosspostResult(platform=self.platform, status="skipped", error="Douyin video creation requires explicit preview and owner confirmation.")
 
 
+
+
+class PikabuAdapter:
+    """Schedule a native community post through the owner's verified browser session."""
+    platform = "pikabu"
+    max_title = 140
+    max_body = 100_000
+
+    def configured(self) -> bool:
+        try:
+            from tgfarm.browser_auth import browser_session_status
+            status = browser_session_status("pikabu")
+            return bool(status.get("verified") and status.get("profile_saved"))
+        except Exception:
+            return False
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        if not self.configured():
+            return CrosspostResult(platform=self.platform, status="skipped")
+        post_public_id = str((payload.meta or {}).get("post_public_id") or "").strip()
+        if not post_public_id:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="Pikabu delivery requires the saved TgFarm post identifier.",
+            )
+        try:
+            from tgfarm.community_drafts import CommunityDraftError, publish_pikabu_scheduled
+            outcome = await publish_pikabu_scheduled(
+                post_public_id, title=str(payload.title or ""), body=str(payload.text or "")
+            )
+        except CommunityDraftError as exc:
+            return CrosspostResult(
+                platform=self.platform, status="skipped",
+                error=redact_sensitive_text(exc, limit=280),
+                retry_after_seconds=6 * 60 * 60,
+            )
+        status = str(outcome.get("status") or "")
+        if status == "scheduled":
+            return CrosspostResult(
+                platform=self.platform, status="scheduled",
+                remote_id=post_public_id, url=outcome.get("url"),
+            )
+        if status == "unknown":
+            return CrosspostResult(
+                platform=self.platform, status="unknown",
+                remote_id=post_public_id, url=outcome.get("url"),
+                error=redact_sensitive_text(outcome.get("detail") or "Pikabu submit outcome is unknown.", limit=280),
+            )
+        return CrosspostResult(
+            platform=self.platform,
+            status="skipped" if status == "skipped" else "failed",
+            error=redact_sensitive_text(outcome.get("detail") or "Pikabu has no eligible automatic destination.", limit=280),
+            retry_after_seconds=6 * 60 * 60,
+        )
+
+
 ADAPTERS: dict[str, Adapter] = {
+    "pikabu": PikabuAdapter(),
     "douyin": DouyinAdapter(),
     "max": MaxAdapter(),
     "vk": VkAdapter(),
@@ -1976,7 +2034,7 @@ def already_done(post_public_id: str, platform: str) -> bool:
     row = latest_crosspost(post_public_id, platform)
     if row is None:
         return False
-    if row.status in {"posted", "unknown", "publishing", "permanent"}:
+    if row.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
         return True
     if row.status == "failed":
         if crosspost_retry_delay_min(row.attempt) is None:
@@ -2024,7 +2082,7 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
                 .limit(1)
                 .with_for_update()
             ).scalar_one_or_none()
-            if row and row.status in {"posted", "unknown", "publishing", "permanent"}:
+            if row and row.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
                 return None
             if row and row.status == "failed":
                 if crosspost_retry_delay_min(row.attempt) is None:
@@ -2123,6 +2181,7 @@ __all__ = [
     "CrosspostResult",
     "MAX_AUTOMATIC_CROSSPOST_ATTEMPTS",
     "RedditAdapter",
+    "PikabuAdapter",
     "crosspost_error_status",
     "crosspost_retry_delay_min",
 ]
