@@ -310,3 +310,71 @@ def test_scheduled_crosspost_is_terminal_and_not_retried(monkeypatch):
         lambda _post_id, _platform: SimpleNamespace(status="scheduled"),
     )
     assert adapters.already_done("post-scheduled", "pikabu") is True
+
+
+def test_wechat_crosspost_passes_selected_cover_image_to_official_account_adapter(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import platforms, s9_growth
+    from tgfarm.core.schemas import CrosspostResult
+
+    post = SimpleNamespace(
+        id=908,
+        public_id="wechat_cover_route_908",
+        hook="How an engineering team reduced deployment risk",
+        body="A detailed analysis of release engineering, testing and safer deployments.",
+        cta="",
+        hashtags=["engineering", "software"],
+        sources=[],
+    )
+    cover_path = "/tmp/tgfarm-wechat-cover.jpg"
+    monkeypatch.setattr(platforms, "is_platform_enabled", lambda name: name == "wechat")
+    monkeypatch.setattr(s9_growth, "get_settings", lambda: SimpleNamespace(live=True))
+    monkeypatch.setattr(s9_growth, "_load_post", lambda _post_id: post)
+    monkeypatch.setattr(s9_growth, "already_done", lambda _public_id, _platform: False)
+    monkeypatch.setattr(s9_growth, "begin_crosspost", lambda _public_id, _platform: 1)
+    monkeypatch.setattr(s9_growth, "primary_image_path", lambda _post_id: None)
+    monkeypatch.setattr(s9_growth, "primary_wechat_cover_path", lambda _post_id: cover_path)
+
+    async def no_ai_adaptation(_payload, *, allow_ai):
+        assert allow_ai is True
+
+    monkeypatch.setattr("tgfarm.platform_editorial.adapt_payload_with_ai", no_ai_adaptation)
+    adapter = s9_growth.ADAPTERS["wechat"]
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+    captured = []
+
+    async def publish(payload):
+        captured.append(payload)
+        return CrosspostResult(
+            platform="wechat",
+            status="posted",
+            remote_id="wechat-draft-908",
+            url="https://mp.weixin.qq.com/s/wechat-draft-908",
+        )
+
+    monkeypatch.setattr(adapter, "publish", publish)
+    monkeypatch.setattr(s9_growth, "log_result", lambda *_args, **_kwargs: None)
+
+    results = asyncio.run(s9_growth.crosspost_post(post.id, ["wechat"]))
+
+    assert [result.status for result in results] == ["posted"]
+    assert len(captured) == 1
+    assert captured[0].image_path == cover_path
+    assert captured[0].meta["image_path"] == cover_path
+
+
+def test_wechat_native_payload_respects_official_article_title_and_body_lengths():
+    from types import SimpleNamespace
+
+    from tgfarm.distribution import adapt_payload_for_platform
+
+    payload = SimpleNamespace(
+        title="標題" * 80,
+        text="內容" * 15_000,
+        link="",
+        hashtags=[],
+    )
+    adapted = adapt_payload_for_platform(payload, "wechat")
+    assert len(adapted.title) <= 64
+    assert len(adapted.text) <= 20_000

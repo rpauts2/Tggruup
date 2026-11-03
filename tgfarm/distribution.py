@@ -304,6 +304,7 @@ def _angle_fit(platform_id: str, angle: str) -> float:
         "mastodon": {"analysis": 1.0, "checklist": 0.95, "history": 0.8, "news": 0.7},
         "youtube": {"analysis": 0.95, "comparison": 1.0, "history": 0.95, "checklist": 0.9, "news": 0.7},
         "telegraph": {"analysis": 1.0, "history": 0.95, "comparison": 0.95, "checklist": 0.9, "why_it_matters": 0.9},
+        "wechat": {"analysis": 1.0, "comparison": 0.95, "checklist": 0.9, "why_it_matters": 0.9, "history": 0.85},
     }
     return preferences.get(platform_id, {}).get(angle, 0.72)
 
@@ -914,6 +915,9 @@ def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
     elif platform_id == "telegraph":
         payload.title = truncate(title, 256)
         # Keep a conservative character cap so Cyrillic and other multi-byte text fit.
+        payload.text = truncate(body, 20_000)
+    elif platform_id == "wechat":
+        payload.title = truncate(title, 64)
         payload.text = truncate(body, 20_000)
     return payload
 

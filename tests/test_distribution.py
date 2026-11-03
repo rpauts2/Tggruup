@@ -377,3 +377,13 @@ def test_telegraph_is_an_automatic_longform_destination_with_daily_budget():
     assert "telegraph" in AUTOMATIC_CROSSPOST_IDS
     assert PLATFORM_RULES["telegraph"]["daily"] == 2
     assert PLATFORM_RULES["telegraph"]["min_gap_hours"] == 8
+
+
+def test_wechat_is_a_media_gated_automatic_article_destination():
+    from tgfarm.distribution import PLATFORM_RULES
+    from tgfarm.platforms import AUTOMATIC_CROSSPOST_IDS
+
+    assert "wechat" in AUTOMATIC_CROSSPOST_IDS
+    assert PLATFORM_RULES["wechat"]["daily"] == 1
+    assert PLATFORM_RULES["wechat"]["min_gap_hours"] == 24
+    assert PLATFORM_RULES["wechat"]["requires_media"] is True
