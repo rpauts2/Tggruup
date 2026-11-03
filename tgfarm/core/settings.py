@@ -189,6 +189,8 @@ class Settings(BaseSettings):
     llm_critic_model: str = Field(default="", alias="LLM_CRITIC_MODEL")
     # Optional model override for the S4 editorial strategist; empty uses the default LLM chain.
     llm_strategist_model: str = Field(default="", alias="LLM_STRATEGIST_MODEL")
+    # Optional model override for S9 platform-native editing; empty uses the default LLM chain.
+    llm_platform_editor_model: str = Field(default="", alias="LLM_PLATFORM_EDITOR_MODEL")
 
     # --- LongCat (OpenAI-compatible) ----------------------------------------
     # The platform currently exposes only paid LongCat models, despite its

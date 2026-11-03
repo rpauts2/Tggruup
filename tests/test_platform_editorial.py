@@ -99,18 +99,28 @@ def test_preview_only_consent_format_can_be_ai_adapted_and_keeps_sources(monkeyp
     )
     monkeypatch.setattr(policy, "finalize", lambda *args, **kwargs: None)
 
+    calls = {}
+
     class FakeLLM:
         async def complete_json(self, *args, **kwargs):
+            calls["model"] = kwargs.get("model")
             return (
                 {"title": "Native video title", "body": "A short native caption.", "notes": []},
                 SimpleNamespace(provider="test-provider", model="test-model", latency_ms=12),
             )
 
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(llm_platform_editor_model="editor-model-v2"),
+    )
     monkeypatch.setattr("tgfarm.llm.client.get_llm", lambda: FakeLLM())
     result = asyncio.run(adapt_payload_with_ai(payload, allow_ai=True, preview_only=True))
 
     assert result["status"] == "ai_native"
     assert result["used_ai"] is True
+    assert calls["model"] == "editor-model-v2"
+    assert payload.meta["editorial_adaptation"]["model"] == "test-model"
+    assert payload.meta["editorial_adaptation"]["provider"] == "test-provider"
     assert payload.title == "Native video title"
     assert "https://example.org/source" in payload.text
     assert payload.meta["editorial_adaptation"]["status"] == "ai_native"
@@ -226,4 +236,56 @@ def test_native_rewrite_provider_failure_keeps_deterministic_payload(monkeypatch
     assert payload.title == "Original factual title"
     assert payload.text == "Original source-backed text. https://example.org/source"
     assert payload.meta == {"post_public_id": "published_ai_failure_123", "source_marker": "keep"}
+    assert finalized == [False]
+
+
+def test_native_rewrite_rejects_new_numbers_and_unapproved_urls(monkeypatch):
+    from tgfarm.llm import policy
+    from tgfarm.platform_editorial import adapt_payload_with_ai
+
+    payload = SimpleNamespace(
+        platform="bluesky",
+        title="Original source-backed title",
+        text="The source confirms a qualitative change. https://example.org/source",
+        image_path=None,
+        video_path=None,
+        link="https://example.org/source",
+        hashtags=[],
+        meta={"post_public_id": "native_guardrail_001"},
+    )
+    finalized = []
+    monkeypatch.setattr(policy, "should_use_ai", lambda *args, **kwargs: (True, "test"))
+    monkeypatch.setattr(
+        policy, "reserve",
+        lambda *args, **kwargs: SimpleNamespace(allowed=True, usage_id=789, reason="reserved"),
+    )
+    monkeypatch.setattr(
+        policy, "finalize",
+        lambda *args, **kwargs: finalized.append(kwargs.get("used")),
+    )
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(llm_platform_editor_model=""),
+    )
+
+    class InventingLLM:
+        async def complete_json(self, *args, **kwargs):
+            return (
+                {
+                    "title": "Updated title with 999 users",
+                    "body": "The change affects 999 users. https://unknown.example/new",
+                    "notes": [],
+                },
+                SimpleNamespace(provider="test-provider", model="editor-v1", latency_ms=8),
+            )
+
+    monkeypatch.setattr("tgfarm.llm.client.get_llm", lambda: InventingLLM())
+    result = asyncio.run(adapt_payload_with_ai(payload, allow_ai=True))
+
+    assert result["used_ai"] is False
+    assert result["status"] == "deterministic_guardrail"
+    assert "числовые значения" in result["reason"]
+    assert payload.title == "Original source-backed title"
+    assert "999" not in payload.text
+    assert payload.meta == {"post_public_id": "native_guardrail_001"}
     assert finalized == [False]
