@@ -15,7 +15,7 @@ from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 
 API_BASE = "https://api.weixin.qq.com"
-THUMB_MAX_BYTES = 64 * 1024
+THUMB_MAX_BYTES = 10 * 1024 * 1024
 
 
 class WeChatAPIError(RuntimeError):
@@ -130,7 +130,7 @@ class WeChatOfficialAccountAdapter:
             result = output.getvalue()
             if 0 < len(result) <= THUMB_MAX_BYTES:
                 return result
-        raise ValueError('Could not compress the WeChat thumbnail below 64 KB.')
+        raise ValueError('Could not compress the WeChat thumbnail below the 10 MB upload limit.')
 
     @staticmethod
     def _inline_text(value: str) -> str:
@@ -225,7 +225,7 @@ class WeChatOfficialAccountAdapter:
             try:
                 upload = await client.post(
                     f'{API_BASE}/cgi-bin/material/add_material',
-                    params={'access_token': token, 'type': 'thumb'},
+                    params={'access_token': token, 'type': 'image'},
                     files={'media': ('tgfarm-cover.jpg', thumb_bytes, 'image/jpeg')},
                 )
                 media = self._check_response(upload.json())
@@ -300,7 +300,7 @@ class WeChatOfficialAccountAdapter:
                     article_id = str(first.get('article_id') or publish_id)
                     article_url = str(first.get('article_url') or '').strip()
                     return CrosspostResult(platform=self.platform, status='posted', remote_id=article_id, url=article_url if article_url.startswith('https://') else None)
-                if publish_status in {2, 3, 4, 5, 6}:
+                if publish_status in {2, 3, 4, 6}:
                     return CrosspostResult(platform=self.platform, status='permanent', remote_id=publish_id, error=f'WeChat publish job ended with publish_status={publish_status}; inspect the Official Account publish center.')
             return CrosspostResult(platform=self.platform, status='scheduled', remote_id=publish_id, error='WeChat accepted the article; processing continues in the Official Account publish queue.')
 
