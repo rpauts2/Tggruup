@@ -230,9 +230,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "goal": "глубокая статья с ясным тезисом, структурой и источниками",
         "voice": "редакторский long-form, без дословного переноса чужих статей",
         "text_format": "статья с подзаголовками", "image_format": "статья с обложкой",
-        "video_format": None, "target_type": "publication_or_profile",
-        "target_selection": "личная публикация или publication только после проверки доступного редактора",
-        "rule_gate": "ручной редактор; не считать website login API publishing access",
+        "video_format": None, "target_type": "profile",
+        "target_selection": "аутентифицированный автор, определённый через /v1/me; publication endpoints не включены",
+        "rule_gate": "только ранее выданный legacy integration token; Medium больше не принимает новые API integrations",
         "max_chars": 100000, "hashtags": "до 5 topics",
     },
     "vc_ru": {
@@ -330,8 +330,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         "voice": "естественный китайский редакторский стиль; не машинный перевод без вычитки",
         "text_format": "локализованная статья", "image_format": "статья с изображениями",
         "video_format": "видео внутри статьи, если доступно", "target_type": "official_account",
-        "target_selection": "Official Account с соответствующей региональной регистрацией",
-        "rule_gate": "ручная локализация и проверка региональных правил/доступа",
+        "target_selection": "подключённый WeChat Official Account, подтверждённый API-вызовом",
+        "rule_gate": "freepublish permission, IP allowlist, региональные правила и китайская локализация; publish API не рассылает статью подписчикам",
         "max_chars": 20000, "hashtags": "нативные темы WeChat",
     },
     "douyin": {

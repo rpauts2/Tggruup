@@ -213,6 +213,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
             "наука и объяснения": ("наук", "исследован", "эксперимент", "объясн", "почему", "данн"),
         },
     },
+    "wechat": {
+        "daily": 1, "max_daily": 1, "min_gap_hours": 24,
+        "age_days": 5, "broad": False, "requires_media": True,
+        "topics": {
+            "технологии и AI": ("технолог", "ai", "нейросет", "программ", "робот"),
+            "наука и объяснения": ("наук", "исследован", "эксперимент", "объясн", "почему"),
+            "практические руководства": ("как", "инструкц", "совет", "разбор", "практик", "опыт"),
+        },
+    },
 }
 
 # These platforms may have a technical adapter but are not eligible for
@@ -749,6 +758,12 @@ def build_distribution_plan(
                     if platform_id == "youtube" and not any(m.kind == "video" for m in media_rows):
                         # S9 can render a short on demand for configured YouTube accounts.
                         pass
+                    if platform_id == "wechat" and not any(
+                        m.kind in {"image", "ai_art", "photo", "cover", "article_image"}
+                        for m in media_rows
+                    ):
+                        # Official Account article requires a real cover image.
+                        continue
                     if platform_id == "instagram" and not any(
                         m.kind == "video" or (m.is_primary and m.kind not in {"video", "article_image"})
                         for m in media_rows
