@@ -316,6 +316,7 @@ def test_wechat_crosspost_passes_selected_cover_image_to_official_account_adapte
     from types import SimpleNamespace
 
     from tgfarm import platforms, s9_growth
+    from tgfarm.s9_growth import adapters
     from tgfarm.core.schemas import CrosspostResult
 
     post = SimpleNamespace(
@@ -334,7 +335,7 @@ def test_wechat_crosspost_passes_selected_cover_image_to_official_account_adapte
     monkeypatch.setattr(s9_growth, "already_done", lambda _public_id, _platform: False)
     monkeypatch.setattr(s9_growth, "begin_crosspost", lambda _public_id, _platform: 1)
     monkeypatch.setattr(s9_growth, "primary_image_path", lambda _post_id: None)
-    monkeypatch.setattr(s9_growth, "primary_wechat_cover_path", lambda _post_id: cover_path)
+    monkeypatch.setattr(adapters, "primary_wechat_cover_path", lambda _post_id: cover_path)
 
     async def no_ai_adaptation(_payload, *, allow_ai):
         assert allow_ai is True

@@ -58,6 +58,7 @@ def build_telegraph_content(title: str, body: str) -> list[dict[str, Any]]:
     list_type: str | None = None
     list_items: list[dict[str, Any]] = []
     in_code = False
+    tick = chr(96)
     code_lines: list[str] = []
 
     def flush_paragraph() -> None:
