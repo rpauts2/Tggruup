@@ -2470,6 +2470,7 @@
         add("Причина fallback", role.reason);
         extra = agentList("План раскрытия", role.outline) + agentList("Обязательные оговорки", role.caveats);
       } else if (key === "platform_editor") {
+        const history = Array.isArray(role.history) ? role.history : [];
         add("Площадка", PLATFORM_RU[role.platform] || role.platform);
         add("Формат", role.format);
         add("Тип адресата", role.target_type);
@@ -2477,7 +2478,19 @@
         add("AI использован", role.used_ai ? "да" : "нет");
         add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
         add("Причина / результат", role.reason);
+        add("Записей в истории", history.length ? `${history.length} из 10 последних` : "1");
         add("Обновлено", dt(role.updated_at));
+        if (history.length > 1) {
+          extra = agentList(
+            "Последние решения",
+            history.slice(-5).reverse().map((item) => [
+              dt(item.updated_at),
+              agentStatuses[item.status] || item.status || "—",
+              item.model || item.provider || "",
+              item.reason || "",
+            ].filter(Boolean).join(" · "))
+          );
+        }
       } else if (key === "writer") {
         add("Провайдер", role.provider);
       } else if (key === "fact_checker") {

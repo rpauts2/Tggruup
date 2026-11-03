@@ -365,3 +365,59 @@ def test_platform_editor_trace_merges_with_existing_agent_team_and_keeps_metadat
         assert team["platform_edits"]["bluesky"]["model"] == "editor-model"
         assert team["platform_edits"]["threads"]["status"] == "special_workflow"
         assert "Содержимое поста" not in repr(team["platform_edits"])
+
+
+def test_platform_editor_trace_history_is_bounded_to_ten_per_platform(db):
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth import record_platform_editor_trace
+
+    with session_scope() as session:
+        session.merge(Channel(
+            id="platform_editor_trace_history_channel",
+            title="Platform editor history",
+            niche="technology",
+            platform="telegram",
+        ))
+        session.add(Post(
+            public_id="platform-editor-history-01",
+            channel_id="platform_editor_trace_history_channel",
+            hook="Native editor history",
+            body="The body remains outside the service trace.",
+            status="published",
+            quality={
+                "agent_team": {
+                    "version": 1,
+                    "roles": {"writer": {"status": "completed"}},
+                    "platform_edits": {
+                        "threads": {"status": "special_workflow", "history": []}
+                    },
+                }
+            },
+        ))
+
+    post_id = _post_id_for_trace("platform-editor-history-01")
+    for index in range(12):
+        assert record_platform_editor_trace(
+            post_id,
+            "bluesky",
+            {
+                "status": "ai_native" if index % 2 == 0 else "deterministic",
+                "used_ai": index % 2 == 0,
+                "model": f"editor-{index}",
+                "reason": f"revision {index}",
+            },
+            {"format": "Short post", "eligible": True, "target_type": "profile"},
+        )
+
+    with session_scope() as session:
+        row = session.query(Post).filter_by(public_id="platform-editor-history-01").one()
+        team = row.quality["agent_team"]
+        trace = team["platform_edits"]["bluesky"]
+        assert trace["status"] == "deterministic"
+        assert trace["model"] == "editor-11"
+        assert len(trace["history"]) == 10
+        assert trace["history"][0]["model"] == "editor-2"
+        assert trace["history"][-1]["model"] == "editor-11"
+        assert team["platform_edits"]["threads"]["status"] == "special_workflow"
+        assert team["roles"]["writer"]["status"] == "completed"

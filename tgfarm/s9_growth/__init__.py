@@ -201,6 +201,14 @@ def record_platform_editor_trace(
         quality = dict(post.quality or {})
         team = dict(quality.get("agent_team") or {})
         edits = dict(team.get("platform_edits") or {})
+        previous = edits.get(platform_id) if isinstance(edits.get(platform_id), dict) else {}
+        previous_history = previous.get("history") if isinstance(previous.get("history"), list) else []
+        history = [
+            item for item in previous_history[-9:]
+            if isinstance(item, dict)
+        ]
+        history.append(dict(event))
+        event["history"] = history[-10:]
         edits[platform_id] = event
         team["platform_edits"] = edits
         team.setdefault("version", 1)
