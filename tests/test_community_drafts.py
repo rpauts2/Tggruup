@@ -158,16 +158,7 @@ def test_pikabu_changed_material_cannot_duplicate_an_existing_scheduled_item(mon
     from types import SimpleNamespace
 
     from tgfarm import community_targets
-    from tgfarm.core.settings import get_settings as _get_settings
-    from tgfarm import core
-
     public_id = "pikabu_revision_123"
-    monkeypatch.setattr(
-        community_targets,
-        "recommend_automatic_pikabu_target",
-        lambda *_args, **_kwargs: None,
-    )
-
     async def selected_target(*_args, **_kwargs):
         return {
             "ok": True,
