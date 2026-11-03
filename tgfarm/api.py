@@ -2614,6 +2614,14 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.reddit_oauth import begin_reddit_oauth
 
         settings = get_settings()
+        if not bool(getattr(settings, "reddit_api_approved", False)):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Reddit Data API закрыт. Сначала получи явное одобрение Reddit "
+                    "для приложения и сценария использования, затем включи REDDIT_API_APPROVED."
+                ),
+            )
         redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/reddit/auth/callback"
         try:
             return await begin_reddit_oauth(
@@ -2648,6 +2656,16 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<h1>Reddit не подключён</h1><p>Авторизация отменена или ответ Reddit неполный. "
                 "<a href='/'>Вернись в TgFarm и повтори подключение.</a></p></body></html>",
                 status_code=400, headers=headers,
+            )
+        if not bool(getattr(get_settings(), "reddit_api_approved", False)):
+            cancel_reddit_oauth(state_value)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · Reddit</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Reddit не подключён</h1><p>Доступ к Reddit Data API не подтверждён. "
+                "Подключение остановлено до обращения к данным; получи одобрение Reddit "
+                "и включи REDDIT_API_APPROVED.</p><a href='/'>Вернуться в TgFarm</a></body></html>",
+                status_code=403, headers=headers,
             )
         try:
             credentials = await complete_reddit_oauth(state_value, code)

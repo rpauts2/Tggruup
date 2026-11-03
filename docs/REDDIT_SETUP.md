@@ -12,7 +12,7 @@
 
 Сохрани client ID (строка под названием приложения) и client secret. Redirect URI должен совпадать в приложении и OAuth-запросе посимвольно.
 
-По актуальной [Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy) Reddit требует получить явное одобрение до обращения к данным Reddit через API. Наличие client ID, client secret и OAuth refresh token само по себе не означает, что доступ одобрен. Не запускай поиск сообществ, чтение правил или отправку постов, пока Reddit не подтвердил право использовать API для твоего приложения и сценария. Не обходи лимиты, блокировки или ограничения.
+По актуальной [Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy) Reddit требует получить явное одобрение до обращения к данным Reddit через API. Наличие client ID, client secret и OAuth refresh token само по себе не означает, что доступ одобрен. После получения одобрения сначала сохрани REDDIT_API_APPROVED=true в настройках TgFarm, и только затем запускай OAuth. Поиск сообществ, чтение правил и отправка постов остаются закрыты без этого допуска. Не обходи лимиты, блокировки или ограничения.
 
 ## 2. Получи permanent refresh token
 
