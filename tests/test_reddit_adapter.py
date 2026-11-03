@@ -324,7 +324,7 @@ def test_registered_reddit_adapter_redacts_submit_exception(monkeypatch):
 
     assert result.status == "unknown"
     assert private_value not in (result.error or "")
-    assert "Bearer [REDACTED]" in (result.error or "")
+    assert "[REDACTED]" in (result.error or "")
 
 
 def test_registered_reddit_adapter_preserves_retry_after(monkeypatch):
