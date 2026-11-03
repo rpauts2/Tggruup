@@ -102,10 +102,13 @@ def _stage_used(usage: dict[str, Any], stage: str) -> bool:
 def _critic_measurement_complete(report: Any, usage: dict[str, Any]) -> bool:
     stages = usage.get("by_stage") or {}
     if bool(getattr(report, "passed", False)):
-        required = S5_STAGES
+        required = ("s5_tone", "s5_relevance", "s5_quality")
     else:
         failed_stage = FAILED_CRITIC_STAGE.get(str(getattr(report, "gate", "") or ""))
-        required = {failed_stage} if failed_stage else set()
+        order = ("s5_tone", "s5_relevance", "s5_quality")
+        if failed_stage not in order:
+            return False
+        required = order[: order.index(failed_stage) + 1]
     return all(int((stages.get(stage) or {}).get("used", 0)) > 0 for stage in required)
 
 
@@ -198,9 +201,44 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def aggregate_benchmarks(directory: Path | None = None) -> dict[str, Any]:
-    """Read local experiment artifacts and produce a conservative summary."""
+    """Read experiment summaries without exposing post text or local paths."""
     folder = directory or (DATA_DIR / "agent_benchmarks")
-    return summarize_records(_read_records(folder))
+    records = _read_records(folder)
+    summary = summarize_records(records)
+    recent: list[dict[str, Any]] = []
+    for row in sorted(records, key=lambda item: str(item.get("started_at") or ""), reverse=True)[:8]:
+        control = row.get("control") or {}
+        strategy = row.get("strategy") or {}
+        control_usage = row.get("control_usage") or {}
+        strategy_usage = row.get("strategy_usage") or {}
+        recent.append({
+            "run_id": str(row.get("run_id") or ""),
+            "status": str(row.get("status") or "unknown"),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "cluster_public_id": str(row.get("cluster_public_id") or ""),
+            "channel_id": str(row.get("channel_id") or ""),
+            "angle": str(row.get("angle") or ""),
+            "format": str(row.get("format") or ""),
+            "winner": str(row.get("winner") or ""),
+            "quality_delta": row.get("quality_delta"),
+            "control": {
+                "passed": control.get("passed"),
+                "quality_index": control.get("quality_index"),
+                "verified_ratio": control.get("verified_ratio"),
+            },
+            "strategy": {
+                "passed": strategy.get("passed"),
+                "quality_index": strategy.get("quality_index"),
+                "verified_ratio": strategy.get("verified_ratio"),
+            },
+            "calls": {
+                "control": int(control_usage.get("used") or 0),
+                "strategy": int(strategy_usage.get("used") or 0),
+            },
+            "inconclusive_reasons": list(row.get("inconclusive_reasons") or [])[:3],
+        })
+    return {**summary, "recent_runs": recent}
 
 
 async def run_paired_benchmark(
@@ -388,5 +426,5 @@ async def run_paired_benchmark(
             "failure_type": type(exc).__name__,
         })
     _write_record(artifact, record)
-    record["artifact"] = str(artifact)
+    record["artifact_id"] = run_id
     return record

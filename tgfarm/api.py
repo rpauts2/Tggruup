@@ -87,6 +87,11 @@ class PlatformPlanRequest(BaseModel):
     planned: bool
 
 
+class AgentBenchmarkRequest(BaseModel):
+    cluster_public_id: str = Field(min_length=3, max_length=40)
+    channel_id: str | None = Field(default=None, max_length=64)
+
+
 class PlatformCredentialsRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
@@ -4348,6 +4353,26 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.llm.policy import usage_report
 
         return await io(usage_report, days)
+
+    @app.get("/api/agents/benchmark")
+    async def agent_benchmark_report() -> dict:
+        """Return safe, local metadata for paired editorial-team experiments."""
+        from tgfarm.agents.benchmark import aggregate_benchmarks
+
+        return await io(aggregate_benchmarks)
+
+    @app.post("/api/agents/benchmark")
+    async def run_agent_benchmark(request: AgentBenchmarkRequest) -> dict:
+        """Run one paired, non-publishing writer/strategist comparison."""
+        from tgfarm.agents.benchmark import AgentBenchmarkError, run_paired_benchmark
+
+        try:
+            return await run_paired_benchmark(
+                request.cluster_public_id,
+                channel_id=request.channel_id,
+            )
+        except AgentBenchmarkError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/metrics")
     async def metrics() -> dict:
