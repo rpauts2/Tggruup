@@ -1823,3 +1823,30 @@ def test_no_publications_alert_prefers_last_success_after_farm_has_published():
     assert alert is not None
     assert alert["code"] == "no_publications"
     assert "последняя публикация 8.0 ч назад" in alert["message"]
+
+
+@pytest.mark.asyncio
+async def test_telegraph_metrics_tick_skips_cleanly_without_account_token(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import pipeline
+
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(online=True, telegraph_access_token=""),
+    )
+    result = await pipeline._telegraph_metrics_tick()
+    assert result["updated"] == 0
+    assert result["skipped_reason"] == "Telegraph token not configured"
+
+
+def test_scheduler_registers_automatic_telegraph_metrics_refresh():
+    from tgfarm import pipeline
+
+    scheduler = pipeline._build_scheduler()
+    try:
+        assert scheduler.get_job("telegraph-metrics").func is pipeline._telegraph_metrics_tick
+        assert scheduler.get_job("startup-telegraph-metrics").func is pipeline._telegraph_metrics_tick
+    finally:
+        scheduler.shutdown(wait=False) if scheduler.running else None

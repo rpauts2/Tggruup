@@ -1821,6 +1821,39 @@ async def _platform_auth_tick() -> dict:
     return report
 
 
+async def _telegraph_metrics_tick() -> dict:
+    """Collect page-view snapshots without publishing or modifying articles."""
+    settings = get_settings()
+    if not settings.online:
+        return {"updated": 0, "skipped": 0, "errors": 0, "skipped_reason": "mode=off"}
+    if not str(getattr(settings, "telegraph_access_token", "") or "").strip():
+        return {"updated": 0, "skipped": 0, "errors": 0, "skipped_reason": "Telegraph token not configured"}
+
+    run_id = f"telegraph-metrics-{uuid.uuid4().hex[:8]}"
+    try:
+        from tgfarm.s9_growth.telegraph_metrics import refresh_telegraph_metrics
+
+        result = await refresh_telegraph_metrics(limit=50)
+        updated = int(result.get("updated", 0))
+        skipped = int(result.get("skipped", 0))
+        errors = int(result.get("errors", 0))
+        await to_thread(
+            _record,
+            run_id,
+            "telegraph_metrics",
+            "ok" if errors == 0 else "partial",
+            items_in=updated + skipped + errors,
+            items_out=updated,
+            meta={"updated": updated, "skipped": skipped, "errors": errors},
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001 - analytics must not interrupt publishing
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+        log.warning("Telegraph metrics tick failed: %s", message)
+        await to_thread(_record, run_id, "telegraph_metrics", "error", error=message)
+        return {"updated": 0, "skipped": 0, "errors": 1, "error": message}
+
+
 async def _startup_backup_check() -> dict | None:
     """Create a verified snapshot on startup when none is fresh or the last attempt failed."""
     settings = get_settings()
@@ -1994,6 +2027,24 @@ def _build_scheduler():
         run_date=datetime.now(UTC),
         id="startup-platform-auth-check",
         name="initial read-only platform auth check",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _telegraph_metrics_tick,
+        IntervalTrigger(hours=6),
+        id="telegraph-metrics",
+        name="Telegraph page-view analytics",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _telegraph_metrics_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-telegraph-metrics",
+        name="initial Telegraph page-view analytics",
         max_instances=1,
         misfire_grace_time=3600,
     )
