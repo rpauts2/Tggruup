@@ -107,10 +107,12 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "odnoklassniki" in PLATFORM_RULES
     assert "facebook" in PLATFORM_RULES
     assert "tumblr" in PLATFORM_RULES
-    assert "tumblr" not in enabled
+    assert "medium" in PLATFORM_RULES
+    assert "medium" not in enabled
     assert "tiktok" not in enabled
     # Reddit can enter the automatic queue once its switch and approved OAuth adapter are ready.
     assert "reddit" in AUTOMATIC_CROSSPOST_IDS
+    assert "medium" in AUTOMATIC_CROSSPOST_IDS
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):

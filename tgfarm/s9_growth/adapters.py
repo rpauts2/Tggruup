@@ -1913,7 +1913,101 @@ class PikabuAdapter:
         )
 
 
+
+class MediumAdapter:
+    """Publish Markdown articles with a pre-existing Medium legacy API token."""
+
+    platform = "medium"
+    api_url = "https://api.medium.com/v1"
+    max_title = 100
+    max_body = 100_000
+
+    def _token(self) -> str:
+        return str(getattr(get_settings(), "medium_access_token", "") or "").strip()
+
+    def configured(self) -> bool:
+        return bool(self._token())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        token = self._token()
+        if not token:
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        title = str(payload.title or '').strip()
+        body = str(payload.text or '').strip()
+        if not title or len(title) > self.max_title:
+            return CrosspostResult(platform=self.platform, status='permanent', error='Medium titles must contain 1–100 characters.')
+        if not body or len(body) > self.max_body:
+            return CrosspostResult(platform=self.platform, status='permanent', error='Medium article body is empty or too long.')
+
+        tags = []
+        seen = set()
+        for raw in payload.hashtags or []:
+            tag = re.sub(r'\\s+', ' ', str(raw or '').strip().lstrip('#')).strip()
+            key = tag.casefold()
+            if not tag or key in seen or len(tag) > 25:
+                continue
+            seen.add(key)
+            tags.append(tag)
+            if len(tags) == 3:
+                break
+
+        import httpx
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Accept-Charset": "utf-8",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=False, headers=headers) as client:
+            try:
+                me_response = await client.get(f"{self.api_url}/me")
+                me_response.raise_for_status()
+                me_data = me_response.json().get("data") or {}
+                author_id = str(me_data.get("id") or "").strip()
+                if not re.fullmatch(r'[A-Za-z0-9_-]{6,128}', author_id):
+                    return CrosspostResult(platform=self.platform, status='permanent', error='Medium /me returned no valid author ID.')
+            except Exception as exc:  # noqa: BLE001 - profile lookup has no publish side effect
+                response = getattr(exc, 'response', None)
+                code = getattr(response, 'status_code', 0)
+                status = 'permanent' if code in {400, 401, 403, 404} else 'failed'
+                return CrosspostResult(
+                    platform=self.platform, status=status,
+                    error=f'Medium author preflight failed ({type(exc).__name__}).',
+                    retry_after_seconds=crosspost_retry_after_seconds(exc),
+                )
+
+            request_body = {
+                'title': title,
+                'contentFormat': 'markdown',
+                'content': f'# {title}\\n\\n{body}',
+                'tags': tags,
+                'publishStatus': 'public',
+                'notifyFollowers': False,
+            }
+            try:
+                response = await client.post(f"{self.api_url}/users/{author_id}/posts", json=request_body)
+                response.raise_for_status()
+                article = response.json().get("data") or {}
+            except Exception as exc:  # noqa: BLE001 - the publish side effect may be ambiguous
+                status = crosspost_error_status(exc)
+                return CrosspostResult(
+                    platform=self.platform, status=status,
+                    error=f'Medium publish request failed ({type(exc).__name__}).',
+                    retry_after_seconds=crosspost_retry_after_seconds(exc),
+                )
+
+        remote_id = str(article.get("id") or "").strip()
+        article_url = str(article.get("url") or "").strip()
+        if not remote_id:
+            return CrosspostResult(platform=self.platform, status='unknown', error='Medium returned no article ID; reconcile before retrying.')
+        return CrosspostResult(
+            platform=self.platform, status='posted', remote_id=remote_id,
+            url=article_url if article_url.startswith('https://') else None,
+        )
+
 ADAPTERS: dict[str, Adapter] = {
+    "medium": MediumAdapter(),
     "pikabu": PikabuAdapter(),
     "douyin": DouyinAdapter(),
     "max": MaxAdapter(),
