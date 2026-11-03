@@ -310,7 +310,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "image_format": None, "video_format": None, "target_type": "publication_account",
         "target_selection": "аккаунт Telegraph, подтверждённый access token",
         "rule_gate": "валидная структура Node, лимит content 64 KB и заголовок до 256 символов",
-        "max_chars": 50000, "hashtags": "не добавлять строку хештегов",
+        "max_chars": 20000, "hashtags": "не добавлять строку хештегов",
     },
     "snapchat": {
         "format": "story_or_spotlight", "label": "Snapchat Story/Spotlight",

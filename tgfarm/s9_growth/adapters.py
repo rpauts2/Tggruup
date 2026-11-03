@@ -2013,7 +2013,8 @@ class TelegraphAdapter:
 
     platform = "telegraph"
     max_title = 256
-    max_body = 50_000
+    # 20k characters leaves room below the 64 KiB UTF-8 JSON limit, even for Cyrillic.
+    max_body = 20_000
 
     def _token(self) -> str:
         return str(get_settings().telegraph_access_token or "").strip()

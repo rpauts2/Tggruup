@@ -309,6 +309,22 @@ class RedditMetricSnapshot(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class TelegraphMetricSnapshot(Base):
+    """A time series of official Telegraph page-view counts."""
+
+    __tablename__ = "telegraph_metric_snapshots"
+    __table_args__ = (
+        Index("ix_telegraph_metrics_log_time", "crosspost_log_id", "collected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    crosspost_log_id: Mapped[int] = mapped_column(
+        ForeignKey("crosspost_logs.id", ondelete="CASCADE"), index=True
+    )
+    views: Mapped[int] = mapped_column(Integer, default=0)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PipelineRun(Base):
     """One row per stage per cycle.
 

@@ -3938,6 +3938,27 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         except RedditMetricsError as exc:
             raise HTTPException(status_code=503, detail=redact_sensitive_text(exc, limit=300)) from exc
 
+    @app.get("/api/telegraph/metrics")
+    async def telegraph_metrics() -> dict:
+        from tgfarm.s9_growth.telegraph_metrics import get_telegraph_metrics_report
+
+        return await io(get_telegraph_metrics_report)
+
+    @app.post("/api/telegraph/metrics/refresh")
+    async def telegraph_metrics_refresh(request: RedditMetricsRefreshRequest) -> dict:
+        from tgfarm.s9_growth.telegraph_metrics import (
+            TelegraphMetricsError,
+            refresh_telegraph_metrics,
+        )
+
+        try:
+            return await refresh_telegraph_metrics(limit=request.limit)
+        except TelegraphMetricsError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=redact_sensitive_text(exc, limit=300),
+            ) from exc
+
     @app.post("/api/reddit/scout")
     async def reddit_scout(request: RedditScoutRequest) -> dict:
         from tgfarm.s9_growth.reddit_scout import RedditScoutError, search_communities

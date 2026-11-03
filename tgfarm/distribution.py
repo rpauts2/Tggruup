@@ -898,7 +898,8 @@ def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
         payload.text = truncate(body, 20_000)
     elif platform_id == "telegraph":
         payload.title = truncate(title, 256)
-        payload.text = truncate(body, 50_000)
+        # Keep a conservative character cap so Cyrillic and other multi-byte text fit.
+        payload.text = truncate(body, 20_000)
     return payload
 
 

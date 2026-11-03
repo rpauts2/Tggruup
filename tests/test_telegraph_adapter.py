@@ -113,6 +113,12 @@ async def test_telegraph_adapter_marks_unconfirmed_timeout_as_unknown(monkeypatc
     assert "secret" not in str(result.error)
 
 
+def test_telegraph_adapter_uses_a_safe_utf8_character_cap():
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    assert ADAPTERS["telegraph"].max_body == 20_000
+
+
 def test_telegraph_node_builder_enforces_the_documented_content_limit():
     from tgfarm.s9_growth.telegraph import MAX_CONTENT_BYTES, build_telegraph_content
 
