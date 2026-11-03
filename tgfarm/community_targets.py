@@ -118,6 +118,46 @@ async def _fetch(url: str) -> dict[str, Any]:
         return result
 
 
+def _target_editorial_brief(
+    platform_id: str,
+    post: dict[str, Any],
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an evidence-backed community brief; never treat warnings as permission."""
+    rules = str(target.get("rules") or "").strip()
+    blockers = list(dict.fromkeys(str(x) for x in target.get("blockers", []) if str(x).strip()))
+    warnings = list(dict.fromkeys(str(x) for x in target.get("risks", []) if str(x).strip()))
+    matches = list(dict.fromkeys(str(x) for x in target.get("matches", []) if str(x).strip()))
+    tags = list(dict.fromkeys(str(x) for x in target.get("suggested_tags", []) if str(x).strip()))
+    platform_name = "Пикабу" if platform_id == "pikabu" else "vc.ru"
+    destination = str(target.get("name") or target.get("title") or platform_name)
+    constraints = [line.strip() for line in re.split(r"[\n.!?]+", rules) if line.strip()][:8]
+    return {
+        "role": "community_editor",
+        "platform": platform_id,
+        "destination": destination,
+        "topic_fit": int(target.get("score") or 0),
+        "matched_terms": matches[:8],
+        "suggested_tags": tags[:8],
+        "editorial_angle": (
+            f"Раскрыть тему «{post.get('title', '').strip()}» через интерес аудитории «{destination}»"
+            if not blockers else
+            "Не назначать публикацию: сначала устранить блокирующие условия"
+        ),
+        "rules_read": bool(rules),
+        "constraints": constraints,
+        "warnings": warnings,
+        "blockers": blockers,
+        "decision": "eligible_for_operator_review" if target.get("recommended") and not blockers else "hold",
+        "publication_authorized": False,
+        "decision_note": (
+            "Подбор темы и правила проверены; это редакционная рекомендация, а не разрешение площадки."
+            if target.get("recommended") and not blockers else
+            "Не публиковать: цель не прошла проверку правил или тематического соответствия."
+        ),
+    }
+
+
 def _score(post_text: str, candidate_text: str) -> tuple[int, list[str]]:
     a, b = set(content_tokens(post_text)), set(content_tokens(candidate_text))
     if not a or not b:
@@ -274,6 +314,12 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "risks": warnings,
             "blockers": blockers,
             "recommended": bool(rule_text) and not blockers and score >= MIN_SCORE,
+            "editorial_brief": _target_editorial_brief("pikabu", post, {
+                "name": label, "score": max(0, min(100, round(score * .8 + initial * .2))),
+                "matches": matches, "suggested_tags": suggested_tags, "rules": rule_text,
+                "risks": warnings, "blockers": blockers,
+                "recommended": bool(rule_text) and not blockers and score >= MIN_SCORE,
+            }),
         }
 
     candidates = [
@@ -438,6 +484,11 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "blockers": blockers,
             "rules_available": bool(rules_text),
             "recommended": bool(rules_text) and bool(topic_rules) and not blockers and score >= MIN_SCORE,
+            "editorial_brief": _target_editorial_brief("vc_ru", post, {
+                "name": label, "score": max(0, min(100, round(score * .82 + initial * .18))),
+                "matches": matches, "rules": topic_rules, "risks": risks, "blockers": blockers,
+                "recommended": bool(rules_text) and bool(topic_rules) and not blockers and score >= MIN_SCORE,
+            }),
         }
 
     candidates = [

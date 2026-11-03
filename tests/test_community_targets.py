@@ -106,6 +106,38 @@ def test_pikabu_recommender_uses_actual_community_page_and_rule_text(monkeypatch
     assert result["auto_publish_supported"] is False
 
 
+def test_target_editorial_brief_is_evidence_backed_and_never_authorizes_publication():
+    brief = community_targets._target_editorial_brief(
+        "pikabu",
+        _post(),
+        {
+            "name": "Python",
+            "score": 76,
+            "matches": ["python", "programming"],
+            "suggested_tags": ["Python"],
+            "rules": "Публикуйте только материалы по Python. Не размещайте рекламу.",
+            "risks": ["Проверь внешние ссылки."],
+            "blockers": [],
+            "recommended": True,
+        },
+    )
+    assert brief["role"] == "community_editor"
+    assert brief["destination"] == "Python"
+    assert brief["topic_fit"] == 76
+    assert brief["rules_read"] is True
+    assert "Публикуйте только материалы по Python" in brief["constraints"]
+    assert brief["decision"] == "eligible_for_operator_review"
+    assert brief["publication_authorized"] is False
+
+    blocked = community_targets._target_editorial_brief(
+        "vc_ru", _post(), {"name": "Офтоп", "score": 12, "rules": "",
+        "risks": [], "blockers": ["Правила не прочитаны."], "recommended": False}
+    )
+    assert blocked["decision"] == "hold"
+    assert blocked["publication_authorized"] is False
+    assert blocked["blockers"] == ["Правила не прочитаны."]
+
+
 def test_pikabu_rule_blocker_prevents_a_recommendation_but_warnings_do_not():
     post = _post()
     warnings, blockers = community_targets._pikabu_risks(
