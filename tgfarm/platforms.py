@@ -1029,7 +1029,8 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             )
         return False, "Нужен уже существующий MEDIUM_ACCESS_TOKEN старой интеграции. Новые токены Medium не выдаются."
     if platform_id == "tumblr":
-        if ( and settings.tumblr_client_secret
+        if (
+            settings.tumblr_client_id and settings.tumblr_client_secret
             and settings.tumblr_access_token and settings.tumblr_refresh_token
             and settings.tumblr_blog_identifier
         ):
