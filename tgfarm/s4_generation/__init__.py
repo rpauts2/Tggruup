@@ -397,6 +397,7 @@ async def generate(
         # Pull archive context only when an online draft will actually be requested.
         # The archive guides novelty, never factual grounding; S4 verification still
         # binds every factual claim to today's source block.
+        editorial_strategy: dict = {"role": "editorial_strategist", "status": "skipped", "reason": "not_run"}
         try:
             from tgfarm.s4_generation.topic_memory import build_topic_context
 
@@ -407,6 +408,30 @@ async def generate(
                 prompt = f"{prompt}\n\n{topic_memory}"
         except Exception as exc:  # noqa: BLE001 - memory must never stall generation
             log.warning("topic memory lookup failed: %s", exc)
+
+        # The strategist is a separate, budgeted role. If it is unavailable,
+        # the writer continues with the existing persona/router/format brief.
+        try:
+            from tgfarm.agents.editorial import create_editorial_strategy, render_strategy
+
+            editorial_strategy = await create_editorial_strategy(
+                items,
+                persona,
+                plan.angle,
+                fmt,
+                cluster_public_id=plan.cluster_public_id,
+                format_reason=(format_plan.reason if format_plan else ""),
+            )
+            strategy_block = render_strategy(editorial_strategy)
+            if strategy_block:
+                prompt += f"\\n\\nОТДЕЛЬНЫЙ ПЛАН РЕДАКЦИОННОГО СТРАТЕГА:\\n{strategy_block}"
+        except Exception as exc:  # noqa: BLE001 - optional agent must not stop generation
+            editorial_strategy = {
+                "role": "editorial_strategist",
+                "status": "fallback",
+                "reason": f"Стратег недоступен ({type(exc).__name__}); использован базовый план.",
+            }
+            log.warning("editorial strategy failed: %s", type(exc).__name__)
 
         payload, response = await llm.complete_json(
             _DRAFT_SYSTEM,
@@ -440,6 +465,9 @@ async def generate(
     draft.hook_style = classify_hook_style(draft.hook)
     draft.variant = "holdout" if holdout else "a"
     draft.post_format = fmt
+    draft.editorial_strategy = editorial_strategy if decision is not None and decision.allowed else {
+        "role": "editorial_strategist", "status": "skipped", "reason": "online draft not selected"
+    }
 
     verified = await verify(draft, items, generation_provider=draft.generation_provider)
     draft.claims = verified
@@ -838,7 +866,36 @@ def persist_draft(
             hashtags=list(draft.hashtags),
             sources=list(draft.sources),
             claims=[c.model_dump() for c in draft.claims],
-            quality={},
+            quality={
+                "agent_team": {
+                    "version": 1,
+                    "roles": {
+                        "topic_router": {
+                            "status": "completed",
+                            "angle": plan.angle,
+                            "score": round(float(plan.score), 3),
+                            "reason": str(plan.reason or "")[:240],
+                        },
+                        "format_planner": {
+                            "status": "completed" if format_plan else "fallback",
+                            "format": format_plan.fmt if format_plan else "news",
+                            "reason": str(format_plan.reason if format_plan else "default format")[:240],
+                        },
+                        "editorial_strategist": dict(draft.editorial_strategy or {
+                            "role": "editorial_strategist", "status": "skipped", "reason": "not_run"
+                        }),
+                        "writer": {
+                            "status": "completed",
+                            "provider": draft.generation_provider,
+                        },
+                        "fact_checker": {
+                            "status": "completed",
+                            "claim_count": len(draft.claims),
+                            "verified_count": sum(1 for claim in draft.claims if claim.verified),
+                        },
+                    },
+                },
+            },
             language=draft.language or detect_lang(draft.text),
             generation_provider=draft.generation_provider,
             status="draft",

@@ -818,12 +818,29 @@ def save_outcome(public_id: str, report: QualityReport) -> None:
         ).scalar_one_or_none()
         if row is None:
             return
-        row.quality = {
+        quality = dict(row.quality or {})
+        quality.update({
             "scores": report.scores,
             "reason": report.reason,
             "gate": report.gate,
             "issues": report.issues,
+        })
+        # Keep the earlier agents' immutable artifacts and append the independent
+        # S5 review board result instead of replacing the trace with its own score.
+        agent_team = dict(quality.get("agent_team") or {})
+        roles = dict(agent_team.get("roles") or {})
+        roles["review_board"] = {
+            "status": "passed" if report.passed else "rejected",
+            "scores": report.scores,
+            "gate": report.gate,
+            "reason": report.reason,
+            "issues": list(report.issues or [])[:8],
+            "rewrites_used": report.rewrites_used,
         }
+        agent_team["version"] = int(agent_team.get("version") or 1)
+        agent_team["roles"] = roles
+        quality["agent_team"] = agent_team
+        row.quality = quality
         row.rewrites_used = report.rewrites_used
         if report.passed:
             row.status = "gated"

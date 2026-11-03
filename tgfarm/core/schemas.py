@@ -113,6 +113,8 @@ class DraftPost(Strict):
     # The S10 format decision travels with the draft: the structure gate tunes
     # emoji/length rules per format, not per channel.
     post_format: str | None = None
+    # Strategy produced by the S4 editorial strategist; persisted with the agent trace.
+    editorial_strategy: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("language", mode="before")
     @classmethod
