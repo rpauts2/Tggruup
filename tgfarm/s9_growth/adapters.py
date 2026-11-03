@@ -1943,7 +1943,7 @@ class MediumAdapter:
         tags = []
         seen = set()
         for raw in payload.hashtags or []:
-            tag = re.sub(r'\\s+', ' ', str(raw or '').strip().lstrip('#')).strip()
+            tag = re.sub(r'\s+', ' ', str(raw or '').strip().lstrip('#')).strip()
             key = tag.casefold()
             if not tag or key in seen or len(tag) > 25:
                 continue
@@ -1980,7 +1980,7 @@ class MediumAdapter:
             request_body = {
                 'title': title,
                 'contentFormat': 'markdown',
-                'content': f'# {title}\\n\\n{body}',
+                'content': f'# {title}\n\n{body}',
                 'tags': tags,
                 'publishStatus': 'public',
                 'notifyFollowers': False,
