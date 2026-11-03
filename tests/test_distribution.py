@@ -94,7 +94,7 @@ def test_platform_daily_caps_are_conservative_and_learn_only_from_reliability():
 
 def test_only_per_post_consent_platforms_are_manual_only():
     from tgfarm.distribution import MANUAL_ONLY, PLATFORM_RULES
-    from tgfarm.platforms import enabled_crosspost_platforms
+    from tgfarm.platforms import AUTOMATIC_CROSSPOST_IDS, enabled_crosspost_platforms
 
     enabled = set(enabled_crosspost_platforms())
     assert "tiktok" in MANUAL_ONLY
@@ -109,8 +109,8 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "tumblr" in PLATFORM_RULES
     assert "tumblr" not in enabled
     assert "tiktok" not in enabled
-    # Reddit is eligible for automation when enabled and its approved OAuth adapter is configured.
-    assert "reddit" not in enabled or "reddit" in enabled
+    # Reddit can enter the automatic queue once its switch and approved OAuth adapter are ready.
+    assert "reddit" in AUTOMATIC_CROSSPOST_IDS
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):
