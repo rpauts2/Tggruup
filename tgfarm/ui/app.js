@@ -464,7 +464,7 @@
     const ready = (trends || []).filter((item) => item.status === "ready" && item.id);
     const selected = state.agentBenchmarkCluster || select.value;
     select.innerHTML = ready.length
-      ? ready.map((item) => "<option value=\\"" + esc(item.id) + "\\">"
+      ? ready.map((item) => '<option value="' + esc(item.id) + '">'
           + esc(item.label || item.id) + " · " + esc(item.niche || "общая тема")
           + " · " + n(item.items) + " источн.</option>").join("")
       : '<option value="">Нет готовых кластеров</option>';
