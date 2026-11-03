@@ -2190,7 +2190,7 @@ def primary_wechat_cover_path(post_id: int) -> str | None:
     return None
 
 
-def primary_video_path(post_id: int) -> str | None:def primary_video_path(post_id: int) -> str | None:
+def primary_video_path(post_id: int) -> str | None:
     """Find the newest existing vertical video attached to a post."""
     from sqlalchemy import select
 
