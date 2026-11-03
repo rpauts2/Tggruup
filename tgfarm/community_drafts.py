@@ -981,6 +981,14 @@ async def publish_pikabu_scheduled(
                 "detail": "Публикация уже запланирована." if status == "scheduled" else
                     "Результат предыдущей отправки неоднозначен; повтор не выполнялся во избежание дубля.",
             }
+    if previous and previous.get("status") == "scheduled":
+        # A changed fingerprint is not a cancellation of the already queued
+        # remote item. Keep the original record intact and require the owner
+        # to cancel it on Pikabu before scheduling a revised version.
+        raise CommunityDraftError(
+            "Для этого материала уже есть отложенная публикация Пикабу. "
+            "Сначала отмени прежнюю запись в очереди площадки; новую версию автоматически не дублирую."
+        )
     if previous and previous.get("status") in {"submitting", "unknown"}:
         raise CommunityDraftError("Предыдущая отправка Пикабу имеет неоднозначный результат; повтор заблокирован.")
 

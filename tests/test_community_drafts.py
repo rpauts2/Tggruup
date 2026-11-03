@@ -150,3 +150,66 @@ def test_pikabu_tag_validation_requires_two_real_tags_and_limits_tag_length():
         community_drafts.normalize_pikabu_tags(["Python"])
     with pytest.raises(community_drafts.CommunityDraftError, match="50"):
         community_drafts.normalize_pikabu_tags(["x" * 51, "Python"])
+
+
+
+def test_pikabu_changed_material_cannot_duplicate_an_existing_scheduled_item(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tgfarm import community_targets
+    from tgfarm.core.settings import get_settings as _get_settings
+    from tgfarm import core
+
+    public_id = "pikabu_revision_123"
+    monkeypatch.setattr(
+        community_targets,
+        "recommend_automatic_pikabu_target",
+        lambda *_args, **_kwargs: None,
+    )
+
+    async def selected_target(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "selected": {
+                "url": "https://pikabu.ru/community/technology",
+                "name": "Технологии",
+            },
+            "tags": ["Python", "Programming"],
+        }
+
+    monkeypatch.setattr(
+        community_targets,
+        "recommend_automatic_pikabu_target",
+        selected_target,
+    )
+    monkeypatch.setattr(
+        "tgfarm.core.settings.get_settings",
+        lambda: SimpleNamespace(tz="UTC"),
+    )
+    monkeypatch.setattr(
+        community_drafts,
+        "_read_state",
+        lambda: {
+            f"pikabu:{public_id}": {
+                "status": "scheduled",
+                "fingerprint": "old-version-fingerprint",
+                "scheduled_at": "2026-11-04T12:00:00+00:00",
+                "target_url": "https://pikabu.ru/community/technology",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        community_drafts,
+        "_write_state_entry",
+        lambda *_args, **_kwargs: pytest.fail("must not replace the existing scheduled entry"),
+    )
+
+    with pytest.raises(community_drafts.CommunityDraftError, match="уже есть отложенная публикация"):
+        asyncio.run(
+            community_drafts.publish_pikabu_scheduled(
+                public_id,
+                title="A revised Python guide",
+                body="A changed article body about Python programming.",
+            )
+        )
