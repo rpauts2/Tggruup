@@ -1,7 +1,8 @@
-"""Assisted, draft-only composition for vc.ru and Pikabu.
+"""Native editor delivery for vc.ru drafts and scheduled Pikabu posts.
 
-The operator authenticates in a persistent local browser profile. TgFarm fills
-an editor draft and deliberately never clicks a publish/submit control.
+The operator authenticates in a persistent local browser profile. vc.ru stays
+draft-only until a current publishing interface is verified; Pikabu uses its
+native delayed-publication queue with duplicate protection.
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import hashlib
 import json
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
