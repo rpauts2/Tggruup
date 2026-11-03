@@ -676,13 +676,16 @@ class RedditAdapter:
             settings.reddit_user_agent.strip(),
         )
 
+    def data_api_approved(self) -> bool:
+        """Whether the owner has explicitly recorded Reddit's API approval."""
+        return bool(getattr(get_settings(), "reddit_api_approved", False))
+
     def configured(self) -> bool:
-        settings = get_settings()
         client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
         # Reddit requires explicit API access approval. Credentials alone are not
         # evidence that this app/use case is allowed to call the Data API.
         return bool(
-            getattr(settings, "reddit_api_approved", False)
+            self.data_api_approved()
             and client_id
             and client_secret
             and refresh_token

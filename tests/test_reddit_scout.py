@@ -28,7 +28,8 @@ def _settings() -> SimpleNamespace:
 def test_reddit_scout_refuses_data_api_without_explicit_approval(monkeypatch):
     settings = _settings()
     settings.reddit_api_approved = False
-    monkeypatch.setattr(adapters, "get_settings", lambda: settings)
+    adapter = adapters.ADAPTERS["reddit"]
+    monkeypatch.setattr(adapter, "data_api_approved", lambda: False)
 
     with pytest.raises(scout.RedditScoutError, match="REDDIT_API_APPROVED"):
         scout._adapter()

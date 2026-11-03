@@ -266,6 +266,15 @@ def test_reddit_adapter_stays_disabled_until_reddit_api_access_is_approved(monke
     monkeypatch.setattr(adapters, "get_settings", lambda: settings)
 
     adapter = adapters.RedditAdapter()
+    monkeypatch.setattr(adapter, "data_api_approved", lambda: False)
+    monkeypatch.setattr(
+        adapter,
+        "_credentials",
+        lambda: (
+            "test-client-id", "test-client-secret", "test-refresh-token",
+            "learnpython", "python:tgfarm-tests:1.0 (by /u/test_account)",
+        ),
+    )
     assert adapter.configured() is False
     result = asyncio.run(
         adapter.publish(CrosspostPayload(platform="reddit", title="Title", text="Body"))
