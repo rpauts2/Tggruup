@@ -117,7 +117,7 @@ async def test_wechat_stops_after_draft_when_account_lacks_freepublish_permissio
 
 
 @pytest.mark.asyncio
-async def test_wechat_in_review_is_recorded_as_scheduled_not_failed(monkeypatch, tmp_path):
+async def test_wechat_deleted_after_success_is_terminal_not_scheduled(monkeypatch, tmp_path):
     from tgfarm.s9_growth.wechat import WeChatOfficialAccountAdapter
 
     _install(monkeypatch, [
@@ -131,7 +131,7 @@ async def test_wechat_in_review_is_recorded_as_scheduled_not_failed(monkeypatch,
     adapter.poll_delay_seconds = 0
     result = await adapter.publish(_payload(_cover(tmp_path)))
 
-    assert result.status == 'scheduled'
+    assert result.status == 'permanent'
     assert result.remote_id == 'publish-job-id'
 
 
@@ -147,6 +147,26 @@ async def test_wechat_requires_a_cover_and_does_not_call_api_without_one(monkeyp
     result = await WeChatOfficialAccountAdapter().publish(payload)
     assert result.status == 'skipped'
     assert FakeWeChatClient.calls == []
+
+
+@pytest.mark.asyncio
+async def test_wechat_publish_status_one_is_still_processing(monkeypatch, tmp_path):
+    from tgfarm.s9_growth.wechat import WeChatOfficialAccountAdapter
+
+    _install(monkeypatch, [
+        FakeResponse({'access_token': 'access-token', 'expires_in': 7200}),
+        FakeResponse({'media_id': 'cover-media-id'}),
+        FakeResponse({'media_id': 'draft-media-id'}),
+        FakeResponse({'publish_id': 'publish-job-id'}),
+        FakeResponse({'publish_status': 1}),
+    ])
+    adapter = WeChatOfficialAccountAdapter()
+    adapter.poll_delay_seconds = 0
+    adapter.poll_attempts = 1
+    result = await adapter.publish(_payload(_cover(tmp_path)))
+
+    assert result.status == 'scheduled'
+    assert result.remote_id == 'publish-job-id'
 
 
 def test_wechat_html_renderer_escapes_untrusted_text():

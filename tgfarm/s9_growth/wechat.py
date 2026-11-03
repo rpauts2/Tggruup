@@ -300,7 +300,7 @@ class WeChatOfficialAccountAdapter:
                     article_id = str(first.get('article_id') or publish_id)
                     article_url = str(first.get('article_url') or '').strip()
                     return CrosspostResult(platform=self.platform, status='posted', remote_id=article_id, url=article_url if article_url.startswith('https://') else None)
-                if publish_status in {2, 3, 4, 6}:
+                if publish_status in {2, 3, 4, 5, 6}:
                     return CrosspostResult(platform=self.platform, status='permanent', remote_id=publish_id, error=f'WeChat publish job ended with publish_status={publish_status}; inspect the Official Account publish center.')
             return CrosspostResult(platform=self.platform, status='scheduled', remote_id=publish_id, error='WeChat accepted the article; processing continues in the Official Account publish queue.')
 
