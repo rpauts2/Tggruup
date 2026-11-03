@@ -183,3 +183,66 @@ def test_live_youtube_does_not_render_until_oauth_adapter_is_configured(monkeypa
 
     assert [result.status for result in results] == ["skipped"]
 
+
+
+def test_reddit_is_delivered_through_the_automatic_crosspost_pipeline(monkeypatch):
+    from types import SimpleNamespace
+
+    from tgfarm import platforms, s9_growth
+    from tgfarm.core.schemas import CrosspostResult
+    from tgfarm.s9_growth import reddit_scout
+
+    post = SimpleNamespace(
+        id=321,
+        public_id="reddit_auto_delivery_321",
+        hook="A practical Python debugging workflow",
+        body="A source-grounded explanation of a debugging workflow for Python developers.",
+        cta="",
+        hashtags=["python", "debugging"],
+        sources=[{"title": "Reference", "url": "https://example.org/python-debugging"}],
+    )
+    monkeypatch.setattr(platforms, "is_platform_enabled", lambda name: name == "reddit")
+    monkeypatch.setattr(s9_growth, "get_settings", lambda: SimpleNamespace(live=True))
+    monkeypatch.setattr(s9_growth, "_load_post", lambda _post_id: post)
+    monkeypatch.setattr(s9_growth, "already_done", lambda _public_id, _platform: False)
+    monkeypatch.setattr(s9_growth, "begin_crosspost", lambda _public_id, _platform: 1)
+
+    async def build_submission(_public_id):
+        return {
+            "ok": True,
+            "subreddit": "learnpython",
+            "title": "A practical Python debugging workflow",
+            "body": "A native, source-grounded explanation for the Learn Python community.",
+            "reddit_kind": "self",
+        }
+
+    monkeypatch.setattr(reddit_scout, "build_automatic_submission", build_submission)
+
+    adapter = s9_growth.ADAPTERS["reddit"]
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+    captured = []
+
+    async def publish(payload):
+        captured.append(payload)
+        return CrosspostResult(
+            platform="reddit",
+            status="posted",
+            remote_id="reddit-auto-1",
+            url="https://www.reddit.com/r/learnpython/comments/reddit-auto-1/",
+        )
+
+    monkeypatch.setattr(adapter, "publish", publish)
+    logged = []
+    monkeypatch.setattr(s9_growth, "log_result", lambda _public_id, result, attempt=1: logged.append((result, attempt)))
+
+    results = asyncio.run(s9_growth.crosspost_post(post.id, ["reddit"]))
+
+    assert [result.status for result in results] == ["posted"]
+    assert len(captured) == 1
+    assert captured[0].title == "A practical Python debugging workflow"
+    assert captured[0].text == "A native, source-grounded explanation for the Learn Python community."
+    assert captured[0].meta["subreddit"] == "learnpython"
+    assert captured[0].meta["reddit_kind"] == "self"
+    assert len(logged) == 1
+    assert logged[0][0].status == "posted"
+    assert logged[0][1] == 1

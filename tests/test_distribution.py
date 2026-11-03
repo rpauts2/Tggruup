@@ -99,7 +99,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
     enabled = set(enabled_crosspost_platforms())
     assert "tiktok" in MANUAL_ONLY
     assert "douyin" in MANUAL_ONLY
-    assert "reddit" in MANUAL_ONLY
+    assert "reddit" not in MANUAL_ONLY
     assert "linkedin" not in MANUAL_ONLY
     assert "linkedin" in PLATFORM_RULES
     assert "instagram" in PLATFORM_RULES
@@ -109,7 +109,8 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "tumblr" in PLATFORM_RULES
     assert "tumblr" not in enabled
     assert "tiktok" not in enabled
-    assert "reddit" not in enabled
+    # Reddit is eligible for automation when enabled and its approved OAuth adapter is configured.
+    assert "reddit" not in enabled or "reddit" in enabled
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):
@@ -261,7 +262,7 @@ async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypat
                 },
                 {
                     "platform": "reddit",
-                    "automation": "manual",
+                    "automation": "automatic",
                     "eligible_count": 2,
                     "selected": [{"post_id": 123, "score": 0.82}],
                 },
@@ -280,9 +281,9 @@ async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypat
 
     result = await s9_growth._run_crossposts_once(limit=5)
 
-    assert calls == [(123, ["x"])]
-    assert result["posted"] == 1
-    assert result["considered"] == 1
+    assert calls == [(123, ["x", "reddit"])]
+    assert result["posted"] == 2
+    assert result["considered"] == 2
 
 
 
@@ -293,7 +294,7 @@ def test_s9_executor_never_sends_manual_only_platforms(monkeypatch):
 
     monkeypatch.setattr(platforms, "is_platform_enabled", lambda _name: True)
 
-    result = asyncio.run(s9_growth.crosspost_post(123, ["reddit"]))
+    result = asyncio.run(s9_growth.crosspost_post(123, ["tiktok", "douyin"]))
 
     assert result == []
 

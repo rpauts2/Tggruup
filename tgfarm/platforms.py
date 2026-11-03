@@ -87,12 +87,13 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Сообщества", "market": "Мировые", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
         "description": (
-            "Нативная публикация в одно выбранное сообщество после проверки правил и "
-            "явного подтверждения владельца; не участвует в unattended cross-posting."
+            "Автоматически выбирает одно подходящее публичное сообщество, адаптирует материал "
+            "под его аудиторию и проверяет актуальные правила перед нативной публикацией."
         ),
         "requirements": (
             "Одобренный Reddit Data API access, REDDIT_API_APPROVED=true, OAuth refresh token "
-            "и уникальный User-Agent. Фиксированный REDDIT_SUBREDDIT необязателен."
+            "и честный уникальный User-Agent. Фиксированный REDDIT_SUBREDDIT необязателен; "
+            "автовыбор исключает 18+, закрытые/ограниченные и сообщества с неразрешёнными рисками."
         ),
         "docs_url": "https://www.reddit.com/dev/api/",
     },
@@ -1132,15 +1133,10 @@ def is_platform_enabled(platform_id: str) -> bool:
 MANUAL_ONLY_AUTOMATION: dict[str, str] = {
     "tiktok": "Каждая публикация требует отдельного выбора настроек и явного согласия автора.",
     "douyin": "Каждое создание видео требует отдельного просмотра ролика и явного подтверждения владельца.",
-    "reddit": (
-        "Только ручной сценарий: сначала прочитать правила и требования одного subreddit, "
-        "затем владелец проверяет и подтверждает конкретную публикацию. Не отправлять "
-        "одинаковые или почти одинаковые материалы в разные сообщества."
-    ),
 }
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
-    "vk", "max", "x", "bluesky", "youtube", "threads", "mastodon",
+    "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
     "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 

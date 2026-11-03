@@ -1,8 +1,9 @@
-"""Read-only Reddit community discovery and native post tailoring.
+"""Reddit community discovery and native post tailoring for the S9 publisher.
 
-The scout only reads community metadata, public rules and post requirements.
-It never subscribes, votes, comments, or publishes. A human chooses a single
-community and approves the resulting draft before the separate publish action.
+The scout reads public community metadata, rules and post requirements. It
+never subscribes, votes, comments, or performs engagement actions. The S9
+crosspost pipeline can select one eligible public community and hand a
+source-grounded native submission to the separate official OAuth adapter.
 """
 from __future__ import annotations
 
