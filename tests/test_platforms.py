@@ -25,6 +25,8 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
+    assert entries["reddit"]["automation_mode"] == "manual"
+    assert "ручной сценарий" in entries["reddit"]["automation_note"].lower()
     assert entries["reddit"]["auth"]["method"] == "oauth"
     assert entries["instagram"]["mode"] == "built_in"
     assert entries["instagram"]["supported"] is True
@@ -144,6 +146,16 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
     assert all("secret" not in item for item in entries.values())
+
+
+def test_reddit_is_never_in_unattended_crosspost_queue(tmp_path, monkeypatch):
+    from tgfarm import platforms
+
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    platforms.set_platform_enabled("reddit", True)
+
+    assert platforms.is_platform_enabled("reddit") is True
+    assert "reddit" not in platforms.enabled_crosspost_platforms()
 
 
 def test_disabling_a_supported_network_persists_and_fails_closed(tmp_path, monkeypatch):
@@ -382,7 +394,7 @@ def test_platform_auth_metadata_distinguishes_saved_keys_from_real_access(tmp_pa
     assert reddit["integration_ready"] is True
     assert {field["key"] for field in reddit["fields"]} >= {
         "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
-        "REDDIT_SUBREDDIT", "REDDIT_USER_AGENT",
+        "REDDIT_SUBREDDIT", "REDDIT_USER_AGENT", "REDDIT_API_APPROVED",
     }
     assert "REDDIT_REFRESH_TOKEN" not in {field["key"] for field in reddit["fields"]}
     assert all("value" not in field for field in reddit["fields"])

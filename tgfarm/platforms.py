@@ -87,12 +87,12 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Сообщества", "market": "Мировые", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
         "description": (
-            "Нативные текстовые или ссылочные посты в один subreddit, "
-            "с журналом и защитой от дублей."
+            "Нативная публикация в одно выбранное сообщество после проверки правил и "
+            "явного подтверждения владельца; не участвует в unattended cross-posting."
         ),
         "requirements": (
-            "REDDIT_CLIENT_ID/SECRET, REDDIT_REFRESH_TOKEN, REDDIT_SUBREDDIT "
-            "и уникальный User-Agent."
+            "Одобренный Reddit Data API access, REDDIT_API_APPROVED=true, OAuth refresh token "
+            "и уникальный User-Agent. Фиксированный REDDIT_SUBREDDIT необязателен."
         ),
         "docs_url": "https://www.reddit.com/dev/api/",
     },
@@ -471,6 +471,7 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "REDDIT_REFRESH_TOKEN", "attribute": "reddit_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Выдаётся автоматически через Reddit OAuth и хранится локально."},
         {"key": "REDDIT_SUBREDDIT", "attribute": "reddit_subreddit", "label": "Fallback-сообщество (необязательно)", "secret": False, "placeholder": "Можно оставить пустым", "help": "Используется только как запасная настройка. В автономном режиме TgFarm подбирает subreddit отдельно под каждую тему и читает его актуальные правила."},
         {"key": "REDDIT_USER_AGENT", "attribute": "reddit_user_agent", "label": "User-Agent", "secret": False, "placeholder": "python:tgfarm:1.0 (by /u/your_name)", "help": "Уникальная описательная строка. Не оставляй шаблонное имя."},
+        {"key": "REDDIT_API_APPROVED", "attribute": "reddit_api_approved", "label": "Reddit явно одобрил доступ к Data API", "secret": False, "placeholder": "true только после одобрения", "help": "Введи true только после того, как Reddit явно одобрил доступ для этого приложения и сценария. Одни OAuth-ключи или refresh token не считаются одобрением. false отключает и чтение, и публикацию."},
     ],
 }
 _AUTH_URLS: dict[str, str] = {
@@ -576,7 +577,11 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             "key": spec["key"],
             "label": spec["label"],
             "secret": bool(spec["secret"]),
-            "has_value": bool(str(getattr(settings, spec["attribute"], "") or "").strip()),
+            "has_value": (
+                bool(getattr(settings, spec["attribute"], False))
+                if isinstance(getattr(settings, spec["attribute"], None), bool)
+                else bool(str(getattr(settings, spec["attribute"], "") or "").strip())
+            ),
             "placeholder": spec["placeholder"],
             "help": spec["help"],
         })
@@ -650,7 +655,7 @@ def _auth_descriptor(platform_id: str) -> dict[str, Any]:
             if platform_id == "vk" else
             "Instagram Login откроет официальное окно Meta. Нужен профессиональный аккаунт Business или Creator, Instagram App ID/Secret и разрешения instagram_business_basic + instagram_business_content_publish."
             if platform_id == "instagram" else
-            "Reddit OAuth откроет официальное окно согласия. Нужен Web App Client ID/Secret и redirect URL из панели; постоянный refresh token будет сохранён автоматически. После подключения укажи subreddit."
+            "Reddit OAuth откроет официальное окно согласия. Нужен Web App Client ID/Secret и redirect URL из панели; постоянный refresh token будет сохранён автоматически. Data API остаётся закрытым до явного одобрения Reddit и включения REDDIT_API_APPROVED. Публикация выполняется вручную в одном проверенном subreddit."
             if platform_id == "reddit" else
             "Вход в vc.ru сохраняется в отдельном профиле браузера. Профиль не даёт API-доступа: публикацию нужно выполнять через редактор vc.ru."
             if platform_id == "vc_ru" else
@@ -977,6 +982,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             return False, "Douyin App настроено; подключи аккаунт через OAuth с разрешениями user_info и video.create."
         return False, "Нужны Douyin Client Key/Secret и подключение через Open Platform OAuth."
     if platform_id == "reddit":
+        if not bool(getattr(settings, "reddit_api_approved", False)):
+            return False, (
+                "Reddit Data API заблокирован по умолчанию. Сначала получи явное одобрение "
+                "Reddit для приложения и сценария использования, затем включи "
+                "REDDIT_API_APPROVED=true. OAuth-ключи сами по себе не дают разрешения."
+            )
         user_agent = settings.reddit_user_agent.strip()
         configured = all((
             settings.reddit_client_id,
@@ -988,15 +999,15 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             target = (
                 f"Фиксированный fallback: r/{settings.reddit_subreddit.strip()}. "
                 if settings.reddit_subreddit.strip()
-                else "Фиксированный subreddit не задан: TgFarm будет выбирать сообщество под каждый пост. "
+                else "Фиксированный subreddit не задан: цель должна быть выбрана и проверена вручную. "
             )
             return True, (
                 target
-                + "Перед отправкой проверяются актуальные правила, ограничения, формат и тематическое совпадение."
+                + "Публикация остаётся ручной: перед отправкой владелец проверяет правила, требования и конкретный черновик."
             )
         return False, (
             "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
-            "REDDIT_SUBREDDIT теперь необязателен: цель выбирает редакторский планировщик."
+            "REDDIT_SUBREDDIT необязателен; без одобрения Data API обращения к Reddit отключены."
         )
     if platform_id == "tumblr":
         if (
@@ -1121,10 +1132,15 @@ def is_platform_enabled(platform_id: str) -> bool:
 MANUAL_ONLY_AUTOMATION: dict[str, str] = {
     "tiktok": "Каждая публикация требует отдельного выбора настроек и явного согласия автора.",
     "douyin": "Каждое создание видео требует отдельного просмотра ролика и явного подтверждения владельца.",
+    "reddit": (
+        "Только ручной сценарий: сначала прочитать правила и требования одного subreddit, "
+        "затем владелец проверяет и подтверждает конкретную публикацию. Не отправлять "
+        "одинаковые или почти одинаковые материалы в разные сообщества."
+    ),
 }
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
-    "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
+    "vk", "max", "x", "bluesky", "youtube", "threads", "mastodon",
     "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 

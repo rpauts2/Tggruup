@@ -56,8 +56,9 @@ def _adapter() -> RedditAdapter:
         raise RedditScoutError("Reddit-адаптер не зарегистрирован.")
     if not adapter.configured():
         raise RedditScoutError(
-            "Reddit OAuth не настроен. Заполни client ID/secret, refresh token, "
-            "subreddit и уникальный User-Agent в локальном .env."
+            "Reddit Data API закрыт. Нужны OAuth client ID/secret, refresh token и "
+            "правдивый User-Agent; REDDIT_API_APPROVED=true выставляй только после "
+            "явного одобрения доступа Reddit. Фиксированный subreddit необязателен."
         )
     return adapter
 

@@ -342,6 +342,8 @@ class Settings(BaseSettings):
     reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
     reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
     reddit_refresh_token: str = Field(default="", alias="REDDIT_REFRESH_TOKEN")
+    # Reddit Data API access stays disabled until the owner has explicit approval.
+    reddit_api_approved: bool = Field(default=False, alias="REDDIT_API_APPROVED")
     reddit_subreddit: str = Field(default="", alias="REDDIT_SUBREDDIT")
     reddit_user_agent: str = Field(default="", alias="REDDIT_USER_AGENT")
     # Threads user OAuth, refreshed locally before expiry.

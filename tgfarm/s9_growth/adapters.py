@@ -677,11 +677,13 @@ class RedditAdapter:
         )
 
     def configured(self) -> bool:
+        settings = get_settings()
         client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
-        # TgFarm selects a destination subreddit per post after reading its rules.
-        # REDDIT_SUBREDDIT remains an optional fixed fallback for manual flows.
+        # Reddit requires explicit API access approval. Credentials alone are not
+        # evidence that this app/use case is allowed to call the Data API.
         return bool(
-            client_id
+            getattr(settings, "reddit_api_approved", False)
+            and client_id
             and client_secret
             and refresh_token
             and user_agent

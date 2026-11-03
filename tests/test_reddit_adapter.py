@@ -18,6 +18,7 @@ def _reddit_settings(subreddit: str = "learnpython") -> SimpleNamespace:
         reddit_client_id="test-client-id",
         reddit_client_secret="test-client-secret",
         reddit_refresh_token="test-refresh-token",
+        reddit_api_approved=True,
         reddit_subreddit=subreddit,
         reddit_user_agent="python:tgfarm-tests:1.0 (by /u/test_account)",
     )
@@ -216,6 +217,7 @@ def test_reddit_adapter_fails_closed_for_missing_credentials_and_invalid_subredd
         reddit_client_id="",
         reddit_client_secret="",
         reddit_refresh_token="",
+        reddit_api_approved=False,
         reddit_subreddit="",
         reddit_user_agent="",
     )
@@ -258,7 +260,21 @@ def test_cli_reddit_live_mode_requires_explicit_confirmation(monkeypatch, capsys
     assert "explicit --confirm-live" in capsys.readouterr().out
 
 
+def test_reddit_adapter_stays_disabled_until_reddit_api_access_is_approved(monkeypatch):
+    settings = _reddit_settings()
+    settings.reddit_api_approved = False
+    monkeypatch.setattr(adapters, "get_settings", lambda: settings)
+
+    adapter = adapters.RedditAdapter()
+    assert adapter.configured() is False
+    result = asyncio.run(
+        adapter.publish(CrosspostPayload(platform="reddit", title="Title", text="Body"))
+    )
+    assert result.status == "skipped"
+
+
 def test_reddit_adapter_does_not_require_a_fixed_default_subreddit(monkeypatch):
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(reddit_api_approved=True))
     adapter = adapters.RedditAdapter()
     monkeypatch.setattr(
         adapter,

@@ -19,9 +19,19 @@ def _settings() -> SimpleNamespace:
         reddit_client_id="test-client-id",
         reddit_client_secret="test-client-secret",
         reddit_refresh_token="test-refresh-token",
+        reddit_api_approved=True,
         reddit_subreddit="learnpython",
         reddit_user_agent="python:tgfarm-tests:1.0 (by /u/test_account)",
     )
+
+
+def test_reddit_scout_refuses_data_api_without_explicit_approval(monkeypatch):
+    settings = _settings()
+    settings.reddit_api_approved = False
+    monkeypatch.setattr(adapters, "get_settings", lambda: settings)
+
+    with pytest.raises(scout.RedditScoutError, match="REDDIT_API_APPROVED"):
+        scout._adapter()
 
 
 def _mock_httpx(monkeypatch, handler):
