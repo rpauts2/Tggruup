@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "pikabu", "bluesky", "mastodon", "threads", "linkedin", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -70,9 +70,8 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         "TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET", "TUMBLR_BLOG_IDENTIFIER"
     }
     assert entries["vk"]["auth"]["method"] == "vkhost"
-    # vc.ru and Pikabu use isolated browser sign-in because no public
-    # publishing API is available. Browser login must not mark them enabled.
-    for platform_id in ("vc_ru", "pikabu"):
+    # vc.ru remains planned: no currently verified publishing API is available.
+    for platform_id in ("vc_ru",):
         assert entries[platform_id]["supported"] is False
         assert entries[platform_id]["mode"] == "planned"
         assert entries[platform_id]["planned"] is False
@@ -81,7 +80,12 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
         assert entries[platform_id]["auth"]["browser_session"]["available"] is True
         assert "профиле браузера" in entries[platform_id]["auth"]["note"].lower()
     assert "публичный api" in entries["vc_ru"]["requirements"].lower()
-    assert "публичный api" in entries["pikabu"]["requirements"].lower()
+    assert "отлож" in entries["pikabu"]["requirements"].lower()
+    assert entries["pikabu"]["supported"] is True
+    assert entries["pikabu"]["mode"] == "built_in"
+    assert entries["pikabu"]["automation_mode"] == "automatic"
+    assert "crosspost" in entries["pikabu"]["roles"]
+    assert entries["pikabu"]["auth"]["method"] == "browser"
     # Every catalogue entry exposes a first-party sign-in URL. This only
     # creates a local browser profile; it does not claim API publish rights.
     assert all(item["auth"]["browser_session"]["available"] for item in entries.values())
@@ -141,7 +145,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["douyin"]["editorial"]["format"] == "vertical_video"
     assert "preview" in entries["douyin"]["editorial"]["rule_gate"].lower()
     assert all("editorial" in item for item in entries.values())
-    assert catalog["summary"]["supported"] == 19
+    assert catalog["summary"]["supported"] == 20
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -255,7 +259,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 19
+    assert payload["summary"]["supported"] == 20
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
@@ -856,3 +860,15 @@ def test_max_auth_form_exposes_public_webhook_origin_and_hides_internal_secrets(
     assert "MAX_WEBHOOK_SECRET" not in fields
     assert "MAX_BOT_ID" not in fields
     assert "attribute" not in fields["TGFARM_PUBLIC_BASE_URL"]
+
+ 
+def test_pikabu_with_verified_browser_profile_enters_automatic_queue(tmp_path, monkeypatch):
+    from tgfarm import platforms
+    monkeypatch.setattr(platforms, "_state_path", lambda: tmp_path / "platforms.yaml")
+    monkeypatch.setattr(
+        "tgfarm.browser_auth.browser_session_status",
+        lambda _platform: {"verified": True, "profile_saved": True},
+    )
+    platforms.set_platform_enabled("pikabu", True)
+    assert platforms.is_platform_enabled("pikabu") is True
+    assert "pikabu" in platforms.enabled_crosspost_platforms()
