@@ -166,13 +166,15 @@ def _load_post(post_pk: int) -> PostRow | None:
 
 
 async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostResult]:
-    from tgfarm.platforms import is_platform_enabled
+    from tgfarm.platforms import MANUAL_ONLY_AUTOMATION, is_platform_enabled
 
     # Defense in depth: neither a manual retry nor a future caller may bypass
-    # the global switch from the UI.
+    # the global switch or route a consent-required platform into background sends.
     platforms = [
         name for name in platforms
-        if name in ADAPTERS and is_platform_enabled(name)
+        if name in ADAPTERS
+        and name not in MANUAL_ONLY_AUTOMATION
+        and is_platform_enabled(name)
     ]
     if not platforms:
         return []
@@ -403,9 +405,11 @@ async def _run_crossposts_once(limit: int = 20) -> dict[str, int]:
                 break
             # The UI toggle is checked again inside crosspost_post immediately
             # before the adapter call, protecting against a switch-off race.
+            from tgfarm.platforms import MANUAL_ONLY_AUTOMATION
+
             available = [
                 name for name, _score in sorted(targets, key=lambda value: -value[1])
-                if name in ADAPTERS
+                if name in ADAPTERS and name not in MANUAL_ONLY_AUTOMATION
             ][: max_targets - sent_targets]
             if not available:
                 continue

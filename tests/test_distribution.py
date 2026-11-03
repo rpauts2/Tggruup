@@ -99,6 +99,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
     enabled = set(enabled_crosspost_platforms())
     assert "tiktok" in MANUAL_ONLY
     assert "douyin" in MANUAL_ONLY
+    assert "reddit" in MANUAL_ONLY
     assert "linkedin" not in MANUAL_ONLY
     assert "linkedin" in PLATFORM_RULES
     assert "instagram" in PLATFORM_RULES
@@ -108,6 +109,7 @@ def test_only_per_post_consent_platforms_are_manual_only():
     assert "tumblr" in PLATFORM_RULES
     assert "tumblr" not in enabled
     assert "tiktok" not in enabled
+    assert "reddit" not in enabled
 
 
 def test_runtime_mode_is_saved_without_touching_other_env_values(tmp_path, monkeypatch):
@@ -253,11 +255,13 @@ async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypat
             "platforms": [
                 {
                     "platform": "x",
+                    "automation": "automatic",
                     "eligible_count": 4,
                     "selected": [{"post_id": 123, "score": 0.91}],
                 },
                 {
                     "platform": "reddit",
+                    "automation": "manual",
                     "eligible_count": 2,
                     "selected": [{"post_id": 123, "score": 0.82}],
                 },
@@ -276,9 +280,22 @@ async def test_s9_uses_editorial_post_platform_pairs_not_random_sample(monkeypat
 
     result = await s9_growth._run_crossposts_once(limit=5)
 
-    assert calls == [(123, ["x", "reddit"])]
-    assert result["posted"] == 2
-    assert result["considered"] == 2
+    assert calls == [(123, ["x"])]
+    assert result["posted"] == 1
+    assert result["considered"] == 1
+
+
+
+def test_s9_executor_never_sends_manual_only_platforms(monkeypatch):
+    import asyncio
+
+    from tgfarm import platforms, s9_growth
+
+    monkeypatch.setattr(platforms, "is_platform_enabled", lambda _name: True)
+
+    result = asyncio.run(s9_growth.crosspost_post(123, ["reddit"]))
+
+    assert result == []
 
 
 def test_distribution_native_format_uses_real_media_and_marks_youtube_render():
