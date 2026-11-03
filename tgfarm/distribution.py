@@ -329,7 +329,7 @@ def choose_post_native_format(
         if kind == "video" and bool(getattr(media, "is_primary", True)):
             media_kinds.add("video")
         elif bool(getattr(media, "is_primary", True)) and kind in {
-            "image", "article_image", "ai_art", "template", "infographic", "quote", "cover"
+            "image", "article_image", "ai_art", "template", "infographic", "quote", "cover", "photo"
         }:
             media_kinds.add("image")
     render_on_demand = False

@@ -186,13 +186,14 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
 
     image_path = (
         await to_thread(primary_image_path, post_pk)
-        if any(name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook", "wechat"} for name in platforms)
+        if any(name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook"} for name in platforms)
         else None
     )
-    if "wechat" in platforms and not image_path:
+    wechat_cover_path = None
+    if "wechat" in platforms:
         from tgfarm.s9_growth.adapters import primary_wechat_cover_path
 
-        image_path = await to_thread(primary_wechat_cover_path, post_pk)
+        wechat_cover_path = await to_thread(primary_wechat_cover_path, post_pk)
     video_targets = {"youtube", "tiktok", "vk_clips", "instagram", "pinterest", "odnoklassniki", "facebook"}
     video_render_error = None
     video_requested = any(name in video_targets for name in platforms)
@@ -280,7 +281,11 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             continue
         payload = build_payload(
             post,
-            image_path=image_path if name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook", "wechat"} else None,
+            image_path=(
+                wechat_cover_path if name == "wechat"
+                else image_path if name in {"vk", "instagram", "pinterest", "odnoklassniki", "facebook"}
+                else None
+            ),
             video_path=video_path if name in video_targets else None,
         )
         from tgfarm.distribution import adapt_payload_for_platform
