@@ -106,6 +106,7 @@ class DraftPost(Strict):
     language: Lang = "ru"
     claims: list[Claim] = Field(default_factory=list)
     generation_provider: str = "offline"
+    generation_model: str = ""
     # Learned hook pattern and A/B bucket ("a" = treatment, "holdout" = baseline
     # without few-shot examples). Both feed the self-measurement loop.
     hook_style: str | None = None

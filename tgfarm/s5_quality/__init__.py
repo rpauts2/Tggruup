@@ -467,14 +467,23 @@ async def gate_tone(
     persona: Persona,
     *,
     generation_provider: str = "offline",
+    usage_scope: str = "",
 ) -> GateOutcome:
     use_ai, reason = policy.should_use_ai(
         "s5_tone", generation_provider=generation_provider
     )
     if not use_ai:
-        await to_thread(policy.record_skip, "s5_tone", purpose="tone", reason=reason)
+        await to_thread(
+            policy.record_skip,
+            "s5_tone",
+            purpose="tone",
+            reason=reason,
+            cluster_public_id=usage_scope,
+        )
         return GateOutcome(True, scores={"tone": 0.8})
-    decision = await to_thread(policy.reserve, "s5_tone", purpose="tone")
+    decision = await to_thread(
+        policy.reserve, "s5_tone", purpose="tone", cluster_public_id=usage_scope
+    )
     if not decision.allowed:
         return GateOutcome(True, scores={"tone": 0.8})
 
@@ -518,14 +527,23 @@ async def gate_relevance(
     persona: Persona,
     *,
     generation_provider: str = "offline",
+    usage_scope: str = "",
 ) -> GateOutcome:
     use_ai, reason = policy.should_use_ai(
         "s5_relevance", generation_provider=generation_provider, angle=draft.angle
     )
     if not use_ai:
-        await to_thread(policy.record_skip, "s5_relevance", purpose="relevance", reason=reason)
+        await to_thread(
+            policy.record_skip,
+            "s5_relevance",
+            purpose="relevance",
+            reason=reason,
+            cluster_public_id=usage_scope,
+        )
         return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
-    decision = await to_thread(policy.reserve, "s5_relevance", purpose="relevance")
+    decision = await to_thread(
+        policy.reserve, "s5_relevance", purpose="relevance", cluster_public_id=usage_scope
+    )
     if not decision.allowed:
         return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
 
@@ -567,14 +585,23 @@ async def gate_quality(
     persona: Persona,
     *,
     generation_provider: str = "offline",
+    usage_scope: str = "",
 ) -> GateOutcome:
     use_ai, reason = policy.should_use_ai(
         "s5_quality", generation_provider=generation_provider, angle=draft.angle
     )
     if not use_ai:
-        await to_thread(policy.record_skip, "s5_quality", purpose="quality", reason=reason)
+        await to_thread(
+            policy.record_skip,
+            "s5_quality",
+            purpose="quality",
+            reason=reason,
+            cluster_public_id=usage_scope,
+        )
         return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
-    decision = await to_thread(policy.reserve, "s5_quality", purpose="quality")
+    decision = await to_thread(
+        policy.reserve, "s5_quality", purpose="quality", cluster_public_id=usage_scope
+    )
     if not decision.allowed:
         return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
 
@@ -675,6 +702,7 @@ async def evaluate(
     persona: Persona,
     *,
     generation_provider: str = "offline",
+    usage_scope: str = "",
 ) -> QualityReport:
     scores: dict[str, float] = {}
 
@@ -686,7 +714,12 @@ async def evaluate(
 
     issues: list[str] = []
     for gate in ASYNC_GATES:
-        outcome = await gate(draft, persona, generation_provider=generation_provider)
+        outcome = await gate(
+            draft,
+            persona,
+            generation_provider=generation_provider,
+            usage_scope=usage_scope,
+        )
         if outcome.issues:
             issues.extend(outcome.issues)
         if not outcome.passed:

@@ -166,3 +166,121 @@ def test_quality_save_preserves_agent_trace_when_critic_verdict_is_written(db):
         assert row.quality["agent_team"]["roles"]["editorial_strategist"]["status"] == "planned"
         assert row.quality["agent_team"]["roles"]["review_board"]["status"] == "passed"
         assert row.quality["scores"]["tone"] == 0.9
+
+
+def test_generation_control_arm_skips_strategist_and_preserves_pair_inputs(monkeypatch):
+    from tgfarm import s4_generation
+    from tgfarm.s4_generation import topic_memory
+    from tgfarm.core.schemas import DraftPost
+
+    captured = {"prompt": "", "usage_scope": "", "examples": None}
+
+    class FakeLLM:
+        async def complete_json(self, _system, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return (
+                {
+                    "hook": "Практический результат уже подтверждён.",
+                    "body": "Первый абзац содержит проверяемый факт из источника.\\n\\n"
+                    "Второй абзац объясняет, что это значит для читателя.",
+                    "hashtags": ["технологии"],
+                    "cta": None,
+                },
+                SimpleNamespace(provider="test-provider", model="writer-v1", latency_ms=15),
+            )
+
+    persona = SimpleNamespace(
+        id="benchmark-channel",
+        title="Тестовый канал",
+        niche="technology",
+        audience="разработчики",
+        language="ru",
+        min_chars=40,
+        max_chars=1200,
+        tone=["спокойный"],
+        banned_words=[],
+        emoji_policy="none",
+        disclaimer="",
+        always_cite_sources=True,
+        max_sources=3,
+        as_dict=lambda: {"title": "Тестовый канал"},
+    )
+    plan = SimpleNamespace(
+        persona=persona,
+        angle="analysis",
+        channel_id="benchmark-channel",
+        cluster_public_id="cluster-001",
+    )
+    item = SimpleNamespace(
+        source_id="source-1",
+        title="Подтверждённое изменение",
+        text="Источник подтверждает практическое изменение для разработчиков.",
+        url="https://example.org/change",
+    )
+    monkeypatch.setattr(s4_generation, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(s4_generation, "get_settings", lambda: SimpleNamespace(holdout_share=0.1))
+    monkeypatch.setattr(s4_generation, "_to_scored", lambda rows: list(rows))
+    monkeypatch.setattr(s4_generation, "compose_offline_post", lambda *_args: {
+        "hook": "Практический результат уже подтверждён.",
+        "body": "Детерминированный базовый текст.",
+    })
+    monkeypatch.setattr(s4_generation, "_persona_block", lambda *_args: "PERSONA")
+    monkeypatch.setattr(s4_generation, "_source_block", lambda _items: "SOURCES")
+
+    def render_examples(examples):
+        captured["examples"] = examples
+        return "SHARED EXAMPLES"
+
+    monkeypatch.setattr(s4_generation, "_examples_block", render_examples)
+    monkeypatch.setattr(s4_generation, "_is_somber_topic", lambda _items: False)
+
+    async def no_claims(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(s4_generation, "verify", no_claims)
+    monkeypatch.setattr(
+        s4_generation,
+        "normalise",
+        lambda payload, *_args: DraftPost(
+            hook=payload["hook"],
+            body=payload["body"],
+            sources=[{"title": item.title, "url": item.url}],
+            angle="analysis",
+        ),
+    )
+    monkeypatch.setattr(
+        s4_generation.policy,
+        "should_use_ai",
+        lambda *_args, **_kwargs: (True, "benchmark test"),
+    )
+
+    def reserve(*_args, **kwargs):
+        captured["usage_scope"] = kwargs.get("cluster_public_id", "")
+        return SimpleNamespace(allowed=True, usage_id=7)
+
+    monkeypatch.setattr(s4_generation.policy, "reserve", reserve)
+    monkeypatch.setattr(s4_generation.policy, "finalize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(s4_generation, "_pick_hook_style", lambda *_args, **_kwargs: "analysis")
+    monkeypatch.setattr(topic_memory, "build_topic_context", lambda *_args: "")
+
+    draft = asyncio.run(
+        s4_generation.generate(
+            plan,
+            [item],
+            format_plan=SimpleNamespace(fmt="article", min_chars=40, max_chars=1200, reason="test"),
+            strategy_enabled=False,
+            holdout_override=False,
+            examples_override=[("Example hook", "Example body")],
+            hook_style_override="analysis",
+            usage_scope="ab1234567890control",
+        )
+    )
+
+    assert draft.generation_provider == "test-provider"
+    assert draft.generation_model == "writer-v1"
+    assert draft.editorial_strategy["status"] == "disabled"
+    assert "ОТДЕЛЬНЫЙ ПЛАН РЕДАКЦИОННОГО СТРАТЕГА" not in captured["prompt"]
+    assert "SHARED EXAMPLES" in captured["prompt"]
+    assert "СТИЛЬ ХУКА:" in captured["prompt"]
+    assert captured["examples"] == [("Example hook", "Example body")]
+    assert captured["usage_scope"] == "ab1234567890control"

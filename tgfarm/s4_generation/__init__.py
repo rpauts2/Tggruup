@@ -317,6 +317,11 @@ async def generate(
     format_plan=None,
     *,
     video=None,
+    strategy_enabled: bool = True,
+    holdout_override: bool | None = None,
+    examples_override: list[tuple[str, str]] | None = None,
+    hook_style_override: str | None = None,
+    usage_scope: str = "",
 ) -> DraftPost:
     """Write one post.
 
@@ -349,9 +354,17 @@ async def generate(
 
     # Holdout bucket: a fixed share of drafts is written without the few-shot
     # examples, so the measurement loop can compare voices honestly.
-    holdout = random.random() < max(0.0, min(1.0, get_settings().holdout_share))
-    examples = [] if holdout else await to_thread(_best_examples, plan.channel_id)
-    hook_style = _pick_hook_style(plan.channel_id)
+    holdout = (
+        bool(holdout_override)
+        if holdout_override is not None
+        else random.random() < max(0.0, min(1.0, get_settings().holdout_share))
+    )
+    examples = (
+        list(examples_override)
+        if examples_override is not None
+        else [] if holdout else await to_thread(_best_examples, plan.channel_id)
+    )
+    hook_style = hook_style_override or _pick_hook_style(plan.channel_id)
     somber = _is_somber_topic(items)
     somber_line = (
         "ТЕМА ТРАГИЧЕСКАЯ: юмор и ирония ЗАПРЕЩЕНЫ в этом посте полностью. "
@@ -381,7 +394,7 @@ async def generate(
             policy.reserve,
             "s4_draft",
             purpose=fmt,
-            cluster_public_id=plan.cluster_public_id,
+            cluster_public_id=usage_scope or plan.cluster_public_id,
         )
     else:
         decision = None
@@ -390,7 +403,7 @@ async def generate(
             "s4_draft",
             purpose=fmt,
             reason=reason,
-            cluster_public_id=plan.cluster_public_id,
+            cluster_public_id=usage_scope or plan.cluster_public_id,
         )
 
     if decision is not None and decision.allowed:
@@ -409,29 +422,36 @@ async def generate(
         except Exception as exc:  # noqa: BLE001 - memory must never stall generation
             log.warning("topic memory lookup failed: %s", exc)
 
-        # The strategist is a separate, budgeted role. If it is unavailable,
-        # the writer continues with the existing persona/router/format brief.
-        try:
-            from tgfarm.agents.editorial import create_editorial_strategy, render_strategy
+        # The strategist is a separate, budgeted role. The benchmark control
+        # arm omits this block while holding every other prompt input constant.
+        if strategy_enabled:
+            try:
+                from tgfarm.agents.editorial import create_editorial_strategy, render_strategy
 
-            editorial_strategy = await create_editorial_strategy(
-                items,
-                persona,
-                plan.angle,
-                fmt,
-                cluster_public_id=plan.cluster_public_id,
-                format_reason=(format_plan.reason if format_plan else ""),
-            )
-            strategy_block = render_strategy(editorial_strategy)
-            if strategy_block:
-                prompt += f"\\n\\nОТДЕЛЬНЫЙ ПЛАН РЕДАКЦИОННОГО СТРАТЕГА:\\n{strategy_block}"
-        except Exception as exc:  # noqa: BLE001 - optional agent must not stop generation
+                editorial_strategy = await create_editorial_strategy(
+                    items,
+                    persona,
+                    plan.angle,
+                    fmt,
+                    cluster_public_id=usage_scope or plan.cluster_public_id,
+                    format_reason=(format_plan.reason if format_plan else ""),
+                )
+                strategy_block = render_strategy(editorial_strategy)
+                if strategy_block:
+                    prompt += f"\\n\\nОТДЕЛЬНЫЙ ПЛАН РЕДАКЦИОННОГО СТРАТЕГА:\\n{strategy_block}"
+            except Exception as exc:  # noqa: BLE001 - optional agent must not stop generation
+                editorial_strategy = {
+                    "role": "editorial_strategist",
+                    "status": "fallback",
+                    "reason": f"Стратег недоступен ({type(exc).__name__}); использован базовый план.",
+                }
+                log.warning("editorial strategy failed: %s", type(exc).__name__)
+        else:
             editorial_strategy = {
                 "role": "editorial_strategist",
-                "status": "fallback",
-                "reason": f"Стратег недоступен ({type(exc).__name__}); использован базовый план.",
+                "status": "disabled",
+                "reason": "paired benchmark control arm",
             }
-            log.warning("editorial strategy failed: %s", type(exc).__name__)
 
         payload, response = await llm.complete_json(
             _DRAFT_SYSTEM,
@@ -462,6 +482,9 @@ async def generate(
     draft.generation_provider = (
         response.provider if response.provider != "offline" else "offline"
     )
+    draft.generation_model = response.model or (
+        "offline" if response.provider == "offline" else ""
+    )
     draft.hook_style = classify_hook_style(draft.hook)
     draft.variant = "holdout" if holdout else "a"
     draft.post_format = fmt
@@ -469,7 +492,12 @@ async def generate(
         "role": "editorial_strategist", "status": "skipped", "reason": "online draft not selected"
     }
 
-    verified = await verify(draft, items, generation_provider=draft.generation_provider)
+    verified = await verify(
+        draft,
+        items,
+        generation_provider=draft.generation_provider,
+        usage_scope=usage_scope,
+    )
     draft.claims = verified
 
     log.info(
@@ -491,6 +519,7 @@ async def verify(
     items: list[ItemScored],
     *,
     generation_provider: str = "offline",
+    usage_scope: str = "",
 ) -> list[Claim]:
     """Ask the model to bind each claim to a source; fall back to lexical binding."""
     allowed = {item.url: item for item in items}
@@ -521,12 +550,15 @@ async def verify(
             "s4_verify",
             purpose="verify",
             reason=reason,
-            cluster_public_id="",
+            cluster_public_id=usage_scope,
         )
         return _fallback_claims(draft, items)
 
     decision = await to_thread(
-        policy.reserve, "s4_verify", purpose="verify"
+        policy.reserve,
+        "s4_verify",
+        purpose="verify",
+        cluster_public_id=usage_scope,
     )
     if not decision.allowed:
         return _fallback_claims(draft, items)

@@ -16,6 +16,8 @@
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
     tgfarm audit [--days 7]     content, source and AI usage audit
+    tgfarm agent-benchmark --cluster ID  compare writer vs writer + strategist (never publishes)
+    tgfarm agent-benchmark --report      summarize paired benchmark history
     tgfarm doctor               diagnose configuration and connectivity
     tgfarm backup-test FILE     restore a backup to a temporary DB and verify it
     tgfarm demo                 seed synthetic data and run a cycle offline
@@ -502,6 +504,21 @@ def cmd_audit(args) -> int:
     return 0
 
 
+def cmd_agent_benchmark(args) -> int:
+    from tgfarm.agents.benchmark import aggregate_benchmarks, run_paired_benchmark
+
+    if args.report:
+        _print(aggregate_benchmarks())
+        return 0
+
+    _bootstrap()
+    result = asyncio.run(
+        run_paired_benchmark(args.cluster, channel_id=args.channel or None)
+    )
+    _print(result)
+    return 0 if result.get("status") == "completed" else 2
+
+
 def cmd_maintain(args) -> int:
     """Run the maintenance pass manually; the cycle also runs it every time."""
     from tgfarm.maintenance import run_maintenance
@@ -769,6 +786,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.add_argument("--days", type=int, default=7)
     p_audit.add_argument("--channel", default="", help="limit to one channel id")
     p_audit.set_defaults(func=cmd_audit)
+
+    p_agent_benchmark = sub.add_parser(
+        "agent-benchmark",
+        help="paired, non-publishing comparison of the editorial strategist",
+    )
+    group_agent_benchmark = p_agent_benchmark.add_mutually_exclusive_group(required=True)
+    group_agent_benchmark.add_argument("--cluster", help="public ID of one source cluster to evaluate")
+    group_agent_benchmark.add_argument(
+        "--report",
+        action="store_true",
+        help="summarize previous paired experiments without making LLM calls",
+    )
+    p_agent_benchmark.add_argument(
+        "--channel",
+        default="",
+        help="optional channel/persona ID; otherwise use the first routed channel",
+    )
+    p_agent_benchmark.set_defaults(func=cmd_agent_benchmark)
 
     sub.add_parser("doctor", help="diagnose configuration").set_defaults(func=cmd_doctor)
     sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
