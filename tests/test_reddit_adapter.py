@@ -300,3 +300,55 @@ def test_reddit_adapter_does_not_require_a_fixed_default_subreddit(monkeypatch):
     assert adapter.configured() is True
 
 
+
+
+
+def test_registered_reddit_adapter_redacts_submit_exception(monkeypatch):
+    monkeypatch.setattr(adapters, "get_settings", _reddit_settings)
+    adapter = adapters.ADAPTERS["reddit"]
+    adapter._token = ""
+    adapter._token_expires_at = 0.0
+    private_value = "reddit-private-diagnostic-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url == "https://www.reddit.com/api/v1/access_token":
+            return _token_response(request)
+        raise RuntimeError(f"upstream diagnostic: Authorization: Bearer {private_value}")
+
+    _mock_httpx(monkeypatch, handler)
+    result = asyncio.run(
+        adapter.publish(
+            CrosspostPayload(platform="reddit", title="Title", text="Source-backed body")
+        )
+    )
+
+    assert result.status == "unknown"
+    assert private_value not in (result.error or "")
+    assert "Bearer [REDACTED]" in (result.error or "")
+
+
+def test_registered_reddit_adapter_preserves_retry_after(monkeypatch):
+    monkeypatch.setattr(adapters, "get_settings", _reddit_settings)
+    adapter = adapters.ADAPTERS["reddit"]
+    adapter._token = ""
+    adapter._token_expires_at = 0.0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url == "https://www.reddit.com/api/v1/access_token":
+            return _token_response(request)
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            json={"message": "rate limited"},
+            request=request,
+        )
+
+    _mock_httpx(monkeypatch, handler)
+    result = asyncio.run(
+        adapter.publish(
+            CrosspostPayload(platform="reddit", title="Title", text="Source-backed body")
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.retry_after_seconds == 120

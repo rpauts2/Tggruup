@@ -2119,6 +2119,7 @@
 
     const labels = {
       posted: "опубликован",
+      scheduled: "отложен на площадке",
       skipped: "пропущен",
       failed: "временная ошибка",
       permanent: "постоянная ошибка",
@@ -2130,6 +2131,7 @@
     };
     const statusClass = {
       posted: "tag-ok",
+      scheduled: "tag-acc",
       failed: "tag-warn",
       permanent: "tag-err",
       permanent_failure: "tag-err",
@@ -2161,7 +2163,7 @@
         return statuses.some((status) => ["failed", "permanent", "permanent_failure"].includes(status));
       }
       if (state.crosspostFilter === "pending") {
-        return statuses.some((status) => ["publishing", "retry_authorized", "failed"].includes(status));
+        return statuses.some((status) => ["scheduled", "publishing", "retry_authorized", "failed"].includes(status));
       }
       return true;
     };
@@ -2215,13 +2217,17 @@
       const needsAttention = (summary.unknown || 0) + (summary.failed || 0)
         + (summary.permanent || 0) + (summary.permanent_failure || 0);
       const activeCount = (summary.publishing || 0) + (summary.retry_authorized || 0);
+      const scheduledCount = summary.scheduled || 0;
       const allSkipped = rows.length > 0 && rows.every((row) => row.status === "skipped");
       const overall = needsAttention ? "нужно внимание"
+        : scheduledCount ? "есть отложенные публикации"
         : activeCount ? "доставка идёт"
         : successCount ? "есть результат"
         : allSkipped ? "не настроено"
         : "ожидает доставки";
-      const overallClass = needsAttention ? "tag-warn" : (activeCount ? "tag-acc" : (successCount ? "tag-ok" : ""));
+      const overallClass = needsAttention ? "tag-warn"
+        : (scheduledCount || activeCount) ? "tag-acc"
+        : (successCount ? "tag-ok" : "");
       return `
         <div class="item delivery-card" style="align-items:flex-start">
           <div class="item-main" style="min-width:0">

@@ -281,8 +281,7 @@ def test_pikabu_is_scheduled_through_the_automatic_crosspost_pipeline(monkeypatc
         return CrosspostResult(
             platform="pikabu",
             status="scheduled",
-            remote_id="pikabu-auto-654",
-            url="https://pikabu.ru/profile/scheduled",
+            error="Отложенная публикация сохранена в очереди Пикабу.",
         )
 
     monkeypatch.setattr(adapter, "publish", schedule)
@@ -299,6 +298,47 @@ def test_pikabu_is_scheduled_through_the_automatic_crosspost_pipeline(monkeypatc
     assert captured[0].meta["post_public_id"] == post.public_id
     assert len(logged) == 1
     assert logged[0][0].status == "scheduled"
+    assert logged[0][0].remote_id is None
+    assert logged[0][0].url is None
+
+
+def test_pikabu_adapter_does_not_fabricate_remote_post_identity(monkeypatch):
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth import adapters
+
+    adapter = adapters.ADAPTERS["pikabu"]
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+
+    async def schedule(post_public_id, *, title, body):
+        assert post_public_id == "pikabu_adapter_contract_123"
+        assert title == "A useful native title"
+        assert body == "A source-grounded article body."
+        return {
+            "ok": True,
+            "status": "scheduled",
+            "scheduled_at": "2026-11-04T12:30:00+03:00",
+            "target_name": "Технологии",
+            "url": "https://pikabu.ru/editor/draft/123",
+            "detail": "Отложенная публикация сохранена в нативной очереди Пикабу.",
+        }
+
+    monkeypatch.setattr("tgfarm.community_drafts.publish_pikabu_scheduled", schedule)
+    result = asyncio.run(
+        adapter.publish(
+            CrosspostPayload(
+                platform="pikabu",
+                title="A useful native title",
+                text="A source-grounded article body.",
+                meta={"post_public_id": "pikabu_adapter_contract_123"},
+            )
+        )
+    )
+
+    assert result.status == "scheduled"
+    assert result.remote_id is None
+    assert result.url is None
+    assert "2026-11-04T12:30:00+03:00" in (result.error or "")
+    assert "Технологии" in (result.error or "")
 
 
 def test_scheduled_crosspost_is_terminal_and_not_retried(monkeypatch):

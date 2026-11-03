@@ -7,6 +7,7 @@ This is the release gate for the end-to-end farm, not a claim that every platfor
 - [ ] `off` / demo mode cannot make an external publish request, even when the environment was configured for live mode.
 - [ ] A publish attempt has a durable local record before external delivery starts.
 - [ ] A confirmed remote success stores the remote ID/URL and a terminal local state.
+- [ ] A provider-side scheduled queue is distinct from a public post: store a remote ID or public URL only when the platform returns that identifier or permalink.
 - [ ] A timeout or process death after a possibly accepted request becomes `publish_unknown`; it is never blindly retried.
 - [ ] Retrying an unknown result requires operator reconciliation with the destination.
 - [ ] Retryable failures have a bounded attempt count and respect provider retry delays.
