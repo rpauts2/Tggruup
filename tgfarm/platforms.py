@@ -241,14 +241,15 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "pikabu", "name": "Пикабу", "symbol": "П", "color": "#6B8E23",
         "category": "Сообщества", "market": "Россия", "priority": "P3",
-        "mode": "planned", "roles": ["community", "visual"],
+        "mode": "built_in", "roles": ["community", "visual", "crosspost"],
         "description": (
-            "Нативные посты с заголовком, текстовыми и медиа-блоками, тегами и сообществами. "
-            "Посты нужно адаптировать под формат Пикабу, а не отправлять как голую ссылку."
+            "Нативные посты с автоматическим подбором сообщества и существующих тегов, "
+            "повторным чтением правил и постановкой в официальную отложенную публикацию Пикабу."
         ),
         "requirements": (
-            "Войти через отдельный профиль браузера. Публичный API создания постов не подтверждён; "
-            "для размещения используйте редактор Пикабу и соблюдайте его правила и лимиты."
+            "Нужна подтверждённая браузерная сессия Пикабу. Используется штатная отложенная публикация: "
+            "час между слотами, максимум 10 дней вперёд, до 12 ожидающих постов и консервативно "
+            "одно создание в сутки."
         ),
         "docs_url": "https://pikabu.ru/",
     },
@@ -1024,6 +1025,12 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         if settings.tumblr_client_id and settings.tumblr_client_secret:
             return False, "Tumblr App настроено; подключи аккаунт через OAuth и выбери блог."
         return False, "Нужны Tumblr OAuth Client ID/Secret и подключение через OAuth."
+    if platform_id == "pikabu":
+        from tgfarm.browser_auth import browser_session_status
+        status = browser_session_status("pikabu")
+        if status.get("verified") and status.get("profile_saved"):
+            return True, "Браузерная сессия Пикабу подтверждена; публикация выполняется через штатный редактор и отложку."
+        return False, "Нужно войти в Пикабу через отдельный браузерный профиль и подтвердить сессию."
     if platform_id == "dzen":
         try:
             profile = settings.dzen_profile_path()
@@ -1136,7 +1143,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 }
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
-    "vk", "max", "x", "reddit", "bluesky", "youtube", "threads", "mastodon",
+    "vk", "max", "x", "reddit", "pikabu", "bluesky", "youtube", "threads", "mastodon",
     "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 

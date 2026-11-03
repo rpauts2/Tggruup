@@ -63,6 +63,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
             "наука": ("наук", "исследован", "эксперимент", "данн", "космос"),
         },
     },
+    "pikabu": {
+        "daily": 1, "max_daily": 1, "min_gap_hours": 24,
+        "age_days": 5, "broad": False,
+        "topics": {
+            "практические истории": ("опыт", "истори", "случа", "практик", "наблюден", "вывод"),
+            "технологии и наука": ("технолог", "ai", "нейросет", "программ", "наук", "исследован", "космос"),
+            "полезные объяснения": ("как", "почему", "объясн", "разбор", "совет", "инструкц"),
+        },
+    },
     "bluesky": {
         "daily": 2, "max_daily": 3, "min_gap_hours": 6,
         "age_days": 7, "broad": False,
@@ -407,11 +416,11 @@ def effective_daily_cap(platform_id: str, recent_logs: list[Any]) -> int:
     base = int(rule["daily"])
     attempts = [
         row for row in recent_logs
-        if row.platform == platform_id and row.status in {"posted", "failed", "permanent"}
+        if row.platform == platform_id and row.status in {"posted", "scheduled", "failed", "permanent"}
     ]
     if len(attempts) < 8:
         return base
-    success_rate = sum(1 for row in attempts if row.status == "posted") / len(attempts)
+    success_rate = sum(1 for row in attempts if row.status in {"posted", "scheduled"}) / len(attempts)
     if success_rate >= 0.95:
         return min(int(rule["max_daily"]), base + 1)
     if success_rate < 0.70:
@@ -629,7 +638,7 @@ def build_distribution_plan(
 
         pair_logs = [row for row in logs if row.platform == platform_id]
         cap = effective_daily_cap(platform_id, pair_logs)
-        count_statuses = {"posted", "publishing", "unknown"}
+        count_statuses = {"posted", "scheduled", "publishing", "unknown"}
         daily_sent = sum(
             1 for row in latest.values()
             if row.platform == platform_id
@@ -686,7 +695,7 @@ def build_distribution_plan(
                     f"{post.hook}\n{post.body}"
                     for post, _channel in candidates
                     if (post.public_id, platform_id) in latest
-                    and latest[(post.public_id, platform_id)].status == "posted"
+                    and latest[(post.public_id, platform_id)].status in {"posted", "scheduled"}
                     and (_utc(latest[(post.public_id, platform_id)].created_at) or cutoff) >= logs_cutoff
                 ]
                 for post, channel in candidates:
@@ -697,7 +706,7 @@ def build_distribution_plan(
                         continue
                     latest_log = latest.get((post.public_id, platform_id))
                     if latest_log is not None:
-                        if latest_log.status in {"posted", "unknown", "publishing", "permanent"}:
+                        if latest_log.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
                             continue
                         if latest_log.status == "failed":
                             retry_at = _utc(latest_log.retry_after_at)

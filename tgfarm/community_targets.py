@@ -148,10 +148,10 @@ def _target_editorial_brief(
         "constraints": constraints,
         "warnings": warnings,
         "blockers": blockers,
-        "decision": "eligible_for_operator_review" if target.get("recommended") and not blockers else "hold",
+        "decision": "eligible_for_automatic_pipeline" if target.get("recommended") and not blockers else "hold",
         "publication_authorized": False,
         "decision_note": (
-            "Подбор темы и правила проверены; это редакционная рекомендация, а не разрешение площадки."
+            "Тема и правила прошли проверку конвейера; перед отправкой они проверяются повторно."
             if target.get("recommended") and not blockers else
             "Не публиковать: цель не прошла проверку правил или тематического соответствия."
         ),
@@ -330,7 +330,10 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
         if item is not None
     ]
     candidates.sort(key=lambda x: (x["recommended"], x["score"], x["name"]), reverse=True)
-    best = next((item for item in candidates if item["recommended"]), None)
+    best = next((
+        item for item in candidates
+        if item["recommended"] and _valid_pikabu_community_tags(item.get("suggested_tags") or [])
+    ), None)
     return {
         "platform": "pikabu",
         "post_public_id": post["public_id"],
@@ -343,9 +346,9 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "Проверь специальные теги «Моё», «Политика», «18+», «Жесть» и «Контент нейросетей», когда они применимы.",
         ],
         "rules_source": PIKABU_RULES,
-        "auto_publish_supported": False,
+        "auto_publish_supported": best is not None,
         "detail": (
-            f"Рекомендуемое сообщество: {best['name']} ({best['score']}/100)."
+            f"Автоматическая публикация возможна: {best['name']} ({best['score']}/100)."
             if best else
             "Нет сообщества с прочитанными правилами и достаточным совпадением. Не назначаю цель автоматически."
         ),
@@ -537,3 +540,52 @@ async def recommend_community_target(platform_id: str, post_public_id: str) -> d
     if not post.get("title") or not post.get("body"):
         raise CommunityDraftError("У поста нет заголовка или текста для тематического подбора.")
     return await (_vc(post) if platform_id == "vc_ru" else _pikabu(post))
+
+
+def _valid_pikabu_community_tags(values: list[str]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        tag = re.sub(r"\s+", " ", str(value or "").strip().lstrip("#")).strip()
+        key = tag.casefold()
+        if not tag or key in seen or len(tag) > 50:
+            continue
+        if key in {"моё", "мое", "18+", "длиннопост", "текст", "видео", "гифка"}:
+            continue
+        seen.add(key)
+        selected.append(tag)
+    total = sum(len(tag) for tag in selected) + max(0, len(selected) - 1)
+    return selected[:8] if len(selected) >= 2 and total <= 250 else []
+
+
+async def recommend_automatic_pikabu_target(
+    post_public_id: str,
+    *,
+    post_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Choose one live-rule-checked community for unattended native publishing."""
+    if post_override is None:
+        result = await recommend_community_target("pikabu", post_public_id)
+    else:
+        from tgfarm.community_drafts import CommunityDraftError
+        post = dict(post_override)
+        post["public_id"] = str(post_public_id)
+        if not post.get("title") or not post.get("body"):
+            raise CommunityDraftError("Для подбора сообщества Пикабу нужен заголовок и текст.")
+        result = await _pikabu(post)
+    for candidate in result.get("candidates", []):
+        if not isinstance(candidate, dict) or not candidate.get("recommended"):
+            continue
+        if candidate.get("blockers") or not candidate.get("rules_available"):
+            continue
+        tags = _valid_pikabu_community_tags(candidate.get("suggested_tags") or [])
+        if tags:
+            return {"ok": True, "platform": "pikabu", "selected": candidate, "tags": tags}
+    return {
+        "ok": False, "platform": "pikabu", "selected": None, "tags": [],
+        "reason": (
+            "Не найдено сообщества с прочитанными правилами и минимум двумя существующими "
+            "тематическими тегами. Публикация пропущена; конвейер продолжает другие площадки."
+        ),
+        "candidates": result.get("candidates", []),
+    }
