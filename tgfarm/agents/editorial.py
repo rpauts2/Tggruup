@@ -10,10 +10,17 @@ from typing import Any
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import to_thread
+from tgfarm.core.settings import get_settings
 from tgfarm.llm import policy
 from tgfarm.llm.client import get_llm
 
 log = get_logger(__name__)
+
+def _strategist_model() -> str | None:
+    """Return the optional dedicated model for the strategist role."""
+    value = str(get_settings().llm_strategist_model or "").strip()
+    return value or None
+
 
 STRATEGIST_SYSTEM = """Ты — редакционный стратег TgFarm, отдельный агент перед автором.
 Твоя задача — спроектировать полезный материал для конкретной аудитории, а не писать сам пост.
@@ -117,6 +124,7 @@ async def create_editorial_strategy(
             STRATEGIST_SYSTEM,
             prompt,
             max_tokens=650,
+            model=_strategist_model(),
             offline_fallback={
                 "reader_value": "",
                 "core_question": "",

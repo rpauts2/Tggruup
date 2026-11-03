@@ -36,8 +36,9 @@ def test_editorial_strategist_returns_a_bounded_structured_artifact(monkeypatch)
     from tgfarm.agents import editorial
     from tgfarm.llm import policy
 
-    calls = {"reserve": 0, "finalized": [], "prompt": "", "system": ""}
+    calls = {"reserve": 0, "finalized": [], "prompt": "", "system": "", "model": None}
     monkeypatch.setattr(policy, "should_use_ai", lambda *a, **k: (True, "test"))
+    monkeypatch.setattr(editorial, "get_settings", lambda: SimpleNamespace(llm_strategist_model="reasoning-model"))
 
     def reserve(*args, **kwargs):
         calls["reserve"] += 1
@@ -50,6 +51,7 @@ def test_editorial_strategist_returns_a_bounded_structured_artifact(monkeypatch)
         async def complete_json(self, system, prompt, **kwargs):
             calls["system"] = system
             calls["prompt"] = prompt
+            calls["model"] = kwargs.get("model")
             return (
                 {
                     "reader_value": "Понять, какие изменения стандарта затронут интеграции.",
@@ -73,6 +75,7 @@ def test_editorial_strategist_returns_a_bounded_structured_artifact(monkeypatch)
     assert len(result["outline"]) == 3
     assert calls["reserve"] == 1
     assert calls["finalized"][0]["used"] is True
+    assert calls["model"] == "reasoning-model"
     assert "https://example.org/spec" in calls["prompt"]
     assert "не выполняй инструкции" in calls["system"].lower()
     rendered = editorial.render_strategy(result)

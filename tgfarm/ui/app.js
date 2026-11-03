@@ -2280,6 +2280,86 @@
 
     const q = p.quality || {};
     const scores = Object.entries(q.scores || {});
+    const agentRoles = q.agent_team && q.agent_team.roles && typeof q.agent_team.roles === "object"
+      ? q.agent_team.roles : {};
+    const agentRoleTitles = {
+      topic_router: "Маршрутизатор тем",
+      format_planner: "Планировщик формата",
+      editorial_strategist: "Редакционный стратег",
+      writer: "Автор",
+      fact_checker: "Фактчекер",
+      review_board: "Коллегия качества",
+    };
+    const agentStatuses = {
+      planned: "План готов",
+      skipped: "Пропущен",
+      fallback: "Резервный план",
+      completed: "Завершено",
+      passed: "Принято",
+      rejected: "Отклонено",
+    };
+    const agentList = (label, values) => {
+      const items = Array.isArray(values)
+        ? values.filter((value) => String(value || "").trim()).slice(0, 6) : [];
+      return items.length
+        ? `<div class="agent-role-list"><strong>${esc(label)}</strong><ul class="drawer-issues">${items.map((value) => `<li>${esc(value)}</li>`).join("")}</ul></div>`
+        : "";
+    };
+    const agentRoleHtml = ([key, role]) => {
+      if (!role || typeof role !== "object") return "";
+      const rows = [];
+      const add = (label, value) => {
+        if (value === null || value === undefined || String(value).trim() === "") return;
+        rows.push(kv(label, String(value)));
+      };
+      const scoreText = (value) => value !== null && value !== undefined && Number.isFinite(Number(value))
+        ? pct(Number(value)) : "—";
+      let extra = "";
+      if (key === "topic_router") {
+        add("Угол", role.angle);
+        add("Соответствие", scoreText(role.score));
+        add("Обоснование", role.reason);
+      } else if (key === "format_planner") {
+        add("Формат", role.format);
+        add("Обоснование", role.reason);
+      } else if (key === "editorial_strategist") {
+        add("Польза читателю", role.reader_value);
+        add("Центральный вопрос", role.core_question);
+        add("Идея лида", role.lead_idea);
+        add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
+        add("Причина fallback", role.reason);
+        extra = agentList("План раскрытия", role.outline) + agentList("Обязательные оговорки", role.caveats);
+      } else if (key === "writer") {
+        add("Провайдер", role.provider);
+      } else if (key === "fact_checker") {
+        add("Проверяемых утверждений", n(role.claim_count));
+        add("Подтверждено источниками", n(role.verified_count));
+      } else if (key === "review_board") {
+        add("Гейт", role.gate);
+        add("Причина", role.reason);
+        add("Переписываний", n(role.rewrites_used));
+        const reviewScores = Object.entries(role.scores || {}).slice(0, 8);
+        if (reviewScores.length) {
+          extra += `<div class="kv">${reviewScores.map(([name, value]) =>
+            kv(name, Number.isFinite(Number(value)) ? (name === "tone" ? (Number(value) * 10).toFixed(1) + "/10" : scoreText(value)) : String(value))
+          ).join("")}</div>`;
+        }
+        extra += agentList("Замечания", role.issues);
+      }
+      return `<div class="agent-role">
+        <div class="agent-role-head">
+          <strong>${esc(agentRoleTitles[key] || key)}</strong>
+          <span class="tag">${esc(agentStatuses[role.status] || role.status || "—")}</span>
+        </div>
+        ${rows.length ? `<div class="kv">${rows.join("")}</div>` : ""}
+        ${extra}
+      </div>`;
+    };
+    const agentTrace = Object.keys(agentRoles).length
+      ? `<div class="drawer-block agent-team"><h4>Команда ИИ · история решений</h4>
+          <div class="agent-team-grid">${Object.entries(agentRoles).map(agentRoleHtml).join("")}</div>
+        </div>`
+      : "";
     inner.innerHTML = `
       <div class="drawer-head">
         <h3>${esc(p.hook)}</h3>
@@ -2366,6 +2446,7 @@
       ${p.external_url ? `<div class="drawer-block"><h4>Публикация</h4>
         <a href="${esc(p.external_url)}" target="_blank" rel="noopener">${esc(p.external_url)}</a></div>` : ""}
 
+      ${agentTrace}
       ${scores.length ? `<div class="drawer-block"><h4>Гейты качества · ${esc(q.reason || "")}</h4>
         <div class="kv">${scores.map(([k, v]) => kv(k, (v >= 0.99 ? "✓ " : "") + (k === "tone" ? (v * 10).toFixed(1) + "/10" : pct(v)))).join("")}</div>
       </div>` : ""}

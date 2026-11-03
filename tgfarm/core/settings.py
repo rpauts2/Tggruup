@@ -187,6 +187,8 @@ class Settings(BaseSettings):
     # the rewriter use this model instead of the generation chain. A cheap model
     # can draft while a stronger one judges; empty means "same chain".
     llm_critic_model: str = Field(default="", alias="LLM_CRITIC_MODEL")
+    # Optional model override for the S4 editorial strategist; empty uses the default LLM chain.
+    llm_strategist_model: str = Field(default="", alias="LLM_STRATEGIST_MODEL")
 
     # --- LongCat (OpenAI-compatible) ----------------------------------------
     # The platform currently exposes only paid LongCat models, despite its
