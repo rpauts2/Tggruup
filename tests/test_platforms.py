@@ -21,7 +21,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     catalog = platforms.get_platform_catalog()
     entries = {item["id"]: item for item in catalog["platforms"]}
 
-    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "pikabu", "bluesky", "mastodon", "threads", "linkedin", "medium", "telegraph", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr"} <= {
+    assert {"telegram", "vk", "dzen", "max", "x", "reddit", "pikabu", "bluesky", "mastodon", "threads", "linkedin", "medium", "telegraph", "wechat", "youtube", "tiktok", "instagram", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr"} <= {
         key for key, item in entries.items() if item["supported"]
     }
     assert entries["reddit"]["supported"] is True
@@ -119,6 +119,13 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["telegraph"]["auth"]["method"] == "credentials"
     assert {field["key"] for field in entries["telegraph"]["auth"]["fields"]} == {"TELEGRAPH_ACCESS_TOKEN"}
     assert entries["medium"]["auth"]["method"] == "credentials"
+    assert entries["wechat"]["supported"] is True
+    assert entries["wechat"]["mode"] == "built_in"
+    assert entries["wechat"]["automation_mode"] == "automatic"
+    assert entries["wechat"]["roles"] == ["article", "crosspost"]
+    assert entries["wechat"]["auth"]["method"] == "credentials"
+    assert {field["key"] for field in entries["wechat"]["auth"]["fields"]} == {"WECHAT_APP_ID", "WECHAT_APP_SECRET", "WECHAT_AUTHOR"}
+    assert "freepublish" in entries["wechat"]["requirements"].lower()
     assert {field["key"] for field in entries["medium"]["auth"]["fields"]} == {"MEDIUM_ACCESS_TOKEN"}
     assert "legacy" in entries["medium"]["requirements"].lower()
     assert {field["key"] for field in entries["linkedin"]["auth"]["fields"]} == {
@@ -156,7 +163,7 @@ def test_catalog_separates_real_adapters_from_future_networks(tmp_path, monkeypa
     assert entries["douyin"]["editorial"]["format"] == "vertical_video"
     assert "preview" in entries["douyin"]["editorial"]["rule_gate"].lower()
     assert all("editorial" in item for item in entries.values())
-    assert catalog["summary"]["supported"] == 22
+    assert catalog["summary"]["supported"] == 23
     assert catalog["summary"]["total"] >= 20
     # The public catalog may name environment variables, but never returns their values.
     assert all("access_token" not in item and "api_key" not in item for item in entries.values())
@@ -270,7 +277,7 @@ def test_platform_catalog_is_available_only_through_authenticated_api(client, mo
     response = client.get("/api/platforms", headers={HEADER: ensure_token()})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["supported"] == 22
+    assert payload["summary"]["supported"] == 23
     entries = {item["id"]: item for item in payload["platforms"]}
     assert entries["reddit"]["supported"] is True
 
