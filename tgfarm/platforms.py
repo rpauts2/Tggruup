@@ -209,10 +209,17 @@ CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "medium", "name": "Medium", "symbol": "Me", "color": "#E7E7E7",
-        "category": "Публикации", "market": "Мировые", "priority": "P3",
-        "mode": "planned", "roles": ["article", "search"],
-        "description": "Полноценные статьи и поисковый трафик; перед включением проверить актуальную доступность API создания публикаций.",
-        "requirements": "Аккаунт автора и подтверждённый рабочий API-путь либо ручной экспорт.",
+        "category": "Публикации", "market": "Мировые", "priority": "P2",
+        "mode": "built_in", "roles": ["article", "search", "crosspost"],
+        "description": (
+            "Нативные Markdown-статьи через Medium API для аккаунтов, у которых сохранился "
+            "ранее выданный legacy integration token."
+        ),
+        "requirements": (
+            "MEDIUM_ACCESS_TOKEN: только уже существующий токен старой интеграции. "
+            "Medium больше не принимает новые интеграции и не выдаёт новые токены; "
+            "пароль аккаунта сюда вводить нельзя."
+        ),
         "docs_url": "https://github.com/Medium/medium-api-docs",
     },
     {
@@ -428,6 +435,9 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "PINTEREST_REFRESH_TOKEN", "attribute": "pinterest_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний rotating refresh token."},
         {"key": "PINTEREST_TOKEN_EXPIRES_AT", "attribute": "pinterest_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
         {"key": "PINTEREST_REFRESH_TOKEN_EXPIRES_AT", "attribute": "pinterest_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+    ],
+    "medium": [
+        {"key": "MEDIUM_ACCESS_TOKEN", "attribute": "medium_access_token", "label": "Legacy Medium integration token", "secret": True, "placeholder": "Существующий токен старой интеграции", "help": "Работает только с токенами, выданными до остановки новых интеграций Medium. Платформа больше не выдаёт новые токены; не вводи сюда пароль аккаунта."},
     ],
     "linkedin": [
         {"key": "LINKEDIN_CLIENT_ID", "attribute": "linkedin_client_id", "label": "LinkedIn Client ID", "secret": False, "placeholder": "Client ID из Developer Portal", "help": "Приложение должно иметь OpenID Connect и Share on LinkedIn."},
@@ -1011,9 +1021,15 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
             "REDDIT_SUBREDDIT необязателен; без одобрения Data API обращения к Reddit отключены."
         )
+    if platform_id == "medium":
+        if str(getattr(settings, "medium_access_token", "") or "").strip():
+            return True, (
+                "Сохранён legacy Medium token. Перед отправкой TgFarm проверяет /v1/me; "
+                "новые API-интеграции Medium больше не выдаются."
+            )
+        return False, "Нужен уже существующий MEDIUM_ACCESS_TOKEN старой интеграции. Новые токены Medium не выдаются."
     if platform_id == "tumblr":
-        if (
-            settings.tumblr_client_id and settings.tumblr_client_secret
+        if ( and settings.tumblr_client_secret
             and settings.tumblr_access_token and settings.tumblr_refresh_token
             and settings.tumblr_blog_identifier
         ):
@@ -1144,7 +1160,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "pikabu", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
+    "instagram", "linkedin", "medium", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 
 

@@ -397,6 +397,9 @@ class Settings(BaseSettings):
     facebook_user_access_token: str = Field(default="", alias="FACEBOOK_USER_ACCESS_TOKEN")
     facebook_user_token_expires_at: int = Field(default=0, alias="FACEBOOK_USER_TOKEN_EXPIRES_AT")
 
+    # Medium legacy API token. Medium no longer accepts new API integrations.
+    medium_access_token: str = Field(default="", alias="MEDIUM_ACCESS_TOKEN")
+
     # Tumblr API v2 OAuth 2.0 and selected blog.
     tumblr_client_id: str = Field(default="", alias="TUMBLR_CLIENT_ID")
     tumblr_client_secret: str = Field(default="", alias="TUMBLR_CLIENT_SECRET")
