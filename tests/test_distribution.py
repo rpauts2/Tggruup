@@ -356,3 +356,11 @@ def test_consent_gated_video_platforms_get_recommendations_but_never_auto_select
     assert automatic == [candidate]
     assert suggestions == []
     assert _route_delivery_candidates("unavailable", [candidate], 1) == ([], [])
+
+
+def test_pikabu_has_a_conservative_native_scheduler_distribution_budget():
+    from tgfarm.distribution import PLATFORM_RULES
+
+    assert PLATFORM_RULES["pikabu"]["daily"] == 1
+    assert PLATFORM_RULES["pikabu"]["max_daily"] == 1
+    assert PLATFORM_RULES["pikabu"]["min_gap_hours"] == 24
