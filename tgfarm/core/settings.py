@@ -410,6 +410,7 @@ class Settings(BaseSettings):
     tumblr_blog_title: str = Field(default="", alias="TUMBLR_BLOG_TITLE")
     tumblr_blog_url: str = Field(default="", alias="TUMBLR_BLOG_URL")
     tumblr_username: str = Field(default="", alias="TUMBLR_USERNAME")
+    telegraph_access_token: str = Field(default="", alias="TELEGRAPH_ACCESS_TOKEN")
 
     # YouTube Data API upload and metadata.
     youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")

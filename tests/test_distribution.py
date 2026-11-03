@@ -366,3 +366,12 @@ def test_pikabu_has_a_conservative_native_scheduler_distribution_budget():
     assert PLATFORM_RULES["pikabu"]["daily"] == 1
     assert PLATFORM_RULES["pikabu"]["max_daily"] == 1
     assert PLATFORM_RULES["pikabu"]["min_gap_hours"] == 24
+
+
+def test_telegraph_is_an_automatic_longform_destination_with_daily_budget():
+    from tgfarm.distribution import PLATFORM_RULES
+    from tgfarm.platforms import AUTOMATIC_CROSSPOST_IDS
+
+    assert "telegraph" in AUTOMATIC_CROSSPOST_IDS
+    assert PLATFORM_RULES["telegraph"]["daily"] == 2
+    assert PLATFORM_RULES["telegraph"]["min_gap_hours"] == 8

@@ -505,6 +505,29 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
             account = (("@" + username + " · ") if username else "") + blog_title
             authorized = True
             detail = "Tumblr OAuth подтвердил профиль и доступ к выбранному блогу; write-доступ отдельно проверяется первой публикацией."
+        elif platform_id == "telegraph":
+            token = str(settings.telegraph_access_token or "").strip()
+            if not token:
+                raise RuntimeError("Введи TELEGRAPH_ACCESS_TOKEN.")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                payload = await _response_json(
+                    client,
+                    "https://api.telegra.ph/getAccountInfo",
+                    params={"access_token": token, "fields": '["short_name","author_name","author_url","page_count"]'},
+                )
+            profile = payload.get("result") or {}
+            if payload.get("ok") is not True or not isinstance(profile, dict):
+                raise RuntimeError("Telegraph не подтвердил access token.")
+            account_name = str(profile.get("short_name") or "Telegraph account").strip()
+            author_name = str(profile.get("author_name") or "").strip()
+            page_count = profile.get("page_count")
+            account = account_name + (f" · {author_name}" if author_name else "")
+            authorized = True
+            detail = (
+                "Telegraph API подтвердил аккаунт и access token"
+                + (f"; страниц создано: {int(page_count)}." if str(page_count or "").isdigit() else ".")
+                + " Первая публикация отдельно проверит write-доступ."
+            )
         elif platform_id == "reddit":
             from tgfarm.s9_growth.adapters import ADAPTERS, RedditAdapter
 

@@ -45,6 +45,7 @@ PLATFORM_LOGIN_URLS: dict[str, str] = {
     "mastodon": "https://joinmastodon.org/",
     "whatsapp_channels": "https://web.whatsapp.com/",
     "medium": "https://medium.com/",
+    "telegraph": "https://telegra.ph/",
     "vc_ru": "https://vc.ru/",
     "habr": "https://habr.com/",
     "pikabu": "https://pikabu.ru/",

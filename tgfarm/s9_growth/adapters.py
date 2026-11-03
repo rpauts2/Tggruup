@@ -2006,7 +2006,105 @@ class MediumAdapter:
             url=article_url if article_url.startswith('https://') else None,
         )
 
+
+
+class TelegraphAdapter:
+    """Publish long-form articles with Telegraph's official createPage API."""
+
+    platform = "telegraph"
+    max_title = 256
+    max_body = 50_000
+
+    def _token(self) -> str:
+        return str(get_settings().telegraph_access_token or "").strip()
+
+    def configured(self) -> bool:
+        return bool(self._token())
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        import json
+
+        token = self._token()
+        if not token:
+            return CrosspostResult(platform=self.platform, status="skipped")
+
+        from tgfarm.s9_growth.telegraph import API_BASE, USER_AGENT, build_telegraph_content
+
+        try:
+            content = build_telegraph_content(str(payload.title or ""), str(payload.text or ""))
+        except ValueError as exc:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error=redact_sensitive_text(exc, limit=280),
+            )
+
+        import httpx
+
+        form = {
+            "access_token": token,
+            "title": str(payload.title or "").strip(),
+            "content": json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+            "return_content": "false",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": USER_AGENT}) as client:
+                response = await client.post(f"{API_BASE}/createPage", data=form)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent" if 400 <= code < 500 and code != 429 else "failed",
+                error=f"Telegraph API returned HTTP {code}.",
+                retry_after_seconds=60 if code == 429 or code >= 500 else None,
+            )
+        except (httpx.TimeoutException, httpx.TransportError):
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Telegraph response was not confirmed after createPage.",
+            )
+        except (ValueError, TypeError):
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Telegraph returned an unreadable createPage response.",
+            )
+
+        if not isinstance(data, dict) or data.get("ok") is not True:
+            error = str((data or {}).get("error") or "TELEGRAPH_API_ERROR")[:100]
+            retryable = error.startswith("FLOOD_WAIT") or error == "TOO_MANY_REQUESTS"
+            return CrosspostResult(
+                platform=self.platform,
+                status="failed" if retryable else "permanent",
+                error=f"Telegraph rejected createPage ({error}).",
+                retry_after_seconds=60 if retryable else None,
+            )
+        page = data.get("result") or {}
+        path = str(page.get("path") or "").strip()
+        url = str(page.get("url") or "").strip()
+        if not path or not re.fullmatch(r"[A-Za-z0-9_-]+", path):
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Telegraph accepted createPage but did not return a valid page path.",
+            )
+        if not url:
+            url = f"https://telegra.ph/{path}"
+        if not url.startswith("https://telegra.ph/"):
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error="Telegraph returned an unexpected page URL; reconcile before retrying.",
+            )
+        return CrosspostResult(platform=self.platform, status="posted", remote_id=path, url=url)
+
+
+
 ADAPTERS: dict[str, Adapter] = {
+    "telegraph": TelegraphAdapter(),
     "medium": MediumAdapter(),
     "pikabu": PikabuAdapter(),
     "douyin": DouyinAdapter(),

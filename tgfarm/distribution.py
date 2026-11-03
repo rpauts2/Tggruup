@@ -195,6 +195,15 @@ PLATFORM_RULES: dict[str, dict[str, Any]] = {
             "истории и визуальное": ("истор", "культур", "искусств", "книг", "музык", "архитект"),
         },
     },
+    "telegraph": {
+        "daily": 2, "max_daily": 2, "min_gap_hours": 8,
+        "age_days": 10, "broad": True,
+        "topics": {
+            "подробные разборы": ("разбор", "анализ", "объясн", "исследован", "почему", "как"),
+            "технологии и наука": ("технолог", "ai", "нейросет", "программ", "наук", "космос"),
+            "практические инструкции": ("инструкц", "гайд", "руководств", "практик", "совет", "решен"),
+        },
+    },
     "medium": {
         "daily": 1, "max_daily": 1, "min_gap_hours": 24,
         "age_days": 7, "broad": False,
@@ -285,6 +294,7 @@ def _angle_fit(platform_id: str, angle: str) -> float:
         "threads": {"why_it_matters": 1.0, "history": 0.9, "comparison": 0.9, "checklist": 0.85},
         "mastodon": {"analysis": 1.0, "checklist": 0.95, "history": 0.8, "news": 0.7},
         "youtube": {"analysis": 0.95, "comparison": 1.0, "history": 0.95, "checklist": 0.9, "news": 0.7},
+        "telegraph": {"analysis": 1.0, "history": 0.95, "comparison": 0.95, "checklist": 0.9, "why_it_matters": 0.9},
     }
     return preferences.get(platform_id, {}).get(angle, 0.72)
 
@@ -886,6 +896,9 @@ def adapt_payload_for_platform(payload: Any, platform_id: str) -> Any:
     elif platform_id == "tumblr":
         payload.title = truncate(title, 200)
         payload.text = truncate(body, 20_000)
+    elif platform_id == "telegraph":
+        payload.title = truncate(title, 256)
+        payload.text = truncate(body, 50_000)
     return payload
 
 

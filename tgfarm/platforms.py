@@ -285,6 +285,14 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "docs_url": "https://www.tumblr.com/docs/en/api/v2",
     },
     {
+        "id": "telegraph", "name": "Telegraph", "symbol": "TG", "color": "#2AABEE",
+        "category": "Статьи", "market": "Мировые", "priority": "P2",
+        "mode": "built_in", "roles": ["article", "text", "crosspost"],
+        "description": "Самостоятельные статьи с заголовками, абзацами, списками, цитатами и ссылками через официальный Telegraph API.",
+        "requirements": "TELEGRAPH_ACCESS_TOKEN из createAccount/getAccountInfo. Публикация выполняется официальным createPage; просмотры доступны через getViews.",
+        "docs_url": "https://telegra.ph/api",
+    },
+    {
         "id": "snapchat", "name": "Snapchat", "symbol": "SC", "color": "#FFFC00",
         "category": "Видео", "market": "Мировые", "priority": "P3",
         "mode": "planned", "roles": ["video", "visual"],
@@ -466,6 +474,9 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
         {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
+    "telegraph": [
+        {"key": "TELEGRAPH_ACCESS_TOKEN", "attribute": "telegraph_access_token", "label": "Telegraph access token", "secret": True, "placeholder": "Токен из createAccount", "help": "Создай аккаунт через официальный Telegraph API createAccount и вставь access_token. Ключ хранится только в локальном .env."},
+    ],
     "tumblr": [
         {"key": "TUMBLR_CLIENT_ID", "attribute": "tumblr_client_id", "label": "Tumblr OAuth Client ID", "secret": False, "placeholder": "Consumer key из Tumblr OAuth Apps", "help": "Зарегистрируй приложение на tumblr.com/oauth/apps и укажи callback URL панели."},
         {"key": "TUMBLR_CLIENT_SECRET", "attribute": "tumblr_client_secret", "label": "Tumblr OAuth Client Secret", "secret": True, "placeholder": "Consumer secret", "help": "Секрет хранится только в локальном .env и не показывается повторно."},
@@ -514,6 +525,7 @@ _AUTH_URLS: dict[str, str] = {
     "tenchat": "https://tenchat.ru/",
     "twitch": "https://www.twitch.tv/",
     "tumblr": "https://www.tumblr.com/",
+    "telegraph": "https://telegra.ph/",
     "snapchat": "https://www.snapchat.com/",
     "wechat": "https://www.wechat.com/",
     "douyin": "https://www.douyin.com/",
@@ -855,6 +867,13 @@ def _write_state(state: dict[str, Any]) -> None:
 
 def _configured_state(platform_id: str) -> tuple[bool, str]:
     settings = get_settings()
+    if platform_id == "telegraph":
+        return (
+            bool(settings.telegraph_access_token.strip()),
+            "Telegraph access token задан; getAccountInfo подтвердит аккаунт перед первой отправкой."
+            if settings.telegraph_access_token.strip()
+            else "Нужен TELEGRAPH_ACCESS_TOKEN от официального метода createAccount.",
+        )
     if platform_id == "telegram":
         if settings.telegram_bot_token:
             return True, "Токен бота задан; доступность канала отдельно зависит от его прав."
@@ -1161,7 +1180,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "pikabu", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "medium", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
+    "instagram", "linkedin", "medium", "telegraph", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 
 

@@ -301,6 +301,17 @@ PROFILES: dict[str, dict[str, Any]] = {
         "target_selection": "блог, выбранный после OAuth", "rule_gate": "права выбранного блога и media policy",
         "max_chars": 20000, "hashtags": "теги Tumblr без спама",
     },
+    "telegraph": {
+        "format": "longform_article", "label": "Статья Telegraph",
+        "audience": "читатели длинных материалов по прямой ссылке или из Telegram",
+        "goal": "дать самостоятельную статью с ясной структурой, источниками и ссылками",
+        "voice": "нейтральный редакторский стиль; факты отделены от предположений",
+        "text_format": "статья с подзаголовками, списками, цитатами и встроенными ссылками",
+        "image_format": None, "video_format": None, "target_type": "publication_account",
+        "target_selection": "аккаунт Telegraph, подтверждённый access token",
+        "rule_gate": "валидная структура Node, лимит content 64 KB и заголовок до 256 символов",
+        "max_chars": 50000, "hashtags": "не добавлять строку хештегов",
+    },
     "snapchat": {
         "format": "story_or_spotlight", "label": "Snapchat Story/Spotlight",
         "audience": "мобильная аудитория короткого вертикального контента",
