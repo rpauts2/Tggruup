@@ -397,6 +397,11 @@ class Settings(BaseSettings):
     facebook_user_access_token: str = Field(default="", alias="FACEBOOK_USER_ACCESS_TOKEN")
     facebook_user_token_expires_at: int = Field(default=0, alias="FACEBOOK_USER_TOKEN_EXPIRES_AT")
 
+    # WeChat Official Account API (articles only; not Channels or mass messaging).
+    wechat_app_id: str = Field(default="", alias="WECHAT_APP_ID")
+    wechat_app_secret: str = Field(default="", alias="WECHAT_APP_SECRET")
+    wechat_author: str = Field(default="", alias="WECHAT_AUTHOR")
+
     # Medium legacy API token. Medium no longer accepts new API integrations.
     medium_access_token: str = Field(default="", alias="MEDIUM_ACCESS_TOKEN")
 

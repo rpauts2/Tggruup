@@ -301,12 +301,19 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "docs_url": "https://developers.snap.com/",
     },
     {
-        "id": "wechat", "name": "WeChat / Weixin", "symbol": "WX", "color": "#07C160",
-        "category": "Азиатские", "market": "Китай", "priority": "P3",
-        "mode": "planned", "roles": ["article", "community"],
-        "description": "Огромная экосистема, но требует отдельной региональной стратегии и аккаунта.",
-        "requirements": "Регистрация в экосистеме WeChat и права на публикацию в Official Accounts.",
-        "docs_url": "https://developers.weixin.qq.com/doc/",
+        "id": "wechat", "name": "WeChat Official Account", "symbol": "WX", "color": "#07C160",
+        "category": "Публикации", "market": "Китай", "priority": "P2",
+        "mode": "built_in", "roles": ["article", "crosspost"],
+        "description": (
+            "Нативные статьи через Official Account API: обложка, HTML-черновик, отправка на "
+            "публикацию и проверка publish_id. Это не массовая рассылка подписчикам и не WeChat Channels."
+        ),
+        "requirements": (
+            "WECHAT_APP_ID и WECHAT_APP_SECRET; публичный IP сервера в allowlist аккаунта; "
+            "Official Account с правом freepublish. Нужна обложка; некоторые типы аккаунтов "
+            "не имеют API-права публикации."
+        ),
+        "docs_url": "https://developers.weixin.qq.com/doc/offiaccount/Publish/Publish.html",
     },
     {
         "id": "douyin", "name": "Douyin", "symbol": "抖", "color": "#111111",
@@ -443,6 +450,11 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "PINTEREST_REFRESH_TOKEN", "attribute": "pinterest_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний rotating refresh token."},
         {"key": "PINTEREST_TOKEN_EXPIRES_AT", "attribute": "pinterest_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
         {"key": "PINTEREST_REFRESH_TOKEN_EXPIRES_AT", "attribute": "pinterest_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
+    ],
+    "wechat": [
+        {"key": "WECHAT_APP_ID", "attribute": "wechat_app_id", "label": "WeChat Official Account AppID", "secret": False, "placeholder": "wx…", "help": "AppID из настроек Official Account. Не путать с WeChat Channels."},
+        {"key": "WECHAT_APP_SECRET", "attribute": "wechat_app_secret", "label": "WeChat Official Account AppSecret", "secret": True, "placeholder": "AppSecret", "help": "Секрет хранится локально. Добавь публичный IP сервера в API IP allowlist аккаунта."},
+        {"key": "WECHAT_AUTHOR", "attribute": "wechat_author", "label": "Автор статьи (необязательно)", "secret": False, "placeholder": "Имя автора до 16 символов", "help": "Подпись автора в карточке статьи."},
     ],
     "medium": [
         {"key": "MEDIUM_ACCESS_TOKEN", "attribute": "medium_access_token", "label": "Legacy Medium integration token", "secret": True, "placeholder": "Существующий токен старой интеграции", "help": "Работает только с токенами, выданными до остановки новых интеграций Medium. Платформа больше не выдаёт новые токены; не вводи сюда пароль аккаунта."},
@@ -1040,6 +1052,13 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
             "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
             "REDDIT_SUBREDDIT необязателен; без одобрения Data API обращения к Reddit отключены."
         )
+    if platform_id == "wechat":
+        if settings.wechat_app_id.strip() and settings.wechat_app_secret.strip():
+            return True, (
+                "AppID/AppSecret сохранены. Перед отправкой проверяются IP allowlist, "
+                "права Official Account и freepublish; аккаунт может иметь только право черновиков."
+            )
+        return False, "Нужны WECHAT_APP_ID и WECHAT_APP_SECRET из настроек Official Account."
     if platform_id == "medium":
         if str(getattr(settings, "medium_access_token", "") or "").strip():
             return True, (
@@ -1180,7 +1199,7 @@ MANUAL_ONLY_AUTOMATION: dict[str, str] = {
 
 AUTOMATIC_CROSSPOST_IDS = frozenset({
     "vk", "max", "x", "reddit", "pikabu", "bluesky", "youtube", "threads", "mastodon",
-    "instagram", "linkedin", "medium", "telegraph", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
+    "instagram", "linkedin", "medium", "telegraph", "wechat", "discord", "pinterest", "odnoklassniki", "facebook", "tumblr",
 })
 
 
