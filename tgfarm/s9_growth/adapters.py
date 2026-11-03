@@ -1426,12 +1426,17 @@ class RedditAdapter:
             settings.reddit_user_agent.strip(),
         )
 
+    def data_api_approved(self) -> bool:
+        """Whether the owner has explicitly recorded Reddit's API approval."""
+        return bool(getattr(get_settings(), "reddit_api_approved", False))
+
     def configured(self) -> bool:
         client_id, client_secret, refresh_token, _subreddit, user_agent = self._credentials()
-        # The S9 scout chooses a different suitable subreddit for each post.
-        # A fixed fallback is optional and is not part of OAuth readiness.
+        # The S9 scout chooses a subreddit, but API access still requires
+        # Reddit's explicit approval for this app and use case.
         return bool(
-            client_id
+            self.data_api_approved()
+            and client_id
             and client_secret
             and refresh_token
             and user_agent
