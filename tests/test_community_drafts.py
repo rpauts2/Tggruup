@@ -115,3 +115,38 @@ def test_state_entry_updates_merge_across_platforms(tmp_path, monkeypatch):
     restored = community_drafts._read_state()
     assert restored["vc_ru:post-123"]["status"] == "preparing"
     assert restored["pikabu:post-456"]["status"] == "prepared"
+
+
+def test_pikabu_scheduler_respects_hour_gap_creation_day_and_pending_limit():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 11, 3, 8, 0, tzinfo=UTC)
+    first = community_drafts.plan_pikabu_schedule(now=now, entries={}, timezone_name="UTC")
+    assert first == datetime(2026, 11, 3, 9, 0, tzinfo=UTC)
+
+    entries = {"pikabu:one": {
+        "status": "scheduled",
+        "created_at": datetime(2026, 11, 3, 7, 0, tzinfo=UTC).isoformat(),
+        "scheduled_at": datetime(2026, 11, 3, 10, 30, tzinfo=UTC).isoformat(),
+    }}
+    second = community_drafts.plan_pikabu_schedule(now=now, entries=entries, timezone_name="UTC")
+    assert second == datetime(2026, 11, 4, 9, 0, tzinfo=UTC)
+
+    crowded = {
+        f"pikabu:{index}": {
+            "status": "scheduled",
+            "created_at": now.isoformat(),
+            "scheduled_at": (now + timedelta(days=index + 1)).isoformat(),
+        }
+        for index in range(12)
+    }
+    with pytest.raises(community_drafts.CommunityDraftError, match="12"):
+        community_drafts.plan_pikabu_schedule(now=now, entries=crowded, timezone_name="UTC")
+
+
+def test_pikabu_tag_validation_requires_two_real_tags_and_limits_tag_length():
+    assert community_drafts.normalize_pikabu_tags(["Python", "Programming", "Python"]) == ["Python", "Programming"]
+    with pytest.raises(community_drafts.CommunityDraftError, match="от 2 до 20"):
+        community_drafts.normalize_pikabu_tags(["Python"])
+    with pytest.raises(community_drafts.CommunityDraftError, match="50"):
+        community_drafts.normalize_pikabu_tags(["x" * 51, "Python"])
