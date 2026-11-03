@@ -285,6 +285,10 @@ def test_native_rewrite_rejects_new_numbers_and_unapproved_urls(monkeypatch):
     assert result["used_ai"] is False
     assert result["status"] == "deterministic_guardrail"
     assert "числовые значения" in result["reason"]
+    assert result["provider"] == "test-provider"
+    assert result["model"] == "editor-v1"
+    assert payload.meta["editorial_adaptation"]["provider"] == "test-provider"
+    assert payload.meta["editorial_adaptation"]["model"] == "editor-v1"
     assert payload.title == "Original source-backed title"
     assert "999" not in payload.text
     assert payload.meta == {"post_public_id": "native_guardrail_001"}

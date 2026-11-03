@@ -616,7 +616,13 @@ async def adapt_payload_with_ai(
                 latency_ms=response.latency_ms,
                 used=False,
             )
-            return {"used_ai": False, "status": "deterministic", "reason": "Нативная версия не сформирована; сохранён исходный адаптированный текст."}
+            return {
+                "used_ai": False,
+                "status": "deterministic",
+                "reason": "Нативная версия не сформирована; сохранён исходный адаптированный текст.",
+                "provider": response_provider,
+                "model": response_model,
+            }
         guardrail_reason = _native_rewrite_guardrail(
             title, body, rewritten_title, rewritten_body, sources
         )
@@ -629,10 +635,23 @@ async def adapt_payload_with_ai(
                 latency_ms=response.latency_ms,
                 used=False,
             )
+            payload.meta = {
+                **(getattr(payload, "meta", None) or {}),
+                "editorial_adaptation": {
+                    "status": "deterministic_guardrail",
+                    "platform": platform_id,
+                    "format": native["format"],
+                    "provider": response_provider,
+                    "model": response_model,
+                    "reason": guardrail_reason,
+                },
+            }
             return {
                 "used_ai": False,
                 "status": "deterministic_guardrail",
                 "reason": guardrail_reason,
+                "provider": response_provider,
+                "model": response_model,
             }
         missing_urls = [url for url in sources if url not in rewritten_body]
         if missing_urls:
@@ -661,6 +680,7 @@ async def adapt_payload_with_ai(
             "used_ai": True,
             "status": "ai_native",
             "reason": "Создана нативная версия с сохранением исходных фактов и ссылок.",
+            "provider": response_provider,
             "model": response_model,
             "notes": [str(item)[:240] for item in (parsed.get("notes") or [])[:4]],
         }
@@ -689,4 +709,6 @@ async def adapt_payload_with_ai(
                 + type(exc).__name__
                 + "); сохранена детерминированная версия."
             ),
+            "provider": response_provider,
+            "model": response_model,
         }
