@@ -32,6 +32,7 @@ from tgfarm.s9_growth.facebook import FacebookPageAdapter
 from tgfarm.s9_growth.pinterest import PinterestAdapter
 from tgfarm.s9_growth.odnoklassniki import OdnoklassnikiAdapter
 from tgfarm.s9_growth.tumblr import TumblrAdapter
+from tgfarm.s9_growth.wechat import WeChatOfficialAccountAdapter
 
 log = get_logger(__name__)
 
@@ -2105,6 +2106,7 @@ class TelegraphAdapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "wechat": WeChatOfficialAccountAdapter(),
     "telegraph": TelegraphAdapter(),
     "medium": MediumAdapter(),
     "pikabu": PikabuAdapter(),
@@ -2152,7 +2154,43 @@ def primary_image_path(post_id: int) -> str | None:
     return None
 
 
-def primary_video_path(post_id: int) -> str | None:
+
+
+def primary_wechat_cover_path(post_id: int) -> str | None:
+    """Choose a stored article/AI image suitable for WeChat Official Account cover upload."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Media as MediaRow
+    from tgfarm.db.session import session_scope
+
+    priorities = {
+        "article_image": 0,
+        "cover": 1,
+        "ai_art": 2,
+        "photo": 3,
+        "image": 4,
+    }
+    with session_scope() as session:
+        rows = session.execute(
+            select(MediaRow.path, MediaRow.kind, MediaRow.is_primary)
+            .where(
+                MediaRow.post_id == post_id,
+                MediaRow.kind.in_(tuple(priorities)),
+            )
+            .order_by(MediaRow.is_primary.desc(), MediaRow.id.desc())
+        ).all()
+    candidates = sorted(
+        rows,
+        key=lambda row: (priorities.get(str(row.kind or ''), 99), not bool(row.is_primary)),
+    )
+    for row in candidates:
+        raw_path = str(row.path or '')
+        if raw_path and Path(raw_path).is_file():
+            return raw_path
+    return None
+
+
+def primary_video_path(post_id: int) -> str | None:def primary_video_path(post_id: int) -> str | None:
     """Find the newest existing vertical video attached to a post."""
     from sqlalchemy import select
 
