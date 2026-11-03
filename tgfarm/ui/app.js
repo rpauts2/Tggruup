@@ -2062,6 +2062,7 @@
     const totals = data.totals || {};
     const statusLabel = {
       healthy: "есть успешные доставки",
+      scheduled: "есть отложенные публикации",
       working: "есть активные повторы",
       attention: "требует внимания",
       setup: "не настроено",
@@ -2090,11 +2091,11 @@
         const label = statusLabel[item.state] || item.state;
         const tone = item.state === "attention" ? "tag-warn"
           : item.state === "healthy" ? "tag-ok"
-          : item.state === "working" ? "tag-acc" : "";
+          : (item.state === "working" || item.state === "scheduled") ? "tag-acc" : "";
         return `<div class="delivery-health-platform">
           <strong>${esc(PLATFORM_RU[item.platform] || item.platform)}</strong>
           <span class="tag ${tone}">${esc(label)}</span>
-          <span class="delivery-health-hint">${n(item.posted)} опубликовано · ${n(item.unknown)} сверка · ${n(item.permanent)} постоянно</span>
+          <span class="delivery-health-hint">${n(item.posted)} опубликовано · ${n(item.scheduled || 0)} отложено · ${n(item.unknown)} сверка · ${n(item.permanent)} постоянно</span>
         </div>`;
       }).join("") || `<div class="delivery-health-empty">Пока нет записей о доставке</div>`}</div>`;
   }

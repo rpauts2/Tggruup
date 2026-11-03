@@ -996,6 +996,7 @@ def _crosspost_health() -> dict:
                 "platform": row.platform,
                 "targets": 0,
                 "posted": 0,
+                "scheduled": 0,
                 "failed": 0,
                 "permanent": 0,
                 "unknown": 0,
@@ -1046,6 +1047,8 @@ def _crosspost_health() -> dict:
             item["state"] = "attention"
         elif item["publishing"] or item["retry_authorized"] or item["failed"]:
             item["state"] = "working"
+        elif item["scheduled"]:
+            item["state"] = "scheduled"
         elif item["posted"]:
             item["state"] = "healthy"
         elif item["skipped"]:
@@ -1059,6 +1062,7 @@ def _crosspost_health() -> dict:
         "targets": len(rows),
         "platforms": len(by_platform),
         "posted": sum(item["posted"] for item in by_platform.values()),
+        "scheduled": sum(item["scheduled"] for item in by_platform.values()),
         "failed": sum(item["failed"] for item in by_platform.values()),
         "permanent": sum(item["permanent"] for item in by_platform.values()),
         "unknown": sum(item["unknown"] for item in by_platform.values()),
@@ -1091,6 +1095,7 @@ def _crosspost_health() -> dict:
     overall = (
         "attention" if totals["needs_attention"] or totals["stale_claims"]
         else "working" if totals["publishing"] or totals["failed"] or totals["retry_authorized"]
+        else "scheduled" if totals["scheduled"]
         else "healthy" if totals["posted"]
         else "not_tested"
     )
