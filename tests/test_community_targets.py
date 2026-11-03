@@ -81,7 +81,7 @@ def test_pikabu_recommender_uses_actual_community_page_and_rule_text(monkeypatch
                 ],
                 links=[
                     ("/tag/python", "Python"),
-                    ("/tag/development", "Разработка"),
+                    ("/tag/programming", "Programming"),
                     ("/tag/cooking", "Кулинария"),
                 ],
             )
@@ -103,7 +103,7 @@ def test_pikabu_recommender_uses_actual_community_page_and_rule_text(monkeypatch
     assert result["selected"]["rules_available"] is True
     assert "Python" in result["selected"]["suggested_tags"]
     assert result["selected"]["recommended"] is True
-    assert result["auto_publish_supported"] is False
+    assert result["auto_publish_supported"] is True
 
 
 def test_target_editorial_brief_is_evidence_backed_and_never_authorizes_publication():
@@ -126,7 +126,7 @@ def test_target_editorial_brief_is_evidence_backed_and_never_authorizes_publicat
     assert brief["topic_fit"] == 76
     assert brief["rules_read"] is True
     assert "Публикуйте только материалы по Python" in brief["constraints"]
-    assert brief["decision"] == "eligible_for_operator_review"
+    assert brief["decision"] == "eligible_for_automatic_pipeline"
     assert brief["publication_authorized"] is False
 
     blocked = community_targets._target_editorial_brief(
@@ -484,3 +484,18 @@ def test_vc_refuses_to_recommend_any_topic_without_topic_specific_rules(monkeypa
     assert all(item["recommended"] is False for item in result["candidates"])
     assert all(item["topic_rules_available"] is False for item in result["candidates"])
     assert all(item["blockers"] for item in result["candidates"])
+
+
+def test_automatic_pikabu_selector_skips_targets_without_two_existing_tags(monkeypatch):
+    async def fake_recommend(_platform, _post_id):
+        return {"candidates": [
+            {"name": "One tag", "recommended": True, "rules_available": True, "suggested_tags": ["Python"]},
+            {"name": "Blocked", "recommended": False, "rules_available": True, "suggested_tags": ["Python", "Programming"]},
+            {"name": "Two tags", "recommended": True, "rules_available": True, "suggested_tags": ["Python", "Programming"]},
+        ]}
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", fake_recommend)
+    result = asyncio.run(community_targets.recommend_automatic_pikabu_target("published_community_test"))
+    assert result["ok"] is True
+    assert result["selected"]["name"] == "Two tags"
+    assert result["tags"] == ["Python", "Programming"]
