@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
@@ -165,6 +166,49 @@ def _load_post(post_pk: int) -> PostRow | None:
         return session.get(PostRow, post_pk)
 
 
+def record_platform_editor_trace(
+    post_pk: int,
+    platform_id: str,
+    adaptation: dict,
+    native: dict,
+    *,
+    destination: str = "",
+) -> bool:
+    """Merge a metadata-only S9 editor decision into the shared agent-team memory."""
+    platform_id = str(platform_id or "").strip().lower()
+    if not platform_id:
+        return False
+    adaptation = adaptation if isinstance(adaptation, dict) else {}
+    native = native if isinstance(native, dict) else {}
+    event = {
+        "role": "platform_editor",
+        "platform": platform_id,
+        "status": str(adaptation.get("status") or "unknown")[:48],
+        "used_ai": bool(adaptation.get("used_ai")),
+        "format": str(native.get("format") or "")[:100],
+        "format_eligible": bool(native.get("eligible")),
+        "target_type": str(native.get("target_type") or "")[:48],
+        "destination": str(destination or "")[:120],
+        "provider": str(adaptation.get("provider") or "")[:48],
+        "model": str(adaptation.get("model") or "")[:100],
+        "reason": redact_sensitive_text(adaptation.get("reason") or "", limit=320),
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    with session_scope() as session:
+        post = session.get(PostRow, int(post_pk))
+        if post is None:
+            return False
+        quality = dict(post.quality or {})
+        team = dict(quality.get("agent_team") or {})
+        edits = dict(team.get("platform_edits") or {})
+        edits[platform_id] = event
+        team["platform_edits"] = edits
+        team.setdefault("version", 1)
+        quality["agent_team"] = team
+        post.quality = quality
+    return True
+
+
 async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostResult]:
     from tgfarm.platforms import MANUAL_ONLY_AUTOMATION, is_platform_enabled
 
@@ -274,6 +318,27 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 results.append(skipped)
                 if previous is None or previous.status != "skipped":
                     await to_thread(log_result, post.public_id, skipped)
+                try:
+                    await to_thread(
+                        record_platform_editor_trace,
+                        post.id,
+                        name,
+                        {
+                            "status": "special_workflow",
+                            "used_ai": False,
+                            "reason": skipped.error or "Не удалось выбрать подходящий subreddit.",
+                        },
+                        {
+                            "format": "community_submission",
+                            "eligible": False,
+                            "target_type": "subreddit",
+                        },
+                    )
+                except Exception as trace_exc:  # noqa: BLE001 - trace persistence must not block other destinations
+                    log.warning(
+                        "platform editor trace could not be saved for %s/%s (%s)",
+                        post.public_id, name, type(trace_exc).__name__,
+                    )
                 continue
 
         attempt = await to_thread(begin_crosspost, post.public_id, name)
@@ -319,6 +384,26 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             },
         }
         if not native["eligible"]:
+            try:
+                await to_thread(
+                    record_platform_editor_trace,
+                    post.id,
+                    name,
+                    {
+                        "status": "blocked_missing_media",
+                        "used_ai": False,
+                        "reason": native["reason"],
+                    },
+                    {
+                        **native,
+                        "target_type": get_editorial_profile(name)["target_type"],
+                    },
+                )
+            except Exception as trace_exc:  # noqa: BLE001 - trace persistence must not block delivery state
+                log.warning(
+                    "platform editor trace could not be saved for %s/%s (%s)",
+                    post.public_id, name, type(trace_exc).__name__,
+                )
             skipped = CrosspostResult(
                 platform=name,
                 status="skipped",
@@ -328,9 +413,23 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             await to_thread(log_result, post.public_id, skipped, attempt)
             results.append(skipped)
             continue
-        if name not in {"reddit", "tiktok", "douyin"}:
-            await adapt_payload_with_ai(payload, allow_ai=settings.live)
+
+        if name in {"reddit", "tiktok", "douyin"}:
+            adaptation = {
+                "status": "special_workflow",
+                "used_ai": False,
+                "reason": "Площадка использует отдельный workflow выбора цели или согласия.",
+            }
+        else:
+            adaptation = await adapt_payload_with_ai(payload, allow_ai=settings.live)
+            adaptation_meta = (payload.meta or {}).get("editorial_adaptation") or {}
+            adaptation = {
+                **adaptation,
+                "provider": adaptation_meta.get("provider") or adaptation.get("provider") or "",
+                "model": adaptation_meta.get("model") or adaptation.get("model") or "",
+            }
             payload = adapt_payload_for_platform(payload, name)
+
         if name == "reddit" and reddit_submission:
             payload.title = reddit_submission["title"]
             payload.text = reddit_submission["body"]
@@ -339,6 +438,61 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 "subreddit": reddit_submission["subreddit"],
                 "reddit_kind": reddit_submission.get("reddit_kind", "self"),
             }
+        final_native = choose_native_format(
+            name,
+            media_kinds,
+            content_chars=len(str(payload.title or "")) + len(str(payload.text or "")),
+        )
+        payload.meta = {
+            **(payload.meta or {}),
+            "editorial_plan": {
+                "format": final_native["format"],
+                "eligible": final_native["eligible"],
+                "reason": final_native["reason"],
+                "target_type": get_editorial_profile(name)["target_type"],
+            },
+        }
+        destination = str(
+            (reddit_submission or {}).get("subreddit") or ""
+        ) if name == "reddit" else str(
+            (payload.meta or {}).get("target_name")
+            or (payload.meta or {}).get("destination")
+            or ""
+        )
+        if not final_native["eligible"]:
+            adaptation = {
+                **adaptation,
+                "status": "blocked_missing_media",
+                "used_ai": False,
+                "reason": final_native["reason"],
+            }
+        try:
+            await to_thread(
+                record_platform_editor_trace,
+                post.id,
+                name,
+                adaptation,
+                {
+                    **final_native,
+                    "target_type": get_editorial_profile(name)["target_type"],
+                },
+                destination=destination,
+            )
+        except Exception as trace_exc:  # noqa: BLE001 - trace persistence must not block delivery
+            log.warning(
+                "platform editor trace could not be saved for %s/%s (%s)",
+                post.public_id, name, type(trace_exc).__name__,
+            )
+        if not final_native["eligible"]:
+            skipped = CrosspostResult(
+                platform=name,
+                status="skipped",
+                error=redact_sensitive_text(final_native["reason"], limit=280),
+                retry_after_seconds=6 * 60 * 60,
+            )
+            await to_thread(log_result, post.public_id, skipped, attempt)
+            results.append(skipped)
+            continue
         if name in video_targets and video_render_error:
             payload.meta = {
                 **(payload.meta or {}),

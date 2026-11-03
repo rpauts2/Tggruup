@@ -2421,6 +2421,7 @@
       writer: "Автор",
       fact_checker: "Фактчекер",
       review_board: "Коллегия качества",
+      platform_editor: "Нативный редактор площадки",
     };
     const agentStatuses = {
       planned: "План готов",
@@ -2429,6 +2430,13 @@
       completed: "Завершено",
       passed: "Принято",
       rejected: "Отклонено",
+      ai_native: "AI-редактура готова",
+      deterministic: "Базовая адаптация",
+      deterministic_guardrail: "Guardrail: оставлен исходник",
+      deterministic_fallback: "Fallback: оставлен исходник",
+      special_workflow: "Отдельный workflow",
+      blocked_missing_media: "Нет нужного медиа",
+      unknown: "Статус неизвестен",
     };
     const agentList = (label, values) => {
       const items = Array.isArray(values)
@@ -2461,6 +2469,15 @@
         add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
         add("Причина fallback", role.reason);
         extra = agentList("План раскрытия", role.outline) + agentList("Обязательные оговорки", role.caveats);
+      } else if (key === "platform_editor") {
+        add("Площадка", PLATFORM_RU[role.platform] || role.platform);
+        add("Формат", role.format);
+        add("Тип адресата", role.target_type);
+        add("Адресат", role.destination);
+        add("AI использован", role.used_ai ? "да" : "нет");
+        add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
+        add("Причина / результат", role.reason);
+        add("Обновлено", dt(role.updated_at));
       } else if (key === "writer") {
         add("Провайдер", role.provider);
       } else if (key === "fact_checker") {
@@ -2487,9 +2504,19 @@
         ${extra}
       </div>`;
     };
-    const agentTrace = Object.keys(agentRoles).length
+    const platformEdits = q.agent_team && q.agent_team.platform_edits
+      && typeof q.agent_team.platform_edits === "object" ? q.agent_team.platform_edits : {};
+    const platformEditorRoles = Object.entries(platformEdits).map(([platform, trace]) => [
+      "platform_editor",
+      { ...(trace || {}), platform },
+    ]);
+    const agentEntries = [
+      ...Object.entries(agentRoles),
+      ...platformEditorRoles,
+    ];
+    const agentTrace = agentEntries.length
       ? `<div class="drawer-block agent-team"><h4>Команда ИИ · история решений</h4>
-          <div class="agent-team-grid">${Object.entries(agentRoles).map(agentRoleHtml).join("")}</div>
+          <div class="agent-team-grid">${agentEntries.map(agentRoleHtml).join("")}</div>
         </div>`
       : "";
     inner.innerHTML = `

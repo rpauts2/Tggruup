@@ -284,3 +284,84 @@ def test_generation_control_arm_skips_strategist_and_preserves_pair_inputs(monke
     assert "СТИЛЬ ХУКА:" in captured["prompt"]
     assert captured["examples"] == [("Example hook", "Example body")]
     assert captured["usage_scope"] == "ab1234567890control"
+
+
+def _post_id_for_trace(public_id: str) -> int:
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        return int(session.query(Post.id).filter_by(public_id=public_id).scalar())
+
+
+def test_platform_editor_trace_merges_with_existing_agent_team_and_keeps_metadata_only(db):
+    from tgfarm.db.models import Channel, Post
+    from tgfarm.db.session import session_scope
+    from tgfarm.s9_growth import record_platform_editor_trace
+
+    with session_scope() as session:
+        session.merge(Channel(
+            id="platform_editor_trace_channel",
+            title="Platform editor trace",
+            niche="technology",
+            platform="telegram",
+        ))
+        session.add(Post(
+            public_id="platform-editor-trace-01",
+            channel_id="platform_editor_trace_channel",
+            hook="Заголовок материала.",
+            body="Содержимое поста не должно копироваться в trace.",
+            status="published",
+            quality={
+                "agent_team": {
+                    "version": 1,
+                    "roles": {
+                        "editorial_strategist": {
+                            "status": "planned",
+                            "outline": ["Сохранить исходную мысль"],
+                        }
+                    },
+                }
+            },
+        ))
+
+    post_id = _post_id_for_trace("platform-editor-trace-01")
+    assert record_platform_editor_trace(
+        post_id,
+        "bluesky",
+        {
+            "status": "ai_native",
+            "used_ai": True,
+            "provider": "test-provider",
+            "model": "editor-model",
+            "reason": "Создана нативная версия.",
+        },
+        {
+            "format": "Короткий пост",
+            "eligible": True,
+            "target_type": "profile",
+        },
+        destination="connected Bluesky profile",
+    )
+    assert record_platform_editor_trace(
+        post_id,
+        "threads",
+        {"status": "special_workflow", "used_ai": False},
+        {"format": "Пост обсуждения", "eligible": True, "target_type": "profile"},
+    )
+    assert record_platform_editor_trace(
+        post_id,
+        "bluesky",
+        {"status": "deterministic_guardrail", "used_ai": False, "model": "editor-model"},
+        {"format": "Короткий пост", "eligible": True, "target_type": "profile"},
+    )
+
+    with session_scope() as session:
+        row = session.query(Post).filter_by(public_id="platform-editor-trace-01").one()
+        team = row.quality["agent_team"]
+        assert team["roles"]["editorial_strategist"]["status"] == "planned"
+        assert set(team["platform_edits"]) == {"bluesky", "threads"}
+        assert team["platform_edits"]["bluesky"]["status"] == "deterministic_guardrail"
+        assert team["platform_edits"]["bluesky"]["model"] == "editor-model"
+        assert team["platform_edits"]["threads"]["status"] == "special_workflow"
+        assert "Содержимое поста" not in repr(team["platform_edits"])
