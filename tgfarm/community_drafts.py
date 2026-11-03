@@ -833,14 +833,11 @@ async def _pikabu_verify_selected_community(page, target_url: str, target_name: 
         except Exception:
             continue
     if not found:
-        # Some editor versions render the selected destination as a chip
-        # without a link. Require its exact name and a nearby rules section.
+        # The editor may render the selected community as a destination chip.
+        # The flow starts from that community's own URL; require its exact name
+        # to remain visible after the editor transition.
         text = await page.locator("body").inner_text()
-        found = (
-            len(target_name) >= 2
-            and target_name.casefold() in text.casefold()
-            and bool(re.search(r"правил[аы]", text, re.I))
-        )
+        found = len(target_name) >= 2 and target_name.casefold() in text.casefold()
     if not found:
         raise CommunityDraftError(
             "Пикабу не подтвердил выбранное сообщество в редакторе. Публикация остановлена."
@@ -931,6 +928,12 @@ async def publish_pikabu_scheduled(
     post_public_id = str(post_public_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", post_public_id):
         raise CommunityDraftError("Некорректный идентификатор поста Пикабу.")
+    title = _clean_markup_text(title)
+    body = _clean_markup_text(body)
+    if not 2 <= len(title) <= 140:
+        raise CommunityDraftError("Заголовок Пикабу должен содержать от 2 до 140 символов.")
+    if not body or len(body) > 100_000:
+        raise CommunityDraftError("Текст Пикабу пустой или превышает 100 000 символов.")
     override = {
         "public_id": post_public_id, "title": title, "body": body,
         "cta": "", "sources": [], "hashtags": [], "media": [],
@@ -944,12 +947,6 @@ async def publish_pikabu_scheduled(
     target_name = str(target.get("name") or target.get("title") or "").strip()[:120]
     if not target_url or not target_name:
         raise CommunityDraftError("Не удалось подтвердить сообщество Пикабу.")
-    title = _clean_markup_text(title)
-    body = _clean_markup_text(body)
-    if not 2 <= len(title) <= 140:
-        raise CommunityDraftError("Заголовок Пикабу должен содержать от 2 до 140 символов.")
-    if not body or len(body) > 100_000:
-        raise CommunityDraftError("Текст Пикабу пустой или превышает 100 000 символов.")
     selected_tags = normalize_pikabu_tags([*tags, PIKABU_AI_DISCLOSURE_TAG])
 
     content = f"{title}\n{body}".casefold()
