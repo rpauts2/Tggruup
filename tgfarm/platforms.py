@@ -999,13 +999,13 @@ def _configured_state(platform_id: str) -> tuple[bool, str]:
         )) and "/u/YOUR_REDDIT_USERNAME" not in user_agent
         if configured:
             target = (
-                f"Фиксированный fallback: r/{settings.reddit_subreddit.strip()}. "
+                f"Фиксированный резервный subreddit: r/{settings.reddit_subreddit.strip()}. "
                 if settings.reddit_subreddit.strip()
-                else "Фиксированный subreddit не задан: цель должна быть выбрана и проверена вручную. "
+                else "Subreddit выбирается автоматически по теме поста и требованиям сообщества. "
             )
             return True, (
                 target
-                + "Публикация остаётся ручной: перед отправкой владелец проверяет правила, требования и конкретный черновик."
+                + "S9 проверяет актуальные правила, выбирает одно подходящее сообщество и публикует через одобренный OAuth Data API."
             )
         return False, (
             "Нужны Reddit OAuth client ID/secret, refresh token и свой REDDIT_USER_AGENT. "
