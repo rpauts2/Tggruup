@@ -246,3 +246,67 @@ def test_reddit_is_delivered_through_the_automatic_crosspost_pipeline(monkeypatc
     assert len(logged) == 1
     assert logged[0][0].status == "posted"
     assert logged[0][1] == 1
+
+
+def test_pikabu_is_scheduled_through_the_automatic_crosspost_pipeline(monkeypatch):
+    from types import SimpleNamespace
+    from tgfarm import platforms, s9_growth
+    from tgfarm.core.schemas import CrosspostResult
+
+    post = SimpleNamespace(
+        id=654,
+        public_id="pikabu_auto_delivery_654",
+        hook="A practical guide to Python debugging",
+        body="A source-grounded walkthrough of debugging Python applications.",
+        cta="",
+        hashtags=["python", "programming"],
+        sources=[],
+    )
+    monkeypatch.setattr(platforms, "is_platform_enabled", lambda name: name == "pikabu")
+    monkeypatch.setattr(s9_growth, "get_settings", lambda: SimpleNamespace(live=True))
+    monkeypatch.setattr(s9_growth, "_load_post", lambda _post_id: post)
+    monkeypatch.setattr(s9_growth, "already_done", lambda _public_id, _platform: False)
+    monkeypatch.setattr(s9_growth, "begin_crosspost", lambda _public_id, _platform: 1)
+
+    async def no_ai_adaptation(_payload, *, allow_ai):
+        assert allow_ai is True
+
+    monkeypatch.setattr("tgfarm.platform_editorial.adapt_payload_with_ai", no_ai_adaptation)
+    adapter = s9_growth.ADAPTERS["pikabu"]
+    monkeypatch.setattr(adapter, "configured", lambda: True)
+    captured = []
+
+    async def schedule(payload):
+        captured.append(payload)
+        return CrosspostResult(
+            platform="pikabu",
+            status="scheduled",
+            remote_id="pikabu-auto-654",
+            url="https://pikabu.ru/profile/scheduled",
+        )
+
+    monkeypatch.setattr(adapter, "publish", schedule)
+    logged = []
+    monkeypatch.setattr(
+        s9_growth, "log_result",
+        lambda _public_id, result, attempt=1: logged.append((result, attempt)),
+    )
+
+    results = asyncio.run(s9_growth.crosspost_post(post.id, ["pikabu"]))
+
+    assert [result.status for result in results] == ["scheduled"]
+    assert len(captured) == 1
+    assert captured[0].meta["post_public_id"] == post.public_id
+    assert len(logged) == 1
+    assert logged[0][0].status == "scheduled"
+
+
+def test_scheduled_crosspost_is_terminal_and_not_retried(monkeypatch):
+    from types import SimpleNamespace
+    from tgfarm.s9_growth import adapters
+
+    monkeypatch.setattr(
+        adapters, "latest_crosspost",
+        lambda _post_id, _platform: SimpleNamespace(status="scheduled"),
+    )
+    assert adapters.already_done("post-scheduled", "pikabu") is True
