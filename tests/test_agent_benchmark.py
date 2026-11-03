@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import pytest
+from fastapi.testclient import TestClient
+
 from tgfarm.agents.benchmark import _winner, summarize_records
+
+
+@pytest.fixture()
+def client():
+    from tgfarm.api import create_app
+
+    with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1") as test_client:
+        yield test_client
 
 
 def _pair(control_score=0.8, strategy_score=0.9, control_facts=0.95, strategy_facts=0.95):
