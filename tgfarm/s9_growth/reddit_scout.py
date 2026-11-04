@@ -8,6 +8,7 @@ source-grounded native submission to the separate official OAuth adapter.
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter
 from typing import Any
 
@@ -21,6 +22,17 @@ REDDIT_API = "https://oauth.reddit.com"
 MAX_COMMUNITIES = 8
 MAX_RULES = 10
 MAX_RULE_CHARS = 600
+
+ACTIVITY_SAMPLE_LIMIT = 25
+ACTIVITY_MIN_MATCH = 0.2
+
+FLAIR_REQUIRED_FLAG = "Перед отправкой потребуется выбрать обязательный flair."
+RISK_EXCLUDE_THRESHOLD = 0.6
+
+
+def _blocking_risk_flags(flags: list[Any] | None) -> list[str]:
+    """Drop the flair flag: flair is now selectable, so it must not block on its own."""
+    return [str(flag) for flag in (flags or []) if str(flag) != FLAIR_REQUIRED_FLAG]
 
 _STOPWORDS = frozenset(
     """
@@ -49,6 +61,10 @@ _STOPWORDS = frozenset(
 
 class RedditScoutError(RuntimeError):
     """A safe, user-displayable Reddit scouting failure."""
+
+
+class RedditRateLimitedError(RedditScoutError):
+    """Reddit answered 429; the caller must back off and skip for this run."""
 
 
 def _adapter() -> RedditAdapter:
@@ -106,7 +122,7 @@ async def _get_json(client, path: str, params: dict[str, Any] | None = None) -> 
     try:
         response = await client.get(f"{REDDIT_API}{path}", params=params)
         if response.status_code == 429:
-            raise RedditScoutError(
+            raise RedditRateLimitedError(
                 "Reddit ограничил частоту запросов. Подожди перед следующим поиском."
             )
         if response.status_code in (401, 403):
@@ -164,7 +180,7 @@ def _risk_flags(about: dict[str, Any], rules: list[dict[str, str]], requirements
     if about.get("subreddit_type") in {"private", "restricted"} or about.get("restrict_posting"):
         flags.append("Доступ или публикации могут быть ограничены.")
     if requirements.get("is_flair_required"):
-        flags.append("Перед отправкой потребуется выбрать обязательный flair.")
+        flags.append(FLAIR_REQUIRED_FLAG)
     if requirements.get("body_restriction_policy") == "notAllowed":
         flags.append("Правила технически запрещают текстовое тело.")
     if requirements.get("domain_whitelist"):
@@ -188,6 +204,550 @@ def _risk_flags(about: dict[str, Any], rules: list[dict[str, str]], requirements
         if any(term in rule_text for term in needles):
             flags.append(message)
     return list(dict.fromkeys(flags))
+
+
+# --------------------------------------------------------------------------
+# Gap #1 - account requirements (/api/v1/me) --------------------------------
+# --------------------------------------------------------------------------
+_MIN_KARMA_PATTERNS = (
+    r"min(?:imum)?[\s\-]*(?:total[\s\-]*)?(?:combined[\s\-]*)?karma[\s\-]*(?:of|:)?[\s\-]*(\d[\d,.]*)",
+    r"(?:at\s+least|need(?:s|ed)?|requir(?:e|es|ed)|must\s+have)[\s\-]*(?:a\s+)?(\d[\d,.]*)[\s\-]*(?:total[\s\-]*)?karma",
+    r"(\d[\d,.]*)[\s\-]*(?:total[\s\-]*)?karma[\s\-]*(?:minimum|required|or\s+more)",
+)
+_MIN_AGE_PATTERNS = (
+    r"min(?:imum)?[\s\-]*(?:account[\s\-]*)?age[\s\-]*(?:of|:)?[\s\-]*(\d+)\s*(day|week|month)",
+    r"(?:at\s+least|need(?:s|ed)?|requir(?:e|es|ed)|older\s+than|must\s+be)[\s\-]*(\d+)\s*(day|week|month)s?[\s\-]*(?:old|account)",
+    r"account[\s\-]*(?:must\s+be|is|of)[\s\-]*(\d+)\s*(day|week|month)s?[\s\-]*old",
+)
+_NEW_ACCOUNT_PATTERNS = (
+    r"new\s+account",
+    r"account.{0,20}(?:too\s+young|young|brand[-\s]?new)",
+)
+_LOW_KARMA_PATTERNS = (
+    r"low[-\s]?karma",
+    r"(?:no|without)[\s\-]+karma",
+)
+
+
+def _to_int(raw: str) -> int | None:
+    digits = re.sub(r"[^0-9]", "", str(raw or ""))
+    if not digits:
+        return None
+    try:
+        return max(0, int(digits))
+    except (TypeError, ValueError):
+        return None
+
+
+def _age_to_days(value: int, unit: str) -> int:
+    unit = (unit or "day").lower()
+    if unit.startswith("week"):
+        return value * 7
+    if unit.startswith("month"):
+        return value * 30
+    return value
+
+
+def _documented_account_minimum(
+    about: dict[str, Any],
+    rules: list[dict[str, str]],
+    requirements: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract any *stated* karma/age minimum. Rule text stays inert data.
+
+    The subreddit's own wording is parsed only for machine-checkable numeric
+    bounds; it is never treated as an instruction to the agent.
+    """
+    min_karma: int | None = None
+    min_age_days: int | None = None
+    signals: list[str] = []
+
+    for key in ("minimum_total_karma", "min_total_karma", "minimum_karma", "required_karma"):
+        candidate = requirements.get(key)
+        if isinstance(candidate, (int, float)) and candidate > 0:
+            min_karma = max(min_karma or 0, int(candidate))
+            signals.append(f"post_requirements:{key}")
+
+    rule_text = " ".join(
+        f"{rule.get('title', '')} {rule.get('description', '')} {rule.get('violation_reason', '')}"
+        for rule in rules
+    ).lower()
+    about_text = " ".join(
+        str(about.get(field) or "")
+        for field in ("public_description", "description", "submit_link_guidelines")
+    ).lower()
+    haystack = f"{rule_text} {about_text}"
+
+    for pattern in _MIN_KARMA_PATTERNS:
+        match = re.search(pattern, haystack)
+        if match:
+            value = _to_int(match.group(1))
+            if value is not None and value <= 1_000_000:
+                min_karma = max(min_karma or 0, value)
+                signals.append("karma minimum in community text")
+
+    for pattern in _MIN_AGE_PATTERNS:
+        match = re.search(pattern, haystack)
+        if match:
+            value = _to_int(match.group(1))
+            if value is not None:
+                min_age_days = max(min_age_days or 0, _age_to_days(value, match.group(2)))
+                signals.append("account age minimum in community text")
+
+    if min_age_days is None and any(re.search(p, haystack) for p in _NEW_ACCOUNT_PATTERNS):
+        min_age_days = max(min_age_days or 0, 1)
+        signals.append("community discourages new accounts")
+    if min_karma is None and any(re.search(p, haystack) for p in _LOW_KARMA_PATTERNS):
+        min_karma = max(min_karma or 0, 1)
+        signals.append("community discourages low karma")
+
+    return {
+        "min_total_karma": min_karma,
+        "min_account_age_days": min_age_days,
+        "signals": list(dict.fromkeys(signals)),
+        "requires_account": bool(min_karma or min_age_days),
+    }
+
+
+async def _fetch_account_identity(client) -> dict[str, Any]:
+    """Resolve /api/v1/me once per run; never claim the account passes on failure."""
+    try:
+        me = await _get_json(client, "/api/v1/me")
+    except RedditScoutError as exc:
+        return {"status": "unknown", "reason": f"Reddit /api/v1/me недоступен: {str(exc)[:120]}"}
+    if not isinstance(me, dict) or not me.get("name"):
+        return {"status": "unknown", "reason": "Reddit /api/v1/me не вернул имя аккаунта."}
+
+    def _karma(field: str) -> int | None:
+        value = me.get(field)
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+        return None
+
+    link_karma = _karma("link_karma")
+    comment_karma = _karma("comment_karma")
+    total_karma = None
+    if link_karma is not None and comment_karma is not None:
+        total_karma = link_karma + comment_karma
+    elif isinstance(me.get("total_karma"), (int, float)):
+        total_karma = max(0, int(me["total_karma"]))
+
+    created = me.get("created_utc")
+    age_days = None
+    if isinstance(created, (int, float)) and created > 0:
+        age_days = max(0.0, round((time.time() - float(created)) / 86_400.0, 1))
+    return {
+        "status": "known",
+        "username": str(me.get("name") or ""),
+        "link_karma": link_karma,
+        "comment_karma": comment_karma,
+        "total_karma": total_karma,
+        "account_age_days": age_days,
+        "reason": "Reddit подтвердил аккаунт через /api/v1/me.",
+    }
+
+
+def _assess_account_requirements(
+    identity: dict[str, Any] | None,
+    minimum: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare the authenticated account with a stated community minimum.
+
+    Eligibility is only ``met`` when every documented bound is satisfied, or
+    when the community documents none. If a bound exists but identity is
+    unknown, the result is ``unknown`` and ineligible: the account is never
+    assumed to pass.
+    """
+    if not minimum.get("requires_account"):
+        return {
+            "status": "not_required",
+            "eligible": True,
+            "reason": "Сообщество не заявило минимальных требований к карме или возрасту аккаунта.",
+        }
+
+    parts: list[str] = []
+    if minimum.get("min_total_karma"):
+        parts.append(f"минимум кармы {minimum['min_total_karma']}")
+    if minimum.get("min_account_age_days"):
+        parts.append(f"минимальный возраст аккаунта {minimum['min_account_age_days']} дн.")
+
+    if not identity or identity.get("status") != "known":
+        reason = (identity or {}).get("reason") or "Reddit /api/v1/me недоступен."
+        return {
+            "status": "unknown",
+            "eligible": False,
+            "reason": (
+                f"Сообщество требует {', '.join(parts)}, но аккаунт не подтверждён "
+                f"({reason[:120]}); публикация запрещена вместо предположения о соответствии."
+            ),
+            "required": minimum,
+        }
+
+    failures: list[str] = []
+    required_karma = minimum.get("min_total_karma")
+    actual_karma = identity.get("total_karma")
+    if required_karma and (actual_karma is None or actual_karma < required_karma):
+        shown = "неизвестна" if actual_karma is None else f"{actual_karma}"
+        failures.append(f"карма: требуется {required_karma}, у аккаунта {shown}")
+
+    required_age = minimum.get("min_account_age_days")
+    actual_age = identity.get("account_age_days")
+    if required_age and (actual_age is None or actual_age < required_age):
+        shown = "неизвестен" if actual_age is None else f"{actual_age:.0f} дн."
+        failures.append(f"возраст аккаунта: требуется {required_age} дн., у аккаунта {shown}")
+
+    if failures:
+        return {
+            "status": "insufficient",
+            "eligible": False,
+            "reason": "Аккаунт не соответствует заявленным требованиям сообщества ("
+            + "; ".join(failures) + ").",
+            "required": minimum,
+            "account": {
+                "username": identity.get("username"),
+                "total_karma": actual_karma,
+                "account_age_days": actual_age,
+            },
+        }
+
+    return {
+        "status": "met",
+        "eligible": True,
+        "reason": f"Аккаунт {identity.get('username') or ''} подтверждён и соответствует требованиям сообщества.",
+        "required": minimum,
+        "account": {
+            "username": identity.get("username"),
+            "total_karma": actual_karma,
+            "account_age_days": actual_age,
+        },
+    }
+
+
+# --------------------------------------------------------------------------
+# Gap #2 - flair selection --------------------------------------------------
+# --------------------------------------------------------------------------
+def _parse_flair_choices(body: dict[str, Any]) -> list[dict[str, str]]:
+    """Normalise Reddit flair templates; malformed entries are dropped safely."""
+    if not isinstance(body, dict):
+        return []
+    raw_choices = body.get("choices") or body.get("flair") or body.get("templates")
+    if isinstance(raw_choices, dict):
+        raw_choices = raw_choices.get("choices") or list(raw_choices.values())
+    if isinstance(raw_choices, str) or not isinstance(raw_choices, (list, tuple)):
+        # A bare string or an unexpected shape is not a set of templates.
+        return []
+    result: list[dict[str, str]] = []
+    for item in raw_choices:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                result.append({"flair_text": text, "flair_id": "", "css_class": ""})
+            continue
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("flair_text") or item.get("text") or "").strip()
+        flair_id = str(
+            item.get("flair_template_id") or item.get("id") or item.get("flair_id") or ""
+        ).strip()
+        css = str(item.get("flair_css_class") or item.get("css") or "").strip()
+        if not text:
+            text = css.replace("_", " ").strip()
+        if not text and not flair_id:
+            continue
+        result.append({"flair_text": text, "flair_id": flair_id, "css_class": css})
+    return result
+
+
+def select_flair(choices: list[dict[str, str]], title: str, body: str) -> dict[str, Any]:
+    """Pick the flair template whose text best matches the post theme.
+
+    When nothing reaches the match threshold the flair stays deliberately
+    unset; a random template is never sent, and the reason is recorded.
+    """
+    parsed = [
+        c for c in (choices or [])
+        if isinstance(c, dict) and (c.get("flair_text") or c.get("flair_id"))
+    ]
+    if not parsed:
+        return {
+            "selected": None,
+            "reason": "Reddit не вернул ни одного доступного flair-шаблона; flair оставлен пустым.",
+            "available": 0,
+        }
+    content_terms = set(_terms(f"{title} {body}", 40))
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for choice in parsed:
+        flair_terms = set(_terms(str(choice.get("flair_text") or ""), 12))
+        if not flair_terms:
+            continue
+        overlap = len(flair_terms & content_terms)
+        score = overlap / max(1, len(flair_terms))
+        if score > best_score:
+            best_score = score
+            best = choice
+    if not best or best_score < ACTIVITY_MIN_MATCH:
+        return {
+            "selected": None,
+            "reason": (
+                "Ни один flair-шаблон не совпадает с темой поста; flair намеренно не выбран, "
+                "чтобы не отправлять случайную метку."
+            ),
+            "available": len(parsed),
+        }
+    return {
+        "selected": {"flair_text": best.get("flair_text", ""), "flair_id": best.get("flair_id", "")},
+        "reason": (
+            f"Выбран flair «{best.get('flair_text','')}» как najbliżший по теме поста "
+            f"(совпадение {best_score:.2f})."
+        ),
+        "available": len(parsed),
+        "match": round(best_score, 3),
+    }
+
+
+# --------------------------------------------------------------------------
+# Gap #3 - numeric removal risk --------------------------------------------
+# --------------------------------------------------------------------------
+def _removal_risk_score(
+    *,
+    risk_flags: list[str] | None,
+    requirements: dict[str, Any] | None,
+    about: dict[str, Any] | None,
+    account_status: str,
+    activity: dict[str, Any] | None,
+    flair_required: bool,
+    flair_selected: bool,
+) -> float:
+    """Fold qualitative flags plus the newly known checks into one 0..1 score.
+
+    Only *measured* activity (never the static ``active_user_count``) may add a
+    penalty, and it is treated as unknown - not risky - when absent.
+    """
+    flags = [flag for flag in (risk_flags or []) if isinstance(flag, str)]
+    requirements = requirements or {}
+    about = about or {}
+
+    score = 0.05 * min(len(flags), 4)
+    rule_text = " ".join(flags).lower()
+    if any(term in rule_text for term in ("self-promotion", "self promotion", "реклам", "promot")):
+        score += 0.20
+    if any(term in rule_text for term in ("ai-generated", "chatgpt", "no ai", "автомат", "bot")):
+        score += 0.15
+    if any(term in rule_text for term in ("ссылк", "link")):
+        score += 0.10
+    if any(term in rule_text for term in ("low effort", "repetitive", "повтор")):
+        score += 0.10
+
+    if requirements.get("body_restriction_policy") == "notAllowed":
+        score += 0.30
+    if requirements.get("domain_whitelist"):
+        score += 0.10
+    if requirements.get("domain_blacklist"):
+        score += 0.05
+    if about.get("over18"):
+        score += 0.35
+    if about.get("restrict_posting") or about.get("subreddit_type") in {"private", "restricted"}:
+        score += 0.30
+    if about.get("submission_type") not in {"any", "self", None, ""}:
+        score += 0.20
+
+    if flair_required:
+        score += 0.0 if flair_selected else 0.15
+    if account_status == "insufficient":
+        score += 0.40
+    elif account_status == "unknown":
+        score += 0.25
+    elif account_status == "not_required":
+        score += 0.05
+
+    rate = (activity or {}).get("posts_per_day")
+    if isinstance(rate, (int, float)):
+        if rate < 0.5:
+            score += 0.25
+        elif rate < 2:
+            score += 0.10
+        elif rate >= 10:
+            score -= 0.05
+    else:
+        score += 0.10
+    return round(max(0.0, min(1.0, score)), 3)
+
+
+def _risk_band(score: float) -> str:
+    if score < 0.25:
+        return "низкий"
+    if score < 0.5:
+        return "умеренный"
+    if score < 0.75:
+        return "высокий"
+    return "критический"
+
+
+# --------------------------------------------------------------------------
+# Gap #4 - measured activity ------------------------------------------------
+# --------------------------------------------------------------------------
+def _posts_per_day(items: list[dict[str, Any]], now: float | None = None) -> dict[str, Any]:
+    """Derive a posts/day rate from listing timestamps already fetched."""
+    moment = now if now is not None else time.time()
+    timestamps = sorted(
+        float(item.get("created_utc"))
+        for item in items or []
+        if isinstance(item, dict) and isinstance(item.get("created_utc"), (int, float))
+    )
+    count = len(timestamps)
+    if count == 0:
+        return {"posts_per_day": None, "sample_size": 0, "measured": False,
+                "reason": "Reddit не вернул временные метки постов."}
+    span_days = max((moment - timestamps[0]) / 86_400.0, 1.0 / 1440.0)
+    rate = count / span_days
+    return {
+        "posts_per_day": round(rate, 3),
+        "sample_size": count,
+        "window_days": round(span_days, 3),
+        "measured": True,
+        "reason": f"Замерено по {count} свежим постам: {rate:.2f} публикаций в сутки.",
+    }
+
+
+async def inspect_destination(
+    subreddit: str,
+    client,
+    *,
+    identity: dict[str, Any] | None = None,
+    title: str = "",
+    body: str = "",
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fetch account fit, flair templates and a measured posting rate.
+
+    Every subreddit response is cached in ``cache`` for one selection run.
+    """
+    subreddit = (subreddit or "").strip()
+    subreddit = subreddit[2:] if subreddit.lower().startswith("r/") else subreddit
+    if not re.fullmatch(r"[A-Za-z0-9_]{2,21}", subreddit):
+        raise RedditScoutError("Укажи корректное имя subreddit без лишних символов.")
+
+    if cache is None:
+        cache = {}
+    entry = cache.get(subreddit.lower())
+    if entry is None:
+        about = _extract_data(await _get_json(client, f"/r/{subreddit}/about"))
+        rules = _rule_objects(await _get_json(client, f"/r/{subreddit}/about/rules"))
+        requirements = await _get_json(client, f"/api/v1/{subreddit}/post_requirements")
+        flair_body: dict[str, Any] = {}
+        if requirements.get("is_flair_required"):
+            try:
+                flair_body = await _get_json(client, f"/r/{subreddit}/api/link_flair.json")
+            except RedditScoutError:
+                flair_body = {}
+        new_listing = []
+        try:
+            new_listing = _unpack_listing(
+                await _get_json(client, f"/r/{subreddit}/new", params={"limit": ACTIVITY_SAMPLE_LIMIT})
+            )
+        except RedditScoutError:
+            new_listing = []
+        entry = {
+            "about": about,
+            "rules": rules,
+            "requirements": requirements,
+            "flair_choices": _parse_flair_choices(flair_body),
+            "activity": _posts_per_day(new_listing),
+        }
+        cache[subreddit.lower()] = entry
+
+    about = entry.get("about") or {}
+    rules = entry.get("rules") or []
+    requirements = entry.get("requirements") or {}
+    flair_required = bool(requirements.get("is_flair_required"))
+    flair = select_flair(entry.get("flair_choices") or [], title, body)
+    if not flair_required and flair.get("selected") is None:
+        flair = {"selected": None, "reason": "Flair не требуется; поле оставлено пустым.", "available": 0}
+
+    minimum = _documented_account_minimum(about, rules, requirements)
+    account = _assess_account_requirements(identity, minimum)
+    risk_flags = _risk_flags(about, rules, requirements)
+    risk_score = _removal_risk_score(
+        risk_flags=risk_flags,
+        requirements=requirements,
+        about=about,
+        account_status=account.get("status", "unknown"),
+        activity=entry.get("activity"),
+        flair_required=flair_required,
+        flair_selected=bool(flair.get("selected")),
+    )
+    return {
+        "name": subreddit,
+        "about": about,
+        "rules": rules,
+        "requirements": requirements,
+        "risk_flags": risk_flags,
+        "flair": flair,
+        "flair_required": flair_required,
+        "account_minimum": minimum,
+        "account": account,
+        "activity": entry.get("activity") or {},
+        "removal_risk": risk_score,
+        "risk_band": _risk_band(risk_score),
+    }
+
+
+async def _open_identity_client() -> tuple[Any, dict[str, Any]]:
+    """Open an authenticated client and resolve /api/v1/me for one run.
+
+    Identity failure is recorded as ``unknown`` and never raised, because a
+    missing identity must not crash scouting - it only blocks destinations
+    that actually document a requirement. A client that cannot be created at
+    all surfaces as ``RedditScoutError`` so the caller can degrade to the
+    cached scouting data.
+    """
+    import httpx
+
+    try:
+        adapter = _adapter()
+        _client_id, _client_secret, _refresh_token, _default_subreddit, user_agent = adapter._credentials()
+        token = await adapter._access_token()
+    except RedditScoutError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any setup failure means "no identity", never a pass
+        raise RedditScoutError(f"Reddit-клиент не готов: {type(exc).__name__}.") from exc
+    client = httpx.AsyncClient(
+        timeout=18.0,
+        headers={"User-Agent": user_agent, "Authorization": f"Bearer {token}"},
+    )
+    identity = await _fetch_account_identity(client)
+    return client, identity
+
+
+async def _safe_destination(
+    client: Any,
+    subreddit: str,
+    identity: dict[str, Any],
+    title: str,
+    body: str,
+    cache: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch destination facts without letting one community abort the search.
+
+    A rate-limited destination is skipped for this run instead of being
+    retried blindly; other scouting failures degrade to ``unknown`` activity.
+    """
+    try:
+        return await inspect_destination(
+            subreddit, client, identity=identity, title=title, body=body, cache=cache
+        )
+    except RedditScoutError as exc:
+        return {
+            "name": subreddit,
+            "fatal": True,
+            "reason": str(exc)[:220],
+            "account": {"status": "unknown", "eligible": False},
+            "flair": {"selected": None},
+            "flair_required": False,
+            "removal_risk": 1.0,
+            "activity": {"posts_per_day": None, "measured": False},
+        }
 
 
 
@@ -241,7 +801,11 @@ def validate_submission(title: str, body: str, community: dict[str, Any]) -> lis
     if submission_type == "link":
         problems.append("Сообщество разрешает только link-посты; текущий редактор подготовил текстовый пост.")
     if requirements.get("is_flair_required"):
-        problems.append("В subreddit обязателен flair. Выбор flair пока не реализован, поэтому отправка заблокирована.")
+        selected_flair = community.get("selected_flair") or {}
+        if not str(selected_flair.get("flair_id") or selected_flair.get("flair_text") or "").strip():
+            problems.append(
+                "В subreddit обязателен flair, но подходящий шаблон не выбран; отправка заблокирована."
+            )
 
     title = (title or "").strip()
     body = (body or "").strip()
@@ -315,6 +879,9 @@ def _candidate_score(
     content_coverage = _coverage(content_terms, community_terms)
     active = max(0, int(candidate.get("active_user_count") or 0))
     subscribers = max(0, int(candidate.get("subscribers") or 0))
+    # Community search answers with counters only, never with timestamps, so this
+    # stays an estimate. The measured posts/day rate arrives later, per
+    # destination, and is what ranks the survivors.
     activity_ratio = min(1.0, (max(active, subscribers // 100) / 100_000) ** 0.5)
     rank_ratio = 1.0 if result_count <= 1 else 1.0 - (result_index / max(1, result_count - 1))
     score = round(100 * (
@@ -328,7 +895,9 @@ def _candidate_score(
     if matches:
         reasons.append("Совпадения по теме: " + ", ".join(matches[:6]))
     if active:
-        reasons.append(f"Активных пользователей сейчас: около {active:,}".replace(",", " "))
+        reasons.append(
+            f"Активных пользователей сейчас: около {active:,} (статичная оценка)".replace(",", " ")
+        )
     elif subscribers:
         reasons.append(f"Подписчиков: около {subscribers:,}".replace(",", " "))
     if not matches:
@@ -671,12 +1240,74 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
     }
 
 
+def _candidate_destination(
+    candidate: dict[str, Any],
+    identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the same destination facts from already-scouted data.
+
+    Used when no authenticated client is available so selection still applies
+    the documented account minimum (recorded as ``unknown`` without identity),
+    measured activity stays absent, and flair templates cannot be fetched.
+    """
+    about = {
+        "over18": candidate.get("over18", False),
+        "subreddit_type": candidate.get("subreddit_type") or "public",
+        "submission_type": candidate.get("submission_type") or "any",
+        "restrict_posting": candidate.get("restrict_posting", False),
+    }
+    rules = candidate.get("rules") or []
+    requirements = candidate.get("requirements") or {}
+    flags = candidate.get("risk_flags") or []
+    flair_required = bool(requirements.get("is_flair_required"))
+    if flair_required:
+        flair = {
+            "selected": None,
+            "reason": "Subreddit требует flair, но шаблоны недоступны без авторизованного клиента.",
+            "available": 0,
+        }
+    else:
+        flair = {"selected": None, "reason": "Flair не требуется; поле оставлено пустым.", "available": 0}
+    minimum = _documented_account_minimum(about, rules, requirements)
+    account = _assess_account_requirements(identity, minimum)
+    # Discovery answers with counters, not post timestamps, so a posting rate
+    # cannot be measured here: it is recorded as unknown, never as safe.
+    activity = {"posts_per_day": None, "measured": False}
+    risk = _removal_risk_score(
+        risk_flags=flags,
+        requirements=requirements,
+        about=about,
+        account_status=account.get("status", "unknown"),
+        activity=activity,
+        flair_required=flair_required,
+        flair_selected=bool(flair.get("selected")),
+    )
+    return {
+        "name": str(candidate.get("name") or ""),
+        "rules": rules,
+        "requirements": requirements,
+        "risk_flags": flags,
+        "flair": flair,
+        "flair_required": flair_required,
+        "account_minimum": minimum,
+        "account": account,
+        "activity": activity,
+        "removal_risk": risk,
+        "risk_band": _risk_band(risk),
+    }
+
+
 async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
     """Choose one public subreddit, tailor one post, and re-check its live rules.
 
-    This deliberately refuses uncertain destinations: low relevance, missing
-    rules, restricted/18+ communities, required flair (not yet selectable), any
-    detected policy risk, offline/non-native drafts, or machine-check failures.
+    The selection now also judges what the account can actually do there
+    (``/api/v1/me`` plus a documented community minimum), selects a matching
+    flair template, measures a real posting rate and folds all of that into a
+    numeric removal-risk score used as an explicit exclusion and tie-breaker.
+    It still refuses uncertain destinations: low relevance, missing rules,
+    restricted/18+ communities, an unsatisfiable account requirement, an
+    unselectable required flair, an offline/non-native draft, or any machine
+    check failure.
     """
     post = _post_record(post_public_id)
     if post["status"] != "published":
@@ -696,35 +1327,117 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
         post_public_id=post_public_id,
         limit=6,
     )
-    rejection_reasons: list[str] = []
-    for candidate in discovery.get("candidates", []):
-        name = str(candidate.get("name") or "").strip()
-        requirements = candidate.get("requirements") or {}
-        rules = candidate.get("rules") or []
-        if int(candidate.get("score") or 0) < 65:
-            rejection_reasons.append(f"r/{name}: тематическое совпадение ниже 65/100.")
-            continue
-        if candidate.get("over18") or candidate.get("subreddit_type") in {"private", "restricted"} or candidate.get("restrict_posting"):
-            rejection_reasons.append(f"r/{name}: закрытая, ограниченная или 18+ площадка.")
-            continue
-        if not rules:
-            rejection_reasons.append(f"r/{name}: Reddit не вернул правила сообщества.")
-            continue
-        if candidate.get("risk_flags"):
-            rejection_reasons.append(
-                f"r/{name}: правила содержат риск-флаги ({'; '.join(candidate['risk_flags'][:2])})."
-            )
-            continue
-        if candidate.get("submission_type") not in {"any", "self"}:
-            rejection_reasons.append(f"r/{name}: формат сообщества не подходит для текстовой статьи.")
-            continue
-        if requirements.get("is_flair_required"):
-            rejection_reasons.append(f"r/{name}: требуется flair, автоматический выбор пока не поддерживается.")
-            continue
-        if requirements.get("body_restriction_policy") == "notAllowed":
-            rejection_reasons.append(f"r/{name}: текстовое тело запрещено.")
-            continue
 
+    identity: dict[str, Any] = {
+        "status": "unknown",
+        "reason": "Reddit /api/v1/me не опрашивался (нет авторизованного клиента в этом прогоне).",
+    }
+    client: Any = None
+    cache: dict[str, Any] = {}
+    try:
+        client, identity = await _open_identity_client()
+    except RedditScoutError as exc:
+        identity = {"status": "unknown", "reason": str(exc)[:180]}
+        client = None
+
+    title_preview = str(post.get("title") or "")[:300]
+    body_preview = str(post.get("body") or "")[:2_000]
+
+    rejection_reasons: list[str] = []
+    eligible: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    try:
+        for candidate in discovery.get("candidates", []):
+            name = str(candidate.get("name") or "").strip()
+            requirements = candidate.get("requirements") or {}
+            rules = candidate.get("rules") or []
+            if int(candidate.get("score") or 0) < 65:
+                rejection_reasons.append(f"r/{name}: тематическое совпадение ниже 65/100.")
+                continue
+            if candidate.get("over18") or candidate.get("subreddit_type") in {"private", "restricted"} or candidate.get("restrict_posting"):
+                rejection_reasons.append(f"r/{name}: закрытая, ограниченная или 18+ площадка.")
+                continue
+            if not rules:
+                rejection_reasons.append(f"r/{name}: Reddit не вернул правила сообщества.")
+                continue
+            blocking_flags = _blocking_risk_flags(candidate.get("risk_flags"))
+            if blocking_flags:
+                rejection_reasons.append(
+                    f"r/{name}: правила содержат риск-флаги ({'; '.join(blocking_flags[:2])})."
+                )
+                continue
+            if candidate.get("submission_type") not in {"any", "self"}:
+                rejection_reasons.append(f"r/{name}: формат сообщества не подходит для текстовой статьи.")
+                continue
+            if requirements.get("body_restriction_policy") == "notAllowed":
+                rejection_reasons.append(f"r/{name}: текстовое тело запрещено.")
+                continue
+
+            if client is not None:
+                dest = await _safe_destination(
+                    client, name, identity, title_preview, body_preview, cache
+                )
+            else:
+                dest = _candidate_destination(candidate, identity)
+            if dest.get("fatal"):
+                rejection_reasons.append(f"r/{name}: {dest['reason']}")
+                continue
+
+            account = dest.get("account") or {}
+            if not account.get("eligible", False):
+                rejection_reasons.append(f"r/{name}: {account.get('reason', 'аккаунт не подходит сообществу')}")
+                continue
+
+            flair = dest.get("flair") or {}
+            if dest.get("flair_required") and not flair.get("selected"):
+                rejection_reasons.append(
+                    f"r/{name}: требуется flair, но "
+                    f"{flair.get('reason', 'подходящий шаблон не найден')}"
+                )
+                continue
+
+            risk_score = float(dest.get("removal_risk") or 0.0)
+            if risk_score >= RISK_EXCLUDE_THRESHOLD:
+                rejection_reasons.append(
+                    f"r/{name}: риск удаления {risk_score:.2f} ({dest.get('risk_band', 'неизвестный')}) "
+                    "выше приемлемого порога автоматической публикации."
+                )
+                continue
+
+            eligible.append((candidate, dest))
+
+        # Rank the survivors: theme score first, then the numeric removal risk
+        # as an explicit tie-breaker (lower is safer), then measured activity.
+        def _rank_key(pair: tuple[dict[str, Any], dict[str, Any]]) -> tuple[int, float, float]:
+            candidate, dest = pair
+            rate = (dest.get("activity") or {}).get("posts_per_day")
+            rate = float(rate) if isinstance(rate, (int, float)) else -1.0
+            return (
+                int(candidate.get("score") or 0),
+                -float(dest.get("removal_risk") or 0.0),
+                rate,
+            )
+
+        eligible.sort(key=_rank_key, reverse=True)
+    finally:
+        if client is not None:
+            await client.aclose()
+
+    if not eligible:
+        summary = " ".join(rejection_reasons[:4])
+        if not summary:
+            summary = "Reddit не вернул достаточно подходящих публичных сообществ."
+        return {
+            "ok": False,
+            "reason": "Автоматическая публикация в Reddit пропущена. " + summary,
+            "candidates_checked": len(discovery.get("candidates") or []),
+            "rejections": rejection_reasons,
+        }
+
+    for candidate, dest in eligible:
+        name = str(candidate.get("name") or "").strip()
+        account = dest.get("account") or {}
+        flair = dest.get("flair") or {}
+        selected_flair = flair.get("selected") or {}
         try:
             tailored = await tailor_post(post_public_id, name)
             if tailored.get("adaptation", {}).get("mode") != "ai":
@@ -736,9 +1449,13 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
             # Re-fetch the community immediately before validation, rather than
             # trusting discovery metadata that may have changed during drafting.
             current = await inspect_community(name)
-            if current.get("risk_flags"):
+            # A required flair is selectable now, so it is not a barrier by
+            # itself; only the remaining flags can reject a live community.
+            blocking_flags = _blocking_risk_flags(current.get("risk_flags"))
+            if blocking_flags:
                 rejection_reasons.append(
-                    f"r/{name}: правила изменились или выявлен риск ({'; '.join(current['risk_flags'][:2])})."
+                    f"r/{name}: правила изменились или выявлен риск "
+                    f"({'; '.join(blocking_flags[:2])})."
                 )
                 continue
             # CommunityPolicy gate: an unknown or stale ruleset means no
@@ -759,6 +1476,7 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
                 continue
             record_policy_snapshot(reddit_policy, reddit_verdict)
             draft = tailored.get("draft") or {}
+            current["selected_flair"] = selected_flair
             problems = validate_submission(
                 str(draft.get("title") or ""),
                 str(draft.get("body") or ""),
@@ -792,6 +1510,18 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
                 "rules_checked": len(current.get("rules") or []),
                 "requirements_checked": True,
                 "adaptation": tailored.get("adaptation") or {},
+                "flair": {
+                    "required": bool(dest.get("flair_required")),
+                    "selected": selected_flair or None,
+                    "flair_id": str(selected_flair.get("flair_id") or ""),
+                    "flair_text": str(selected_flair.get("flair_text") or ""),
+                    "reason": flair.get("reason", ""),
+                },
+                "account_requirement": account,
+                "activity": dest.get("activity") or {},
+                "removal_risk": dest.get("removal_risk"),
+                "risk_band": dest.get("risk_band"),
+                "rejected_candidates": rejection_reasons,
             }
         except RedditScoutError as exc:
             rejection_reasons.append(f"r/{name}: {str(exc)[:180]}")
@@ -804,6 +1534,7 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
         "ok": False,
         "reason": "Автоматическая публикация в Reddit пропущена. " + summary,
         "candidates_checked": len(discovery.get("candidates") or []),
+        "rejections": rejection_reasons,
     }
 
 
@@ -811,7 +1542,9 @@ __all__ = [
     "RedditScoutError",
     "build_automatic_submission",
     "inspect_community",
+    "inspect_destination",
     "search_communities",
+    "select_flair",
     "tailor_post",
     "validate_submission",
 ]

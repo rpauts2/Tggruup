@@ -809,6 +809,17 @@ class RedditAdapter:
                 )
             form["text"] = body
 
+        # A subreddit-selected flair is carried through meta by the scout. The
+        # template id is authoritative; the text mirrors it for Reddit's UI. An
+        # unset flair is deliberately NOT replaced with a random one.
+        flair = meta.get("flair") if isinstance(meta.get("flair"), dict) else {}
+        flair_id = str(meta.get("flair_id") or flair.get("flair_id") or "").strip()
+        flair_text = str(meta.get("flair_text") or flair.get("flair_text") or "").strip()
+        if flair_id:
+            form["flair_id"] = flair_id
+        if flair_text:
+            form["flair_text"] = flair_text
+
         try:
             token = await self._access_token()
         except Exception as exc:  # noqa: BLE001 - no post request has been made yet

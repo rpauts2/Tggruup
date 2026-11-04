@@ -456,6 +456,9 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 **(payload.meta or {}),
                 "subreddit": reddit_submission["subreddit"],
                 "reddit_kind": reddit_submission.get("reddit_kind", "self"),
+                # Forward the scout-selected flair (id + text) so the Reddit
+                # adapter can send it; an unset flair is passed through empty.
+                "flair": reddit_submission.get("flair") or {},
             }
         final_native = choose_native_format(
             name,
