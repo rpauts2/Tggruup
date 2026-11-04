@@ -247,6 +247,29 @@ class _OpenAI(_Provider):
                     )
                     break  # next candidate; this one is out of quota
                 if resp.status_code in (401, 402, 403):
+                    body_text = resp.text.lower()
+                    if resp.status_code == 403 and any(
+                        marker in body_text
+                        for marker in (
+                            "consent_required",
+                            "consent required",
+                            "model_not_found",
+                            "unknown model",
+                        )
+                    ):
+                        # A free model may demand a one-off consent for its
+                        # upstream provider (unorouter returns 403
+                        # consent_required) or simply not exist in this
+                        # catalogue. The key is fine, so park only this
+                        # candidate for an hour and keep walking: taking the
+                        # whole gateway down here is what turned every draft
+                        # into offline text for days.
+                        self._model_cooldown[candidate] = time.monotonic() + 3600
+                        record_stat(f"{self.name}:{candidate}", "consent_required")
+                        last_error = ProviderUnavailable(
+                            f"{self.name} 403 for {candidate}: {resp.text[:160]}"
+                        )
+                        break
                     # Bad key, revoked access, or an exhausted prepaid quota:
                     # retrying this provider in the same process will not help.
                     self._down = time.monotonic() + 3600
