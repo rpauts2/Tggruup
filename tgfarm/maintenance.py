@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, select, text, update
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
@@ -108,6 +108,44 @@ def checkpoint(mode: str = "PASSIVE") -> bool:
     return True
 
 
+def expire_unpublishable_drafts(hours: int | None = None) -> int:
+    """Reject drafts that can never publish under the current policy.
+
+    Today that is the offline-composed Dzen draft: the publisher holds template
+    text back (``DZEN_REQUIRES_LLM``), so one sitting in the backlog only rots
+    there and hides the real outage behind a wall of «готово к публикации».
+    Only formal criteria are used and nothing is published — the post can be
+    regenerated once a model answers again.
+    """
+    from tgfarm.db.models import Channel, Post
+
+    settings = get_settings()
+    if not getattr(settings, "dzen_requires_llm", False):
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(hours=max(1, hours or 24))
+    reason = (
+        "formal: offline draft for Dzen while DZEN_REQUIRES_LLM is on; "
+        "regenerate when an online model is available"
+    )
+    with session_scope() as session:
+        dzen_channels = session.execute(
+            select(Channel.id).where(Channel.platform == "dzen")
+        ).scalars().all()
+        if not dzen_channels:
+            return 0
+        result = session.execute(
+            update(Post)
+            .where(
+                Post.status.in_(("gated", "draft")),
+                Post.channel_id.in_(dzen_channels),
+                Post.generation_provider == "offline",
+                Post.created_at <= cutoff,
+            )
+            .values(status="rejected", reject_reason=reason)
+        )
+        return result.rowcount or 0
+
+
 def run_maintenance() -> dict[str, int | bool]:
     """One maintenance pass; every step fails separately, not the stage."""
     out: dict[str, int | bool] = {}
@@ -116,6 +154,7 @@ def run_maintenance() -> dict[str, int | bool]:
         ("raw_items_pruned", prune_raw_items),
         ("runs_pruned", prune_pipeline_runs),
         ("crosspost_logs_pruned", prune_crosspost_logs),
+        ("unpublishable_drafts", expire_unpublishable_drafts),
     ):
         try:
             out[name] = fn()
@@ -134,6 +173,7 @@ def run_maintenance() -> dict[str, int | bool]:
 __all__ = [
     "checkpoint",
     "expire_stale_clusters",
+    "expire_unpublishable_drafts",
     "prune_crosspost_logs",
     "prune_pipeline_runs",
     "prune_raw_items",

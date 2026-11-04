@@ -236,6 +236,15 @@ def schedule_ready_posts(limit: int = 200) -> int:
 
             channel = session.get(ChannelRow, post.channel_id)
             platform = ((channel.platform if channel else None) or "telegram").lower()
+            if (
+                platform == "dzen"
+                and getattr(settings, "dzen_requires_llm", False)
+                and str(post.generation_provider or "") == "offline"
+            ):
+                # An offline Dzen draft can never ship: the publisher holds
+                # template text back (DZEN_REQUIRES_LLM). Scheduling it would
+                # rot in the queue and be skipped on every tick.
+                continue
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
                 if platform not in platform_daily_counts:
                     platform_daily_counts[platform] = _posts_platform_today(
