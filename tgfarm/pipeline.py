@@ -1906,6 +1906,40 @@ async def _telegraph_metrics_tick() -> dict:
         return {"updated": 0, "skipped": 0, "errors": 1, "error": message}
 
 
+async def _metrics_learning_tick() -> dict:
+    """Measure and learn on the scheduler's own clock, not at the tail of a cycle.
+
+    Live evidence (2026-11-04): cycles spent their whole budget generating and
+    gating drafts, were cancelled at 2700 s while still in S5, and therefore never
+    reached S8 or S12 — metrics were last collected on 29.10 and learning never
+    ran at all. Publishing has its own job for the same reason; measurement needs
+    one too, since a farm that never measures cannot feed the format and angle
+    decisions it is supposed to be learning from.
+
+    Nothing here sends anything anywhere: S8 reads platform statistics and S12
+    turns them into lessons.
+    """
+    from tgfarm import s8_analytics, s12_learning
+
+    settings = get_settings()
+    if not settings.online:
+        return {"skipped": "mode=off"}
+
+    run_id = f"metrics-{uuid.uuid4().hex[:8]}"
+    out: dict[str, object] = {}
+    for stage, call in (("s8_analytics", s8_analytics.run), ("s12_learning", s12_learning.run)):
+        try:
+            value = await call()
+            out[stage] = value if isinstance(value, dict) else {"value": value}
+            await to_thread(_record, run_id, stage, "ok", items_out=len(out[stage]))
+        except Exception as exc:  # noqa: BLE001 - one unread platform must not stop learning
+            message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+            out[stage] = {"error": message}
+            log.warning("%s tick failed: %s", stage, message)
+            await to_thread(_record, run_id, stage, "error", error=message)
+    return out
+
+
 async def _startup_backup_check() -> dict | None:
     """Create a verified snapshot on startup when none is fresh or the last attempt failed."""
     settings = get_settings()
@@ -2097,6 +2131,24 @@ def _build_scheduler():
         run_date=datetime.now(UTC),
         id="startup-telegraph-metrics",
         name="initial Telegraph page-view analytics",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _metrics_learning_tick,
+        IntervalTrigger(hours=1),
+        id="metrics-and-learning",
+        name="metrics collection and learning",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _metrics_learning_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-metrics-and-learning",
+        name="initial metrics collection and learning",
         max_instances=1,
         misfire_grace_time=3600,
     )
