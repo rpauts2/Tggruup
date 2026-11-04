@@ -116,6 +116,22 @@ async def select_vk_group(group_id: str) -> dict[str, str]:
     }
 
 
+def _vk_groups(response: Any) -> list[dict[str, Any]]:
+    """Normalise the ``groups.getById`` payload across API versions.
+
+    VK 5.199 answers ``{"response": {"groups": [...]}}``; older versions answered
+    a bare list. Reading only the list shape raised ``KeyError(0)``, which the
+    auth check recorded as "access denied" and turned into a false «переподключи
+    VK» alert while publishing worked fine.
+    """
+    if isinstance(response, dict):
+        items = response.get("groups")
+        return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    if isinstance(response, list):
+        return [item for item in response if isinstance(item, dict)]
+    return []
+
+
 async def check_platform_auth(platform_id: str) -> dict[str, Any]:
     """Make one read-only provider request and remember only redacted results."""
     platform_id = str(platform_id or "").strip().lower()
@@ -174,7 +190,7 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                     "VK отклонил запрос: проверь токен, версию API и ID сообщества"
                     + (f" (код {code})." if code else ".")
                 )
-            groups = payload.get("response") or []
+            groups = _vk_groups(payload.get("response"))
             if not groups:
                 raise RuntimeError("VK не вернул сообщество для указанного ID.")
             account = str(groups[0].get("name") or f"Сообщество {group_id}")

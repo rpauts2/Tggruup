@@ -434,25 +434,10 @@ PUBLISHER = TelegramPublisher()
 
 
 def _llm_recently_working(minutes: int = 90) -> bool:
-    """Did any of the recent drafts come from an online model?
+    """Compatibility wrapper: draft provenance is the honest LLM health signal."""
+    from tgfarm.core.llm_health import llm_recently_working
 
-    Provider health flags park for an hour after a single 402/403, which used
-    to stall Dzen for an hour even though generation had recovered. The
-    provenance of actual drafts cannot lie: offline fallbacks stamp themselves.
-    """
-    from sqlalchemy import select
-
-    cutoff = datetime.now(UTC) - timedelta(minutes=max(1, minutes))
-    with session_scope() as session:
-        rows = session.execute(
-            select(PostRow.generation_provider)
-            .where(PostRow.created_at >= cutoff)
-            .order_by(PostRow.created_at.desc())
-            .limit(5)
-        ).scalars().all()
-    if not rows:
-        return True  # nothing generated yet: do not block on a guess
-    return any(provider != "offline" for provider in rows)
+    return llm_recently_working(minutes)
 
 
 def _primary_vk_image(post_id: int) -> str | None:

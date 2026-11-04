@@ -978,6 +978,20 @@ def _too_similar_vec(vec, pool: list[dict], channel_id: str, threshold: float = 
     return False
 
 
+def plans_after_llm_gate(plans: list, *, requires_llm: bool, llm_ok: bool) -> list:
+    """Drop Dzen channel plans while only the offline composer can answer.
+
+    Dzen demotes deterministic, template-looking text, and its own length gate
+    rejects the short offline drafts anyway (153 of 156 drafts in one 6 h window
+    were thrown away). Drafting for it in that state burns source slots and hides
+    the real outage behind a wall of "rejected" posts. With ``DZEN_REQUIRES_LLM``
+    disabled the caller keeps every plan, so an offline-only setup still works.
+    """
+    if not requires_llm or llm_ok:
+        return plans
+    return [plan for plan in plans if getattr(plan, "platform", "") != "dzen"]
+
+
 async def run(cluster_public_id: str) -> list[str]:
     """Route a cluster, choose a format per channel, and generate drafts."""
     from tgfarm.s2_trends import mark_consumed
@@ -1037,6 +1051,22 @@ async def run(cluster_public_id: str) -> list[str]:
             {"channel_id": channel_id, "vec": vec, "label": draft_text[:60]}
         )
         return False, vec
+
+    settings = get_settings()
+    if plans and getattr(settings, "dzen_requires_llm", False) and any(
+        getattr(plan, "platform", "") == "dzen" for plan in plans
+    ):
+        from tgfarm.core.llm_health import llm_recently_working
+
+        llm_ok = await to_thread(llm_recently_working)
+        gated = plans_after_llm_gate(
+            plans, requires_llm=True, llm_ok=llm_ok
+        )
+        if len(gated) != len(plans):
+            log.warning(
+                "s4: dzen drafts paused — no online model produced a draft recently"
+            )
+            plans = gated
 
     with StageTimer("s4_generate") as timer:
         for plan in plans:

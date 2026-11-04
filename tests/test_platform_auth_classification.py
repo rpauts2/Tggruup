@@ -100,3 +100,20 @@ def test_vk_success_is_confirmed(monkeypatch):
     result = asyncio.run(platform_auth.check_platform_auth("vk"))
     assert result["authorized"] is True
     assert result["account"] == "Всякая всячина"
+
+
+def test_vk_groups_payload_shapes():
+    # VK 5.199 wraps the list in an object; older versions answered a bare list.
+    assert platform_auth._vk_groups({"groups": [{"name": "A"}]}) == [{"name": "A"}]
+    assert platform_auth._vk_groups([{"name": "A"}]) == [{"name": "A"}]
+    assert platform_auth._vk_groups(None) == []
+    assert platform_auth._vk_groups({"groups": "broken"}) == []
+
+
+def test_vk_object_payload_confirms_access(monkeypatch):
+    # The live bug: reading only the list shape raised KeyError(0), which was
+    # stored as authorized=False and produced a false "reconnect VK" alert.
+    _patch_platform(monkeypatch, {"response": {"groups": [{"name": "Всякая всячина"}]}})
+    result = asyncio.run(platform_auth.check_platform_auth("vk"))
+    assert result["authorized"] is True
+    assert result["account"] == "Всякая всячина"
