@@ -140,16 +140,33 @@ def test_measured_partial_and_blocked_are_three_different_answers():
 
 
 def test_a_partially_measured_platform_without_a_collector_names_the_collector():
-    """Live Telegram: 7 of 15 measured and nobody can collect the rest.
+    """Live Telegraph: some posts measured, and nobody at all reads the rest.
 
     A bare "8 публикаций без снимка" reads like a schedule that has not run yet.
     The reason has to say the remaining rows are unreachable, not merely overdue.
     """
-    _seed_platform("telegram", published=4, measured=1, with_remote=0)
-    row = _row(measurement_coverage(), "telegram")
+    _seed_platform("telegraph", published=4, measured=1, with_remote=0)
+    row = _row(measurement_coverage(), "telegraph")
+    assert row["collector"] is None
     assert row["status"] == STATUS_PARTIAL
     assert "измерено 1 из 4" in row["reason"]
     assert "сборщика метрик в s8 нет" in row["reason"]
+
+
+def test_telegram_is_measured_on_demand_rather_than_by_a_broken_reader():
+    """Telegram used to be reported as a collector that crashed before it wrote.
+
+    That was true until `860bbc6` stopped it writing a `PostStat.day` column the
+    schema never had. The reader works now; what it lacks is a schedule. Saying
+    the old sentence today would send an operator to fix a bug that is gone.
+    """
+    _seed_platform("telegram", published=4, measured=1, with_remote=0)
+    row = _row(measurement_coverage(), "telegram")
+    assert row["collector"] == "tgfarm.tg_sync"
+    assert row["status"] == STATUS_PARTIAL
+    assert "не соберётся само" in row["reason"]
+    assert "PostStat.day" not in row["reason"]
+    assert "сборщика метрик в s8 нет" not in row["reason"]
 
 
 def test_a_platform_without_a_collector_says_so_instead_of_blaming_the_platform():
@@ -168,7 +185,7 @@ def test_all_zero_snapshots_are_not_reported_as_measured():
     assert row["measured_posts"] == 3
     assert row["measured_with_signal"] == 0
     assert row["status"] == STATUS_BLOCKED
-    assert "PostStat.day" in row["reason"] or "сборщика" in row["reason"]
+    assert "сборщика" in row["reason"]
 
 
 def test_totals_and_coverage_share_the_same_denominator():

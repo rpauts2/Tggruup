@@ -2,10 +2,11 @@
 
 ``post_stats`` is the only table the learning layers read: ``formats.py`` counts a
 format as evidence only when its posts have a snapshot, and S12 can only learn
-from engagement that exists. The farm therefore has two different problems that
-look identical from the outside - a platform nobody measures, and a platform
-whose measurements are thrown away before they reach the table. This module
-separates them with facts from the database alone.
+from engagement that exists. The farm therefore has three different problems that
+look identical from the outside - a platform nobody reads, a platform nobody can
+read without something the operator has not provided, and a platform with a
+working reader that only runs when a human asks. This module separates them with
+facts from the database alone.
 
 Read-only by construction: every query here is a ``select``, nothing is inserted,
 updated or deleted, and no network call is made. The result is a diagnosis, not a
@@ -47,11 +48,20 @@ log = get_logger(__name__)
 COLLECTORS: dict[str, str | None] = {
     "dzen": "tgfarm.s8_analytics.dzen_web",
     "vk": "tgfarm.s8_analytics.vk_stats",
-    "telegram": None,
+    "telegram": "tgfarm.tg_sync",
     "max": None,
     "x": None,
     "reddit": None,
     "telegraph": None,
+}
+
+#: Collectors that exist but are reached only when somebody asks for them.
+#: Their coverage grows while an operator clicks and stops the moment nobody
+#: does, so a gap here is a missing schedule, not a missing reader - which is a
+#: different sentence from "nobody can read this platform at all".
+ON_DEMAND_COLLECTORS: dict[str, str] = {
+    "telegram": "tg_sync.collect_post_stats запускают POST /api/telegram/stats, "
+    "`tgfarm telegram stats` и меню десктопа, но ни одна задача планировщика",
 }
 
 #: Collectors that cannot run without something the operator has not provided.
@@ -59,8 +69,6 @@ COLLECTORS: dict[str, str | None] = {
 BLOCKED_REASONS: dict[str, str] = {
     "vk": "нужен VK_USER_TOKEN: wall.getById читается только пользовательским "
     "токеном, групповой отвечает ошибкой 27",
-    "telegram": "сборщика метрик в s8 нет; tg_sync.collect_post_stats обращается к "
-    "PostStat.day, которого в схеме нет, и падает до записи снимка",
 }
 
 #: Every counter column that can make a snapshot mean something.
@@ -191,6 +199,8 @@ def _classify(row: dict[str, Any], platform: str) -> tuple[str, str | None]:
                     "; сборщика метрик в s8 нет, поэтому недостающие снимки появятся "
                     "только после того, как он появится"
                 )
+            elif platform in ON_DEMAND_COLLECTORS:
+                note = f"; остальное не соберётся само: {ON_DEMAND_COLLECTORS[platform]}"
             elif platform in BLOCKED_REASONS and row["crosspost_with_remote"] > row[
                 "measured_posts"
             ]:
@@ -309,6 +319,7 @@ def coverage_table(*, now: datetime | None = None) -> list[dict[str, Any]]:
 __all__ = [
     "BLOCKED_REASONS",
     "COLLECTORS",
+    "ON_DEMAND_COLLECTORS",
     "STATUS_BLOCKED",
     "STATUS_MEASURED",
     "STATUS_PARTIAL",
