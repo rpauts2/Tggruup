@@ -8,7 +8,7 @@ from sqlalchemy import inspect
 
 from tgfarm.core.media import discover_from_feed, discover_in_html, dominant_kind, extension_of
 from tgfarm.core.schemas import ItemScored, RawItem
-from tgfarm.db.bootstrap import apply_additive_migrations, init_db
+from tgfarm.db.bootstrap import apply_additive_migrations, init_db, plan_additive_migrations
 from tgfarm.db.models import RawItem as RawItemRow
 from tgfarm.db.session import get_engine, session_scope
 from tgfarm.s1_sources.base import to_raw
@@ -208,6 +208,38 @@ def test_migration_adds_a_missing_column():
     assert apply_additive_migrations(engine) == 1
     assert "media_kind" in {col["name"] for col in inspect(engine).get_columns("raw_items")}
     assert apply_additive_migrations(engine) == 0
+
+
+def test_the_plan_predicts_what_the_migration_will_run():
+    """A preview that disagrees with the boot is worse than no preview.
+
+    The restart decision rests on `plan_additive_migrations`, so the drift has to
+    show up in the plan and then be repaired by exactly that plan.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE raw_items DROP COLUMN media_kind")
+
+    plan = plan_additive_migrations(engine)
+    column_statements = [s for s in plan if s.startswith("ALTER TABLE")]
+    assert any('ADD COLUMN "media_kind"' in s for s in column_statements)
+
+    assert apply_additive_migrations(engine) == len(column_statements)
+    assert plan_additive_migrations(engine) == []
+
+
+def test_a_missing_index_is_planned_and_applied_without_counting_as_a_column():
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP INDEX IF EXISTS ix_clusters_trend_phase")
+
+    plan = plan_additive_migrations(engine)
+    assert any("ix_clusters_trend_phase" in s for s in plan)
+
+    assert apply_additive_migrations(engine) == 0
+    assert "ix_clusters_trend_phase" in {
+        ix["name"] for ix in inspect(engine).get_indexes("clusters")
+    }
 
 
 def test_post_format_columns_are_migrated():

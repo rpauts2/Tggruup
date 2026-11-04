@@ -26,6 +26,43 @@ def init_db(drop: bool = False) -> None:
     )
 
 
+def plan_additive_migrations(engine: Engine) -> list[str]:
+    """The statements the next boot would run, computed without running them.
+
+    An operator deciding whether to restart needs to know what the restart
+    *writes*. Deriving the answer from the same comparison `apply_additive_migrations`
+    uses is the point: a preview with its own logic can disagree with the boot.
+    """
+    inspector = inspect(engine)
+    live_tables = set(inspector.get_table_names())
+    columns: list[str] = []
+    indexes: list[str] = []
+
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in live_tables:
+            continue
+        live_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name in live_columns:
+                continue
+            type_sql = column.type.compile(dialect=engine.dialect)
+            columns.append(f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}')
+
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in live_tables:
+            continue
+        try:
+            existing_indexes = {ix["name"] for ix in inspector.get_indexes(table_name)}
+        except Exception:  # noqa: BLE001 - a read-only inspector is not fatal
+            continue
+        for index in table.indexes:
+            if index.name in existing_indexes:
+                continue
+            indexes.append(str(CreateIndex(index).compile(dialect=engine.dialect)))
+
+    return columns + indexes
+
+
 def apply_additive_migrations(engine: Engine) -> int:
     """Add columns that exist in the models but not yet in the database.
 
@@ -37,42 +74,23 @@ def apply_additive_migrations(engine: Engine) -> int:
     Only additive, nullable-safe changes are handled. Anything destructive
     (drops, renames, type changes, non-null constraints on populated tables)
     belongs in a real migration tool, not here.
+
+    Indexes are the other half of the drift: one added to the models never
+    reaches a database provisioned before it existed, and the slowdown is
+    invisible until the tables are large.
     """
-    inspector = inspect(engine)
-    live_tables = set(inspector.get_table_names())
+    statements = plan_additive_migrations(engine)
+    live_tables = set(inspect(engine).get_table_names())
     added = 0
-
-    for table_name, table in Base.metadata.tables.items():
-        if table_name not in live_tables:
-            continue
-        live_columns = {col["name"] for col in inspector.get_columns(table_name)}
-        for column in table.columns:
-            if column.name in live_columns:
-                continue
-            type_sql = column.type.compile(dialect=engine.dialect)
-            with engine.begin() as conn:
-                conn.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column.name}" {type_sql}'))
-            log.info("migrated %s.%s (%s)", table_name, column.name, type_sql)
+    for statement in statements:
+        with engine.begin() as conn:
+            conn.execute(text(statement))
+        if statement.startswith("ALTER TABLE"):
+            log.info("migrated %s", statement)
             added += 1
-
-    # Columns are only half the drift: an index added to the models never
-    # reaches a database provisioned before it existed, and the slowdown is
-    # invisible until the tables are large.
-    created_indexes = 0
-    for table_name, table in Base.metadata.tables.items():
-        if table_name not in live_tables:
-            continue
-        try:
-            existing_indexes = {ix["name"] for ix in inspector.get_indexes(table_name)}
-        except Exception:  # noqa: BLE001 - a read-only inspector is not fatal
-            continue
-        for index in table.indexes:
-            if index.name in existing_indexes:
-                continue
-            with engine.begin() as conn:
-                conn.execute(CreateIndex(index))
-            log.info("migrated index %s on %s", index.name, table_name)
-            created_indexes += 1
+        else:
+            log.info("migrated index: %s", statement)
+    created_indexes = len(statements) - added
     if created_indexes:
         log.info("migrated %d missing index(es)", created_indexes)
 

@@ -134,7 +134,9 @@ where cur = start and depth > 1
 
 
 def main() -> int:
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    path = sys.argv[1] if len(sys.argv) > 1 else DB
+    print(f"db: {path}")
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     cur = con.cursor()
     facts = {
         "rows_total": cur.execute("select count(*) from raw_items").fetchone()[0],
