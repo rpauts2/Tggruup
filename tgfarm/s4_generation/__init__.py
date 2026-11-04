@@ -1023,6 +1023,158 @@ def _media_kinds(raw_items: list, video) -> set[str]:
     return kinds
 
 
+#: Which evidence a format choice rests on. Recorded in the plan reason and in
+#: the log so the operator can always tell *what* decided, not only *what* won.
+PREFERENCE_DURABLE_LESSON = "durable_lesson"
+PREFERENCE_LIVE_WINDOW = "live_window"
+PREFERENCE_NO_DATA = "no_data"
+
+_PREFERENCE_LABELS = {
+    PREFERENCE_DURABLE_LESSON: "урок S12",
+    PREFERENCE_LIVE_WINDOW: "окно S8",
+    PREFERENCE_NO_DATA: "только правила",
+}
+
+
+def _no_lesson_preference(
+    state: str, detail: str, *, platform: str = "", **extra
+) -> dict[str, Any]:
+    """A preference that names no format, so the previous strategy applies."""
+    return {
+        "state": state, "platform": platform, "format": "", "history": {},
+        "sample_size": 0, "detail": detail, **extra,
+    }
+
+
+def durable_format_preference(
+    channel_id: str,
+    platform_id: str,
+    *,
+    has_video: bool = False,
+) -> dict[str, Any]:
+    """What the durable S12 lesson says about this destination's format.
+
+    S12 keeps the measurement S8 took, so a lesson survives the window the live
+    report reads and stops evaporating as soon as those posts age out. This
+    answers with *either* a one-row history the planner may act on *or* nothing,
+    never a blend of the two and never a lesson from another platform:
+
+    * no channel, no platform or an unreadable S12 — no lesson is consulted at
+      all, because an unknown destination is exactly where a Reddit number would
+      otherwise leak into a Дзен plan;
+    * only `below_sample`/`not_measured` lessons — `best_format_lesson` already
+      refuses them via `reliable_only`, and an unmeasured format is a blind spot,
+      not a verdict, so it cannot steer generation either;
+    * a trustworthy lesson naming a format this material cannot carry (outside the
+      length budgets, `video` without licensed footage, or a sample under the
+      planner's own threshold) is marked `unusable`;
+    * otherwise `state="trusted"` with `history` = that one format's row, so the
+      lesson — not an average of lesson and window — decides.
+
+    Every non-`trusted` answer leaves the live S8 window in charge, which is the
+    strategy that ran before this existed.
+    """
+    channel = str(channel_id or "").strip()
+    platform = str(platform_id or "").strip().lower()
+    if not platform:
+        return _no_lesson_preference(
+            "no_platform", "площадка плана не названа — урок другой площадки не принимается"
+        )
+    if not channel:
+        return _no_lesson_preference(
+            "no_channel", "канал плана не назван — личного урока формата нет", platform=platform
+        )
+
+    try:
+        from tgfarm.s10_format import LENGTH_BUDGET, MIN_HISTORY_SAMPLE
+        from tgfarm.s12_learning import best_format_lesson, format_lessons
+
+        lesson = best_format_lesson(channel, platform=platform)
+    except Exception as exc:  # noqa: BLE001 - a missing lesson is not a broken cycle
+        log.warning(
+            "s4: durable format lesson unreadable for %s/%s (%s) — решает окно S8",
+            channel, platform, exc,
+        )
+        return _no_lesson_preference(
+            "unreadable", "урок S12 не читается", platform=platform
+        )
+
+    if lesson is None:
+        observed: list[dict[str, Any]] = []
+        try:
+            observed = format_lessons(channel, platform=platform)
+        except Exception as exc:  # noqa: BLE001 - the explanation may fail, the plan may not
+            log.debug("s4: format lessons unreadable for %s/%s: %s", channel, platform, exc)
+        if observed:
+            best_measured = max(int(row.get("measured") or 0) for row in observed)
+            threshold = max(int(row.get("min_sample") or 0) for row in observed)
+            return _no_lesson_preference(
+                "below_sample",
+                f"уроки S12 по {platform}: лучше всего измерено {best_measured} из порога "
+                f"{threshold} — наблюдение, не вывод",
+                platform=platform,
+                sample_size=best_measured,
+                min_sample=threshold,
+                lesson_count=len(observed),
+            )
+        return _no_lesson_preference(
+            "not_measured", f"уроков S12 по {platform} не записано", platform=platform
+        )
+
+    value = dict(lesson.get("value") or {})
+    fmt = str(lesson.get("format") or value.get("format") or "").strip().lower()
+    measured = int(lesson.get("measured") or lesson.get("sample_size") or 0)
+    published = int(lesson.get("published") or value.get("published") or 0)
+    try:
+        engagement = float(value.get("avg_engagement") or 0.0)
+    except (TypeError, ValueError):
+        engagement = float("nan")
+
+    if fmt not in LENGTH_BUDGET:
+        return _no_lesson_preference(
+            "unusable",
+            f"урок S12 называет формат «{fmt}», для которого нет бюджета длины",
+            platform=platform, sample_size=measured,
+        )
+    if fmt == "video" and not has_video:
+        return _no_lesson_preference(
+            "unusable",
+            "урок S12 просит видео, а лицензированного ролика нет",
+            platform=platform, sample_size=measured, format=fmt,
+        )
+    if measured < MIN_HISTORY_SAMPLE:
+        return _no_lesson_preference(
+            "unusable",
+            f"урок S12 «{fmt}» опирается на {measured} измерений — план требует "
+            f"{MIN_HISTORY_SAMPLE}, решает окно S8",
+            platform=platform, sample_size=measured, format=fmt,
+        )
+    if engagement != engagement or engagement < 0:
+        return _no_lesson_preference(
+            "unusable",
+            f"урок S12 «{fmt}» не несёт проверяемой вовлечённости — решает окно S8",
+            platform=platform, sample_size=measured, format=fmt,
+        )
+
+    return {
+        "state": "trusted",
+        "platform": platform,
+        "format": fmt,
+        "sample_size": measured,
+        "detail": (
+            f"«{fmt}» по {platform}: измерено {measured} из {published}, avg {engagement:.2f}"
+        ),
+        "history": {
+            fmt: {
+                "measured": measured,
+                "published": published,
+                "avg_engagement": engagement,
+                "reliable": True,
+            }
+        },
+    }
+
+
 def format_plan_for(
     plan,
     *,
@@ -1032,12 +1184,21 @@ def format_plan_for(
     has_video: bool,
     history: dict[str, dict[str, Any]] | None,
     use_performance: bool,
+    preference: dict[str, Any] | None = None,
 ) -> Any:
     """One plan's format choice: rules only, or rules plus measured performance.
 
-    With ``use_performance`` off the planner is never consulted and the result is
-    byte-identical to `plan_for_cluster`, so switching the flag off restores the
-    previous generation strategy exactly.
+    With ``use_performance`` off the planner is never consulted, no lesson is
+    read and the result is byte-identical to `plan_for_cluster`, so switching the
+    flag off restores the previous generation strategy exactly.
+
+    With it on the preference order is: the trustworthy durable S12 lesson for
+    *this* platform, else the live S8 window, else the rules. `preference` may be
+    passed in already resolved (the cycle resolves and caches one per channel and
+    platform); `None` means look it up here. The two bodies of evidence are never
+    merged: whichever one speaks alone sets the format, and the reason says which
+    one did (`урок S12` / `окно S8` / `только правила`) and why the other stayed
+    silent.
     """
     from tgfarm.s10_format import as_format_plan, plan_for_cluster, plan_with_history
 
@@ -1045,26 +1206,60 @@ def format_plan_for(
         return plan_for_cluster(cluster_view, plan.persona, has_video=has_video)
 
     platform_id = str(getattr(plan, "platform", "") or "").strip().lower()
+    if preference is None:
+        preference = durable_format_preference(
+            str(getattr(plan, "channel_id", "") or ""),
+            platform_id,
+            has_video=bool(has_video) or "video" in (media_kinds or set()),
+        )
+    lesson_history = (
+        dict(preference.get("history") or {})
+        if preference.get("state") == "trusted"
+        else {}
+    )
+    # One source of evidence only: the lesson replaces the window for this plan,
+    # it does not join it.
+    chosen_history = lesson_history or (history or {})
+
     chosen = plan_with_history(
         plan.persona,
         platform_id=platform_id,
         media_kinds=media_kinds,
         topic=topic,
-        history=history or {},
+        history=chosen_history,
         cluster=cluster_view,
     )
+    if chosen["source"] == "history":
+        preference_key = (
+            PREFERENCE_DURABLE_LESSON if lesson_history else PREFERENCE_LIVE_WINDOW
+        )
+    else:
+        preference_key = PREFERENCE_NO_DATA
+    label = _PREFERENCE_LABELS[preference_key]
+    detail = str(preference.get("detail") or "")
+    # The reason names the evidence that decided and, when it was not the lesson,
+    # why the lesson stayed silent.
+    tail = f"довод: {label}"
+    if detail:
+        tail = f"{tail} — {detail}"
+
     measured = sum(int(row.get("measured") or 0) for row in chosen["history"].values())
     log.info(
-        "s4 format plan %s/%s: %s source=%s confidence=%.2f measured=%d platform=%s",
+        "s4 format plan %s/%s: %s source=%s preference=%s lesson_state=%s "
+        "confidence=%.2f measured=%d platform=%s",
         plan.channel_id,
         getattr(plan, "cluster_public_id", ""),
         chosen["format"],
         chosen["source"],
+        preference_key,
+        str(preference.get("state") or ""),
         float(chosen["confidence"]),
         measured,
         platform_id,
     )
-    return as_format_plan(chosen)
+    format_plan = as_format_plan(chosen)
+    format_plan.reason = f"{format_plan.reason}; {tail}".strip("; ")
+    return format_plan
 
 
 async def run(cluster_public_id: str) -> list[str]:
@@ -1146,6 +1341,8 @@ async def run(cluster_public_id: str) -> list[str]:
     with StageTimer("s4_generate") as timer:
         kinds = _media_kinds(raw_items, video)
         history_cache: dict[str, dict[str, Any]] = {}
+        preference_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        footage_ok = video is not None or "video" in kinds
 
         async def _performance_history(platform_id: str) -> dict[str, dict[str, Any]]:
             """One platform-scoped read per format, reused across this cluster's plans."""
@@ -1165,6 +1362,30 @@ async def run(cluster_public_id: str) -> list[str]:
                     )
             return history_cache[platform_id]
 
+        async def _format_preference(channel_id: str, platform_id: str) -> dict[str, Any]:
+            """One durable-lesson read per destination, reused across this cluster."""
+            key = (channel_id, platform_id)
+            if key not in preference_cache:
+                try:
+                    preference_cache[key] = await to_thread(
+                        durable_format_preference,
+                        channel_id,
+                        platform_id,
+                        has_video=footage_ok,
+                    )
+                except Exception as exc:  # noqa: BLE001 - a lesson nobody reads is not a verdict
+                    preference_cache[key] = {
+                        "state": "unreadable", "platform": platform_id, "format": "",
+                        "history": {}, "sample_size": 0, "detail": "урок S12 не читается",
+                    }
+                    log.warning(
+                        "s4: durable format lesson failed for %s/%s (%s) — окно S8 решает",
+                        channel_id,
+                        platform_id,
+                        exc,
+                    )
+            return preference_cache[key]
+
         for plan in plans:
             try:
                 cluster_view = ClusterSchema(
@@ -1174,10 +1395,22 @@ async def run(cluster_public_id: str) -> list[str]:
                     niche=cluster.niche,
                     heat=cluster.heat,
                 )
-                history = (
-                    await _performance_history(str(getattr(plan, "platform", "") or ""))
+                platform_id = str(getattr(plan, "platform", "") or "").strip().lower()
+                # The durable lesson is asked first: when it can be trusted it
+                # replaces the live window, so the two are never averaged and the
+                # heavier S8 read is skipped. Named apart from the similarity
+                # `history` above — rebinding that name here would turn the dedupe
+                # lookup into `dict + list`.
+                preference = (
+                    await _format_preference(str(getattr(plan, "channel_id", "") or ""), platform_id)
                     if settings.format_performance_planner
-                    else {}
+                    else None
+                )
+                lesson_decides = bool(preference and preference.get("state") == "trusted")
+                format_history = (
+                    {}
+                    if not settings.format_performance_planner or lesson_decides
+                    else await _performance_history(platform_id)
                 )
                 format_plan = format_plan_for(
                     plan,
@@ -1185,8 +1418,9 @@ async def run(cluster_public_id: str) -> list[str]:
                     topic=cluster.label or "",
                     media_kinds=kinds,
                     has_video=video is not None,
-                    history=history,
+                    history=format_history,
                     use_performance=settings.format_performance_planner,
+                    preference=preference,
                 )
                 draft = await generate(plan, raw_items, format_plan, video=video)
             except Exception as exc:  # noqa: BLE001 - one bad plan must not kill the cluster
