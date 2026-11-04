@@ -319,6 +319,10 @@ class Settings(BaseSettings):
     telegram_publish_timeout_s: int = Field(default=60, alias="TELEGRAM_PUBLISH_TIMEOUT_S")
     # How long to wait for a cancelled publisher before abandoning it.
     publish_cancel_grace_s: int = Field(default=15, alias="PUBLISH_CANCEL_GRACE_S")
+    # VK group tokens cannot read wall metrics (VK API rejects them with error
+    # 27); a user token with the wall scope is the only supported path for
+    # per-post views/likes/comments/reposts.
+    vk_user_token: str = Field(default="", alias="VK_USER_TOKEN")
     # Stop retrying a primary publication after this many definite failures.
     primary_publish_max_attempts: int = Field(default=5, alias="PRIMARY_PUBLISH_MAX_ATTEMPTS")
     dzen_login_timeout_s: int = Field(default=600, alias="DZEN_LOGIN_TIMEOUT_S")

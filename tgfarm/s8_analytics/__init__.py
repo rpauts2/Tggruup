@@ -440,17 +440,34 @@ async def run() -> dict[str, int]:
             except Exception as exc:  # noqa: BLE001 - analytics is best-effort
                 log.warning("s8: Dzen metrics unavailable: %s", exc)
                 dzen_result = {"error": str(exc)[:200]}
-        timer.items_out = written + int(dzen_result.get("saved", 0) or 0)
+        # VK is the volume channel and has no browser fallback: wall.getById is
+        # the only honest source of its views/likes/comments/reposts.
+        vk_result: dict = {}
+        if settings.live:
+            from tgfarm.s8_analytics.vk_stats import collect_and_record as collect_vk
+
+            try:
+                vk_result = await collect_vk()
+            except Exception as exc:  # noqa: BLE001 - analytics is best-effort
+                log.warning("s8: VK metrics unavailable: %s", exc)
+                vk_result = {"error": str(exc)[:200]}
+        timer.items_out = (
+            written
+            + int(dzen_result.get("saved", 0) or 0)
+            + int(vk_result.get("saved", 0) or 0)
+        )
     log.info(
-        "s8: %d channel-days written, angles measured: %s, dzen: %s",
+        "s8: %d channel-days written, angles measured: %s, dzen: %s, vk: %s",
         written,
         list(angles),
         dzen_result or "skipped",
+        vk_result or "skipped",
     )
     return {
         "channel_days": written,
         "angles": len(angles),
         "dzen_saved": int(dzen_result.get("saved", 0) or 0),
+        "vk_saved": int(vk_result.get("saved", 0) or 0),
     }
 
 

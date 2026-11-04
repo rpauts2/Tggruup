@@ -170,6 +170,17 @@ def _capabilities() -> dict:
         "images": settings.images_configured,
         "video_enabled": settings.video_enabled,
         "video": guard_summary(),
+        # VK wall metrics need a user token: the group token used for posting is
+        # rejected by VK with error 27, so the honest state must be visible.
+        "vk_metrics": {
+            "available": bool(str(getattr(settings, "vk_user_token", "") or "").strip()),
+            "required": "VK_USER_TOKEN (user token with the wall scope)",
+            "reason": (
+                "user token is configured"
+                if str(getattr(settings, "vk_user_token", "") or "").strip()
+                else "group tokens cannot read wall metrics (VK error 27)"
+            ),
+        },
     }
 
 
