@@ -768,6 +768,77 @@
     not_implemented: "muted",
   };
 
+  // ── План тем (глобальный редакционный план) ─────────────────────────────
+  async function loadEditorialPlan(force = false) {
+    if (force) state.planLoaded = false;
+    try {
+      const [plan, history] = await Promise.all([
+        api("/api/editorial/plan"),
+        api("/api/editorial/plan/history?limit=10"),
+      ]);
+      renderEditorialPlan(plan || {}, (history && history.plans) || []);
+      state.planLoaded = true;
+    } catch (err) {
+      const meta = $("#plan-meta");
+      if (meta) meta.textContent = "План недоступен: " + (err && err.message ? err.message : String(err));
+    }
+  }
+
+  function renderEditorialPlan(plan, history) {
+    const meta = $("#plan-meta");
+    const chips = $("#plan-summary");
+    const rows = $("#plan-entries");
+    const hist = $("#plan-history");
+    if (!meta || !rows) return;
+
+    const summary = plan.summary || {};
+    const stateLabel = plan.status === "transient"
+      ? "предпросмотр — «Зафиксировать план» сделает его активным"
+      : "активный";
+    const created = plan.created_at ? new Date(plan.created_at).toLocaleString() : "—";
+    meta.textContent = `Статус: ${stateLabel}; горизонт ${plan.horizon_days ?? "—"} дн.; сформирован ${created}`;
+
+    const diff = summary.diff || {};
+    const chipItems = [
+      ["Всего тем", summary.total ?? (plan.entries || []).length],
+      ["В работу", summary.produce ?? 0],
+      ["В расписание", summary.schedule ?? 0],
+      ["Отложено", summary.hold ?? 0],
+      ...(diff.added && diff.added.length ? [["Добавлено тем", diff.added.length]] : []),
+      ...(diff.removed && diff.removed.length ? [["Снято тем", diff.removed.length]] : []),
+      ...Object.entries(summary.by_platform || {}).map(([p, n]) => [p, n]),
+    ];
+    chips.innerHTML = chipItems
+      .map(([label, value]) => `<span class="plan-chip">${esc(String(label))}: ${esc(String(value))}</span>`)
+      .join("");
+
+    const entries = plan.entries || [];
+    rows.innerHTML = entries.length
+      ? `<ul class="plan-entries">${entries.map((e) => {
+          const slot = e.slot_at ? new Date(e.slot_at).toLocaleString() : "по готовности";
+          const reasons = (e.reasons || []).filter(Boolean);
+          const channel = e.channel_title || (e.channel && e.channel.title) || e.channel_id || "—";
+          return `<li class="plan-entry${e.action === "hold" ? " plan-hold" : ""}">
+            <div class="plan-entry-head">
+              <span class="plan-chip">P${esc(String(e.priority ?? "-"))}</span>
+              <span class="plan-chip">${esc(String(e.action || "—"))}</span>
+              <span>${esc(String(e.title || e.cluster_public_id || "—"))}</span>
+            </div>
+            <div class="plan-entry-reasons">${esc(String(e.platform || "—"))} · ${esc(String(channel))} · ${esc(String(e.format || "—"))} · слот ${esc(slot)}</div>
+            ${reasons.length ? `<ul class="plan-entry-reasons">${reasons.map((r) => `<li>${esc(String(r))}</li>`).join("")}</ul>` : ""}
+          </li>`;
+        }).join("")}</ul>`
+      : `<p class="plan-entry-reasons">Материалов нет — запустите сбор тем или обновите план.</p>`;
+
+    hist.innerHTML = history.length
+      ? `<ul class="plan-history">${history.map((h) => {
+          const s = h.summary || {};
+          const when = h.created_at ? new Date(h.created_at).toLocaleString() : "—";
+          return `<li>${esc(String(h.public_id || ""))} — ${esc(when)}: ${esc(String(s.total ?? 0))} тем (в работу ${esc(String(s.produce ?? 0))}, отложено ${esc(String(s.hold ?? 0))})</li>`;
+        }).join("")}</ul>`
+      : `<p class="plan-entry-reasons">Зафиксированных планов пока нет.</p>`;
+  }
+
   function renderDistributionPlan(payload) {
     const plan = payload || {};
     const mode = plan.mode || "dry";
@@ -3567,6 +3638,7 @@
     state.view = view;
     $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    if (view === "plan" && !state.planLoaded) loadEditorialPlan();
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so
@@ -3583,6 +3655,22 @@
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  const planRefresh = $("#plan-refresh");
+  if (planRefresh) planRefresh.addEventListener("click", () => loadEditorialPlan(true));
+  const planApply = $("#plan-apply");
+  if (planApply) planApply.addEventListener("click", async () => {
+    planApply.disabled = true;
+    try {
+      const res = await fetch(API + "/api/editorial/plan/refresh", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      await loadEditorialPlan(true);
+      toast("План зафиксирован", "ok");
+    } catch (err) {
+      toast("Не удалось зафиксировать план: " + (err && err.message ? err.message : err), "err");
+    } finally {
+      planApply.disabled = false;
+    }
+  });
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
   $("#crosspost-filter")?.addEventListener("change", (event) => {

@@ -21,6 +21,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
+    <button class="tab" data-view="plan" role="tab">План тем</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
     <button class="tab" data-view="memory" role="tab">Память</button>
@@ -154,6 +155,21 @@
   </section>
 
   <!-- ============================================================== TRENDS -->
+  <section class="view" data-view="plan">
+    <article class="card">
+      <header class="card-head">
+        <h2>План тем</h2>
+        <button class="btn btn-ghost" id="plan-refresh" type="button">Обновить</button>
+        <button class="btn" id="plan-apply" type="button">Зафиксировать план</button>
+      </header>
+      <p id="plan-meta">Ещё не загружено.</p>
+      <div id="plan-summary" class="plan-chips"></div>
+      <div id="plan-entries"></div>
+      <h3>История ревизий</h3>
+      <div id="plan-history"></div>
+    </article>
+  </section>
+
   <section class="view" data-view="trends">
     <article class="card">
       <header class="card-head">
