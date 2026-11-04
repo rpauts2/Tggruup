@@ -164,20 +164,63 @@ def best_hook_style_weights(channel_id):
 
 
 def record_gate_failure(channel_id: str, gate: str, reason: str) -> None:
-    """A rejected draft is a lesson: the most frequent gate failures go back
-    into the generation prompt as explicit "do not" notes."""
-    if not channel_id:
+    """Accumulate repeated gate rejections instead of overwriting the count.
+
+    A gate that has rejected 300 drafts and a gate that rejected one both looked
+    like `sample_size=1` while the row was rewritten on every rejection, which
+    erased the frequency signal S4 ranks on. The reason tail stays bounded so one
+    noisy gate cannot grow the prompt without limit.
+    """
+    channel = str(channel_id or "").strip()
+    gate_name = " ".join(str(gate or "gate").split())[:96] or "gate"
+    safe_reason = " ".join(str(reason or "").split())[:300]
+    if not channel:
         return
-    _upsert(
-        channel_id,
-        "mistake",
-        f"gate:{gate}",
-        {"gate": gate, "reason": reason[:300]},
-        0.0,
-        1,
-        0.3,
-        f"гейт {gate} отклоняет посты: {reason[:120]}",
-    )
+
+    key = f"gate:{gate_name}"[:128]
+    with session_scope() as session:
+        row = session.execute(
+            select(LearningMemory).where(
+                LearningMemory.channel_id == channel,
+                LearningMemory.kind == "mistake",
+                LearningMemory.key == key,
+            )
+        ).scalar_one_or_none()
+        previous = dict(row.value or {}) if row is not None else {}
+        count = max(
+            int(row.sample_size or 0) if row is not None else 0,
+            int(previous.get("occurrences") or 0),
+        ) + 1
+        recent = previous.get("recent_reasons")
+        recent_reasons = [str(item)[:300] for item in recent] if isinstance(recent, list) else []
+        recent_reasons.append(safe_reason)
+        value = {
+            "gate": gate_name,
+            "reason": safe_reason,
+            "occurrences": count,
+            "recent_reasons": recent_reasons[-5:],
+        }
+        confidence = _sample_confidence(count)
+        note = f"гейт {gate_name}: {count} отклонений; последний пример: {safe_reason[:120]}"
+        if row is None:
+            session.add(
+                LearningMemory(
+                    channel_id=channel,
+                    kind="mistake",
+                    key=key,
+                    value=value,
+                    score=0.0,
+                    sample_size=count,
+                    confidence=confidence,
+                    note=note,
+                )
+            )
+        else:
+            row.value = value
+            row.score = 0.0
+            row.sample_size = count
+            row.confidence = confidence
+            row.note = note
 
 
 def best_hours(channel_id):

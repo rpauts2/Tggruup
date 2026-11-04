@@ -81,6 +81,23 @@ _VERIFY_SYSTEM = (
 )
 
 
+def _rank_learning_mistakes(mistakes: list[dict], limit: int = 5) -> list[dict]:
+    """Most-repeated lessons first; `updated_at` only breaks a genuine tie.
+
+    The lessons come back in whatever order the database stored them, so slicing
+    straight to five could drop the gate that rejects most often.
+    """
+
+    def rank(item: dict) -> tuple[int, str]:
+        try:
+            count = max(0, int(item.get("sample_size") or 0))
+        except (TypeError, ValueError):
+            count = 0
+        return count, str(item.get("updated_at") or "")
+
+    return sorted(mistakes, key=rank, reverse=True)[: max(0, int(limit))]
+
+
 def _persona_block(persona: Persona, angle: str, plan=None) -> str:
     max_chars = plan.max_chars if plan else persona.max_chars
     min_chars = plan.min_chars if plan else persona.min_chars
@@ -109,7 +126,7 @@ def _persona_block(persona: Persona, angle: str, plan=None) -> str:
     try:
         from tgfarm.s12_learning import lessons as _lessons
         tactics = _lessons(persona.id, kind="tactic")
-        mistakes_list = _lessons(persona.id, kind="mistake")
+        mistakes_list = _rank_learning_mistakes(_lessons(persona.id, kind="mistake"), limit=5)
         if tactics or mistakes_list:
             lines.append("ОПЫТ И ОШИБКИ (самообучение):")
             for t in tactics[:5]:
