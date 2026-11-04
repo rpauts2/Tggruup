@@ -218,6 +218,29 @@ def test_reddit_is_delivered_through_the_automatic_crosspost_pipeline(monkeypatc
 
     monkeypatch.setattr(reddit_scout, "build_automatic_submission", build_submission)
 
+    # The delivery path now re-reads the community after claiming the attempt,
+    # so the harness answers that read the way Reddit answers a clean subreddit.
+    fresh_reads = []
+
+    async def inspect(subreddit):
+        fresh_reads.append(subreddit)
+        return {
+            "name": subreddit,
+            "about": {
+                "title": "Learn Python",
+                "public_description": "Python questions and tutorials.",
+                "subreddit_type": "public",
+                "over18": False,
+                "restrict_posting": False,
+                "submission_type": "self",
+            },
+            "rules": [{"short_name": "Be constructive", "description": "Keep posts relevant."}],
+            "requirements": {},
+            "risk_flags": [],
+        }
+
+    monkeypatch.setattr(reddit_scout, "inspect_community", inspect)
+
     adapter = s9_growth.ADAPTERS["reddit"]
     monkeypatch.setattr(adapter, "configured", lambda: True)
     captured = []
@@ -243,6 +266,10 @@ def test_reddit_is_delivered_through_the_automatic_crosspost_pipeline(monkeypatc
     assert captured[0].text == "A native, source-grounded explanation for the Learn Python community."
     assert captured[0].meta["subreddit"] == "learnpython"
     assert captured[0].meta["reddit_kind"] == "self"
+    assert fresh_reads == ["learnpython"]
+    assert captured[0].meta["community_policy"]["target_id"] == "learnpython"
+    assert captured[0].meta["community_policy_assessment"]["target_key"] == "reddit:subreddit:learnpython"
+    assert captured[0].meta["community_policy_assessment"]["allow_publish"] is True
     assert len(logged) == 1
     assert logged[0][0].status == "posted"
     assert logged[0][1] == 1

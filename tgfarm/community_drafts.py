@@ -922,7 +922,10 @@ async def publish_pikabu_scheduled(
     from playwright.async_api import async_playwright
 
     from tgfarm.browser_auth import _launch_context, browser_session_status
-    from tgfarm.community_targets import recommend_automatic_pikabu_target
+    from tgfarm.community_targets import (
+        recommend_automatic_pikabu_target,
+        revalidate_pikabu_target,
+    )
     from tgfarm.core.settings import get_settings
 
     post_public_id = str(post_public_id or "").strip()
@@ -1020,6 +1023,13 @@ async def publish_pikabu_scheduled(
             ),
             "policy_verdict": verdict,
         }
+    # Carried into every durable state below, so the queue file always says which
+    # rules verdict the publisher acted on — and, after the final re-read, which
+    # verdict actually authorised the click.
+    policy_state = {
+        "community_policy": policy.to_dict() if policy is not None else {},
+        "policy_assessment": verdict,
+    }
     lock = _LOCKS["pikabu"]
     if not lock.acquire(blocking=False):
         raise CommunityDraftError("Браузер Пикабу уже используется другой операцией.")
@@ -1045,6 +1055,7 @@ async def publish_pikabu_scheduled(
             "target_url": target_url,
             "target_name": target_name,
             "tags": selected_tags,
+            **policy_state,
         })
         submitted = False
         context = None
@@ -1106,6 +1117,33 @@ async def publish_pikabu_scheduled(
                 if not await save_button.count() or not await save_button.is_visible() or not await save_button.is_enabled():
                     raise CommunityDraftError("Пикабу не переключил действие на «Сохранить пост» после включения отложки.")
 
+                # Last possible moment to ask the site: the editor has been
+                # filled and the schedule set, and the next statement is the
+                # click. Rules are re-read now, because everything before this
+                # point was minutes of page work.
+                latest = await revalidate_pikabu_target(override, target)
+                latest_assessment = latest.get("policy_assessment") or {}
+                policy_state = {
+                    "community_policy": latest.get("community_policy") or {},
+                    "policy_assessment": latest_assessment,
+                }
+                # The selection refused a community with blockers; the same
+                # standard applies at the last moment, otherwise a rule that
+                # appeared while the editor was open would be published against.
+                new_blockers = [str(x) for x in (latest.get("blockers") or [])]
+                refusal = "; ".join(new_blockers[:3]) or str(
+                    latest_assessment.get("reason") or "правила изменились или недоступны"
+                )
+                if (
+                    new_blockers
+                    or not latest_assessment.get("allow_publish")
+                    or not latest_assessment.get("auto_publish")
+                ):
+                    raise CommunityDraftError(
+                        "Пикабу: финальная перечитка правил остановила отложенную публикацию. "
+                        + refusal
+                    )
+
                 _write_state_entry(key, {
                     "platform": "pikabu",
                     "post_public_id": post_public_id,
@@ -1117,6 +1155,7 @@ async def publish_pikabu_scheduled(
                     "target_name": target_name,
                     "tags": selected_tags,
                     "draft_url": page.url if _safe_editor_url("pikabu", page.url) else "",
+                    **policy_state,
                 })
                 submitted = True
                 await save_button.click(timeout=12_000)
@@ -1147,6 +1186,7 @@ async def publish_pikabu_scheduled(
                         "target_name": target_name,
                         "tags": selected_tags,
                         "draft_url": page.url if _safe_editor_url("pikabu", page.url) else "",
+                        **policy_state,
                     })
                     return {
                         "ok": False,
@@ -1169,6 +1209,7 @@ async def publish_pikabu_scheduled(
                     "target_name": target_name,
                     "tags": selected_tags,
                     "draft_url": "",
+                    **policy_state,
                 })
                 return {
                     "ok": False,
@@ -1188,6 +1229,7 @@ async def publish_pikabu_scheduled(
                 "target_name": target_name,
                 "tags": selected_tags,
                 "error": str(exc)[:300],
+                **policy_state,
             })
             if isinstance(exc, CommunityDraftError):
                 raise
@@ -1207,6 +1249,7 @@ async def publish_pikabu_scheduled(
             "target_name": target_name,
             "tags": selected_tags,
             "draft_url": result_url,
+            **policy_state,
         })
         return {
             "ok": True,
@@ -1216,7 +1259,8 @@ async def publish_pikabu_scheduled(
             "target_url": target_url,
             "target_name": target_name,
             "tags": selected_tags,
-            "detail": "Отложенная публикация сохранена в нативной очереди Пикабу.",
+            "policy_assessment": policy_state.get("policy_assessment") or {},
+            "detail": "Отложенная публикация сохранена в нативной очереди Пикабу после перечитки правил.",
         }
     finally:
         lock.release()

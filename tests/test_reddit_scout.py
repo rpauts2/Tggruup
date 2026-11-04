@@ -243,6 +243,13 @@ def test_search_communities_reads_about_rules_and_requirements(monkeypatch):
     assert result["candidates"][0]["name"] == "learnpython"
     assert result["candidates"][0]["risk_flags"]
     assert result["candidates"][0]["requirements"]["is_flair_required"] is True
+    # The answer is measured, not written into the code: the scout used to put a
+    # constant false here and say nothing about why.
+    capability = scout.automatic_publish_capability()
+    assert capability["can_auto_publish"] is False
+    assert capability["blockers"]
+    assert result["candidates"][0]["can_auto_publish"] == capability["can_auto_publish"]
+    assert result["candidates"][0]["capability_blockers"] == capability["blockers"]
     assert all(item["name"] != "adult_python" for item in result["candidates"])
     assert len(seen) == 7
 

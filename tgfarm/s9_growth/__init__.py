@@ -14,12 +14,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.security import redact_sensitive_text
-from tgfarm.core.schemas import CrosspostResult
+from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
@@ -217,6 +218,66 @@ def record_platform_editor_trace(
         quality["agent_team"] = team
         post.quality = quality
     return True
+
+
+async def _reddit_preflight(
+    payload: CrosspostPayload,
+    submission: dict[str, Any],
+) -> CrosspostResult | None:
+    """Read the subreddit again immediately before an automatic submit.
+
+    Returns ``None`` when the live rules still allow the post, otherwise the
+    ``skipped`` result the caller must log instead of publishing. Nothing here can
+    reach Reddit: the only network call is the read-only inspector, and every
+    failure — rate limit, unreadable rules, a newly required flair, a vanished
+    permission — ends as a skip with the reason recorded.
+
+    The flair selected during scouting is passed in as the community's chosen
+    template: ``validate_submission`` asks whether a required flair is actually
+    set, and the fresh ``/about`` payload does not know what we intend to send.
+    """
+    from tgfarm.community_policy import assess_policy, policy_from_reddit, record_policy_snapshot
+    from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
+    from tgfarm.s9_growth.reddit_scout import (
+        RedditScoutError,
+        inspect_community,
+        validate_submission,
+    )
+
+    subreddit = str(submission.get("subreddit") or "").strip()
+    try:
+        current = await inspect_community(subreddit)
+        policy = policy_from_reddit(current, subreddit=subreddit)
+        verdict = assess_policy(policy)
+        await to_thread(record_policy_snapshot, policy, verdict)
+        if not verdict.get("allow_publish"):
+            raise RedditScoutError(
+                "свежая перечитка правил не разрешила публикацию: "
+                f"{verdict.get('reason') or 'unknown'}"
+            )
+        current["selected_flair"] = submission.get("flair") or {}
+        problems = validate_submission(
+            str(payload.title or ""),
+            str(payload.text or ""),
+            current,
+        )
+        if problems:
+            raise RedditScoutError("; ".join(problems[:3]))
+    except Exception as exc:  # noqa: BLE001 - no read may turn into a publish
+        return CrosspostResult(
+            platform="reddit",
+            status="skipped",
+            error=redact_sensitive_text(
+                f"Reddit rules recheck before submit blocked delivery: {exc}", limit=300
+            ),
+            retry_after_seconds=crosspost_retry_after_seconds(exc) or 6 * 60 * 60,
+        )
+    payload.meta = {
+        **(payload.meta or {}),
+        "community_policy": policy.to_dict(),
+        "community_policy_assessment": verdict,
+    }
+    return None
 
 
 async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostResult]:
@@ -521,6 +582,16 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 "video_render_error": video_render_error,
             }
         if settings.live:
+            if name == "reddit" and reddit_submission:
+                # Selection, tailoring and the first rules check all happened
+                # before this attempt was claimed. An external action is
+                # authorised by the rules as they are now, not as they were
+                # twenty minutes ago, so the live facts are read again here.
+                blocked = await _reddit_preflight(payload, reddit_submission)
+                if blocked is not None:
+                    await to_thread(log_result, post.public_id, blocked, attempt)
+                    results.append(blocked)
+                    continue
             try:
                 result = await adapter.publish(payload)
             except Exception as exc:  # noqa: BLE001 - leave a durable state after adapter faults

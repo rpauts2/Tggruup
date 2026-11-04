@@ -26,7 +26,7 @@ Contract decisions (2026-11-04)
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
@@ -521,8 +521,3 @@ def latest_policy(platform: str, target_id: str) -> dict[str, Any] | None:
     """Newest stored rules snapshot of one destination, or ``None``."""
     rows = policy_history(platform=platform, target_id=target_id, limit=1)
     return rows[0] if rows else None
-
-
-def with_fresh_check(policy: CommunityPolicy, checked_at: str) -> CommunityPolicy:
-    """Return a copy marked as re-checked at ``checked_at`` (frozen dataclass)."""
-    return replace(policy, checked_at=checked_at)

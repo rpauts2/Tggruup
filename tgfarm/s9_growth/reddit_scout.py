@@ -173,6 +173,42 @@ def _rule_objects(body: dict[str, Any]) -> list[dict[str, str]]:
     return result
 
 
+def automatic_publish_capability() -> dict[str, Any]:
+    """Can Reddit really be published without a human, and what is missing.
+
+    The scout used to answer this with a flat ``False`` written into every
+    candidate, at a time when no automatic Reddit publisher existed. `S9` now
+    builds and sends Reddit submissions on its own, so the honest answer depends
+    on live conditions and has to name them: the farm being in live mode, the
+    platform being enabled in the platform centre, and OAuth actually configured.
+    ``review_required`` stays a separate fact — a draft the operator opened by
+    hand still needs a human, capability or not.
+    """
+    from tgfarm.core.settings import get_settings
+    from tgfarm.platforms import is_platform_enabled
+
+    adapter = ADAPTERS.get("reddit")
+    settings = get_settings()
+    blockers: list[str] = []
+    if not bool(getattr(settings, "live", False)):
+        blockers.append("режим фермы не live")
+    if not is_platform_enabled("reddit"):
+        blockers.append("Reddit выключен в центре площадок")
+    if adapter is None:
+        blockers.append("для Reddit нет адаптера публикации")
+    elif not adapter.configured():
+        blockers.append("Reddit OAuth не настроен")
+    return {
+        "can_auto_publish": not blockers,
+        "publisher": "reddit_api" if adapter is not None else "",
+        "blockers": blockers,
+        "note": (
+            "Возможность автоматически публиковать — это про код и настройки, "
+            "а не про то, что правила сообщества пройдены."
+        ),
+    }
+
+
 def _risk_flags(about: dict[str, Any], rules: list[dict[str, str]], requirements: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     if about.get("over18"):
@@ -955,6 +991,9 @@ async def search_communities(
             if item.get("display_name") and not item.get("over18")
         ][:limit]
         candidates = []
+        # Read once per search: the capability is about this farm's code and
+        # settings, and it does not change between two subreddits.
+        capability = automatic_publish_capability()
         for index, raw in enumerate(filtered):
             name = str(raw["display_name"])
             about = _extract_data(await _get_json(client, f"/r/{name}/about"))
@@ -1025,7 +1064,8 @@ async def search_communities(
                     if key in requirements
                 },
                 "review_required": True,
-                "can_auto_publish": False,
+                "can_auto_publish": capability["can_auto_publish"],
+                "capability_blockers": capability["blockers"],
             })
     candidates.sort(key=lambda item: (item["score"], item["subscribers"]), reverse=True)
     return {
@@ -1236,7 +1276,10 @@ async def tailor_post(post_public_id: str, subreddit: str) -> dict[str, Any]:
         "notes": list(dict.fromkeys(notes)),
         "review_required": True,
         "publish_requires_live_mode_and_confirmation": True,
-        "can_auto_publish": False,
+        # This call is a manual draft, so confirmation stays required here. The
+        # capability below answers a different question: could the farm send a
+        # Reddit post on its own at all, right now, with the current settings.
+        **automatic_publish_capability(),
     }
 
 

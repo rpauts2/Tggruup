@@ -243,6 +243,102 @@ def _pikabu_risks(
         )
     return list(dict.fromkeys(warnings)), list(dict.fromkeys(blockers))
 
+
+async def revalidate_pikabu_target(
+    post: dict[str, Any],
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Read the Code and the selected community again, right before publishing.
+
+    The selector read the rules minutes ago; the native editor then takes a while
+    (fill, upload, tags, schedule) before the save button exists. Rules that were
+    fine at selection may have changed by then, and rules that cannot be read now
+    are not a licence to publish anyway — every unreadable outcome here becomes a
+    blocker rather than a silent pass.
+
+    The verdict is recorded in the rules history like any other check, so the
+    operator can see after the fact what the publisher saw at the last moment.
+    """
+    target_url = str(target.get("url") or "").strip()
+    parsed = urlparse(target_url)
+    match = re.fullmatch(r"/community/([A-Za-z0-9_-]+)", parsed.path.rstrip("/"))
+    slug = str(target.get("slug") or "").strip()
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"pikabu.ru", "www.pikabu.ru"}
+        or match is None
+        or (slug and slug != match.group(1))
+    ):
+        raise ValueError("Selected Pikabu community URL is not a canonical community path.")
+
+    expected_slug = match.group(1)
+    global_page, community_page = await asyncio.gather(
+        _fetch(PIKABU_RULES), _fetch(target_url), return_exceptions=True
+    )
+    if isinstance(global_page, BaseException):
+        global_rules = ""
+    else:
+        global_rules = str(global_page.get("text") or "").strip()
+    if isinstance(community_page, BaseException):
+        community_rules, page_description = "", ""
+    else:
+        community_rules = _rules(
+            list(community_page.get("chunks") or []),
+            str(community_page.get("text") or ""),
+        )
+        page_description = str(community_page.get("description") or "")
+
+    warnings, blockers = _pikabu_risks(community_rules, post, global_rules)
+    if isinstance(global_page, BaseException):
+        blockers.append(f"Общий Кодекс Пикабу не перечитался ({type(global_page).__name__}).")
+    elif not global_rules:
+        blockers.append("Не удалось повторно прочитать общий Кодекс Пикабу.")
+    if isinstance(community_page, BaseException):
+        blockers.append(f"Правила сообщества не перечитались ({type(community_page).__name__}).")
+    elif not community_rules:
+        blockers.append("Не удалось повторно прочитать правила выбранного сообщества.")
+
+    try:
+        score = max(0, min(100, int(target.get("score") or 0)))
+    except (TypeError, ValueError):
+        score = 0
+    candidate = {
+        "target_type": "community",
+        "name": str(target.get("name") or target.get("title") or expected_slug),
+        "slug": expected_slug,
+        "url": target_url,
+        "description": (page_description or str(target.get("description") or ""))[:900],
+        "rules": community_rules[:2200],
+        "global_rules": global_rules[:2200],
+        # The Code and the community rules are judged as one policy: with the
+        # Code unread there is no claim that the destination's rules are known.
+        "rules_available": bool(community_rules and global_rules),
+        "global_rules_available": bool(global_rules),
+        "rules_source": PIKABU_RULES,
+        "auto_publish_supported": True,
+        "score": score,
+        "matches": target.get("matches") or [],
+        "suggested_tags": target.get("suggested_tags") or [],
+        "editorial_brief": target.get("editorial_brief") or [],
+        "risks": warnings,
+        "blockers": list(dict.fromkeys(blockers)),
+        "recommended": bool(target.get("recommended")) and score >= MIN_SCORE and not blockers,
+    }
+
+    from tgfarm.community_policy import assess_policy, policy_from_candidate, record_policy_snapshot
+
+    policy = policy_from_candidate("pikabu", candidate, rules_source=PIKABU_RULES)
+    assessment = assess_policy(policy)
+    record_policy_snapshot(policy, assessment)
+    return {
+        "target": candidate,
+        "community_policy": policy.to_dict(),
+        "policy_assessment": assessment,
+        "warnings": warnings,
+        "blockers": list(dict.fromkeys(blockers)),
+    }
+
+
 async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError
 
