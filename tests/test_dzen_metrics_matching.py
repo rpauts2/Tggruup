@@ -121,3 +121,35 @@ def test_remote_id_still_wins_over_title():
             .where(Post.public_id == public_id)
         ).scalars().all()
     assert len(count) == 1
+
+
+def test_headline_surrounded_by_cell_junk_is_attributed():
+    """Studio's publication cell is not only the headline.
+
+    The live table puts the date (and sometimes the author) around the title, so a
+    stored hook that appears *inside* the scraped text is the same article. The
+    40-character evidence rule and the single-candidate rule both still apply.
+    """
+    hook = "Пшеничный экспорт вырос втрое за квартал по данным союза"
+    public_id = _seed(hook)
+    result = record_publication_metrics([_metrics(f"5 нояб. 2026 {hook} Автор: Фирма")])
+
+    assert result["saved"] == 1
+    with session_scope() as session:
+        rows = session.execute(
+            select(PostStat)
+            .join(Post, Post.id == PostStat.post_id)
+            .where(Post.public_id == public_id)
+        ).scalars().all()
+    assert len(rows) == 1
+
+
+def test_an_unmatched_row_says_what_was_actually_scraped():
+    """`unmatched: 4` alone cannot tell a wrong column from a missing post."""
+    result = record_publication_metrics([_metrics("Ничего похожего на наши посты и вообще пусто")])
+
+    sample = result["unmatched_samples"][0]
+
+    assert result["unmatched"] == 1
+    assert sample["reason"] == "headline_not_attributable"
+    assert sample["title"].startswith("Ничего похожего")

@@ -289,23 +289,41 @@ def _remote_from_url(url: str) -> str | None:
 
 
 def _title_matches(left: str, right: str) -> bool:
-    """True when two normalised titles are the same or one truncates the other.
+    """True when two normalised titles are the same or one contains the other.
 
-    A prefix match needs at least 40 characters of evidence; shorter prefixes
-    would attribute metrics to the wrong article.
+    Studio's publication cell is not only the headline: it often carries the
+    publication date or the author around it, so requiring the stored hook to be a
+    *prefix* lost every match while the identity of the article was unknown. The
+    containment rule keeps the safety property that matters — at least 40
+    characters of evidence — and the caller still attributes only an unambiguous
+    headline, so two posts sharing a phrase never share one article's metrics.
     """
     if not left or not right:
         return False
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    return len(shorter) >= 40 and longer.startswith(shorter)
+    return len(shorter) >= 40 and shorter in longer
+
+
+def _unmatched_sample(item: DzenPublicationMetrics, reason: str) -> dict[str, str]:
+    """What the collector actually saw for a row it could not attribute.
+
+    Without the scraped headline the next diagnosis is guesswork: an empty title
+    means the parser read the wrong column, a populated one means the stored post
+    never carried this headline.
+    """
+    return {
+        "reason": reason,
+        "remote_id": str(item.remote_id or ""),
+        "title": " ".join(str(item.title or "").split())[:80],
+    }
 
 
 def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str, Any]:
     """Store changed snapshots for publications already logged as posted."""
     saved = unchanged = 0
-    unmatched: list[str] = []
+    unmatched: list[dict[str, str]] = []
     with session_scope() as session:
         by_remote: dict[str, str] = {}
         by_url: dict[str, str] = {}
@@ -344,13 +362,13 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
                 if len(unique) == 1:
                     public_id = unique[0]
             if not public_id:
-                unmatched.append(item.remote_id or item.url or item.title)
+                unmatched.append(_unmatched_sample(item, "headline_not_attributable"))
                 continue
             post = session.execute(
                 select(PostRow).where(PostRow.public_id == public_id)
             ).scalar_one_or_none()
             if post is None:
-                unmatched.append(public_id)
+                unmatched.append(_unmatched_sample(item, "log_points_at_missing_post"))
                 continue
             latest = session.execute(
                 select(PostStat)
@@ -385,7 +403,7 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
         "saved": saved,
         "unchanged": unchanged,
         "unmatched": len(unmatched),
-        "unmatched_ids": unmatched[:8],
+        "unmatched_samples": unmatched[:8],
     }
 
 
