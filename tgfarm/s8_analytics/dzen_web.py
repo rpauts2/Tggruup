@@ -267,6 +267,41 @@ def _normalise_url(url: str) -> str:
     return str(url or "").split("?", 1)[0].rstrip("/")
 
 
+def _normalise_title(title: str) -> str:
+    """Comparable form of an article title for the title-only fallback.
+
+    Dzen's Studio list sometimes shows a truncated title and the publisher does
+    not always learn the article URL, so the only stable link between a farm post
+    and a collected row is the headline. Punctuation and the ellipsis are dropped
+    and the text is lowercased; nothing else is guessed.
+    """
+    text = " ".join(str(title or "").replace("…", " ").split()).lower()
+    for char in "«»\"'`.,:;!?()[]{}—–-":
+        text = text.replace(char, " ")
+    return " ".join(text.split())
+
+
+def _remote_from_url(url: str) -> str | None:
+    """Article id from a publication URL (``dzen.ru/a/auXXXX``)."""
+    path = str(url or "").split("?", 1)[0].rstrip("/")
+    last = path.rsplit("/", 1)[-1] if "/" in path else ""
+    return last if len(last) >= 6 else None
+
+
+def _title_matches(left: str, right: str) -> bool:
+    """True when two normalised titles are the same or one truncates the other.
+
+    A prefix match needs at least 40 characters of evidence; shorter prefixes
+    would attribute metrics to the wrong article.
+    """
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    return len(shorter) >= 40 and longer.startswith(shorter)
+
+
 def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str, Any]:
     """Store changed snapshots for publications already logged as posted."""
     saved = unchanged = 0
@@ -274,6 +309,7 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
     with session_scope() as session:
         by_remote: dict[str, str] = {}
         by_url: dict[str, str] = {}
+        by_title: dict[str, list[str]] = {}
         for row in session.execute(
             select(CrosspostLog).where(
                 CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
@@ -283,13 +319,32 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
                 by_remote[row.remote_id] = row.post_public_id
             if row.url:
                 by_url[_normalise_url(row.url)] = row.post_public_id
+            if row.post_public_id:
+                post_row = session.execute(
+                    select(PostRow.hook).where(PostRow.public_id == row.post_public_id)
+                ).scalar_one_or_none()
+                title_key = _normalise_title(post_row or "")
+                if title_key:
+                    by_title.setdefault(title_key, []).append(row.post_public_id)
 
         for item in items:
-            public_id = by_remote.get(item.remote_id or "") or by_url.get(
+            remote_key = item.remote_id or _remote_from_url(item.url) or ""
+            public_id = by_remote.get(remote_key) or by_url.get(
                 _normalise_url(item.url)
             )
+            if not public_id and item.title:
+                key = _normalise_title(item.title)
+                candidates: list[str] = []
+                for known_title, public_ids in by_title.items():
+                    if _title_matches(key, known_title):
+                        candidates.extend(public_ids)
+                # Only an unambiguous headline may be attributed: two posts with
+                # the same title would otherwise share one article's metrics.
+                unique = list(dict.fromkeys(candidates))
+                if len(unique) == 1:
+                    public_id = unique[0]
             if not public_id:
-                unmatched.append(item.remote_id or item.url)
+                unmatched.append(item.remote_id or item.url or item.title)
                 continue
             post = session.execute(
                 select(PostRow).where(PostRow.public_id == public_id)

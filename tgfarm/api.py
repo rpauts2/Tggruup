@@ -2023,6 +2023,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         target_context: dict[str, Any] | None = None
         target: dict[str, Any] | None = None
+        # CommunityPolicy travels with the selected target: the same verdict the
+        # panel shows is handed to the brief and the native adaptation, so the
+        # editor cannot "respect" rules nobody verified.
+        community_policy: dict[str, Any] | None = None
         if platform_id in {"vc_ru", "pikabu"}:
             from tgfarm.community_targets import recommend_community_target
 
@@ -2041,6 +2045,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                     "review_required": True,
                     "publish_action": "none",
                 }
+            community_policy = (plan.get("policy_verdict") or {}).get("policy")
             target_context = {
                 "name": target.get("name"),
                 "url": target.get("url"),
@@ -2078,6 +2083,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             topic=str(post.get("hook") or ""),
             source_angle=str(post.get("angle") or ""),
             content_chars=len(body),
+            community_policy=community_policy,
         )
         if not brief["format_eligible"]:
             return {
@@ -2095,6 +2101,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             allow_ai=True,
             preview_only=True,
             target_context=target_context,
+            community_policy=community_policy,
         )
         payload = adapt_payload_for_platform(payload, platform_id)
         return {
@@ -2104,6 +2111,8 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "profile": get_editorial_profile(platform_id),
             "brief": brief,
             "target": target,
+            "community_policy": brief.get("community_policy"),
+            "adaptation_community_policy": adaptation.get("community_policy"),
             "draft": {"title": payload.title, "body": payload.text, "hashtags": payload.hashtags},
             "adaptation": adaptation,
             "review_required": True,

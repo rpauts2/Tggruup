@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -30,11 +31,22 @@ from tgfarm.db.session import session_scope
 from tgfarm.db.vector import pack, unpack
 from tgfarm.llm.client import get_llm
 from tgfarm.llm.embedding import get_embedder
+from tgfarm.platform_capability import CAPABILITY_LABELS, CAPABILITY_NOTES, capability_of
 
 log = get_logger(__name__)
 
 TOPIC_COOLDOWN_HOURS = 72
 RECENT_HISTORY_LIMIT = 200
+
+#: Levels that cannot receive material at all. Planning such a destination would
+#: promise a delivery S7 cannot perform, so it is dropped with a recorded reason.
+UNROUTABLE_CAPABILITIES: frozenset[str] = frozenset({"unsupported", "read_only"})
+
+#: Levels where the farm prepares the material but a human finishes delivery.
+MANUAL_CAPABILITIES: frozenset[str] = frozenset({"draft_only", "manual_upload"})
+
+#: How many clusters keep their skip report in memory (the panel reads it back).
+SKIP_REGISTRY_LIMIT = 128
 
 
 @dataclass
@@ -45,9 +57,104 @@ class ChannelPlan:
     angle: str
     score: float
     reason: str = ""
+    # Capability contract. Every field is defaulted, so existing construction
+    # sites and consumers keep working: a plan for a `publish` destination looks
+    # exactly as before once the defaults are applied.
+    capability: str = "publish"
+    capability_label: str = CAPABILITY_LABELS["publish"]
+    requires_manual_action: bool = False
+    manual_step: str = ""
+    notes: str = ""
 
     def key(self) -> str:
         return f"{self.channel_id}:{self.cluster_public_id}"
+
+
+@dataclass(frozen=True)
+class SkippedDestination:
+    """A destination the router refused, with the reason kept next to the plan."""
+
+    cluster_public_id: str
+    channel_id: str
+    platform: str
+    capability: str
+    capability_label: str
+    reason: str
+
+    def note(self) -> str:
+        return f"{self.channel_id} ({self.platform}): {self.reason}"
+
+
+_SKIP_REGISTRY: OrderedDict[str, tuple[SkippedDestination, ...]] = OrderedDict()
+
+
+def _remember_skips(cluster_public_id: str, skipped: list[SkippedDestination]) -> None:
+    key = str(cluster_public_id)
+    _SKIP_REGISTRY[key] = tuple(skipped)
+    _SKIP_REGISTRY.move_to_end(key)
+    while len(_SKIP_REGISTRY) > SKIP_REGISTRY_LIMIT:
+        _SKIP_REGISTRY.popitem(last=False)
+
+
+def route_skips(cluster_public_id: str) -> list[SkippedDestination]:
+    """Destinations dropped from a cluster's plan and why (for API/panel)."""
+    return list(_SKIP_REGISTRY.get(str(cluster_public_id), ()))
+
+
+def _capability_level(platform_id: str) -> str:
+    try:
+        return capability_of(platform_id)
+    except Exception as exc:  # noqa: BLE001 - routing must survive a broken catalogue
+        log.debug("capability lookup failed for %s: %s", platform_id, exc)
+        return "publish"
+
+
+def _capability_gate(
+    personas: list[Persona], cluster_public_id: str
+) -> tuple[list[Persona], list[SkippedDestination]]:
+    """Split candidates into plannable destinations and unreachable ones.
+
+    `unsupported` and `read_only` cannot accept material, so they never enter the
+    plan; the reason is kept in the skip report and in `ChannelPlan.notes`.
+    """
+    allowed: list[Persona] = []
+    skipped: list[SkippedDestination] = []
+    for persona in personas:
+        level = _capability_level(persona.platform)
+        if level in UNROUTABLE_CAPABILITIES:
+            label = CAPABILITY_LABELS.get(level, level)
+            skipped.append(
+                SkippedDestination(
+                    cluster_public_id=cluster_public_id,
+                    channel_id=persona.id,
+                    platform=persona.platform,
+                    capability=level,
+                    capability_label=label,
+                    reason=f"{label}: {CAPABILITY_NOTES.get(level, '')}".strip(),
+                )
+            )
+            log.debug("skip %s: platform %s is %s", persona.id, persona.platform, level)
+            continue
+        allowed.append(persona)
+    return allowed, skipped
+
+
+def _capability_fields(platform_id: str) -> dict:
+    """Plan fields describing how this destination is actually delivered."""
+    level = _capability_level(platform_id)
+    manual = level in MANUAL_CAPABILITIES
+    return {
+        "capability": level,
+        "capability_label": CAPABILITY_LABELS.get(level, level),
+        "requires_manual_action": manual,
+        "manual_step": CAPABILITY_NOTES.get(level, "") if manual else "",
+    }
+
+
+def _skips_note(skipped: list[SkippedDestination]) -> str:
+    if not skipped:
+        return ""
+    return "Пропущены площадки: " + "; ".join(item.note() for item in skipped)
 
 
 # ------------------------------------------------------------- classification
@@ -300,10 +407,18 @@ def _load_history_vectors(channel_id: str, limit: int = 120) -> list[np.ndarray]
 
 # ------------------------------------------------------------------ routing
 async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = None) -> list[ChannelPlan]:
-    """Decide which channels take this cluster and at which angle."""
+    """Decide which channels take this cluster and at which angle.
+
+    Destinations whose honest capability is `unsupported`/`read_only` are not
+    planned at all; `draft_only`/`manual_upload` are planned with
+    `requires_manual_action` set, because the last step belongs to a human.
+    """
     rng = rng or random.Random(uuid.uuid4().hex)
     get_settings()
     config = get_config()
+    # A report from a previous route of the same cluster must not be mistaken
+    # for the current decision.
+    _remember_skips(cluster_public_id, [])
 
     with session_scope() as session:
         cluster = session.execute(
@@ -328,10 +443,24 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
     ]
     if niche:
         telegram_available = [p for p in telegram_available if p.niche == niche]
-    catch_all_personas = config.catch_all_personas
+    catch_all_personas = list(config.catch_all_personas)
+
+    # Capability gate: a destination that cannot accept material is not a
+    # candidate, and it does not reach the classifier prompt either — that would
+    # burn tokens scoring a channel which can never publish.
+    telegram_available, telegram_skipped = _capability_gate(telegram_available, cluster_public_id)
+    catch_all_personas, catch_all_skipped = _capability_gate(catch_all_personas, cluster_public_id)
+    skipped = telegram_skipped + catch_all_skipped
+    _remember_skips(cluster_public_id, skipped)
+    notes = _skips_note(skipped)
 
     if not telegram_available and not catch_all_personas:
-        log.debug("cluster %s niche=%s has no enabled channel", cluster_public_id, niche)
+        log.debug(
+            "cluster %s niche=%s has no capable destination (skipped=%s)",
+            cluster_public_id,
+            niche,
+            [item.channel_id for item in skipped],
+        )
         return []
 
     routes = (
@@ -396,6 +525,8 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
                     angle=angle,
                     score=score,
                     reason=f"niche={niche} score={score:.2f}",
+                    notes=notes,
+                    **_capability_fields(persona.platform),
                 )
             )
 
@@ -437,6 +568,8 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
                     angle=_sample_angle(learned_persona, rng, learned_angles),
                     score=0.55,
                     reason="catch_all",
+                    notes=notes,
+                    **_capability_fields(persona.platform),
                 )
             )
 
@@ -484,8 +617,10 @@ def today_posts_by_channel() -> dict[str, int]:
 
 __all__ = [
     "ChannelPlan",
+    "SkippedDestination",
     "classify_niche",
     "plan_cluster",
+    "route_skips",
     "sameness",
     "save_post_embedding",
     "today_posts_by_channel",

@@ -65,7 +65,12 @@ def _terminal_reason(post: Post) -> str:
     error = str(post.publish_error or "").strip()
     if not error:
         return "Публикация окончательно не удалась; причина не записана."
-    return error[:300]
+    # Our own machine-readable close-outs ("expired: …") are already the reason;
+    # raw provider errors get a Russian framing so the board reads like a
+    # decision list, not a log dump.
+    if error.startswith("expired:"):
+        return error
+    return f"Публикация не состоялась (финальный отказ): {error[:260]}"
 
 
 def _item(post: Post, platform: str, bucket: str, reason: str, now: datetime) -> dict[str, Any]:
