@@ -1,5 +1,6 @@
 """Shared fixtures: every test runs against a throwaway SQLite database and the
-real YAML config, with the network and every paid credential hard-disabled."""
+real YAML config, with the network and every paid credential hard-disabled and
+every ordinary tunable pinned to the default the code declares."""
 
 from __future__ import annotations
 
@@ -15,6 +16,101 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("TGFARM_MODE", "off")
 os.environ.setdefault("LLM_PROVIDERS", "offline")
 os.environ.setdefault("EMBEDDING_PROVIDER", "local")
+
+# Ordinary tunables — thresholds, intervals, budgets, window sizes, behaviour
+# switches — pinned to the default the CODE declares. The credential blanking
+# below only covers secrets, so a numeric setting was still being inherited from
+# whichever `.env` happened to sit next to the checkout, and a test that only
+# passes under one machine's `.env` is a defective test. It already bit us: at
+# 98958e4 `tests/test_trends.py::test_heat_rewards_multi_source_fresh_stories`
+# passed on the operator laptop (`HEAT_THRESHOLD=0.55`) and failed in CI and in
+# fresh worktrees on the same commit (code default 0.68, `assert 0 == 1` at
+# tests/test_trends.py:140, CI run 41920465137). Same mechanism as the credential
+# blanking: environment variables win over `.env` in pydantic-settings.
+# The values are read back out of `Settings`, never written here, so this list
+# cannot encode an operator preference and it follows a default change in
+# `tgfarm/core/settings.py` automatically.
+# TGFARM_MODE / LLM_PROVIDERS / EMBEDDING_PROVIDER are deliberately absent: they
+# use `setdefault` above so CI can keep choosing them.
+DETERMINISTIC_TUNABLES = (
+    # pipeline scoring and cadence
+    "HEAT_THRESHOLD",
+    "CLUSTER_SIMILARITY",
+    "DUPLICATE_SIMILARITY",
+    "SAMENESS_THRESHOLD",
+    "COLLECT_INTERVAL_MIN",
+    "MAX_POSTS_PER_CHANNEL_DAY",
+    "SOURCE_ADAPTIVE_CADENCE",
+    "SOURCE_IDLE_BACKOFF_MAX",
+    "SOURCE_FAILURE_BACKOFF_MAX",
+    "SOURCE_AUTO_COOLDOWN_AFTER_FAILURES",
+    "SOURCE_AUTO_COOLDOWN_HOURS",
+    "SOURCE_MAX_AGE_HOURS",
+    "EMBEDDING_DIM",
+    # AI spend and gates
+    "AI_POLICY",
+    "AI_DAILY_BUDGET",
+    "AI_RELEVANCE_THRESHOLD",
+    "AI_QUALITY_THRESHOLD",
+    "IMAGE_DAILY_BUDGET",
+    "WEB_SEARCH_MAX_RESULTS",
+    "HOLDOUT_SHARE",
+    "PRIMARY_PUBLISH_MAX_ATTEMPTS",
+    # supervision, alerting and retention windows
+    "CYCLE_TIMEOUT_MIN",
+    "CYCLE_STALE_MIN",
+    "ALERT_NO_PUBLISH_HOURS",
+    "QUEUE_BACKLOG_ALERT_THRESHOLD",
+    "EDITORIAL_BACKLOG_ALERT_THRESHOLD",
+    "ALERT_COOLDOWN_MIN",
+    "ALERT_HEARTBEAT_HOURS",
+    "WATCHDOG_INTERVAL_MIN",
+    "WATCHDOG_RECOVERY_BASE_MIN",
+    "WATCHDOG_RECOVERY_MAX_MIN",
+    "PLATFORM_AUTH_MAX_AGE_HOURS",
+    "STALE_CLUSTER_HOURS",
+    "RETENTION_RAW_DAYS",
+    "RETENTION_RUNS_DAYS",
+    "BACKUP_MAX_AGE_HOURS",
+    "KEEP_BACKUPS",
+    "DISK_FREE_WARN_GB",
+    "DISK_FREE_CRITICAL_GB",
+    # publishing behaviour switches and pacing
+    "TGFARM_APPROVAL_REQUIRED",
+    "VK_PRIME_SHARE",
+    "TELEGRAM_USER_READONLY",
+    "TELEGRAM_TOP_GROUPS_ENABLED",
+    "TELEGRAM_TOP_GROUPS_LIMIT",
+    "TELEGRAM_TOP_GROUPS_INTERVAL_MIN",
+    "TELEGRAM_TOP_GROUP_MIN_PARTICIPANTS",
+    "REDDIT_API_APPROVED",
+    "MAX_CHANNEL_IS_CHANNEL",
+    "MAX_CHANNEL_BLOCKED",
+    "DZEN_MIN_GAP_S",
+    "DZEN_HUMAN_DELAY_MS",
+    "DZEN_CAPTCHA_WAIT_S",
+    "DZEN_PUBLISH_TIMEOUT_S",
+    "DZEN_LOGIN_TIMEOUT_S",
+    "DZEN_STATS_INTERVAL_MIN",
+    "DZEN_STATS_TIMEOUT_S",
+    "DZEN_REQUIRES_LLM",
+    "DZEN_STATS_ENABLED",
+    "VIDEO_MAX_MB",
+    "VIDEO_MAX_DURATION_S",
+    "VIDEO_ALLOW_UNKNOWN",
+    "ARTICLE_IMAGE_ENABLED",
+    "ARTICLE_IMAGE_MAX_MB",
+    "ARTICLE_IMAGE_MAX_WIDTH",
+    "ARTICLE_IMAGE_TIMEOUT_S",
+    "IMAGE_TIMEOUT_S",
+    "IMAGE_QUALITY",
+    # image routing: IMAGE_ENABLED/VIDEO_ENABLED are already forced off below,
+    # and `pollinations` is keyless, so the provider itself must not drift.
+    "IMAGE_PROVIDER",
+    "IMAGE_MODEL",
+    "CLOUDFLARE_IMAGE_STEPS",
+)
+
 
 # Credentials that must never leak from the operator's .env into a test run.
 # Environment variables win over .env in pydantic-settings, so blanking them is
@@ -68,6 +164,33 @@ OFFLINE_CREDENTIALS = (
     "IMAGE_API_KEY",
     "IMAGE_BASE_URL",
 )
+
+
+def _format_default(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _pin_tunables_to_code_defaults() -> None:
+    """Put every pinned tunable in the environment at the value the code declares.
+
+    A typo or a renamed field must be an error, not a silent no-op: an unpinned
+    tunable is precisely the hole this function exists to close.
+    """
+    from tgfarm.core.settings import Settings
+
+    declared = {(field.alias or name): field.default for name, field in Settings.model_fields.items()}
+    for alias in DETERMINISTIC_TUNABLES:
+        if alias not in declared:
+            raise RuntimeError(f"conftest pins {alias}, which Settings no longer declares")
+        default = declared[alias]
+        if default is None:
+            raise RuntimeError(f"conftest pins {alias}, which has no code default to pin")
+        os.environ[alias] = _format_default(default)
+
+
+_pin_tunables_to_code_defaults()
 
 
 def _reset_caches() -> None:
