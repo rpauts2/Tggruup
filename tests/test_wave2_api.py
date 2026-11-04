@@ -93,6 +93,25 @@ def test_source_health_api_and_reset():
         assert reset.json()["ok"] is True
 
 
+def test_formats_endpoint_reports_measured_rows():
+    from tgfarm.api import create_app
+    from tgfarm.core.apiauth import ensure_token
+
+    with TestClient(
+        create_app(with_scheduler=False),
+        base_url="http://127.0.0.1",
+        headers={"X-TGFarm-Token": ensure_token()},
+    ) as client:
+        response = client.get("/api/metrics/formats", params={"days": 30})
+        assert response.status_code == 200
+        body = response.json()
+    assert body["window_days"] == 30
+    assert isinstance(body["formats"], dict)
+    assert body["min_sample"] >= 1
+    for row in body["formats"].values():
+        assert set(row) >= {"format", "published", "measured", "avg_engagement", "reliable"}
+
+
 def test_trend_explain_unknown_cluster_is_404():
     with _client() as client:
         response = client.get("/api/trends/no_such_cluster/explain")

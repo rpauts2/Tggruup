@@ -4476,6 +4476,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         except AgentBenchmarkError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.get("/api/metrics/formats")
+    async def metrics_formats(days: int = Query(30, ge=1, le=365)) -> dict:
+        """Published posts and measured engagement per post format."""
+        from tgfarm.s8_analytics.formats import format_performance
+
+        return await io(format_performance, days)
+
     @app.get("/api/metrics/freshness")
     async def metrics_freshness_api() -> dict:
         """Which platforms actually have measured data, and when it was taken."""
