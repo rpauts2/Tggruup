@@ -4682,6 +4682,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         summary = await io(freshness_summary)
         return {"summary": summary, "platforms": detail.get("platforms") or {}}
 
+    @app.get("/api/metrics/coverage")
+    async def metrics_coverage_api() -> dict:
+        """Which publications are measured per platform, and why the rest is not."""
+        from tgfarm.s8_analytics.coverage import measurement_coverage
+
+        return await io(measurement_coverage)
+
     @app.get("/api/metrics")
     async def metrics() -> dict:
         """Counters the operator (or a dashboard) can watch over time."""

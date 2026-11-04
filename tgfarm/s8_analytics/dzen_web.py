@@ -82,6 +82,44 @@ class DzenPublicationMetrics:
         }
 
 
+@dataclass(slots=True)
+class DzenScrapeResult:
+    """What one Studio visit actually yielded, including what it did not.
+
+    ``table_rows`` versus ``listed_publications`` is the difference between a
+    collector that read the whole channel and one that read the first page; the
+    old code could not tell them apart.
+    """
+
+    items: list[DzenPublicationMetrics]
+    dropped: list[dict[str, Any]]
+    table_rows: int
+    headers: list[str]
+    columns: dict[str, int]
+    listed_publications: int | None
+    subscribers: int | None
+
+    def drop_reasons(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for entry in self.dropped:
+            reason = str(entry.get("reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+        return counts
+
+    def as_report(self) -> dict[str, Any]:
+        missing = [role for role in METRIC_ROLES if role not in self.columns]
+        return {
+            "table_rows": self.table_rows,
+            "parsed": len(self.items),
+            "dropped": len(self.dropped),
+            "drop_reasons": self.drop_reasons(),
+            "drop_samples": self.dropped[:5],
+            "listed_publications": self.listed_publications,
+            "columns": dict(self.columns),
+            "metrics_not_in_table": missing,
+        }
+
+
 def _to_int(value: Any) -> int:
     """Parse Dzen's human-formatted counters (`1 234`, `1,2 тыс.`, `—`)."""
     text = str(value or "").replace("\u00a0", " ").replace("\u202f", " ").strip().lower()
@@ -100,6 +138,50 @@ def _to_int(value: Any) -> int:
     return int(round(number * multiplier))
 
 
+LISTED_PUBLICATIONS_RE = re.compile(
+    r"(\d[\d\s\u00a0\u202f]*)\s*(?:публикац|статей)", re.I
+)
+
+#: Metric roles, keyed by the words the Studio header itself uses.
+#:
+#: The publications table is not a stable contract: the 2026 redesign replaced
+#: the "Показы / Открытия / Дочитывания" block with a single selectable metric
+#: plus icon columns, so a row that used to have thirteen cells now has fewer,
+#: and the column that holds "views" moves. Reading it by position therefore
+#: drops rows in silence - the live run of 2026-11-04 scraped four rows out of a
+#: channel that lists eighteen. Column identity is taken from the header instead,
+#: and the positional read survives only as an explicit fallback.
+COLUMN_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("impressions", ("показ", "show", "impression")),
+    ("opens", ("открыт", "open", "clickthrough")),
+    ("views", ("дочитыв", "просмотр", "прочитыв", "view", "read")),
+    ("reactions", ("лайк", "реакц", "like")),
+    ("comments", ("комментар", "comment")),
+    ("forwards", ("репост", "поделит", "рассылк", "share", "repost")),
+)
+
+#: Roles that are metrics; anything else the header offers is ignored.
+METRIC_ROLES: tuple[str, ...] = tuple(role for role, _words in COLUMN_ROLES)
+
+#: Legacy positional layout, kept as the documented fallback only.
+POSITIONAL_MIN_CELLS = 12
+POSITIONAL_COLUMNS: dict[str, int] = {
+    "impressions": 4,
+    "opens": 5,
+    "views": 6,
+    "comments": 9,
+    "reactions": 10,
+    "forwards": 11,
+}
+
+DROP_REASONS: tuple[str, ...] = (
+    "no_publication_link",
+    "duplicate_remote_id",
+    "metric_columns_out_of_range",
+    "no_metric_column_identified",
+)
+
+
 def publication_id(url: str | None) -> str | None:
     value = str(url or "").strip()
     match = PUBLICATION_ID_RE.search(value)
@@ -109,45 +191,198 @@ def publication_id(url: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def parse_table_rows(rows: list[dict[str, Any]]) -> list[DzenPublicationMetrics]:
-    """Parse the JSON-shaped rows extracted by `_read_rows` from the DOM.
+def _column_role(header: str | None) -> str | None:
+    """Which metric a Studio header describes, or ``None`` for "not a metric".
 
-    Column order follows the Studio table:
-    4 impressions, 5 openings, 6 reads/views, 9 comments, 10 likes, 11 shares.
+    "Время просмотра" contains the word for views but reports minutes, and
+    "Подписки" is a subscriber delta; both must stay unmapped rather than be
+    written into ``views``.
     """
+    text = " ".join(str(header or "").replace("\u00a0", " ").replace("\u202f", " ").lower().split())
+    if not text or "время" in text or "подписк" in text:
+        return None
+    for role, words in COLUMN_ROLES:
+        if any(word in text for word in words):
+            return role
+    return None
+
+
+def map_columns(headers: list[str] | None) -> dict[str, int]:
+    """``role -> cell index`` for one Studio table; the first header wins.
+
+    Deterministic on purpose: two headers claiming one role is a page we do not
+    understand, and guessing which column the operator meant would put the wrong
+    number on a real post.
+    """
+    mapping: dict[str, int] = {}
+    for index, header in enumerate(headers or []):
+        role = _column_role(header)
+        if role is None or role in mapping:
+            continue
+        mapping[role] = index
+    return mapping
+
+
+def listed_publications(rows: list[dict[str, Any]]) -> int | None:
+    """How many publications the page says the table covers.
+
+    Studio's summary row ("Всего за 30 дней - 18 публикаций") is the only honest
+    denominator available: it separates "the channel has 18 articles and we read
+    4" from "the page really only had 4".
+    """
+    for row in rows:
+        if str(row.get("href") or "").strip():
+            continue
+        text = " ".join(str(cell or "") for cell in (row.get("cells") or []))
+        match = LISTED_PUBLICATIONS_RE.search(text)
+        if match:
+            return _to_int(match.group(1)) or None
+    return None
+
+
+def _title_column(headers: list[str] | None) -> int | None:
+    """Which cell holds the publication cell, so the headline is not guessed.
+
+    The headline is the only attribution key for the 27 Dzen rows whose publisher
+    never stored a URL, so reading it out of the metric column would silently
+    destroy every match.
+    """
+    for index, header in enumerate(headers or []):
+        text = " ".join(str(header or "").lower().split())
+        if text == "publication" or "публикац" in text:
+            return index
+    return None
+
+
+def _cell(cells: list[str], index: int) -> str:
+    return cells[index] if 0 <= index < len(cells) else ""
+
+
+def _row_title(cells: list[str], row: dict[str, Any], title_index: int | None) -> str:
+    """Headline of a table row, from the column the header names if there is one."""
+    if title_index is not None:
+        value = _cell(cells, title_index)
+        if value:
+            return value[:200]
+    return _cell(cells, 2) or str(row.get("title") or "")[:200]
+
+
+def parse_rows(
+    rows: list[dict[str, Any]],
+    headers: list[str] | None = None,
+) -> tuple[list[DzenPublicationMetrics], list[dict[str, Any]], int | None]:
+    """Parse a Studio table into metrics, naming every row that was not parsed.
+
+    Returns ``(items, dropped, listed)``. A row is dropped only when the table
+    genuinely does not carry it, and the reason says which case it was, so a
+    collector that reads nothing is distinguishable from one that reads nothing
+    useful.
+    """
+    columns = map_columns(headers)
+    title_index = _title_column(headers)
+    usable = {role: index for role, index in columns.items() if index >= 0}
     out: list[DzenPublicationMetrics] = []
+    dropped: list[dict[str, Any]] = []
     seen: set[str] = set()
+
     for row in rows:
         href = str(row.get("href") or "").strip()
         remote_id = publication_id(href)
-        if not href or not remote_id or remote_id in seen:
+        if not href or not remote_id:
+            dropped.append({"reason": "no_publication_link", "href": href[:120]})
+            continue
+        if remote_id in seen:
+            dropped.append({"reason": "duplicate_remote_id", "remote_id": remote_id})
             continue
         cells = [str(cell or "") for cell in (row.get("cells") or [])]
-        if len(cells) < 12:
+
+        if usable:
+            in_range = {role: index for role, index in usable.items() if index < len(cells)}
+            if not in_range:
+                dropped.append(
+                    {
+                        "reason": "metric_columns_out_of_range",
+                        "remote_id": remote_id,
+                        "cells": len(cells),
+                        "expected": dict(usable),
+                    }
+                )
+                continue
+            seen.add(remote_id)
+            values = {role: _to_int(_cell(cells, index)) for role, index in in_range.items()}
+            out.append(
+                DzenPublicationMetrics(
+                    url=href.split("?", 1)[0],
+                    remote_id=remote_id,
+                    title=_row_title(cells, row, title_index),
+                    impressions=values.get("impressions", 0),
+                    opens=values.get("opens", 0),
+                    views=values.get("views", 0),
+                    reactions=values.get("reactions", 0),
+                    comments=values.get("comments", 0),
+                    forwards=values.get("forwards", 0),
+                )
+            )
+            continue
+
+        # No usable header: fall back to the documented legacy column order.
+        if len(cells) < POSITIONAL_MIN_CELLS:
+            dropped.append(
+                {
+                    "reason": "no_metric_column_identified",
+                    "remote_id": remote_id,
+                    "cells": len(cells),
+                }
+            )
             continue
         seen.add(remote_id)
         out.append(
             DzenPublicationMetrics(
                 url=href.split("?", 1)[0],
                 remote_id=remote_id,
-                title=cells[2] or str(row.get("title") or "")[:200],
-                impressions=_to_int(cells[4]),
-                opens=_to_int(cells[5]),
-                views=_to_int(cells[6]),
-                comments=_to_int(cells[9]),
-                reactions=_to_int(cells[10]),
-                forwards=_to_int(cells[11]),
+                title=_row_title(cells, row, title_index),
+                impressions=_to_int(_cell(cells, POSITIONAL_COLUMNS["impressions"])),
+                opens=_to_int(_cell(cells, POSITIONAL_COLUMNS["opens"])),
+                views=_to_int(_cell(cells, POSITIONAL_COLUMNS["views"])),
+                comments=_to_int(_cell(cells, POSITIONAL_COLUMNS["comments"])),
+                reactions=_to_int(_cell(cells, POSITIONAL_COLUMNS["reactions"])),
+                forwards=_to_int(_cell(cells, POSITIONAL_COLUMNS["forwards"])),
             )
         )
-    return out
+
+    return out, dropped, listed_publications(rows)
 
 
-async def _read_rows(page) -> list[dict[str, Any]]:
+def parse_table_rows(
+    rows: list[dict[str, Any]], headers: list[str] | None = None
+) -> list[DzenPublicationMetrics]:
+    """Parse the JSON-shaped rows extracted by `_read_rows` from the DOM.
+
+    Column order follows the Studio table when it is readable; without a header
+    the legacy order (4 impressions, 5 openings, 6 reads/views, 9 comments,
+    10 likes, 11 shares) is used. Use `parse_rows` when the drops matter too.
+    """
+    return parse_rows(rows, headers)[0]
+
+
+async def _read_rows(page) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return ``(rows, headers)`` of the publications table.
+
+    A table qualifies when it carries a publication link and either the legacy
+    thirteen-column layout or a header that names at least one metric. The old
+    test was `len(cells) >= 12` alone, which is exactly how the redesigned table
+    was rejected without anybody being told.
+    """
     tables = page.locator("table")
-    for index in range(await tables.count()):
-        rows = await tables.nth(index).evaluate(
-            """table => Array.from(table.querySelectorAll('tr'))
-                .map(tr => {
+    table_count = await tables.count()
+    for index in range(table_count):
+        table = tables.nth(index)
+        data = await table.evaluate(
+            """table => {
+                const headers = Array.from(table.querySelectorAll('thead th'))
+                    .map(th => (th.getAttribute('data-column-id') || '') + '|' +
+                        (th.innerText || '').replace(/\\s+/g, ' ').trim());
+                const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => {
                     const cells = Array.from(tr.querySelectorAll('td'))
                         .map(td => (td.innerText || '').replace(/\\s+/g, ' ').trim());
                     const link = tr.querySelector(
@@ -158,11 +393,47 @@ async def _read_rows(page) -> list[dict[str, Any]]:
                         title: link ? (link.innerText || '').trim() : '',
                         cells,
                     };
-                })"""
+                });
+                return {headers, rows};
+            }"""
         )
-        if any(row.get("href") and len(row.get("cells") or []) >= 12 for row in rows):
-            return rows
-    raise DzenStatsError("таблица публикаций не найдена на странице статистики")
+        headers = _header_labels(data.get("headers") or [])
+        rows = data.get("rows") or []
+        if not isinstance(rows, list) or not isinstance(headers, list):
+            continue
+        has_metric_row = any(
+            row.get("href")
+            and (
+                len(row.get("cells") or []) >= POSITIONAL_MIN_CELLS
+                or bool(map_columns(headers))
+            )
+            for row in rows
+        )
+        if has_metric_row:
+            return rows, headers
+    raise DzenStatsError(
+        f"таблица публикаций не найдена на странице статистики ({table_count} таблиц прочитано)"
+    )
+
+
+def _header_labels(raw: list[str]) -> list[str]:
+    """Prefer the stable `data-column-id`, fall back to the visible label.
+
+    Studio renames its labels; `data-column-id` is the attribute the page itself
+    keys columns by, which is why the loader waits for it.
+    """
+    labels: list[str] = []
+    for entry in raw:
+        column_id, _, text = str(entry or "").partition("|")
+        column_id = column_id.strip().lower()
+        text = text.strip()
+        if column_id and column_id not in {"", "publication"}:
+            labels.append(column_id)
+        elif text:
+            labels.append(text)
+        else:
+            labels.append("")
+    return labels
 
 
 async def _discover_publisher_id(page, timeout_s: int) -> str:
@@ -196,10 +467,15 @@ async def _save_debug(page, name: str) -> Path | None:
         return None
 
 
-async def collect_publication_metrics(
+async def scrape_publication_metrics(
     *, publisher_id: str | None = None, timeout_s: int | None = None
-) -> tuple[list[DzenPublicationMetrics], int | None]:
-    """Open Studio and return publication rows plus the channel subscriber count."""
+) -> DzenScrapeResult:
+    """Open Studio and return publication rows, what was dropped, and subscribers.
+
+    The drop list and `listed_publications` are the point: without them a run
+    that read four of eighteen rows looks identical to a run that read all of
+    them.
+    """
     from playwright.async_api import async_playwright
 
     settings = get_settings()
@@ -257,10 +533,29 @@ async def collect_publication_metrics(
                     "статистика Дзена не загрузилась; проверьте вход и DZEN_PUBLISHER_ID"
                 ) from exc
             await page.wait_for_timeout(1500)
-            rows = parse_table_rows(await _read_rows(page))
-            return rows, subscribers
+            rows, headers = await _read_rows(page)
+            items, dropped, listed = parse_rows(rows, headers)
+            return DzenScrapeResult(
+                items=items,
+                dropped=dropped,
+                table_rows=len(rows),
+                headers=headers,
+                columns=map_columns(headers),
+                listed_publications=listed,
+                subscribers=subscribers,
+            )
         finally:
             await context.close()
+
+
+async def collect_publication_metrics(
+    *, publisher_id: str | None = None, timeout_s: int | None = None
+) -> tuple[list[DzenPublicationMetrics], int | None]:
+    """Compatibility wrapper: publication rows plus the subscriber count."""
+    result = await scrape_publication_metrics(
+        publisher_id=publisher_id, timeout_s=timeout_s
+    )
+    return result.items, result.subscribers
 
 
 def _normalise_url(url: str) -> str:
@@ -320,6 +615,50 @@ def _unmatched_sample(item: DzenPublicationMetrics, reason: str) -> dict[str, st
     }
 
 
+def _headline_index(session) -> dict[str, list[str]]:
+    """Normalised headline -> farm post ids that could be this article.
+
+    Two sources are indexed, because live data shows both matter. The crosspost
+    log records what the browser publisher confirmed; a Dzen channel post is
+    published without one whenever the log write was lost - 22 of the 57
+    published Dzen posts have no ``posted`` row at all, and an article nobody can
+    point at is an article nobody can measure. The uniqueness rule below still
+    gates every attribution, so widening the index cannot invent a match.
+    """
+    by_title: dict[str, list[str]] = {}
+
+    def add(public_id: str | None, hook: str | None) -> None:
+        key = _normalise_title(hook or "")
+        if key and public_id:
+            ids = by_title.setdefault(key, [])
+            if public_id not in ids:
+                ids.append(public_id)
+
+    for row in session.execute(
+        select(CrosspostLog).where(
+            CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
+        )
+    ).scalars():
+        if not row.post_public_id:
+            continue
+        hook = session.execute(
+            select(PostRow.hook).where(PostRow.public_id == row.post_public_id)
+        ).scalar_one_or_none()
+        add(row.post_public_id, hook)
+
+    for public_id, hook in session.execute(
+        select(PostRow.public_id, PostRow.hook)
+        .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+        .where(
+            ChannelRow.platform == "dzen",
+            PostRow.status == "published",
+        )
+    ).all():
+        add(public_id, hook)
+
+    return by_title
+
+
 def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str, Any]:
     """Store changed snapshots for publications already logged as posted."""
     saved = unchanged = 0
@@ -327,7 +666,6 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
     with session_scope() as session:
         by_remote: dict[str, str] = {}
         by_url: dict[str, str] = {}
-        by_title: dict[str, list[str]] = {}
         for row in session.execute(
             select(CrosspostLog).where(
                 CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
@@ -337,13 +675,7 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
                 by_remote[row.remote_id] = row.post_public_id
             if row.url:
                 by_url[_normalise_url(row.url)] = row.post_public_id
-            if row.post_public_id:
-                post_row = session.execute(
-                    select(PostRow.hook).where(PostRow.public_id == row.post_public_id)
-                ).scalar_one_or_none()
-                title_key = _normalise_title(post_row or "")
-                if title_key:
-                    by_title.setdefault(title_key, []).append(row.post_public_id)
+        by_title = _headline_index(session)
 
         for item in items:
             remote_key = item.remote_id or _remote_from_url(item.url) or ""
@@ -361,6 +693,9 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
                 unique = list(dict.fromkeys(candidates))
                 if len(unique) == 1:
                     public_id = unique[0]
+                elif len(unique) > 1:
+                    unmatched.append(_unmatched_sample(item, "headline_ambiguous"))
+                    continue
             if not public_id:
                 unmatched.append(_unmatched_sample(item, "headline_not_attributable"))
                 continue
@@ -472,9 +807,22 @@ def metrics_status() -> dict[str, Any]:
                 CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
             )
         ).scalar_one()
+        published_posts = session.execute(
+            select(func.count(PostRow.id))
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(ChannelRow.platform == "dzen", PostRow.status == "published")
+        ).scalar_one()
+        measured_posts = session.execute(
+            select(func.count(func.distinct(PostStat.post_id)))
+            .join(PostRow, PostRow.id == PostStat.post_id)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(ChannelRow.platform == "dzen")
+        ).scalar_one()
     return {
         "enabled": get_settings().dzen_stats_enabled,
         "snapshots": int(count or 0),
+        "published_posts": int(published_posts or 0),
+        "measured_posts": int(measured_posts or 0),
         "latest_snapshot": (
             (latest if latest.tzinfo else latest.replace(tzinfo=UTC)).isoformat()
             if latest
@@ -483,23 +831,47 @@ def metrics_status() -> dict[str, Any]:
         "mapped_publications": int(mapped or 0),
         "last_run": state.get("collected_at"),
         "last_result": {
-            key: state.get(key) for key in ("seen", "saved", "unchanged", "unmatched")
+            key: state.get(key)
+            for key in (
+                "seen",
+                "saved",
+                "unchanged",
+                "unmatched",
+                "table_rows",
+                "parsed",
+                "dropped",
+                "drop_reasons",
+                "listed_publications",
+                "metrics_not_in_table",
+                "status",
+            )
+            if key in state
         }
         if state
         else None,
         "last_error": state.get("error"),
+        "last_reason": state.get("reason"),
     }
 
 
 async def collect_and_record(*, force: bool = False) -> dict[str, Any]:
-    """Collect, persist, and throttle automatic runs by DZEN_STATS_INTERVAL_MIN."""
+    """Collect, persist, and throttle automatic runs by DZEN_STATS_INTERVAL_MIN.
+
+    Every path out of this function carries a ``status`` and, whenever nothing
+    was stored, a ``reason``: "collected zero rows" and "could not collect" are
+    different facts and the dashboard must not print them the same way.
+    """
     from tgfarm.dzen_web import DZEN_BROWSER_LOCK
 
     settings = get_settings()
     if not force and not settings.dzen_stats_enabled:
-        return {"skipped": True, "reason": "disabled"}
+        return {"status": "skipped", "skipped": True, "reason": "DZEN_STATS_ENABLED=false"}
     if DZEN_BROWSER_LOCK.locked():
-        return {"skipped": True, "reason": "browser busy"}
+        return {
+            "status": "skipped",
+            "skipped": True,
+            "reason": "браузер Дзена занят публикацией",
+        }
     state = _read_state()
     if not force and state.get("collected_at"):
         try:
@@ -508,47 +880,92 @@ async def collect_and_record(*, force: bool = False) -> dict[str, Any]:
                 last = last.replace(tzinfo=UTC)
             age_min = (datetime.now(UTC) - last).total_seconds() / 60
             if age_min < max(1, settings.dzen_stats_interval_min):
-                return {"skipped": True, "reason": "interval", "age_min": round(age_min, 1)}
+                return {
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "интервал сбора ещё не истёк",
+                    "age_min": round(age_min, 1),
+                }
         except ValueError:
             pass
 
     started = datetime.now(UTC)
     try:
         async with DZEN_BROWSER_LOCK:
-            items, subscribers = await collect_publication_metrics()
+            scrape = await scrape_publication_metrics()
+        items, subscribers = scrape.items, scrape.subscribers
         result = record_publication_metrics(items)
         record_subscribers(subscribers)
-        payload = {
+        payload: dict[str, Any] = {
             "collected_at": started.isoformat(),
+            "status": "collected",
             "seen": len(items),
             "subscribers": subscribers,
-            **result,
+            "saved": result["saved"],
+            "unchanged": result["unchanged"],
+            "unmatched": result["unmatched"],
+            "unmatched_samples": result["unmatched_samples"],
+            **scrape.as_report(),
         }
+        if not items and not payload["saved"]:
+            payload["reason"] = _empty_run_reason(scrape)
         _write_state(payload)
         log.info(
-            "s8 dzen metrics: %d seen, %d saved, %d unchanged, %d unmatched",
+            "s8 dzen metrics: %d table rows, %d parsed, %d dropped, %d saved, "
+            "%d unchanged, %d unmatched (page lists %s)",
+            scrape.table_rows,
             len(items),
+            len(scrape.dropped),
             result["saved"],
             result["unchanged"],
             result["unmatched"],
+            scrape.listed_publications,
         )
         return payload
     except Exception as exc:
+        reason = redact_sensitive_text(exc, limit=300)
         _write_state(
-            {"collected_at": started.isoformat(), "error": redact_sensitive_text(exc, limit=300), "seen": 0}
+            {
+                "collected_at": started.isoformat(),
+                "status": "blocked",
+                "error": reason,
+                "seen": 0,
+            }
         )
         raise
 
 
+def _empty_run_reason(scrape: DzenScrapeResult) -> str:
+    """Why a visit produced nothing, in one sentence the operator can act on."""
+    if scrape.table_rows == 0:
+        return "таблица статистики пустая: публикаций в выбранном периоде нет"
+    reasons = scrape.drop_reasons()
+    if reasons.get("no_publication_link"):
+        return (
+            f"{scrape.table_rows} строк таблицы, ни одна не содержит ссылку на "
+            "публикацию - Studio изменила разметку"
+        )
+    if reasons.get("no_metric_column_identified") or reasons.get("metric_columns_out_of_range"):
+        return (
+            f"колонки метрик не распознаны в заголовке таблицы ({scrape.headers[:8]!r}); "
+            "метрики не записаны, чтобы не угадать столбец"
+        )
+    return f"{scrape.table_rows} строк таблицы, измерить нечего"
+
+
 __all__ = [
     "DzenPublicationMetrics",
+    "DzenScrapeResult",
     "DzenStatsError",
     "DzenStatsNotLoggedIn",
     "collect_and_record",
     "collect_publication_metrics",
+    "map_columns",
     "metrics_status",
+    "parse_rows",
     "parse_table_rows",
     "publication_id",
     "record_publication_metrics",
     "record_subscribers",
+    "scrape_publication_metrics",
 ]

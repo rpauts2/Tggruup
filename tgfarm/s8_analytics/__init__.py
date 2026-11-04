@@ -14,12 +14,14 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, ensure_utc, to_thread
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.text import content_tokens
 from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import ChannelStat, CrosspostLog, PostStat
@@ -421,11 +423,12 @@ def record_post_stat(
         return True
 
 
-async def run() -> dict[str, int]:
+async def run() -> dict[str, Any]:
     from tgfarm.core.settings import get_settings
 
     settings = get_settings()
     dzen_result: dict = {}
+    vk_result: dict = {}
     with StageTimer("s8_analytics") as timer:
         written = await to_thread(write_daily_stats)
         angles = await to_thread(angle_performance)
@@ -438,19 +441,28 @@ async def run() -> dict[str, int]:
             try:
                 dzen_result = await collect_and_record()
             except Exception as exc:  # noqa: BLE001 - analytics is best-effort
-                log.warning("s8: Dzen metrics unavailable: %s", exc)
-                dzen_result = {"error": str(exc)[:200]}
+                message = redact_sensitive_text(exc, limit=200)
+                log.warning("s8: Dzen metrics unavailable: %s", message)
+                dzen_result = {
+                    "status": "blocked",
+                    "error": message,
+                    "reason": f"сбор Дзена не выполнился: {message}",
+                }
         # VK is the volume channel and has no browser fallback: wall.getById is
         # the only honest source of its views/likes/comments/reposts.
-        vk_result: dict = {}
         if settings.live:
             from tgfarm.s8_analytics.vk_stats import collect_and_record as collect_vk
 
             try:
                 vk_result = await collect_vk()
             except Exception as exc:  # noqa: BLE001 - analytics is best-effort
-                log.warning("s8: VK metrics unavailable: %s", exc)
-                vk_result = {"error": str(exc)[:200]}
+                message = redact_sensitive_text(exc, limit=200)
+                log.warning("s8: VK metrics unavailable: %s", message)
+                vk_result = {
+                    "status": "blocked",
+                    "error": message,
+                    "reason": f"сбор ВК не выполнился: {message}",
+                }
         timer.items_out = (
             written
             + int(dzen_result.get("saved", 0) or 0)
@@ -468,6 +480,12 @@ async def run() -> dict[str, int]:
         "angles": len(angles),
         "dzen_saved": int(dzen_result.get("saved", 0) or 0),
         "vk_saved": int(vk_result.get("saved", 0) or 0),
+        # A stage that collected nothing must say why; `saved: 0` alone cannot
+        # be told apart from a platform with nothing to measure.
+        "dzen_status": dzen_result.get("status") or ("skipped" if not dzen_result else "collected"),
+        "dzen_reason": dzen_result.get("reason"),
+        "vk_status": vk_result.get("status") or ("skipped" if not vk_result else "collected"),
+        "vk_reason": vk_result.get("reason"),
     }
 
 

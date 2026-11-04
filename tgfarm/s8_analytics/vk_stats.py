@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
@@ -61,6 +61,29 @@ def recent_vk_posts(days: int = 14, limit: int = 100) -> list[tuple[str, str]]:
         return list(seen.items())
 
 
+def attributable_vk_posts(days: int = 14, limit: int = 100) -> int:
+    """How many VK publications could be measured right now, id included or not.
+
+    The sampling window is a budget, not a fact about the farm: live data has
+    375 posted VK rows with a wall id while one run looks at 100 of the last 14
+    days. The gap has to be visible or "saved: 0" reads as "nothing to measure".
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=max(1, days))
+    with session_scope() as session:
+        return int(
+            session.execute(
+                select(func.count(func.distinct(CrosspostLog.post_public_id))).where(
+                    CrosspostLog.platform == "vk",
+                    CrosspostLog.status == "posted",
+                    CrosspostLog.remote_id.isnot(None),
+                    CrosspostLog.remote_id != "",
+                    CrosspostLog.created_at >= cutoff,
+                )
+            ).scalar_one()
+            or 0
+        )
+
+
 def _items(payload: Any) -> list[dict[str, Any]]:
     """Normalise ``wall.getById`` across response shapes (list or items wrapper)."""
     body = payload.get("response") if isinstance(payload, dict) else payload
@@ -99,7 +122,13 @@ def _metric(item: dict[str, Any], key: str) -> int:
 
 
 async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, Any]:
-    """Read VK metrics for recent posts and append one snapshot per post."""
+    """Read VK metrics for recent posts and append one snapshot per post.
+
+    ``status`` is one of ``blocked`` (a precondition is missing and no request
+    was made), ``collected`` (at least one snapshot written) or ``empty`` (the
+    read succeeded and there was genuinely nothing to write). ``reason`` always
+    says which, so an operator never has to guess whether zero means failure.
+    """
     from tgfarm.s8_analytics import record_post_stat
 
     settings = get_settings()
@@ -108,31 +137,64 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
     # offline) works for posting but must not be assumed to be a user token.
     token = str(getattr(settings, "vk_user_token", "") or "").strip()
     owner = _owner_id(str(getattr(settings, "vk_group_id", "") or ""))
-    if not getattr(settings, "live", False) or not token or not owner:
+    if not getattr(settings, "live", False):
         return {
+            "status": "blocked",
             "checked": 0,
             "saved": 0,
+            "reason": "режим не live: метрики ВК не собираются",
+            "skipped": "vk metrics are only collected in live mode",
+        }
+    if not token or not owner:
+        missing = ", ".join(
+            name
+            for name, present in (("VK_USER_TOKEN", bool(token)), ("VK_GROUP_ID", bool(owner)))
+            if not present
+        )
+        return {
+            "status": "blocked",
+            "checked": 0,
+            "saved": 0,
+            "reason": f"нужен {missing}: групповой токен ВК читает wall.getById с ошибкой 27",
             "skipped": "vk metrics need VK_USER_TOKEN (a user token with the wall scope)",
         }
 
     posts = recent_vk_posts(days=days, limit=limit)
+    attributable = attributable_vk_posts(days=days, limit=limit)
     if not posts:
-        return {"checked": 0, "saved": 0, "skipped": "no recent vk publications"}
-
+        return {
+            "status": "empty",
+            "checked": 0,
+            "saved": 0,
+            "attributable": attributable,
+            "reason": (
+                f"за последние {days} дней нет опубликованных записей ВК с remote id "
+                f"(сопоставимых публикаций в базе: {attributable})"
+            ),
+            "skipped": "no recent vk publications",
+        }
     by_remote = {remote: public_id for public_id, remote in posts}
     wall_ids = [f"{owner}_{remote}" for remote in by_remote]
     saved = 0
     checked = 0
+    unattributed = 0
     errors: list[str] = []
     for start in range(0, len(wall_ids), BATCH_SIZE):
         chunk = wall_ids[start : start + BATCH_SIZE]
         try:
             items = await _fetch(chunk, token=token)
         except Exception as exc:  # noqa: BLE001 - metrics must not break the cycle
-            if "error 27" in str(exc):
+            message = str(exc)
+            if "error 27" in message:
                 return {
+                    "status": "blocked",
                     "checked": checked,
                     "saved": saved,
+                    "attributable": attributable,
+                    "reason": (
+                        "ВК отклонил токен ошибкой 27: wall.getById читается только "
+                        "пользовательским токеном (VK_USER_TOKEN), групповой не может"
+                    ),
                     "skipped": (
                         "vk rejected the token with error 27: wall metrics need a "
                         "user token (VK_USER_TOKEN), a group token cannot read them"
@@ -145,6 +207,9 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
             raw_id = str(item.get("id") or "")
             public_id = by_remote.get(raw_id)
             if not public_id:
+                # The wall answered with a post we do not own the id of. Guessing
+                # from the text would attach someone else's numbers to our post.
+                unattributed += 1
                 continue
             ok = record_post_stat(
                 public_id,
@@ -156,8 +221,22 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
             saved += int(bool(ok))
     if errors:
         log.warning("s8: vk metrics partially failed: %s", "; ".join(errors[:3]))
-    log.info("s8: vk metrics checked=%d saved=%d", checked, saved)
-    return {"checked": checked, "saved": saved, "errors": errors}
+    log.info("s8: vk metrics checked=%d saved=%d unattributed=%d", checked, saved, unattributed)
+    payload: dict[str, Any] = {
+        "status": "collected" if saved else "empty",
+        "checked": checked,
+        "saved": saved,
+        "unattributed": unattributed,
+        "attributable": attributable,
+        "planned": len(wall_ids),
+        "errors": errors,
+    }
+    if not saved:
+        payload["reason"] = (
+            f"ВК вернул {checked} записей, из них {unattributed} не сопоставлены с "
+            f"нашими публикациями; снимков не записано"
+        )
+    return payload
 
 
-__all__ = ["collect_and_record", "recent_vk_posts"]
+__all__ = ["attributable_vk_posts", "collect_and_record", "recent_vk_posts"]
