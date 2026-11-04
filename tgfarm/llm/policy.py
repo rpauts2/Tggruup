@@ -238,6 +238,30 @@ def record_skip(
         )
 
 
+#: A reservation whose process died is closed, not refunded: the provider may
+#: have been called, so the charge stays and only the alarm stops repeating.
+STALE_CLOSURE_REASON = "stale reservation closed (unused)"
+
+
+def close_stale_reservations(minutes: int = 30, now: datetime | None = None) -> int:
+    """Close reservations left open by a crashed process; never refund them."""
+    current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    cutoff = current - timedelta(minutes=max(1, int(minutes)))
+    with session_scope() as session:
+        rows = session.execute(
+            select(AIUsage).where(
+                AIUsage.charged.is_(True),
+                AIUsage.used.is_(False),
+                AIUsage.reason == "reserved",
+                AIUsage.created_at <= cutoff,
+            )
+        ).scalars().all()
+        for row in rows:
+            row.reason = STALE_CLOSURE_REASON
+        return len(rows)
+
+
 def usage_report(days: int = 7, now: datetime | None = None) -> dict:
     """Safe dashboard report of call-budget use, fallbacks, and persistent reservations."""
     current = now or datetime.now(UTC)
@@ -256,9 +280,10 @@ def usage_report(days: int = 7, now: datetime | None = None) -> dict:
     rows_today = [row for row in rows if _aware(row.created_at) >= today_start]
     used_rows = [row for row in rows if row.used]
     fallback_rows = [row for row in rows if row.reason == "fallback:offline"]
+    closed_reasons = {"", "fallback:offline", "reserved", STALE_CLOSURE_REASON}
     blocked_rows = [
         row for row in rows
-        if not row.used and row.reason not in ("", "fallback:offline", "reserved")
+        if not row.used and row.reason not in closed_reasons
     ]
     pending_rows = [
         row for row in rows
@@ -302,7 +327,7 @@ def usage_report(days: int = 7, now: datetime | None = None) -> dict:
             "charged": charged_today,
             "used": sum(1 for row in rows_today if row.used),
             "fallbacks": sum(1 for row in rows_today if row.reason == "fallback:offline"),
-            "skipped": sum(1 for row in rows_today if not row.used and row.reason not in ("", "fallback:offline", "reserved")),
+            "skipped": sum(1 for row in rows_today if not row.used and row.reason not in closed_reasons),
             "pending_reservations": sum(1 for row in rows_today if row.charged and not row.used and row.reason == "reserved"),
             "stale_reservations": sum(
                 1 for row in rows_today

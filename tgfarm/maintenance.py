@@ -146,6 +146,18 @@ def expire_unpublishable_drafts(hours: int | None = None) -> int:
         return result.rowcount or 0
 
 
+def _close_stale_ai_reservations() -> int:
+    """Close AI budget reservations whose process died mid-call.
+
+    They stay charged on purpose: the provider may have been called, so refunding
+    would let the farm exceed its daily cap. Closing only stops the panel from
+    flagging the same dead reservation forever.
+    """
+    from tgfarm.llm.policy import close_stale_reservations
+
+    return close_stale_reservations(30)
+
+
 def run_maintenance() -> dict[str, int | bool]:
     """One maintenance pass; every step fails separately, not the stage."""
     out: dict[str, int | bool] = {}
@@ -155,6 +167,7 @@ def run_maintenance() -> dict[str, int | bool]:
         ("runs_pruned", prune_pipeline_runs),
         ("crosspost_logs_pruned", prune_crosspost_logs),
         ("unpublishable_drafts", expire_unpublishable_drafts),
+        ("stale_ai_reservations", _close_stale_ai_reservations),
     ):
         try:
             out[name] = fn()
