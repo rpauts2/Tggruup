@@ -12,6 +12,15 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.platforms import _configured_state, record_auth_check
 
 
+class CheckUnavailable(RuntimeError):
+    """The platform could not be checked right now — not an auth rejection.
+
+    Rate limits, 5xx and flood-control answers say nothing about the token, so
+    they must never be recorded as ``authorized=False``: that would tell the
+    operator to reconnect a working account and hide a real outage.
+    """
+
+
 async def _response_json(
     client: httpx.AsyncClient, url: str, *, params: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -24,8 +33,11 @@ async def _response_json(
         # Never return request URLs, headers, token fragments or raw error bodies.
         if response.status_code in (401, 403):
             raise RuntimeError("Площадка отклонила доступ: проверь токен и разрешения.")
-        if response.status_code == 429:
-            raise RuntimeError("Площадка временно ограничила запросы. Повтори проверку позже.")
+        if response.status_code in (408, 425, 429) or response.status_code >= 500:
+            raise CheckUnavailable(
+                f"Площадка временно недоступна (HTTP {response.status_code}). "
+                "Это не отказ токена — повтори проверку позже."
+            )
         raise RuntimeError(f"Площадка ответила HTTP {response.status_code}.")
     if isinstance(payload, dict):
         return payload
@@ -153,6 +165,11 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
                 )
             if payload.get("error"):
                 code = payload["error"].get("error_code")
+                if code in {1, 6, 9, 10}:
+                    raise CheckUnavailable(
+                        f"VK временно не ответил на проверку (код {code}). "
+                        "Это не отказ токена — повтори проверку позже."
+                    )
                 raise RuntimeError(
                     "VK отклонил запрос: проверь токен, версию API и ID сообщества"
                     + (f" (код {code})." if code else ".")
@@ -558,6 +575,9 @@ async def check_platform_auth(platform_id: str) -> dict[str, Any]:
         else:
             raise RuntimeError("Для этой площадки пока нет API-проверки авторизации.")
 
+    except CheckUnavailable as exc:
+        authorized = None
+        detail = str(exc)
     except httpx.TimeoutException:
         authorized = None
         detail = "Площадка не ответила вовремя. Это не доказывает, что токен неверный."
