@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.db.models import Channel, Post, PostStat
@@ -221,7 +221,8 @@ async def collect_post_stats(limit: int = 500) -> dict:
     if not stats:
         return {"ok": True, "posts": 0, "reason": "telegram returned nothing visible"}
 
-    today = datetime.now(UTC).date().isoformat()
+    now = datetime.now(UTC)
+    today = now.date().isoformat()
     written = 0
     with session_scope() as session:
         for row_id, chat_id in chat_of.items():
@@ -232,12 +233,13 @@ async def collect_post_stats(limit: int = 500) -> dict:
             existing = session.execute(
                 select(PostStat).where(
                     PostStat.post_id == row_id,
-                    PostStat.day == today,
+                    func.date(PostStat.collected_at) == today,
                 )
             ).scalar_one_or_none()
             if existing is None:
-                existing = PostStat(post_id=row_id, day=today)
+                existing = PostStat(post_id=row_id)
                 session.add(existing)
+            existing.collected_at = now
             existing.views = data["views"]
             existing.reactions = data["reactions"]
             existing.forwards = data["forwards"]
