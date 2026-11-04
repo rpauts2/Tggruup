@@ -339,6 +339,88 @@ def _router_skip_report(cluster_public_id: str) -> dict | None:
     }
 
 
+_BACKFILL_FACT_KEYS = (
+    "rows_scanned",
+    "links_found",
+    "links_written",
+    "candidates_remaining",
+    "pages_read",
+    "pool_peak",
+    "unfingerprinted_rows",
+    "undated_rows",
+    "stopped_by",
+    "budget_exhausted",
+    "elapsed_s",
+    "window_hours",
+    "dry_run",
+)
+
+
+def _reprint_backfill_report() -> dict:
+    """The last reprint-backfill pass plus the state the panel must not guess.
+
+    The report lives in the backfill module's process memory only (mirroring
+    `_router_skip_report`): it exists once the maintenance step has called
+    `note_backfill_report` in this process, and a restart clears it. So
+    "never ran here" stays its own state and never collapses into "nothing
+    remains"; numbers that were never measured travel as null, never as 0.
+    """
+    from tgfarm.core.run import ensure_utc
+    from tgfarm.s1_sources import backfill_reprints as backfill
+
+    report = backfill.get_last_backfill_report()
+    recorded_at = backfill.get_last_backfill_recorded_at()
+
+    if report is None:
+        payload = dict.fromkeys(_BACKFILL_FACT_KEYS)
+        state = "never_run"
+        state_note = (
+            "Бэкфилл репринтов ещё не выполнялся в этом процессе (или процесс "
+            "перезапускался). Это НЕ значит, что ничего не осталось: остаток здесь "
+            "просто не измерен."
+        )
+        cursor_payload = None
+    else:
+        payload = report.as_dict()
+        if report.stopped_by == backfill.COMPLETE and report.candidates_remaining == 0:
+            state = "finished"
+            state_note = (
+                "Проход дошёл до конца: кандидатов на связывание не осталось. "
+                f"Строк без отпечатка {report.unfingerprinted_rows} и без даты "
+                f"{report.undated_rows} кандидатами не считаются — этот бэкфилл их "
+                "не свяжет никогда."
+            )
+        elif report.budget_exhausted:
+            state = "remainder"
+            state_note = (
+                f"Проход остановлен по {report.stopped_by}: осталось "
+                f"{report.candidates_remaining} кандидатов; следующий срез "
+                "продолжит с этого курсора."
+            )
+        else:
+            state = "remainder"
+            state_note = (
+                f"Проход прошёл всю историю, но кандидатов всё ещё "
+                f"{report.candidates_remaining}."
+            )
+            if report.dry_run:
+                state_note += " Пробный проход: связи не записывались."
+        cursor = report.next_cursor
+        cursor_payload = (
+            None
+            if cursor is None
+            else {"moment": ensure_utc(cursor.moment).isoformat(), "row_id": int(cursor.row_id)}
+        )
+
+    payload["next_cursor"] = cursor_payload
+    payload["recorded_at"] = None if recorded_at is None else recorded_at.isoformat()
+    payload["state"] = state
+    payload["state_note"] = state_note
+    payload["storage"] = "in-process-memory"
+    payload["restart_clears"] = True
+    return payload
+
+
 def _sources() -> list[dict]:
     from tgfarm.s1_sources import effective_interval
 
@@ -1773,6 +1855,16 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         if report is None:
             raise HTTPException(404, "Нет записи маршрутизации для этого кластера")
         return report
+
+    @app.get("/api/sources/reprint-backfill")
+    async def reprint_backfill_status() -> dict:
+        """Last reprint-backfill pass: what it linked, what remains, why it stopped.
+
+        The answer is the backfill module's process memory, said out loud: a
+        never-run process reports nulls and `never_run`, never a zero remainder
+        the sweep did not measure.
+        """
+        return await io(_reprint_backfill_report)
 
     @app.get("/api/sources/health")
     async def sources_health() -> dict:

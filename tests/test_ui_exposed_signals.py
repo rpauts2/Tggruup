@@ -136,6 +136,7 @@ def test_server_text_reaches_the_dom_escaped(client):
         "async function loadSourcesHealth",
         "const routerSkipRow",
         "function renderRouterSkips",
+        "function renderReprintBackfill",
     ):
         body = script[script.index(marker):script.index(marker) + 3000]
         for leak in ('">${row.', '">${item.', "+ row.", "+ item."):
@@ -286,6 +287,83 @@ def test_trends_legend_explains_the_absent_skip_record(client):
     html = client.get("/").text
     assert "Пропуски?" in html
     assert "не означает «ничего не пропущено»" in html
+
+
+# ------------------------------------------------------------- reprint backfill
+def test_backfill_report_is_wired_to_the_real_endpoint(client):
+    script = _script(client)
+    loader = _chunk(script, "async function loadReprintBackfill", "async function explainTrend")
+    assert 'api("/api/sources/reprint-backfill")' in loader
+    assert '$("#reprint-backfill")' in loader
+    # A failed answer must not silently keep a stale report on screen.
+    assert "Статус бэкфилла репринтов недоступен: " in loader
+    assert 'id="reprint-backfill"' in client.get("/").text
+
+
+def test_backfill_block_reloads_when_the_sources_view_opens(client):
+    script = _script(client)
+    body = _chunk(script, "function switchView(view)", "window.tgfarmGoto")
+    assert 'if (view === "sources") loadReprintBackfill();' in body
+
+
+def test_never_run_backfill_is_not_rendered_as_finished(client):
+    """`state: never_run` means this process has no report, not a clean corpus.
+
+    Only the server's `finished` verdict may show the green chip; every other
+    answer — including a missing body — falls to the «нет данных» chip, so an
+    operator never reads "nothing remains" out of "nobody looked".
+    """
+    script = _script(client)
+    body = _chunk(script, "function renderReprintBackfill", "async function loadReprintBackfill")
+    assert 'd.state === "finished"' in body
+    assert 'd.state === "remainder"' in body
+    assert 'class="tag tag-none">нет данных' in body
+    assert "отчёт не записан в этом процессе" in body
+    # The green word belongs to the measured-finished branch alone.
+    assert body.index('d.state === "finished"') < body.index("завершён")
+
+
+def test_absent_backfill_numbers_are_never_rendered_as_zeros(client):
+    """rows_scanned null is "no data"; a scanned 0 is a measurement."""
+    script = _script(client)
+    body = _chunk(script, "const backfillFact", "function renderReprintBackfill")
+    assert 'typeof value === "number"' in body
+    assert "Number.isFinite(value)" in body
+    assert '"нет данных"' in body
+    assert "|| 0" not in body
+    assert "?? 0" not in body
+
+
+def test_backfill_counters_stay_four_different_facts(client):
+    """Scanned, remaining candidates, unfingerprinted and undated are not merged."""
+    script = _script(client)
+    body = _chunk(script, "function renderReprintBackfill", "async function loadReprintBackfill")
+    for label in (
+        "просканировано строк",
+        "осталось кандидатов",
+        "без отпечатка",
+        "без даты",
+    ):
+        assert label in body
+    for field in ("d.rows_scanned", "d.candidates_remaining", "d.unfingerprinted_rows", "d.undated_rows"):
+        assert field in body
+
+
+def test_backfill_block_admits_its_memory(client):
+    script = _script(client)
+    body = _chunk(script, "function renderReprintBackfill", "async function loadReprintBackfill")
+    assert "esc(d.storage" in body
+    assert "памяти процесса" in body
+    assert "после перезапуска" in body
+
+
+def test_backfill_state_note_reaches_the_dom_escaped(client):
+    script = _script(client)
+    body = _chunk(script, "function renderReprintBackfill", "async function loadReprintBackfill")
+    assert "esc(d.state_note" in body
+    assert "esc(d.stopped_by)" in body
+    for raw in ("${d.", "+ d. ", "${data."):
+        assert raw not in body, f"raw interpolation of {raw!r}"
 
 
 # ---------------------------------------------------------------------- style

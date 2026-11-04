@@ -154,9 +154,12 @@ def _reprint_backfill() -> int:
     trends, niches, heat and `item_count`. The pass is time-boxed and reports its
     own remainder; a maintenance step must never become the reason a cycle dies.
     """
-    from tgfarm.s1_sources.backfill_reprints import backfill_reprints
+    from tgfarm.s1_sources.backfill_reprints import backfill_reprints, note_backfill_report
 
     report = backfill_reprints(budget_seconds=60.0)
+    # The panel answers "what remains" from this process only, so the pass has to
+    # be remembered here or the operator sees "never ran" after every restart.
+    note_backfill_report(report)
     log.info(
         "maintenance: reprint backfill scanned %d, linked %d, %d left (%s)",
         report.rows_scanned,

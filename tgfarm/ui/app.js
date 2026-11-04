@@ -2400,6 +2400,60 @@
     }
   }
 
+  /* ------------------------------------------------ reprint backfill report */
+  // GET /api/sources/reprint-backfill answers from the backfill module's process
+  // memory, so the block has to keep the three states apart: "never ran here",
+  // "stopped on budget with a remainder", "finished". A number that was never
+  // measured renders as «нет данных» — never as a tidy zero — and the four
+  // counters (scanned / remaining / unfingerprinted / undated) stay on the page
+  // as four different facts because they mean four different things.
+  const backfillFact = (value) => {
+    if (typeof value === "boolean") return value ? "да" : "нет";
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "нет данных";
+    return "нет данных";
+  };
+
+  function renderReprintBackfill(data) {
+    const root = $("#reprint-backfill");
+    if (!root) return;
+    const d = data || {};
+    const chip = d.state === "finished"
+      ? '<span class="tag tag-ok">завершён</span>'
+      : d.state === "remainder"
+        ? '<span class="tag tag-warn">остаток: ' + backfillFact(d.candidates_remaining) + "</span>"
+        : '<span class="tag tag-none">нет данных</span>';
+    root.innerHTML =
+      '<div class="item"><div class="item-main"><div class="item-title">Бэкфилл репринтов</div>'
+      + '<div class="item-meta">' + chip + " " + esc(d.state_note || "отчёт не записан в этом процессе") + "</div></div></div>"
+      + '<div class="item"><div class="item-main"><div class="item-meta">'
+      + "просканировано строк: " + backfillFact(d.rows_scanned)
+      + " · найдено связей: " + backfillFact(d.links_found)
+      + " · записано связей: " + backfillFact(d.links_written)
+      + " · осталось кандидатов: " + backfillFact(d.candidates_remaining)
+      + '</div><div class="item-meta">'
+      + "без отпечатка: " + backfillFact(d.unfingerprinted_rows)
+      + " · без даты: " + backfillFact(d.undated_rows)
+      + " · остановлен по: " + (d.stopped_by ? esc(d.stopped_by) : "нет данных")
+      + " · бюджет исчерпан: " + backfillFact(d.budget_exhausted)
+      + " · пробный проход: " + backfillFact(d.dry_run)
+      + "</div></div></div>"
+      + '<div class="item"><div class="item-main"><div class="item-meta">'
+      + "Отчёт живёт в памяти процесса (" + esc(d.storage || "в памяти процесса") + "): "
+      + "после перезапуска здесь снова «нет данных»"
+      + (d.recorded_at ? " · записан " + esc(dt(d.recorded_at)) : "")
+      + "</div></div></div>";
+  }
+
+  async function loadReprintBackfill() {
+    const root = $("#reprint-backfill");
+    if (!root) return;
+    try {
+      renderReprintBackfill(await api("/api/sources/reprint-backfill"));
+    } catch (error) {
+      root.innerHTML = '<div class="empty">Статус бэкфилла репринтов недоступен: ' + esc(error?.message || error) + "</div>";
+    }
+  }
+
   async function explainTrend(clusterId) {
     const target = document.querySelector('[data-trend-explain-body="' + CSS.escape(clusterId) + '"]');
     if (!target) return;
@@ -4108,6 +4162,7 @@
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
     if (view === "sources") loadSourcesHealth();
+    if (view === "sources") loadReprintBackfill();
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so

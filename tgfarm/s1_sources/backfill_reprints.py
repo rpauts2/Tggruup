@@ -66,8 +66,8 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import DateTime, and_, case, func, or_, select, update
@@ -465,4 +465,54 @@ def backfill_reprints(
     return report
 
 
-__all__ = ["BackfillReport", "Cursor", "backfill_reprints"]
+# ---------------------------------------------------------------- panel memory
+# Where the last pass left the corpus is a fact the operator needs and the
+# log line does not survive a page refresh. This mirrors exactly how S3 keeps
+# the router's skip report: one module-level reference, no schema, no file
+# format, and the API says out loud that a restart clears it. Nothing is
+# invented here — either a report was recorded in this process or it was not,
+# and `get_last_backfill_report()` answers None when it was not.
+
+_LAST_BACKFILL_REPORT: BackfillReport | None = None
+_LAST_BACKFILL_RECORDED_AT: datetime | None = None
+
+
+def note_backfill_report(report: BackfillReport | None) -> None:
+    """Remember the last backfill pass so the panel can serve its remainder.
+
+    One wiring line in the maintenance step is all this needs:
+    `note_backfill_report(report)` right after `backfill_reprints(...)`
+    returns. A failed pass has no report, so `None` is ignored and the
+    previously remembered pass stays as it was — forgetting what ran because
+    something else failed would be its own lie. A copy is stored, so a caller
+    that later mutates its own report object cannot rewrite operator history.
+    """
+    global _LAST_BACKFILL_REPORT, _LAST_BACKFILL_RECORDED_AT
+    if report is None:
+        return
+    _LAST_BACKFILL_REPORT = replace(report)
+    _LAST_BACKFILL_RECORDED_AT = datetime.now(UTC)
+
+
+def get_last_backfill_report() -> BackfillReport | None:
+    """The report of the last pass recorded in *this* process, or None.
+
+    None is the honest answer when nothing has been recorded yet — the caller
+    must present it as "never ran here", never as "nothing remains".
+    """
+    return _LAST_BACKFILL_REPORT
+
+
+def get_last_backfill_recorded_at() -> datetime | None:
+    """UTC instant `note_backfill_report` accepted the stored report, or None."""
+    return _LAST_BACKFILL_RECORDED_AT
+
+
+__all__ = [
+    "BackfillReport",
+    "Cursor",
+    "backfill_reprints",
+    "get_last_backfill_recorded_at",
+    "get_last_backfill_report",
+    "note_backfill_report",
+]
