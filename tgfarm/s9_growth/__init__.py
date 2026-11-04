@@ -114,6 +114,7 @@ def _pending_crossposts(
     from tgfarm.core.run import ensure_utc
     from tgfarm.db.models import Channel as ChannelRow
     from tgfarm.db.models import CrosspostLog, Post as PostRow
+    from tgfarm.distribution import exclude_imported_history
 
     cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     target_platforms = list(platforms if platforms is not None else ADAPTERS.keys())
@@ -142,6 +143,7 @@ def _pending_crossposts(
             .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
             .where(
                 PostRow.status == "published",
+                *exclude_imported_history(),
                 or_(PostRow.published_at >= cutoff, where_retry),
                 or_(ChannelRow.platform.is_(None), ChannelRow.platform == "telegram"),
                 ChannelRow.enabled.is_(True),

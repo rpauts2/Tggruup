@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from tgfarm.core.settings import ROOT, get_settings
 from tgfarm.core.text import content_tokens, normalize, token_jaccard
@@ -576,6 +576,46 @@ def _route_delivery_candidates(
     return [], []
 
 
+def exclude_imported_history() -> tuple[Any, ...]:
+    """SQL conditions that keep archive imports out of automatic distribution.
+
+    Imported history is stored with `status=published` so analytics can use it,
+    which otherwise makes every historical post look like fresh material worth
+    cross-posting. `history_import` writes both markers together.
+
+    `angle` deliberately stays out: "history" is a normal editorial angle in the
+    schema (992 ordinary posts here carry it), so filtering on it would silence
+    real cross-posting to hide archive rows. The JSON provenance flag is unread
+    here too — malformed `quality` would fail the whole candidate read.
+
+    `generation_provider` is nullable, and SQL drops a row on `NULL != x` instead
+    of keeping it, so a missing value has to be allowed explicitly.
+    """
+    return (
+        Post.post_format != "history",
+        or_(Post.generation_provider.is_(None), Post.generation_provider != "history_import"),
+    )
+
+
+def published_candidates(session, cutoff: datetime) -> list[tuple[Any, Any]]:
+    """Recent published (post, channel) pairs the distribution plan may consider."""
+    return list(
+        session.execute(
+            select(Post, Channel)
+            .join(Channel, Channel.id == Post.channel_id)
+            .where(
+                Post.status == "published",
+                *exclude_imported_history(),
+                Post.published_at.is_not(None),
+                Post.published_at >= cutoff,
+                Channel.enabled.is_(True),
+            )
+            .order_by(Post.published_at.desc(), Post.id.desc())
+            .limit(MAX_CANDIDATES)
+        ).all()
+    )
+
+
 def build_distribution_plan(
     *,
     now: datetime | None = None,
@@ -598,18 +638,7 @@ def build_distribution_plan(
     logs_cutoff = current - timedelta(days=30)
 
     with session_scope() as session:
-        candidates = session.execute(
-            select(Post, Channel)
-            .join(Channel, Channel.id == Post.channel_id)
-            .where(
-                Post.status == "published",
-                Post.published_at.is_not(None),
-                Post.published_at >= cutoff,
-                Channel.enabled.is_(True),
-            )
-            .order_by(Post.published_at.desc(), Post.id.desc())
-            .limit(MAX_CANDIDATES)
-        ).all()
+        candidates = published_candidates(session, cutoff)
         candidate_ids = [post.id for post, _channel in candidates]
         media_by_post: dict[int, list[Any]] = {}
         stats_by_post: dict[int, Any] = {}
