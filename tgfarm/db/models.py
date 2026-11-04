@@ -84,6 +84,10 @@ class RawItem(Base):
     simhash: Mapped[int] = mapped_column(Integer, default=0)
     heat: Mapped[float] = mapped_column(Float, default=0.0)
     duplicate_of: Mapped[int | None] = mapped_column(ForeignKey("raw_items.id"))
+    # Measured in S2's `_measure_pass`, which reads only the items that survived
+    # the dedup pass: `recency` is this document's own age decay, `velocity` and
+    # `cross_platform` are the independence signals of the story it is evidence
+    # for. A flagged duplicate keeps 0.0 — it measures no independent interest.
     recency: Mapped[float] = mapped_column(Float, default=0.0)
     velocity: Mapped[float] = mapped_column(Float, default=0.0)
     cross_platform: Mapped[float] = mapped_column(Float, default=0.0)
@@ -108,6 +112,13 @@ class Cluster(Base):
     heat: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(16), default="forming", index=True)
     item_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Window-over-window interest, measured by S2 over the items that survived
+    # dedup. `trend_phase` is rising|steady|spike|decaying|unknown;
+    # `acceleration` is the relative change and stays NULL when there was no
+    # preceding window to compare against — an unknown rate is reported as
+    # unknown, never as zero.
+    trend_phase: Mapped[str | None] = mapped_column(String(16), index=True)
+    acceleration: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

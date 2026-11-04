@@ -1,14 +1,20 @@
 """S2 — trend detection.
 
-Three steps, each cheap enough to run on every cycle:
+Four steps, each cheap enough to run on every cycle:
 
 1. `deduplicate` — near-identical items from different outlets collapse via
-   simhash (cheap) and embedding cosine (accurate).
+   simhash (cheap) and embedding cosine (accurate), and stay collapsed: a row
+   with `duplicate_of` set is evidence of *copying*, never of independent
+   interest, so every count below is taken over the rows that survived it.
 2. `cluster`     — surviving items are greedily assigned to the nearest existing
    cluster above a similarity floor, otherwise they start one. A cluster is the
    farm's unit of "a story".
-3. `score_heat`  — every cluster gets a 0..1 heat value from five signals. Only
-   clusters above `HEAT_THRESHOLD` are allowed into content generation.
+3. `measure`     — the independence signals (velocity, recency, cross-platform)
+   and the window-over-window acceleration are measured and persisted, so the
+   number a cluster was promoted on is auditable per item afterwards.
+4. `score_heat`  — every cluster gets a 0..1 heat value from five signals, read
+   back from the measurements above. Only clusters above `HEAT_THRESHOLD` — and
+   whose shape is not a single-window burst — reach content generation.
 """
 
 from __future__ import annotations
@@ -41,6 +47,22 @@ log = get_logger(__name__)
 
 CLUSTER_WINDOW_HOURS = 24
 STALE_AFTER_HOURS = 12
+
+# The interest window: "is this story accelerating?" is answered by comparing the
+# current window with the one immediately before it. Six hours is the horizon the
+# velocity signal already used, so a burst and its baseline are the same length.
+VELOCITY_WINDOW_HOURS = 6.0
+ACCELERATION_WINDOW_HOURS = 6.0
+
+# A window-over-window change of +25% is the point where "more outlets are
+# picking this up" stops being plausibly noise. Two items becoming three is not a
+# trend no matter what the ratio says, hence the floor on the current window.
+RISE_RATE = 0.25
+DECAY_RATE = -0.25
+RISING_MIN_ITEMS = 3
+
+# Source kinds the farm polls, used by the cross-platform signal.
+SOURCE_KINDS = frozenset({"rss", "gnews", "gdelt", "api"})
 
 # "Same story" for news headlines is a lexical question: two outlets covering one
 # event share the rare tokens (proper nouns, figures, version numbers) and almost
@@ -113,9 +135,114 @@ W_CROSS = 0.10
 W_DEFICIT = 0.10
 
 
+# ------------------------------------------------------------- acceleration
+TREND_PHASES = ("rising", "steady", "spike", "decaying", "unknown")
+# Phases a cluster may be promoted on. A `spike` is interest that exists in one
+# window and in none before it — that is a burst, not a trend, and promoting it
+# is how one reprint storm turns into six posts. `decaying` still earns a post
+# while its heat is above the threshold: recency already penalises it.
+PROMOTABLE_PHASES = ("rising", "steady", "unknown")
+
+
+def classify_acceleration(
+    current_items: int,
+    previous_items: int | None,
+    *,
+    rise_rate: float = RISE_RATE,
+    decay_rate: float = DECAY_RATE,
+    rising_min_items: int = RISING_MIN_ITEMS,
+) -> tuple[str, float | None]:
+    """Shape of interest: the window now against the comparable window before it.
+
+    Returns `(phase, rate)`.
+
+    * `previous_items is None` — there is no preceding window at all (the store,
+      or this story, is younger than one window). The rate is reported as unknown
+      instead of being invented from nothing.
+    * `previous_items == 0` with items now — a measured empty baseline plus a full
+      window is a `spike`. No rate: dividing by zero would be a made-up number.
+    * both windows non-empty — the relative change decides `rising`, `steady` or
+      `decaying`. Steady-high volume is *steady*: five outlets covering a story on
+      two windows in a row is not an acceleration, however loud it looks in one.
+
+    A jump that clears the ratio but not `rising_min_items` (1 item becoming 2) is
+    reported as steady — the rate is measured and returned, the verdict is not.
+    """
+    current = max(0, int(current_items))
+    if previous_items is None:
+        return "unknown", None
+    previous = max(0, int(previous_items))
+
+    if previous == 0:
+        if current == 0:
+            # Nothing in either window: no change to report, and no burst.
+            return "steady", 0.0
+        return "spike", None
+
+    rate = (current - previous) / previous
+    if current == 0:
+        return "decaying", rate
+    if rate >= rise_rate and current >= rising_min_items:
+        return "rising", rate
+    if rate <= decay_rate:
+        return "decaying", rate
+    return "steady", rate
+
+
+def _item_time(item: RawItemRow) -> datetime:
+    """When this document counts as having appeared.
+
+    `published_at` is the honest clock for interest, but feeds lie about it and
+    legacy rows omit it; `fetched_at` is always set, so it is the fallback.
+    """
+    return _aware(item.published_at or item.fetched_at)
+
+
+def _window_counts(
+    items: list[RawItemRow],
+    *,
+    now: datetime,
+    window_hours: float = ACCELERATION_WINDOW_HOURS,
+) -> tuple[int, int | None]:
+    """(current window, preceding window) item counts — or None for the preceding.
+
+    None means "there is nothing here that predates the current window", so the
+    farm cannot claim the previous window was empty: it never observed one.
+    """
+    window = timedelta(hours=max(0.1, float(window_hours)))
+    current_start = now - window
+    previous_start = now - 2 * window
+
+    times = [_item_time(item) for item in items]
+    current = sum(1 for moment in times if moment >= current_start)
+    if not any(moment < current_start for moment in times):
+        return current, None
+    previous = sum(1 for moment in times if previous_start <= moment < current_start)
+    return current, previous
+
+
+def acceleration_of(
+    items: list[RawItemRow],
+    *,
+    now: datetime | None = None,
+    window_hours: float = ACCELERATION_WINDOW_HOURS,
+) -> tuple[str, float | None]:
+    """Public shape read over the items that survived dedup."""
+    now = now or datetime.now(UTC)
+    current, previous = _window_counts(items, now=now, window_hours=window_hours)
+    return classify_acceleration(current, previous)
+
+
 # ----------------------------------------------------------------- deduplicate
 def _dedup_pass() -> int:
-    """Mark exact/near duplicates among recent items. Returns rows flagged."""
+    """Mark exact/near duplicates among recent items. Returns rows flagged.
+
+    The match always points at a surviving item, so a reprint storm has exactly
+    one original at the bottom of it. A row whose `simhash` is absent (0 or NULL,
+    written before the column existed) is never treated as identical to anything:
+    a missing fingerprint carries no information, and `hamming(0, x)` is a
+    meaningless number.
+    """
     with session_scope() as session:
         cutoff = datetime.now(UTC) - timedelta(hours=CLUSTER_WINDOW_HOURS)
         rows = session.execute(
@@ -126,6 +253,7 @@ def _dedup_pass() -> int:
 
         seen_fp: dict[int, int] = {}
         seen_titles: dict[str, int] = {}
+        eligible = {row.id for row in rows}
         index = get_index()
         flagged = 0
 
@@ -145,11 +273,13 @@ def _dedup_pass() -> int:
             if match_id is None and row.embedding:
                 vec = unpack(row.embedding)
                 hits = index.search(vec, top_k=3, min_score=0.95, exclude={row.id})
-                if hits:
-                    match_id = hits[0][0]
+                match_id = next(
+                    (hit_id for hit_id, _ in hits if hit_id in eligible), None
+                )
 
             if match_id is not None:
                 row.duplicate_of = match_id
+                eligible.discard(row.id)
                 flagged += 1
             else:
                 seen_titles[title_key(row.title)] = row.id
@@ -160,16 +290,27 @@ def _dedup_pass() -> int:
 
 
 # -------------------------------------------------------------------- cluster
-def _cluster_pass() -> int:
+def _cluster_pass(*, include_duplicates: bool = False) -> int:
+    """Group surviving items into stories.
+
+    A flagged reprint is not an argument for a story being bigger; letting it
+    into the clustering pass would move centroids and inflate `item_count`, so by
+    default it never reaches this query. `include_duplicates=True` keeps the old
+    behaviour available for backfills and diagnostics.
+    """
     cutoff = datetime.now(UTC) - timedelta(hours=CLUSTER_WINDOW_HOURS)
     created = 0
 
     with session_scope() as session:
         get_index()
+        conditions = [
+            RawItemRow.fetched_at >= cutoff,
+            RawItemRow.cluster_id.is_(None),
+        ]
+        if not include_duplicates:
+            conditions.append(RawItemRow.duplicate_of.is_(None))
         rows = session.execute(
-            select(RawItemRow)
-            .where(RawItemRow.fetched_at >= cutoff, RawItemRow.cluster_id.is_(None))
-            .order_by(RawItemRow.fetched_at.asc())
+            select(RawItemRow).where(*conditions).order_by(RawItemRow.fetched_at.asc())
         ).scalars().all()
 
         idf = _build_idf(rows)
@@ -183,10 +324,13 @@ def _cluster_pass() -> int:
             select(ClusterRow).where(ClusterRow.status.in_(("forming", "ready")))
         ).scalars().all()
         for cluster in existing:
+            member_conditions = [RawItemRow.cluster_id == cluster.id]
+            if not include_duplicates:
+                member_conditions.append(RawItemRow.duplicate_of.is_(None))
             members = session.execute(
                 select(
                     RawItemRow.embedding, RawItemRow.title, RawItemRow.niche_hint
-                ).where(RawItemRow.cluster_id == cluster.id)
+                ).where(*member_conditions)
             ).all()
             vectors = [unpack(row[0]) for row in members if row[0]]
             tokens: set[str] = set()
@@ -317,7 +461,10 @@ def assign_niches() -> int:
         for cluster in clusters:
             members = (
                 session.execute(
-                    select(RawItemRow.niche_hint).where(RawItemRow.cluster_id == cluster.id)
+                    select(RawItemRow.niche_hint).where(
+                        RawItemRow.cluster_id == cluster.id,
+                        RawItemRow.duplicate_of.is_(None),
+                    )
                 )
                 .scalars()
                 .all()
@@ -333,9 +480,121 @@ def assign_niches() -> int:
     return updated
 
 
-def _score_pass() -> int:
+def _recency_signal(moment: datetime, *, now: datetime, half_life_hours: float = 4.0) -> float:
+    """Exponential age decay of one document. Measured from its own timestamp."""
+    hours = max(0.0, (now - _aware(moment)).total_seconds() / 3600.0)
+    return math.exp(-hours / max(0.1, half_life_hours))
+
+
+def _velocity_signal(
+    survivors: list[RawItemRow],
+    *,
+    now: datetime,
+    window_hours: float = VELOCITY_WINDOW_HOURS,
+) -> float:
+    """Independent outlets that published inside the current window, 0..1.
+
+    `survivors` is already the dedup-pass output: one document reprinted by five
+    outlets is one outlet here, not five. The same number used to be a local
+    variable that nobody could audit; it is persisted per item by `_measure_pass`.
+    """
+    window_start = now - timedelta(hours=max(0.1, float(window_hours)))
+    recent_sources = {m.source_id for m in survivors if _item_time(m) >= window_start}
+    velocity = min(1.0, len(recent_sources) / 4.0)
+    if len(recent_sources) >= 2:
+        velocity = min(1.0, velocity + 0.15)
+    return round(velocity, 4)
+
+
+def _cross_platform_signal(survivors: list[RawItemRow]) -> float:
+    """How many different source *kinds* agree, 0..1 — over surviving items only.
+
+    Kept formula-for-formula with the old local computation (prefix families, with
+    a spread fallback on distinct outlets); the only change is which rows feed it.
+    """
+    distinct_kinds = len({m.source_id.split("_")[0] for m in survivors}) or 1
+    cross_platform = min(1.0, distinct_kinds / max(len(SOURCE_KINDS), 1))
+    outlets = len({m.source_id for m in survivors})
+    return round(max(cross_platform, min(1.0, outlets / 6.0)), 4)
+
+
+def _measure_pass(
+    *,
+    now: datetime | None = None,
+    window_hours: float = ACCELERATION_WINDOW_HOURS,
+) -> int:
+    """Persist the measured S2 signals, then and only then let heat read them.
+
+    Every number written here is a measurement over the items that survived the
+    dedup pass:
+      * `recency`       — this document's own age decay.
+      * `velocity`      — independent outlets of its story inside the window.
+      * `cross_platform`— source kinds agreeing on its story.
+      * `trend_phase` / `acceleration` on the cluster — this window against the
+        one before it, or unknown when there is no preceding window.
+
+    A flagged duplicate is zeroed rather than left holding a value it earned
+    before it was recognised as a copy: zero independent signal *is* the measured
+    statement about a reprint. Returns the number of items written.
+    """
+    now = now or datetime.now(UTC)
+    measured = 0
+    with session_scope() as session:
+        clusters = session.execute(
+            select(ClusterRow).where(ClusterRow.status.in_(("forming", "ready")))
+        ).scalars().all()
+
+        for cluster in clusters:
+            members = session.execute(
+                select(RawItemRow).where(RawItemRow.cluster_id == cluster.id)
+            ).scalars().all()
+            survivors = [m for m in members if m.duplicate_of is None]
+            copies = [m for m in members if m.duplicate_of is not None]
+
+            if not survivors:
+                # Nothing independent left in this cluster: no rate to invent.
+                cluster.trend_phase = "unknown"
+                cluster.acceleration = None
+                for member in copies:
+                    member.recency = 0.0
+                    member.velocity = 0.0
+                    member.cross_platform = 0.0
+                continue
+
+            current, previous = _window_counts(survivors, now=now, window_hours=window_hours)
+            phase, rate = classify_acceleration(current, previous)
+            cluster.trend_phase = phase
+            cluster.acceleration = rate
+
+            velocity = _velocity_signal(survivors, now=now)
+            cross_platform = _cross_platform_signal(survivors)
+            for member in survivors:
+                member.recency = round(_recency_signal(_item_time(member), now=now), 4)
+                member.velocity = velocity
+                member.cross_platform = cross_platform
+                measured += 1
+            for member in copies:
+                member.recency = 0.0
+                member.velocity = 0.0
+                member.cross_platform = 0.0
+
+    return measured
+
+
+def _score_pass(*, measure: bool = True) -> int:
+    """Heat from the persisted measurements, over surviving evidence only.
+
+    `measure=True` (the default, and what `run()` uses) refreshes the per-item
+    signals first, so heat is always computed from this cycle's measurements
+    rather than from a score written days ago. Reading the columns back instead of
+    recomputing them locally is deliberate: it makes the stored numbers
+    load-bearing — the heat a cluster was promoted on is reproducible from the
+    rows that produced it.
+    """
     get_settings()
     now = datetime.now(UTC)
+    if measure:
+        _measure_pass(now=now)
     coverage = _niche_coverage()
     max_coverage = max(coverage.values(), default=0) or 1
 
@@ -346,8 +605,12 @@ def _score_pass() -> int:
         ).scalars().all()
 
         for cluster in clusters:
+            # -- only items that survived the dedup pass are independence evidence
             members = session.execute(
-                select(RawItemRow).where(RawItemRow.cluster_id == cluster.id)
+                select(RawItemRow).where(
+                    RawItemRow.cluster_id == cluster.id,
+                    RawItemRow.duplicate_of.is_(None),
+                )
             ).scalars().all()
             if not members:
                 continue
@@ -355,24 +618,10 @@ def _score_pass() -> int:
             # -- signal 1: source authority (best source in the cluster counts)
             source_component = max((m.source_weight for m in members), default=0.3)
 
-            # -- signal 2: velocity, distinct outlets inside a 6h window
-            window_start = now - timedelta(hours=6)
-            recent = [m for m in members if _aware(m.published_at) >= window_start]
-            recent_sources = {m.source_id for m in recent}
-            velocity = min(1.0, len(recent_sources) / 4.0)
-            if len(recent_sources) >= 2:
-                velocity = min(1.0, velocity + 0.15)
-
-            # -- signal 3: recency, 4h half-life-ish
-            newest = max(_aware(m.published_at) for m in members)
-            hours = max(0.0, (now - newest).total_seconds() / 3600.0)
-            recency = math.exp(-hours / 4.0)
-
-            # -- signal 4: cross-platform, different source *kinds* agreeing
-            kinds = {"rss", "gnews", "gdelt", "api"}
-            distinct_kinds = len({m.source_id.split("_")[0] for m in members}) or 1
-            cross_platform = min(1.0, distinct_kinds / max(len(kinds), 1) + 0.0)
-            cross_platform = max(cross_platform, min(1.0, len({m.source_id for m in members}) / 6.0))
+            # -- signals 2-4: read the measurements `_measure_pass` persisted
+            velocity = max((m.velocity for m in members), default=0.0)
+            recency = max((m.recency for m in members), default=0.0)
+            cross_platform = max((m.cross_platform for m in members), default=0.0)
 
             # -- signal 5: niche deficit (documented approximation)
             niche_posts = coverage.get(cluster.niche or "", 0)
@@ -387,8 +636,10 @@ def _score_pass() -> int:
             )
 
             cluster.heat = round(min(1.0, heat), 4)
+            # `item_count` is a claim about independent coverage, so it counts the
+            # documents that survived dedup — not the reprints stacked on top.
             cluster.item_count = len(members)
-            last_seen = max(_aware(m.published_at) for m in members)
+            last_seen = max(_item_time(m) for m in members)
             cluster.last_seen_at = last_seen
             if now - last_seen > timedelta(hours=STALE_AFTER_HOURS):
                 cluster.status = "ready"
@@ -406,24 +657,54 @@ def _aware(value: datetime | None) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
-def promote_ready(threshold: float | None = None) -> int:
-    """Clusters above the heat threshold become `ready` and are visible to S3."""
+def promote_ready(threshold: float | None = None, *, allow_spikes: bool = False) -> int:
+    """Clusters above the heat threshold become `ready` and are visible to S3.
+
+    Heat alone cannot tell a rising story from a burst, so the measured shape
+    gates promotion too: a cluster whose interest exists in one window and in none
+    before it (`trend_phase == "spike"`) is held for the next cycle, where the
+    preceding window either confirms it or exposes it. Clusters with no measured
+    shape yet — legacy rows, or a store younger than one window — are judged on
+    heat alone, because refusing to promote what cannot be measured would be
+    inventing a verdict in the other direction. `allow_spikes=True` restores the
+    old heat-only behaviour for operators who want a burst to publish now.
+    """
     settings = get_settings()
     threshold = settings.heat_threshold if threshold is None else threshold
     promoted = 0
+    held = 0
     with session_scope() as session:
         clusters = session.execute(
             select(ClusterRow).where(ClusterRow.status == "forming", ClusterRow.heat >= threshold)
         ).scalars().all()
         for cluster in clusters:
+            if not allow_spikes and cluster.trend_phase == "spike":
+                held += 1
+                continue
             cluster.status = "ready"
             promoted += 1
     if promoted:
         log.info("promoted %d clusters above heat>=%.2f", promoted, threshold)
+    if held:
+        log.info(
+            "held back %d spike-shaped clusters (heat>=%.2f but interest has no"
+            " preceding window to compare against)",
+            held,
+            threshold,
+        )
     return promoted
 
 
-def ready_clusters(min_items: int = 2) -> list[tuple[str, str, float, list]]:
+def ready_clusters(
+    min_items: int = 2, *, include_duplicates: bool = False
+) -> list[tuple[str, str, float, list]]:
+    """Clusters S3 may turn into posts.
+
+    `min_items` is a claim about independent coverage, so it counts the documents
+    that survived dedup, and the members handed downstream are those same
+    documents — a post that cites five outlets for one reprinted wire story cites
+    one outlet five times.
+    """
     settings = get_settings()
     with session_scope() as session:
         rows = session.execute(
@@ -434,9 +715,10 @@ def ready_clusters(min_items: int = 2) -> list[tuple[str, str, float, list]]:
         ).scalars().all()
         out = []
         for cluster in rows:
-            members = session.execute(
-                select(RawItemRow).where(RawItemRow.cluster_id == cluster.id)
-            ).scalars().all()
+            conditions = [RawItemRow.cluster_id == cluster.id]
+            if not include_duplicates:
+                conditions.append(RawItemRow.duplicate_of.is_(None))
+            members = session.execute(select(RawItemRow).where(*conditions)).scalars().all()
             if len(members) < min_items:
                 continue
             if max((m.source_weight for m in members), default=0.0) < 0.45:

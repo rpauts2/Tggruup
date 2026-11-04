@@ -83,7 +83,18 @@ def test_clustering_groups_same_story(clean_items):
     with session_scope() as session:
         clusters = session.execute(select(Cluster)).scalars().all()
         assert len(clusters) == 1
-        assert clusters[0].item_count == 3
+        members = session.execute(
+            select(RawItemRow).where(RawItemRow.cluster_id == clusters[0].id)
+        ).scalars().all()
+        copies = session.execute(
+            select(RawItemRow).where(RawItemRow.duplicate_of.is_not(None))
+        ).scalars().all()
+        # Three outlets carried one body. The reprint is linked to the document it
+        # copies instead of joining the story, so the size of a cluster is the
+        # number of independent documents and never the number of copies.
+        assert len(copies) == 1
+        assert copies[0].cluster_id is None
+        assert clusters[0].item_count == len(members) == 2
 
 
 def test_clustering_separates_different_stories(clean_items):

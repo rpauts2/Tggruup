@@ -240,8 +240,13 @@ def _trends(limit: int) -> list[dict]:
         ).scalars().all()
         out = []
         for row in rows:
+            # A flagged reprint is evidence of copying, not of a second outlet
+            # covering the story, so the panel counts only what survived dedup.
             items = session.execute(
-                select(RawItem).where(RawItem.cluster_id == row.id)
+                select(RawItem).where(
+                    RawItem.cluster_id == row.id,
+                    RawItem.duplicate_of.is_(None),
+                )
             ).scalars().all()
             out.append(
                 {
@@ -251,6 +256,8 @@ def _trends(limit: int) -> list[dict]:
                     "heat": row.heat,
                     "status": row.status,
                     "items": len(items),
+                    "trend_phase": row.trend_phase,
+                    "acceleration": row.acceleration,
                     "outlets": sorted({i.source_id for i in items}),
                 }
             )
