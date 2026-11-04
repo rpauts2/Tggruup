@@ -515,6 +515,11 @@ class Settings(BaseSettings):
 
     # --- always-on supervision ---------------------------------------------
     cycle_timeout_min: int = Field(default=60, alias="CYCLE_TIMEOUT_MIN")
+    # How much of one cycle S5 may spend gating the draft backlog. The rest of the
+    # backlog waits for the next cycle; without a slice, one long rewrite queue
+    # (up to 200 drafts at 60 s per LLM request) consumed the whole cycle and it
+    # was cancelled before publishing, analytics and learning ever ran.
+    quality_stage_budget_s: int = Field(default=600, ge=1, alias="QUALITY_STAGE_BUDGET_S")
     # News drafts with known publication dates are rejected when every attached source is older than this.
     source_max_age_hours: int = Field(default=72, alias="SOURCE_MAX_AGE_HOURS")
     # Operational alerts: the farm must say out loud when it stops shipping.

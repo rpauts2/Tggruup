@@ -12,6 +12,7 @@ drafts that already passed length and vocabulary.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -957,14 +958,28 @@ async def gate_post(public_id: str) -> QualityReport:
     return report
 
 
-async def run(post_public_ids: list[str] | None = None) -> dict[str, int]:
-    """Gate all pending drafts, or a specific list."""
+async def run(post_public_ids: list[str] | None = None, *, budget_s: float | None = None) -> dict[str, int]:
+    """Gate all pending drafts, or a specific list.
+
+    A backlog pass stops when its time budget runs out and leaves the rest queued
+    for the next cycle. Without that, one long rewrite queue consumed the entire
+    cycle and the cycle was cancelled before publishing, analytics and learning
+    could run. An explicit list is operator intent, so it is never truncated.
+    """
+    backlog = post_public_ids is None
+    ids = await to_thread(_pending_ids) if backlog else post_public_ids or []
+    deadline = None
+    seconds = 0.0
+    if backlog:
+        seconds = float(budget_s if budget_s is not None else get_settings().quality_stage_budget_s)
+        deadline = time.monotonic() + max(1.0, seconds)
+    passed = rejected = deferred = 0
+
     with StageTimer("s5_quality") as timer:
-        ids = post_public_ids
-        if ids is None:
-            ids = await to_thread(_pending_ids)
-        passed = rejected = 0
-        for public_id in ids:
+        for index, public_id in enumerate(ids):
+            if deadline is not None and time.monotonic() >= deadline:
+                deferred = len(ids) - index
+                break
             report = await gate_post(public_id)
             if report.passed:
                 passed += 1
@@ -972,7 +987,9 @@ async def run(post_public_ids: list[str] | None = None) -> dict[str, int]:
                 rejected += 1
         timer.items_in = len(ids)
         timer.items_out = passed
-    return {"in": len(ids), "passed": passed, "rejected": rejected}
+    if deferred:
+        log.info("s5: %d drafts left for the next cycle (budget %.0fs)", deferred, seconds)
+    return {"in": len(ids), "passed": passed, "rejected": rejected, "deferred": deferred}
 
 
 def _pending_ids() -> list[str]:
