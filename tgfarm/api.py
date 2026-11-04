@@ -1685,6 +1685,20 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         summary = await io(source_health_summary)
         return {"summary": summary, "sources": detail.get("sources") or []}
 
+    @app.post("/api/sources/{source_id}/cooldown/reset")
+    async def reset_source_cooldown_api(source_id: str) -> dict:
+        """Let the operator retry a source in cooldown without editing the DB."""
+        from tgfarm.s1_sources.health import reset_source_cooldown
+
+        source_id = str(source_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", source_id):
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор источника.")
+        reset = await io(reset_source_cooldown, source_id, reason="operator reset from panel")
+        if not reset:
+            raise HTTPException(status_code=404, detail="Источник не найден.")
+        _operator("source-cooldown-reset", source_id, "operator cleared the source cooldown")
+        return {"ok": True, "source_id": source_id}
+
     @app.get("/api/sources")
     async def sources() -> dict:
         return {"sources": await io(_sources)}

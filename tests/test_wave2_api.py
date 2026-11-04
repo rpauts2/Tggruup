@@ -73,6 +73,26 @@ def test_trend_explain_returns_numbers_for_a_real_cluster():
     assert any(char.isdigit() for char in text)
 
 
+def test_source_health_api_and_reset():
+    from tgfarm.api import create_app
+    from tgfarm.core.apiauth import ensure_token
+
+    with TestClient(
+        create_app(with_scheduler=False),
+        base_url="http://127.0.0.1",
+        headers={"X-TGFarm-Token": ensure_token()},
+    ) as client:
+        health = client.get("/api/sources/health")
+        assert health.status_code == 200
+        body = health.json()
+        missing = client.post("/api/sources/no_such_source/cooldown/reset")
+        assert missing.status_code == 404
+        listed = body["sources"][0]["id"]
+        reset = client.post(f"/api/sources/{listed}/cooldown/reset")
+        assert reset.status_code == 200
+        assert reset.json()["ok"] is True
+
+
 def test_trend_explain_unknown_cluster_is_404():
     with _client() as client:
         response = client.get("/api/trends/no_such_cluster/explain")

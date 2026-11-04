@@ -928,6 +928,16 @@ main {
 .review-reason { margin: 0 0 8px; font-size: 9px; line-height: 1.45; color: var(--muted); }
 .review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .review-age { font-size: 9px; color: var(--muted); }
+.trend-explain { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.trend-reason {
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: rgba(255,255,255,.02);
+}
 .platform-capability.capability-publish { color: #5ec98a; background: rgba(94,201,138,.08); border-color: rgba(94,201,138,.25); }
 .platform-capability.capability-manual_upload { color: #e0b341; background: rgba(224,179,65,.08); border-color: rgba(224,179,65,.25); }
 .platform-capability.capability-draft_only { color: #9ac1ff; background: rgba(91,140,255,.07); border-color: rgba(91,140,255,.22); }

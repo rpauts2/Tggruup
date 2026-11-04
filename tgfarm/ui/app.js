@@ -648,7 +648,9 @@
           <span class="tag ${t.status === "ready" ? "tag-ok" : ""}">${esc(t.status)}</span>
           <div class="heat"><i style="width:${Math.round((t.heat || 0) * 100)}%"></i></div>
           <div class="heat-val">${(t.heat || 0).toFixed(2)}</div>
+          <button class="btn btn-ghost btn-sm" type="button" data-trend-explain="${esc(t.id || t.public_id || "")}">Почему?</button>
         </div>
+        <div class="trend-explain" data-trend-explain-body="${esc(t.id || t.public_id || "")}"></div>
       </div>`).join("")
       : `<div class="empty">Трендов нет — тепло ниже порога</div>`;
     $("#trends-list").innerHTML = html;
@@ -2262,6 +2264,64 @@
     }
   }
 
+  async function loadSourcesHealth() {
+    const root = $("#sources-health");
+    if (!root) return;
+    try {
+      const data = await api("/api/sources/health");
+      const summary = (data && data.summary) || {};
+      const counts = summary.counts || {};
+      const problems = (summary.top_problems || []).slice(0, 3);
+      root.innerHTML =
+        '<div class="item"><div class="item-main"><div class="item-title">Флот источников</div>'
+        + '<div class="item-meta">' + Number(summary.enabled || 0) + " включено · "
+        + Number(counts.ok || 0) + " в порядке · " + Number(counts.due || 0) + " ждут проверки · "
+        + Number(counts.cooldown || 0) + " в карантине · " + Number(counts.failing || 0) + " сбоят</div></div></div>"
+        + problems.map((row) => {
+          const reason = String(row.reason || "").slice(0, 90);
+          return '<div class="item"><div class="item-main"><div class="item-title">' + esc(row.title || row.id) + "</div>"
+            + '<div class="item-meta">' + esc(row.state) + " · провалов " + Number(row.failures || 0)
+            + (reason ? " · " + esc(reason) : "") + "</div></div>"
+            + '<div class="item-side"><button class="btn btn-ghost btn-sm" type="button" data-source-reset="'
+            + esc(row.id) + '">Снять cooldown</button></div></div>';
+        }).join("");
+    } catch (error) {
+      root.innerHTML = '<div class="empty">Здоровье источников недоступно: ' + esc(error?.message || error) + "</div>";
+    }
+  }
+
+  async function explainTrend(clusterId) {
+    const target = document.querySelector('[data-trend-explain-body="' + CSS.escape(clusterId) + '"]');
+    if (!target) return;
+    if (target.dataset.loaded === "1") {
+      target.innerHTML = "";
+      target.dataset.loaded = "0";
+      return;
+    }
+    target.textContent = "Считаю…";
+    try {
+      const data = await api("/api/trends/" + encodeURIComponent(clusterId) + "/explain");
+      const reasons = (data && data.reasons) || [];
+      target.innerHTML = reasons.length
+        ? reasons.map((item) => '<span class="trend-reason">' + esc(item.text || item.code) + "</span>").join("")
+        : '<span class="trend-reason">Объяснение недоступно.</span>';
+      target.dataset.loaded = "1";
+    } catch (error) {
+      target.innerHTML = '<span class="trend-reason">Не удалось получить объяснение: ' + esc(error?.message || error) + "</span>";
+    }
+  }
+
+  async function resetSourceCooldown(sourceId) {
+    try {
+      await post("/api/sources/" + encodeURIComponent(sourceId) + "/cooldown/reset", {});
+      toast("Cooldown снят: " + sourceId, "ok");
+      await loadSourcesHealth();
+      refresh();
+    } catch (error) {
+      toast("Не удалось снять cooldown: " + (error?.message || error), "err");
+    }
+  }
+
   function renderSources(sources) {
     $("#sources-list").innerHTML = sources.map((s) => {
       const cooling = Boolean(s.cooldown_active);
@@ -3778,6 +3838,7 @@
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
+    if (view === "sources") loadSourcesHealth();
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so
@@ -3801,6 +3862,24 @@
       if (!button) return;
       event.preventDefault();
       runReviewAction(button.dataset.reviewId, button.dataset.reviewAction);
+    });
+  }
+  const trendsList = $("#trends-list");
+  if (trendsList) {
+    trendsList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-trend-explain]");
+      if (!button) return;
+      event.preventDefault();
+      explainTrend(button.dataset.trendExplain);
+    });
+  }
+  const sourcesHealth = $("#sources-health");
+  if (sourcesHealth) {
+    sourcesHealth.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-source-reset]");
+      if (!button) return;
+      event.preventDefault();
+      resetSourceCooldown(button.dataset.sourceReset);
     });
   }
   const reviewRefresh = $("#review-refresh");
