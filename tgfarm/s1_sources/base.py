@@ -18,7 +18,15 @@ from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.schemas import RawItem
 from tgfarm.core.settings import get_settings
-from tgfarm.core.text import detect_lang, strip_html
+from tgfarm.core.text import (
+    SIMHASH_MAX_DISTANCE,
+    content_tokens,
+    detect_lang,
+    hamming,
+    jaccard,
+    simhash,
+    strip_html,
+)
 
 log = get_logger(__name__)
 
@@ -27,6 +35,116 @@ def external_id_for(url: str, guid: str | None = None) -> str:
     if guid:
         return hashlib.sha1(guid.encode("utf-8")).hexdigest()[:32]
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
+
+
+# --------------------------------------------------------------- fingerprints
+# `(source_id, external_id)` proves an article was already stored; it says
+# nothing about the second outlet that republished the same copy under its own
+# guid. `simhash` was already computed and written for every item, so the
+# comparison lives here: two outlets reprinting one wire story share long
+# character n-grams, so their fingerprints land a few bits apart, while two
+# articles that merely cover the same event share *words*, not text.
+FINGERPRINT_TEXT_CHARS = 600
+# A simhash hit is a candidate, not a verdict — the token-set confirmation below
+# is what keeps a same-topic different-article pair out of the duplicate net.
+REPRINT_MIN_TOKEN_OVERLAP = 0.60
+
+
+def fingerprint_of(title: str, text: str) -> int:
+    """The one simhash recipe used by both the writer and the comparer."""
+    return simhash(f"{title or ''} {fingerprint_source(text)}")
+
+
+def fingerprint_source(text: str) -> str:
+    return (text or "")[:FINGERPRINT_TEXT_CHARS]
+
+
+class ContentFingerprint:
+    """A stored or pending document, reduced to what a reprint comparison needs.
+
+    `row_id` is None while the document has not been inserted yet — the batch
+    being persisted has no id to point at until `session.flush()` returns one.
+    `simhash` of 0 means "no fingerprint recorded" (a legacy row), which is
+    deliberately *not* comparable: absent data must never read as identical.
+
+    The token set is built lazily. A registry holds every document of the ingest
+    window — tens of thousands of rows — and tokenising all of them to compare
+    against one incoming item would dominate the cycle. The cheap bit-flop
+    pre-filter picks the handful of candidates worth the words.
+    """
+
+    __slots__ = ("row_id", "simhash", "_source", "_tokens")
+
+    def __init__(self, row_id: int | None, simhash_value: int, source: str) -> None:
+        self.row_id = row_id
+        self.simhash = int(simhash_value or 0)
+        self._source = source
+        self._tokens: frozenset[str] | None = None
+
+    @classmethod
+    def of(
+        cls,
+        row_id: int | None,
+        title: str,
+        text: str,
+        *,
+        simhash_value: int | None = None,
+    ) -> ContentFingerprint:
+        source = f"{title or ''} {fingerprint_source(text)}"
+        return cls(
+            row_id,
+            fingerprint_of(title, text) if simhash_value is None else simhash_value,
+            source,
+        )
+
+    @property
+    def tokens(self) -> frozenset[str]:
+        if self._tokens is None:
+            self._tokens = frozenset(content_tokens(self._source))
+        return self._tokens
+
+
+def token_overlap(a: ContentFingerprint, b: ContentFingerprint) -> float:
+    return jaccard(set(a.tokens), set(b.tokens))
+
+
+def is_content_reprint(a: ContentFingerprint, b: ContentFingerprint) -> bool:
+    """True when `b` is a copy of the same document as `a`, not another article
+    about the same subject.
+
+    Two independent gates: the character-n-gram fingerprint has to be within
+    `SIMHASH_MAX_DISTANCE` (copying text), *and* the surviving content words have
+    to overlap by `REPRINT_MIN_TOKEN_OVERLAP` (it is the same document, not a
+    rewrite). Either gate alone misfires — fingerprints collide on boilerplate,
+    topic words collide on subject matter.
+    """
+    if not a.simhash or not b.simhash:
+        return False
+    if hamming(a.simhash, b.simhash) > SIMHASH_MAX_DISTANCE:
+        return False
+    if not a.tokens or not b.tokens:
+        return False
+    return token_overlap(a, b) >= REPRINT_MIN_TOKEN_OVERLAP
+
+
+def find_content_reprint(
+    candidate: ContentFingerprint,
+    known: list[ContentFingerprint],
+) -> int | None:
+    """Earliest known document that `candidate` reprints, None when it is new.
+
+    Pointing at the lowest id (the oldest copy) keeps one canonical original per
+    reprint storm instead of a chain that drifts with every cycle.
+    """
+    best: int | None = None
+    for other in known:
+        if other.row_id is None:
+            continue
+        if not is_content_reprint(candidate, other):
+            continue
+        if best is None or other.row_id < best:
+            best = other.row_id
+    return best
 
 
 def parse_date(value: str | None) -> datetime | None:

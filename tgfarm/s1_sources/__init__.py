@@ -1,4 +1,9 @@
-"""S1 — source collection: fetch feeds, persist new items, index embeddings."""
+"""S1 — source collection: fetch feeds, persist new items, index embeddings.
+
+Two layers of "we already have this": the exact `(source_id, external_id)` pair
+per outlet, and a content fingerprint over title + body that catches the same
+document reprinted by a second outlet under a second guid.
+"""
 
 from __future__ import annotations
 
@@ -12,18 +17,30 @@ from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.schemas import RawItem
 from tgfarm.core.settings import get_settings
-from tgfarm.core.text import simhash
 from tgfarm.db.models import RawItem as RawItemRow
 from tgfarm.db.models import Source as SourceRow
 from tgfarm.db.session import session_scope
 from tgfarm.db.vector import get_index, pack
 from tgfarm.llm.embedding import get_embedder
-from tgfarm.s1_sources.base import SourceCollectionResult
+from tgfarm.s1_sources.base import (
+    ContentFingerprint,
+    SourceCollectionResult,
+    find_content_reprint,
+)
 from tgfarm.s1_sources.collectors import FETCHERS, collect_detailed
 
 log = get_logger(__name__)
 
 MAX_AGE_DAYS = 21
+
+# How far back ingest looks for "someone already published this exact copy".
+# Two days covers the usual wire-to-aggregator lag without letting the candidate
+# set grow into the whole retention window; older reprints are still caught by
+# S2's dedup pass, which runs over its own cluster window.
+INGEST_DEDUP_WINDOW_HOURS = 48
+# Bound the in-memory scan: at farm scale a feed can dump thousands of rows, and
+# the fingerprint comparison is O(candidates) per incoming item.
+INGEST_DEDUP_SCAN_LIMIT = 20_000
 
 
 def due_sources(now: datetime | None = None) -> list[SourceSpec]:
@@ -134,8 +151,52 @@ async def _record_source_outcomes(
             )
 
 
-def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
-    """Insert unseen items and return the count per source."""
+def _load_fingerprint_registry(
+    session,
+    *,
+    since: datetime,
+    limit: int = INGEST_DEDUP_SCAN_LIMIT,
+) -> list[ContentFingerprint]:
+    """Recent surviving documents, reduced to fingerprints.
+
+    Rows already flagged as duplicates are skipped so a reprint points at the
+    original instead of at another reprint, and rows that carry no fingerprint
+    (the column post-dates them) are left out entirely: a missing fingerprint
+    cannot prove similarity to anything, and keeping it would only tempt a
+    `hamming(0, x)` comparison that means nothing.
+    """
+    rows = session.execute(
+        select(RawItemRow.id, RawItemRow.title, RawItemRow.text, RawItemRow.simhash)
+        .where(
+            RawItemRow.fetched_at >= since,
+            RawItemRow.duplicate_of.is_(None),
+            RawItemRow.simhash.isnot(None),
+            RawItemRow.simhash != 0,
+        )
+        .order_by(RawItemRow.fetched_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        ContentFingerprint.of(int(row.id), row.title, row.text, simhash_value=row.simhash)
+        for row in rows
+    ]
+
+
+def _persist_detailed(
+    items: list[RawItem],
+    *,
+    dedup_window_hours: int = INGEST_DEDUP_WINDOW_HOURS,
+) -> tuple[int, dict[str, int]]:
+    """Insert unseen items and return the count per source.
+
+    "Unseen" is two different questions. `(source_id, external_id)` says *this
+    outlet* already handed us the document; the content fingerprint says the
+    document itself is already in the store from *another* outlet. A reprint that
+    passes the first test and fails the second is still written — it is evidence
+    that the story reached a second audience — but it is flagged with
+    `duplicate_of` at ingest so nothing downstream can read it as a fresh,
+    independent signal.
+    """
     if not items:
         return 0, {}
 
@@ -143,6 +204,7 @@ def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
     index = get_index(embedder.dim)
     cutoff = datetime.now(UTC) - timedelta(days=MAX_AGE_DAYS)
     written = 0
+    reprints = 0
     counts: dict[str, int] = {}
 
     with session_scope() as session:
@@ -172,6 +234,12 @@ def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
         items = list(unique.values())
 
         pending = [i for i in items if (i.source_id, i.external_id) not in existing]
+
+        registry: list[ContentFingerprint] = []
+        if pending and dedup_window_hours > 0:
+            since = datetime.now(UTC) - timedelta(hours=max(1, int(dedup_window_hours)))
+            registry = _load_fingerprint_registry(session, since=since)
+
         for item in pending:
             published = item.published_at
             if published is not None and published < cutoff:
@@ -180,6 +248,8 @@ def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
                 published = datetime.now(UTC)
 
             vec = embedder.embed(item.blend)
+            fingerprint = ContentFingerprint.of(None, item.title, item.text)
+            original_id = find_content_reprint(fingerprint, registry)
             row = RawItemRow(
                 source_id=item.source_id,
                 external_id=item.external_id,
@@ -188,12 +258,13 @@ def _persist_detailed(items: list[RawItem]) -> tuple[int, dict[str, int]]:
                 text=item.text,
                 lang=item.lang,
                 published_at=published,
-niche_hint=item.niche_hint,
+                niche_hint=item.niche_hint,
                 source_weight=item.source_weight,
                 media_links=item.media_links,
                 media_kind=item.media_kind,
                 embedding=pack(vec),
-                simhash=simhash(item.title + " " + item.text[:600]),
+                simhash=fingerprint.simhash,
+                duplicate_of=original_id,
             )
             session.add(row)
             session.flush()  # need row.id for the in-memory index
@@ -201,7 +272,24 @@ niche_hint=item.niche_hint,
             written += 1
             counts[item.source_id] = counts.get(item.source_id, 0) + 1
 
-    log.info("persisted %d new items (index now %d vectors)", written, len(index))
+            if original_id is None:
+                # Only surviving documents join the registry: a reprint must not
+                # become the canonical copy of a third copy.
+                registry.append(
+                    ContentFingerprint.of(
+                        row.id, item.title, item.text, simhash_value=fingerprint.simhash
+                    )
+                )
+            else:
+                reprints += 1
+
+    log.info(
+        "persisted %d new items (%d flagged as already-in-store reprints), "
+        "index now %d vectors",
+        written,
+        reprints,
+        len(index),
+    )
     return written, counts
 
 
