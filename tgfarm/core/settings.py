@@ -345,9 +345,6 @@ class Settings(BaseSettings):
     # When Dzen shows the "I'm not a robot" box, the headed window stays open
     # and the farm waits this long for the operator to click it.
     dzen_captcha_wait_s: int = Field(default=180, alias="DZEN_CAPTCHA_WAIT_S")
-    # Interval mode schedules posts far ahead by design, so the queue is
-    # naturally larger than the old 100-post world; tune to taste.
-    queue_backlog_alert_threshold: int = Field(default=100, alias="QUEUE_BACKLOG_ALERT_THRESHOLD")
     # Numeric publisher id from dzen.ru/profile/editor/id/<id>/... . Optional:
     # when empty the collector discovers it from the authenticated main page.
     dzen_publisher_id: str = Field(default="", alias="DZEN_PUBLISHER_ID")
@@ -494,6 +491,11 @@ class Settings(BaseSettings):
     heat_threshold: float = Field(default=0.68, alias="HEAT_THRESHOLD")
     cluster_similarity: float = Field(default=0.82, alias="CLUSTER_SIMILARITY")
     duplicate_similarity: float = Field(default=0.88, alias="DUPLICATE_SIMILARITY")
+    # Rewriting stored `duplicate_of` links touches tens of thousands of history
+    # rows, so it stays off until the operator turns it on deliberately, with a
+    # fresh copy of the database taken first (§80). The repair itself refuses
+    # nothing — this flag is the consent.
+    duplicate_repair_apply: bool = Field(default=False, alias="DUPLICATE_REPAIR_APPLY")
     sameness_threshold: float = Field(default=0.87, alias="SAMENESS_THRESHOLD")
     collect_interval_min: int = Field(default=10, alias="COLLECT_INTERVAL_MIN")
     max_posts_per_channel_day: int = Field(
@@ -525,6 +527,8 @@ class Settings(BaseSettings):
     # Operational alerts: the farm must say out loud when it stops shipping.
     alert_no_publish_hours: int = Field(default=3, alias="ALERT_NO_PUBLISH_HOURS")
     # Warn when scheduled publication or editorial review queues grow beyond these limits.
+    # Interval mode schedules posts far ahead by design, so the scheduled queue is
+    # naturally larger than the old 100-post world; tune to taste.
     queue_backlog_alert_threshold: int = Field(default=100, alias="QUEUE_BACKLOG_ALERT_THRESHOLD")
     editorial_backlog_alert_threshold: int = Field(default=50, alias="EDITORIAL_BACKLOG_ALERT_THRESHOLD")
     # Where alerts go. Empty chat id = alerts stay in logs and /api/status.

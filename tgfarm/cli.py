@@ -23,6 +23,7 @@
     tgfarm demo                 seed synthetic data and run a cycle offline
     tgfarm dzen-login           open Dzen and keep the Yandex session in a profile
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
+    tgfarm repair-duplicates [--apply]  preview, then repoint stored duplicate links
     tgfarm history-import FILE  import old publication exports (preview by default)
 """
 
@@ -534,6 +535,25 @@ def cmd_maintain(args) -> int:
     return 0
 
 
+def cmd_repair_duplicates(args) -> int:
+    """Repoint stored duplicate links, preview first.
+
+    The pass rewrites tens of thousands of history rows, so the default run only
+    reports what it would change. `--apply` is the operator's consent (§80), and
+    the copy in `backup/` is what makes it reversible.
+    """
+    from tgfarm.s2_trends.duplicate_repair import DEFAULT_BUDGET_SECONDS, repair_duplicate_links
+
+    budget = DEFAULT_BUDGET_SECONDS if args.budget is None else float(args.budget)
+    if args.apply:
+        print("пишу в базу из DATABASE_URL: свежая копия должна лежать в backup/ (§80)")
+    report = repair_duplicate_links(budget_seconds=budget, dry_run=not args.apply)
+    _print(report.as_dict())
+    if not args.apply:
+        print("предпросмотр: ни одна строка не изменена; повтори с --apply")
+    return 0
+
+
 def cmd_capability(args) -> int:
     """Print the honest five-level capability matrix of every platform."""
     from tgfarm.platform_capability import LEVEL_RANK, capability_counts, capability_matrix
@@ -776,6 +796,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--vacuum", action="store_true", help="compact the database file (brief lock)"
     )
     p_maintain.set_defaults(func=cmd_maintain)
+
+    p_repair_dupes = sub.add_parser(
+        "repair-duplicates",
+        help="repoint stored duplicate_of links to the root (preview by default)",
+    )
+    p_repair_dupes.add_argument(
+        "--budget", type=float, default=None, help="wall-clock seconds for this pass"
+    )
+    p_repair_dupes.add_argument(
+        "--apply",
+        action="store_true",
+        help="write for real; take a fresh copy of the database first",
+    )
+    p_repair_dupes.set_defaults(func=cmd_repair_duplicates)
 
     p_render = sub.add_parser("render", help="render a cover image")
     p_render.add_argument("post_id")

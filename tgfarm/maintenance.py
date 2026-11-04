@@ -170,6 +170,32 @@ def _reprint_backfill() -> int:
     return report.links_written
 
 
+def _duplicate_repair() -> int:
+    """Heal stored `duplicate_of` links, but only after the operator has said so.
+
+    The sweep rewrites tens of thousands of history rows, which is exactly the
+    kind of change §80 keeps behind a copy of the database and an explicit
+    decision. Without that consent the step reports zero and touches nothing.
+    """
+    from tgfarm.s2_trends.duplicate_repair import repair_duplicate_links
+
+    if not get_settings().duplicate_repair_apply:
+        return 0
+
+    report = repair_duplicate_links(budget_seconds=60.0)
+    log.info(
+        "maintenance: duplicate repair scanned %d, rewrote %d, dropped %d, "
+        "cycles broken %d, %d to rescan (%s)",
+        report.rows_scanned,
+        report.links_rewritten,
+        report.links_dropped,
+        report.cycles_broken,
+        report.candidates_remaining,
+        report.stopped_by,
+    )
+    return report.links_rewritten + report.links_dropped
+
+
 def _close_stale_ai_reservations() -> int:
     """Close AI budget reservations whose process died mid-call.
 
@@ -192,6 +218,7 @@ def run_maintenance() -> dict[str, int | bool]:
         ("crosspost_logs_pruned", prune_crosspost_logs),
         ("unpublishable_drafts", expire_unpublishable_drafts),
         ("reprint_backfill", _reprint_backfill),
+        ("duplicate_repair", _duplicate_repair),
         ("stale_ai_reservations", _close_stale_ai_reservations),
     ):
         try:
