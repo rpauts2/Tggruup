@@ -4229,6 +4229,13 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             raise HTTPException(503, "Цикл не завершился успешно. Проверьте состояние и журнал фермы.")
         return result.as_dict()
 
+    @app.get("/api/review/queue")
+    async def review_queue_api(limit: int = Query(25, ge=1, le=200)) -> dict:
+        """What needs an operator now: unknown outcomes, terminal failures, held posts."""
+        from tgfarm.review import review_queue
+
+        return await io(review_queue, limit=limit)
+
     @app.post("/api/posts/publish")
     async def force_publish(request: PublishRequest) -> dict:
         from tgfarm import s7_publish

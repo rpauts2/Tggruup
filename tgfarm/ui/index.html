@@ -24,6 +24,7 @@
     <button class="tab" data-view="plan" role="tab">План тем</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
+    <button class="tab" data-view="review" role="tab">Сверка <span class="tab-counter" id="review-nav-count">0</span></button>
     <button class="tab" data-view="memory" role="tab">Память</button>
     <button class="tab" data-view="channels" role="tab">Каналы</button>
     <button class="tab" data-view="platforms" role="tab">Площадки <span class="tab-counter" id="platforms-nav-count">5</span></button>
@@ -193,6 +194,22 @@
       </div>
     </div>
     <div id="posts-grid" class="cards"></div>
+  </section>
+
+  <!-- ============================================================= REVIEW -->
+  <section class="view" data-view="review">
+    <div class="toolbar">
+      <div class="segmented" id="review-filters">
+        <button class="is-active" data-bucket="">все</button>
+        <button data-bucket="unknown">неизвестный результат</button>
+        <button data-bucket="terminal">финальные отказы</button>
+        <button data-bucket="held">без слота</button>
+      </div>
+      <div class="toolbar-actions">
+        <button class="btn btn-ghost btn-sm" id="review-refresh">Обновить</button>
+      </div>
+    </div>
+    <div id="review-board" class="review-board"></div>
   </section>
 
   <!-- ============================================================= MEMORY -->

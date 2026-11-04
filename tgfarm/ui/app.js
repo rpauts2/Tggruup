@@ -3638,12 +3638,115 @@
     else document.exitFullscreen?.();
   };
 
+  /* ------------------------------------------------------- review board */
+  const REVIEW_ACTION_LABELS = {
+    confirm_published: "Пост на площадке есть",
+    retry_after_check: "Проверил, поста нет — в очередь",
+    retry: "Повторить",
+    publish_now: "Опубликовать сейчас",
+    reject: "Отклонить",
+  };
+
+  async function loadReviewBoard(force = false) {
+    if (state.reviewBusy && !force) return;
+    state.reviewBusy = true;
+    const root = $("#review-board");
+    if (root && !state.reviewLoaded) root.innerHTML = '<p class="empty">Читаю очередь сверки…</p>';
+    try {
+      const data = await api("/api/review/queue?limit=25");
+      state.review = data || {};
+      state.reviewLoaded = true;
+      renderReviewBoard();
+      const counter = $("#review-nav-count");
+      if (counter) counter.textContent = String(Number(data?.total || 0));
+    } catch (error) {
+      if (root) {
+        root.innerHTML = '<p class="empty">Не удалось загрузить очередь: ' + esc(error?.message || error) + "</p>";
+      }
+      toast("Сверка не загрузилась: " + (error?.message || error), "err");
+    } finally {
+      state.reviewBusy = false;
+    }
+  }
+
+  function renderReviewCard(item) {
+    const age = Number(item.age_hours || 0);
+    const ageLabel = age >= 48 ? Math.round(age / 24) + " дн" : Math.round(age) + " ч";
+    const actions = (item.actions || [])
+      .map((action) => {
+        const label = REVIEW_ACTION_LABELS[action] || action;
+        const cls = action === "confirm_published" ? "btn-primary" : "btn-ghost";
+        return '<button class="btn ' + cls + ' btn-sm" type="button" data-review-action="'
+          + esc(action) + '" data-review-id="' + esc(item.public_id) + '">' + esc(label) + "</button>";
+      })
+      .join("");
+    return '<article class="review-card">'
+      + '<div class="review-card-head"><span class="tag">' + esc(item.platform) + "</span>"
+      + '<span class="review-age">' + esc(ageLabel) + " · попыток " + Number(item.attempts || 0) + "</span></div>"
+      + '<p class="review-hook">' + esc(item.hook || "Без заголовка") + "</p>"
+      + '<p class="review-reason">' + esc(item.reason || "") + "</p>"
+      + '<div class="review-actions">' + actions + "</div></article>";
+  }
+
+  function renderReviewBoard() {
+    const root = $("#review-board");
+    if (!root) return;
+    const data = state.review || {};
+    const buckets = data.buckets || {};
+    const counts = data.counts || {};
+    const titles = data.titles || {};
+    const filter = state.reviewFilter || "";
+    const shown = filter ? [filter] : ["unknown", "terminal", "held"];
+    root.innerHTML = shown
+      .map((bucket) => {
+        const items = buckets[bucket] || [];
+        return '<div class="review-column"><div class="review-column-head"><strong>'
+          + esc(titles[bucket] || bucket) + '</strong><span class="tab-counter">'
+          + Number(counts[bucket] || 0) + "</span></div>"
+          + (items.length
+            ? items.map((item) => renderReviewCard(item)).join("")
+            : '<p class="empty">Ничего не ждёт решения.</p>')
+          + "</div>";
+      })
+      .join("");
+  }
+
+  async function runReviewAction(publicId, action) {
+    try {
+      if (action === "confirm_published") {
+        await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", { action: "confirm_published" });
+      } else if (action === "retry_after_check") {
+        await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", {
+          action: "retry_after_check",
+          confirm_not_published: true,
+        });
+      } else if (action === "retry") {
+        await post("/api/posts/" + encodeURIComponent(publicId) + "/retry", {});
+      } else if (action === "publish_now") {
+        await post("/api/posts/publish", { post_public_ids: [publicId] });
+      } else if (action === "reject") {
+        await post("/api/posts/reject", {
+          post_public_ids: [publicId],
+          reason: "operator review board",
+        });
+      } else {
+        throw new Error("неизвестное действие " + action);
+      }
+      toast("Готово: " + (REVIEW_ACTION_LABELS[action] || action), "ok");
+      await loadReviewBoard(true);
+      refresh();
+    } catch (error) {
+      toast("Действие не выполнено: " + (error?.message || error), "err");
+    }
+  }
+
   /* ---------------------------------------------------------------- wiring */
   function switchView(view) {
     state.view = view;
     $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
+    if (view === "review" && !state.reviewLoaded) loadReviewBoard();
   }
 
   // Hooks the native application menu calls. They exist in the browser too, so
@@ -3660,6 +3763,23 @@
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  const reviewBoard = $("#review-board");
+  if (reviewBoard) {
+    reviewBoard.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-review-action]");
+      if (!button) return;
+      event.preventDefault();
+      runReviewAction(button.dataset.reviewId, button.dataset.reviewAction);
+    });
+  }
+  const reviewRefresh = $("#review-refresh");
+  if (reviewRefresh) reviewRefresh.addEventListener("click", () => loadReviewBoard(true));
+  $$("#review-filters button").forEach((button) =>
+    button.addEventListener("click", () => {
+      state.reviewFilter = button.dataset.bucket || "";
+      $$("#review-filters button").forEach((item) => item.classList.toggle("is-active", item === button));
+      renderReviewBoard();
+    }));
   const planRefresh = $("#plan-refresh");
   if (planRefresh) planRefresh.addEventListener("click", () => loadEditorialPlan(true));
   const planApply = $("#plan-apply");

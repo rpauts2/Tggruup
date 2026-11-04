@@ -3,7 +3,7 @@
 Файл-реестр для продолжения работы без повторного исследования репозитория.
 Статусы: `todo`, `in_progress`, `blocked`, `implemented` (код + тесты локально), `verified` (есть подтверждающая проверка).
 
-Обновлён: 2026-11-04 (continuous loop). Ветка: `main`. HEAD: `f428ee2`.
+Обновлён: 2026-11-04 (continuous loop). Ветка: `main`. HEAD: `f428ee2` + доска сверки.
 
 ## Ключевые факты о проекте
 
@@ -43,7 +43,8 @@
 | P7c. 403 consent не валит весь LLM-провайдер | verified (локально) | tgfarm/llm/client.py, tests/test_llm_model_level_403.py | причина «всё офлайн с 27.10»: 403 consent_required для первой free-модели убивал провайдера на час. Теперь паркуется только модель; 401/402 по-прежнему демоутят провайдера |
 | P7d. Честная проверка авторизации VK | verified (живой прогон) | tgfarm/platform_auth.py, tests/test_platform_auth_classification.py | VK 5.199 отдаёт response.groups объектом — KeyError(0) записывался как «доступ не пройден» (ложный алерт). Разбор обоих форматов; лимиты/5xx → authorized=None, а не False. Живьём: «Всякая всячина» подтверждена |
 | P9. Медиастудия (изображения/видео) | todo | — | |
-| P10. Интерфейс управления | in_progress | tgfarm/ui/, tgfarm/platforms.py, tgfarm/api.py | дефект ID ручного пакета исправлен + регрессия; статусы цикла/Promise.all уже верны и закрыты тестами; в карточке площадки — честный уровень возможности (см. P10b) |
+| P10c. Доска сверки оператора | verified (локально + браузер) | tgfarm/review.py, tgfarm/api.py (/api/review/queue), tgfarm/ui/index.html, tgfarm/ui/app.js, tgfarm/ui/app.css, tests/test_review_queue.py, tests/test_ui_pipeline_contracts.py | три корзины: publish_unknown (51), failed (365), gated без слота (41); у каждой карточки причина, возраст, число попыток и действия на существующих эндпоинтах (reconcile/retry/publish/reject); вкладка «Сверка» с счётчиком проверена в браузере |
+| P10. Интерфейс управления | in_progress | tgfarm/ui/, tgfarm/platforms.py, tgfarm/api.py | дефект ID ручного пакета исправлен + регрессия; статусы цикла/Promise.all уже верны и закрыты тестами; в карточке площадки — честный уровень возможности (см. P10b); добавлена вкладка «Сверка» (P10c) |
 | P10b. Честные уровни возможностей площадок | verified (локально) | tgfarm/platform_capability.py, tgfarm/platforms.py, tgfarm/cli.py, docs/PLATFORM_CENTER.md, tests/test_platform_capability.py | 5 уровней из кода (адаптеры + ручные пакеты): publish 23, draft_only 1 (vc.ru), manual_upload 8, read_only 0, unsupported 0; API-поля capability/capability_label/capability_note; CLI `capability --format markdown`; 10 тестов |
 | P11. Финальная интеграция (Linux/Windows CI, EXE) | blocked (внешнее) | packaging/tgfarm.spec | EXE-сборка локально не завершалась из-за таймаута анализа зависимостей |
 
@@ -69,7 +70,8 @@
 
 ## Следующий конкретный шаг
 
-- 2026-11-04, continuous loop (9 коммитов от 59a5c87 до f428ee2): P3 закрыт; P10b уровни возможностей; P6c per-post deadline; P6d requeue/expire незапущенных (365 expired + 51 parked живьём); P6e обложка перед Дзеном (7 постов вылечены); P7b LLM health gate; P7c 403 consent больше не убивает провайдера; P7d разбор response.groups и authorized=None для лимитов; P8b сборщик метрик ВК. Ферма v20 работает (farm_serve20.log, монитор 5a137a1d), published 439+, алерты platform_auth_failed и editorial_review_backlog сняты.
+- 2026-11-04, continuous loop (9 коммитов от 59a5c87 до f428ee2): P3 закрыт; P10b уровни возможностей; P6c per-post deadline; P6d requeue/expire незапущенных (365 expired + 51 parked живьём); P6e обложка перед Дзеном (7 постов вылечены); P7b LLM health gate; P7c 403 consent не убивает провайдера; P7d разбор response.groups и authorized=None для лимитов; P8b сборщик метрик ВК.
+- 2026-11-04, доска сверки: `/api/review/queue` + вкладка «Сверка» с тремя корзинами (51/365/41) и действиями на существующих эндпоинтах; проверено в браузере на живой базе; тесты 1008 passed.
 
 ## Следующий конкретный шаг
 

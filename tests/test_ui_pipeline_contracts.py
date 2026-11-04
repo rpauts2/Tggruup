@@ -41,6 +41,20 @@ def test_manual_package_controls_use_interpolated_ids(client):
     assert "\\${" not in script
 
 
+def test_review_board_is_wired_to_the_real_endpoints(client):
+    html = client.get("/").text
+    script = client.get("/ui/app.js").text
+    assert 'data-view="review"' in html
+    assert "review-board" in html
+    # The board must call the API and reuse the existing action endpoints.
+    assert "/api/review/queue" in script
+    assert "/reconcile" in script and "/retry" in script and "/api/posts/reject" in script
+    assert 'post("/api/posts/publish"' in script
+    # Each visible action is defined, so no dead buttons are rendered.
+    for action in ("confirm_published", "retry_after_check", "retry", "publish_now", "reject"):
+        assert f'"{action}"' in script
+
+
 def test_dashboard_refresh_degrades_gracefully(client):
     body = _refresh_body(client.get("/ui/app.js").text)
     assert "Promise.allSettled(" in body

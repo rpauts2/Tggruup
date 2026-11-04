@@ -889,6 +889,45 @@ main {
 .platform-priority { color: #8490a9; background: rgba(255,255,255,.02); }
 .platform-priority.priority-core { color: #9ac1ff; border-color: rgba(91,140,255,.22); background: rgba(91,140,255,.07); }
 .platform-capability { border: 1px solid transparent; }
+.review-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.review-column {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.015);
+}
+.review-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.review-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 11px;
+  margin-bottom: 8px;
+  background: rgba(255,255,255,.02);
+}
+.review-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--muted);
+}
+.review-hook { margin: 6px 0 4px; font-size: 11px; line-height: 1.4; }
+.review-reason { margin: 0 0 8px; font-size: 9px; line-height: 1.45; color: var(--muted); }
+.review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-age { font-size: 9px; color: var(--muted); }
 .platform-capability.capability-publish { color: #5ec98a; background: rgba(94,201,138,.08); border-color: rgba(94,201,138,.25); }
 .platform-capability.capability-manual_upload { color: #e0b341; background: rgba(224,179,65,.08); border-color: rgba(224,179,65,.25); }
 .platform-capability.capability-draft_only { color: #9ac1ff; background: rgba(91,140,255,.07); border-color: rgba(91,140,255,.22); }
