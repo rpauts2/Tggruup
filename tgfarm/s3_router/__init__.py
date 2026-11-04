@@ -65,6 +65,10 @@ class ChannelPlan:
     requires_manual_action: bool = False
     manual_step: str = ""
     notes: str = ""
+    # The channel's destination family. Consumers gate on it (Дзен must not get
+    # an offline draft), so the router fills it instead of leaving readers to
+    # guess it from `channel_id`.
+    platform: str = ""
 
     def key(self) -> str:
         return f"{self.channel_id}:{self.cluster_public_id}"
@@ -526,6 +530,7 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
                     score=score,
                     reason=f"niche={niche} score={score:.2f}",
                     notes=notes,
+                    platform=persona.platform,
                     **_capability_fields(persona.platform),
                 )
             )
@@ -569,6 +574,7 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
                     score=0.55,
                     reason="catch_all",
                     notes=notes,
+                    platform=persona.platform,
                     **_capability_fields(persona.platform),
                 )
             )

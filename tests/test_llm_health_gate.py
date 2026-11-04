@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from tgfarm.config import Persona
 from tgfarm.core import llm_health
+from tgfarm.s3_router import ChannelPlan
 from tgfarm.s4_generation import plans_after_llm_gate
 
 
@@ -41,6 +43,28 @@ def test_other_platforms_are_never_dropped():
 
 def test_empty_plans_are_safe():
     assert plans_after_llm_gate([], requires_llm=True, llm_ok=False) == []
+
+
+def test_the_real_plan_object_carries_the_platform_the_gate_reads():
+    """`ChannelPlan` must have the field, not just the stand-ins above.
+
+    The gate reads `plan.platform`; every unit test here passed a namespace that
+    already had it, which is how the field stayed missing on the real dataclass
+    while the gate silently dropped nobody.
+    """
+    persona = Persona(
+        id="zen", title="Дзен", niche="business", min_chars=150, max_chars=700, platform="dzen"
+    )
+    plan = ChannelPlan(
+        cluster_public_id="c1",
+        channel_id="zen",
+        persona=persona,
+        angle="news",
+        score=0.5,
+        platform=persona.platform,
+    )
+    assert plan.platform == "dzen"
+    assert plans_after_llm_gate([plan], requires_llm=True, llm_ok=False) == []
 
 
 def test_recently_working_true_on_empty_history(monkeypatch):
