@@ -7,6 +7,7 @@ publisher. Reddit, vc.ru and Pikabu keep their specialised live rule checks.
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from typing import Any
 
 # These are editorial defaults, not platform policy guarantees. Current
@@ -502,6 +503,8 @@ async def adapt_payload_with_ai(
 
     platform_id = str(getattr(payload, "platform", "") or "").strip().lower()
     profile = get_editorial_profile(platform_id)
+    # Detach nested user metadata before any result is exposed to callers.
+    payload.meta = deepcopy(getattr(payload, "meta", None) or {})
     title = str(getattr(payload, "title", "") or "").strip()
     body = str(getattr(payload, "text", "") or "").strip()
     media_kinds = set()
@@ -561,9 +564,6 @@ async def adapt_payload_with_ai(
         return {"used_ai": False, "status": "deterministic", "reason": decision.reason}
 
     fallback = {"title": title, "body": body, "notes": []}
-    from tgfarm.core.settings import get_settings
-
-    platform_editor_model = str(get_settings().llm_platform_editor_model or "").strip() or None
     system = (
         "You are a strict platform-native editor for an owner's legitimate content account. "
         "Rewrite only the supplied source material for the target platform and its audience. "
@@ -596,6 +596,9 @@ async def adapt_payload_with_ai(
     response_model = "none"
     original_meta = dict(getattr(payload, "meta", None) or {})
     try:
+        from tgfarm.core.settings import get_settings
+
+        platform_editor_model = str(get_settings().llm_platform_editor_model or "").strip() or None
         parsed, response = await get_llm().complete_json(
             system,
             prompt,

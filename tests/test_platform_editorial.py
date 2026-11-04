@@ -291,5 +291,10 @@ def test_native_rewrite_rejects_new_numbers_and_unapproved_urls(monkeypatch):
     assert payload.meta["editorial_adaptation"]["model"] == "editor-v1"
     assert payload.title == "Original source-backed title"
     assert "999" not in payload.text
-    assert payload.meta == {"post_public_id": "native_guardrail_001"}
+    # Service adaptation metadata is allowed; the original user fields must survive.
+    assert {
+        key: value for key, value in payload.meta.items() if key != "editorial_adaptation"
+    } == {"post_public_id": "native_guardrail_001"}
+    assert payload.meta["editorial_adaptation"]["status"] == "deterministic_guardrail"
+    assert payload.meta["editorial_adaptation"]["reason"] == result["reason"]
     assert finalized == [False]
