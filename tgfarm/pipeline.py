@@ -25,7 +25,7 @@ from sqlalchemy import and_, func, or_, select
 
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
-from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.run import StageTimer, counters_state, to_thread
 from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem, Source
@@ -122,53 +122,106 @@ class CycleResult:
         }
 
 
-def _record(run_id: str, stage: str, status: str, items_in: int = 0, items_out: int = 0,
+def _record(run_id: str, stage: str, status: str, items_in: int | None = None, items_out: int | None = None,
             duration_ms: int = 0, error: str | None = None, meta: dict | None = None) -> None:
     """Append a stage outcome to the run journal.
+
+    `items_in` / `items_out` are three-state and `None` means "this stage never
+    measured it", which is a different fact from "it measured zero". The column
+    is `INTEGER NOT NULL` in SQLite and a nullable column cannot be gained in
+    place, so an unmeasured counter is stored as 0 with the truth written beside
+    it in `meta`: `meta["counters"]` says how much of the row is measurement and
+    `meta["unmeasured"]` names the columns whose 0 is a placeholder. A consumer
+    that reads only the columns still gets the old zeros; a consumer that needs
+    to tell "the stage did nothing" from "nobody looked" can now do it.
 
     Wrapped in its own try/except on purpose: telemetry must never be able to
     break the pipeline. A failed log row is a missing metric, not a failed post.
     """
     try:
+        row_meta = dict(meta or {})
+        row_meta["counters"] = counters_state(items_in, items_out)
+        unmeasured = [
+            name
+            for name, value in (("items_in", items_in), ("items_out", items_out))
+            if value is None
+        ]
+        if unmeasured:
+            row_meta["unmeasured"] = unmeasured
         with session_scope() as session:
             session.add(
                 PipelineRun(
                     run_id=run_id,
                     stage=stage,
                     status=status,
-                    items_in=items_in,
-                    items_out=items_out,
-                    duration_ms=duration_ms,
+                    items_in=0 if items_in is None else int(items_in),
+                    items_out=0 if items_out is None else int(items_out),
+                    duration_ms=int(duration_ms),
                     error=redact_sensitive_text(error, limit=1000) if error else None,
-                    meta=meta or {},
+                    meta=row_meta,
                 )
             )
     except Exception:  # noqa: BLE001 - see docstring
         log.error("could not record pipeline run %s/%s", run_id, stage)
 
 
+def _stage_meta(meta: dict | None, timer: StageTimer) -> dict:
+    """Caller metadata plus the sub-stage breakdown the headline counters hide.
+
+    A stage that runs several passes (S2: dedup, cluster, score) has one headline
+    pair of numbers and several different measurements; the breakdown is what
+    makes the headline readable.
+    """
+    out = dict(meta or {})
+    sub_stages = timer.sub_stages
+    if sub_stages:
+        out["sub_stages"] = sub_stages
+    return out
+
+
 async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = None) -> object:
     """Run one stage, record its outcome, and never let it kill the cycle.
 
-    `coro` must be an async callable taking no arguments.
+    `coro` must be an async callable taking no arguments. The counters written to
+    the journal are the ones a stage actually measured: `StageTimer` collects the
+    numbers from the timers the stage opens inside itself, including the ones that
+    exit on a worker thread. `duration_ms` has always been this outer timer's own
+    wall time, so it already covers work the stage does outside its sub-timers.
     """
     timer = StageTimer(name)
     try:
         with timer:
             value = await coro()
         payload = value if isinstance(value, dict) else {"value": value}
-        result.stages[name] = {"ok": True, "duration_ms": timer.duration_ms, **payload}
+        result.stages[name] = {
+            "ok": True,
+            "duration_ms": timer.duration_ms,
+            "items_in": timer.reported_in,
+            "items_out": timer.reported_out,
+            **payload,
+        }
         await to_thread(
             _record, result.run_id, name, "ok",
-            timer.items_in, timer.items_out, timer.duration_ms, None, meta,
+            timer.reported_in, timer.reported_out, timer.duration_ms, None, _stage_meta(meta, timer),
         )
         return value
     except Exception as exc:  # noqa: BLE001 - stage isolation is the point
         message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600)
         log.error("stage %s failed: %s", name, message)
-        result.stages[name] = {"ok": False, "error": message}
+        # What the stage measured before it threw is still true, and a stage that
+        # measured nothing is recorded as nothing-measured, not as zero items.
+        result.stages[name] = {
+            "ok": False,
+            "error": message,
+            "duration_ms": timer.duration_ms,
+            "items_in": timer.reported_in,
+            "items_out": timer.reported_out,
+        }
         result.errors.append(f"{name}: {message}")
-        await to_thread(_record, result.run_id, name, "error", 0, 0, timer.duration_ms, message)
+        await to_thread(
+            _record, result.run_id, name, "error",
+            timer.reported_in, timer.reported_out, timer.duration_ms, message, _stage_meta(meta, timer),
+        )
         return None
 
 
