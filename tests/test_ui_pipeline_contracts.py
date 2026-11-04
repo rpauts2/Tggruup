@@ -41,6 +41,20 @@ def test_manual_package_controls_use_interpolated_ids(client):
     assert "\\${" not in script
 
 
+def test_no_single_dollar_foreach_on_lists(client):
+    """$() returns one element; calling forEach on it aborts the whole refresh.
+
+    Live defect 2026-11-04: the distribution-mode buttons used $(...) + forEach,
+    which threw "$(...).forEach is not a function" and killed the dashboard
+    refresh before the remaining cards were rendered.
+    """
+    import re
+
+    script = client.get("/ui/app.js").text
+    offenders = re.findall(r'(?<!\$)\$\s*\([^)]*\)\s*\.forEach\(', script)
+    assert offenders == []
+
+
 def test_review_board_is_wired_to_the_real_endpoints(client):
     html = client.get("/").text
     script = client.get("/ui/app.js").text

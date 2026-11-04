@@ -885,7 +885,7 @@
         notice.textContent += " Глобальное ручное одобрение дополнительно блокирует основную очередь публикации.";
       }
     }
-    $("#distribution-mode-buttons [data-runtime-mode]").forEach((button) => {
+    $$("#distribution-mode-buttons [data-runtime-mode]").forEach((button) => {
       const active = button.dataset.runtimeMode === mode;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
