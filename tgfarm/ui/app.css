@@ -888,6 +888,12 @@ main {
 .platform-status.status-plan { color: #b8a0ff; background: rgba(157,118,255,.08); border-color: rgba(157,118,255,.2); }
 .platform-priority { color: #8490a9; background: rgba(255,255,255,.02); }
 .platform-priority.priority-core { color: #9ac1ff; border-color: rgba(91,140,255,.22); background: rgba(91,140,255,.07); }
+.platform-capability { border: 1px solid transparent; }
+.platform-capability.capability-publish { color: #5ec98a; background: rgba(94,201,138,.08); border-color: rgba(94,201,138,.25); }
+.platform-capability.capability-manual_upload { color: #e0b341; background: rgba(224,179,65,.08); border-color: rgba(224,179,65,.25); }
+.platform-capability.capability-draft_only { color: #9ac1ff; background: rgba(91,140,255,.07); border-color: rgba(91,140,255,.22); }
+.platform-capability.capability-read_only { color: #8490a9; }
+.platform-capability.capability-unsupported { color: #7d8598; }
 .platform-connection {
   display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 11px;
   border: 1px solid rgba(255,255,255,.04); border-radius: 10px;

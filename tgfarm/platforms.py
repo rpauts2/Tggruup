@@ -1145,6 +1145,11 @@ def get_platform_catalog() -> dict[str, Any]:
             1 for persona in cfg.personas if persona.platform == platform_id and persona.enabled
         )
         row["auth"] = _auth_descriptor(platform_id)
+        # Honest five-level capability (mission §10): publish / manual_upload /
+        # draft_only / read_only / unsupported, derived from adapter registries.
+        from tgfarm.platform_capability import describe as describe_capability
+
+        row.update(describe_capability(platform_id))
         # Editorial guidance is independent from publisher/API availability.
         from tgfarm.platform_editorial import get_editorial_profile
 

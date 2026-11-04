@@ -1159,6 +1159,7 @@
             <span class="platform-status status-${statusClass}"><i></i>${esc(item.status_label || "Статус неизвестен")}</span>
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
             <span class="platform-priority">${esc(automationLabel)}</span>
+            ${item.capability ? `<span class="platform-capability capability-${esc(item.capability)}" title="${esc(item.capability_note || "")}">${esc(item.capability_label || item.capability)}</span>` : ""}
           </div>
           <div class="platform-connection">
             <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>

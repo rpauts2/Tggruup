@@ -34,7 +34,8 @@
 | P7. Аналитика и самообучение | todo | — | |
 | P8. Память, импорт истории, бэкапы | implemented (частично) | tests/test_backup.py, tests/test_history_import_backup.py | 23 проверки прошли 2026-11-03 |
 | P9. Медиастудия (изображения/видео) | todo | — | |
-| P10. Интерфейс управления | todo | tgfarm/ui/ | известные кандидаты дефектов: HTTP-метод цикла, интерполяция manual package ID, общий Promise.all |
+| P10. Интерфейс управления | in_progress | tgfarm/ui/, tgfarm/platforms.py, tgfarm/api.py | дефект ID ручного пакета исправлен + регрессия; статусы цикла/Promise.all уже верны и закрыты тестами; в карточке площадки — честный уровень возможности (см. P10b) |
+| P10b. Честные уровни возможностей площадок | verified (локально) | tgfarm/platform_capability.py, tgfarm/platforms.py, tgfarm/cli.py, docs/PLATFORM_CENTER.md, tests/test_platform_capability.py | 5 уровней из кода (адаптеры + ручные пакеты): publish 23, draft_only 1 (vc.ru), manual_upload 8, read_only 0, unsupported 0; API-поля capability/capability_label/capability_note; CLI `capability --format markdown`; 10 тестов |
 | P11. Финальная интеграция (Linux/Windows CI, EXE) | blocked (внешнее) | packaging/tgfarm.spec | EXE-сборка локально не завершалась из-за таймаута анализа зависимостей |
 
 ## Матрица аудита (заполняется по мере проверки)

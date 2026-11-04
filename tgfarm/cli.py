@@ -534,6 +534,25 @@ def cmd_maintain(args) -> int:
     return 0
 
 
+def cmd_capability(args) -> int:
+    """Print the honest five-level capability matrix of every platform."""
+    from tgfarm.platform_capability import LEVEL_RANK, capability_counts, capability_matrix
+
+    rows = capability_matrix()
+    if getattr(args, "format", "text") == "markdown":
+        print("| Площадка | Уровень | Что делает TgFarm |")
+        print("|---|---|---|")
+        ordered = sorted(
+            rows.items(),
+            key=lambda item: (-LEVEL_RANK[str(item[1]["capability"])], item[0]),
+        )
+        for platform_id, row in ordered:
+            print(f"| {platform_id} | {row['capability']} | {row['capability_note']} |")
+        print("")
+    _print(capability_counts())
+    return 0
+
+
 def cmd_doctor(_args) -> int:
     from tgfarm.diagnostics import run_doctor
 
@@ -806,6 +825,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_benchmark.set_defaults(func=cmd_agent_benchmark)
 
     sub.add_parser("doctor", help="diagnose configuration").set_defaults(func=cmd_doctor)
+    p_capability = sub.add_parser(
+        "capability", help="honest capability level of every platform",
+    )
+    p_capability.add_argument(
+        "--format", choices=("text", "markdown"), default="text",
+        help="markdown prints the table used in docs/PLATFORM_CENTER.md",
+    )
+    p_capability.set_defaults(func=cmd_capability)
     sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
 
     p_backup_test = sub.add_parser(
