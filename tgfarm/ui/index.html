@@ -97,6 +97,16 @@
       </div>
     </article>
 
+    <article class="card">
+      <header class="card-head">
+        <h2>Форматы по факту</h2>
+        <span class="card-sub" id="metrics-formats-meta">Опубликовано против измерено: неоценённый пост не делает формат успешным</span>
+      </header>
+      <div id="metrics-formats" class="list">
+        <div class="empty">Читаю статистику форматов…</div>
+      </div>
+    </article>
+
     <article class="card agent-benchmark-card">
       <header class="card-head">
         <h2>Редакционная команда: контроль качества</h2>
@@ -187,7 +197,7 @@
         <h2>Тренды</h2>
         <span class="card-sub">кластеры с heat выше порога</span>
       </header>
-      <p class="card-sub">Кнопка «Почему?» показывает числа: скорость, свежесть, насыщенность.</p>
+      <p class="card-sub">Кнопка «Почему?» показывает числа: скорость, свежесть, насыщенность. Фаза и ускорение сравнивают текущее окно наблюдений с предыдущим; «нет данных» — это не ноль, предыдущего окна ещё не было.</p>
       <div id="trends-list" class="list list-rich"></div>
     </article>
   </section>
@@ -453,9 +463,11 @@
     <article class="card">
       <header class="card-head">
         <h2>Источники</h2>
-        <span class="card-sub">здоровье сборщиков</span>
+        <span class="card-sub">сводка здоровья сверху, список сборщиков ниже</span>
       </header>
-      <div id="sources-health" class="list"></div>
+      <div id="sources-health" class="list">
+        <div class="empty">Читаю здоровье источников…</div>
+      </div>
       <div id="sources-list" class="list"></div>
     </article>
   </section>

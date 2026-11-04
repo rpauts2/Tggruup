@@ -155,6 +155,41 @@
       .join("");
   }
 
+  function renderMetricsFormats(payload) {
+    const root = $("#metrics-formats");
+    if (!root) return;
+    const data = payload || {};
+    const formats = data.formats || {};
+    const minSample = Number(data.min_sample || 0);
+    const meta = $("#metrics-formats-meta");
+    if (meta) {
+      meta.textContent = `${Number(data.published_total || 0)} опубликовано · ${Number(data.measured_total || 0)} с замерами · окно ${Number(data.window_days || 0)} дн`;
+    }
+    const rows = Object.values(formats);
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty">В этом окне не было опубликовано ни одного поста — про форматы ничего не известно.</div>';
+      return;
+    }
+    root.innerHTML = rows
+      .map((row) => {
+        const measured = Number(row.measured || 0);
+        const reliable = row.reliable === true;
+        // `avg_engagement` is 0.0 for an all-unmeasured format: that is an empty
+        // average, not a score, so the number is only shown when measured > 0.
+        const attention = measured
+          ? `<span class="tag tag-acc">внимание ${esc(Number(row.avg_engagement || 0).toFixed(1))}</span>`
+          : '<span class="tag tag-none">внимание: нет данных</span>';
+        return '<div class="item"><div class="item-main"><div class="item-title">'
+          + esc(FORMAT_RU[row.format] || row.format || "—") + "</div>"
+          + '<div class="item-meta">опубликовано ' + Number(row.published || 0)
+          + " · с замерами " + measured
+          + (reliable ? "" : " · нужно не меньше " + minSample) + "</div></div>"
+          + '<div class="item-side"><span class="tag ' + (reliable ? "tag-ok" : "tag-none") + '">'
+          + (reliable ? "данных достаточно" : "мало данных") + "</span>" + attention + "</div></div>";
+      })
+      .join("");
+  }
+
   function renderReport(report) {
     const hours = report.hours || {};
     const entries = Object.entries(hours)
@@ -637,12 +672,60 @@
     }).join("");
   }
 
+  // S2 stores the *shape* of interest per cluster: `trend_phase` is this window
+  // against the window before it, `acceleration` is the relative change. Both
+  // can be legitimately absent — `unknown` means the farm never observed a
+  // preceding window, `null` means no ratio could be computed (an empty or a
+  // missing baseline). Neither is a zero, so neither may render as one.
+  const TREND_PHASE_RU = {
+    rising: ["растёт", "tag-ok"],
+    steady: ["ровно", "tag-acc"],
+    spike: ["всплеск", "tag-warn"],
+    decaying: ["затухает", ""],
+    unknown: ["фаза не измерена", "tag-none"],
+  };
+  const PHASE_HINTS = {
+    rising: "новых элементов заметно больше, чем в предыдущем окне",
+    steady: "объём примерно тот же, что и в предыдущем окне",
+    spike: "элементы появились только в этом окне — предыдущее было пустым",
+    decaying: "элементов меньше, чем в предыдущем окне",
+    unknown: "предыдущего окна наблюдений ещё не было: сравнивать не с чем, и это не ноль",
+  };
+
+  const trendPhaseChip = (phase) => {
+    const key = String(phase ?? "").trim().toLowerCase();
+    const known = TREND_PHASE_RU[key];
+    // An unrecognised code is shown verbatim, never silently renamed: the panel
+    // must not dress up a value it does not understand as a known one.
+    const label = known ? known[0] : (key ? key : "фаза не измерена");
+    const cls = known ? known[1] : "tag-none";
+    const hint = known ? PHASE_HINTS[key] : "неизвестная фаза: код пришёл с сервера без описания";
+    return `<span class="tag ${cls} trend-phase" title="${esc(hint)}">фаза: ${esc(label)}</span>`;
+  };
+
+  const trendAccelerationChip = (value) => {
+    const measured = typeof value === "number" && Number.isFinite(value);
+    if (!measured) {
+      return '<span class="tag tag-none trend-accel" title="измерения нет: это не ноль">ускорение: нет данных</span>';
+    }
+    // 0 is a real measurement ("объём не изменился"), so it must print as 0 %.
+    const percent = value * 100;
+    const rounded = Math.abs(percent) < 0.5 && percent !== 0
+      ? percent.toFixed(1)
+      : String(Math.round(percent));
+    const sign = percent > 0 ? "+" : "";
+    return `<span class="tag ${percent > 0 ? "tag-ok" : percent < 0 ? "tag-err" : "tag-none"} trend-accel" title="окно к окну, по независимым документам">ускорение ${esc(sign + rounded)} %</span>`;
+  };
+
+  const trendShapeRow = (t) => `<div class="trend-shape">${trendPhaseChip(t.trend_phase)}${trendAccelerationChip(t.acceleration)}</div>`;
+
   function renderTrends(trends) {
     const html = trends.length ? trends.map((t) => `
       <div class="item">
         <div class="item-main">
           <div class="item-title">${esc(t.label || t.id)}</div>
           <div class="item-meta">${esc(t.niche || "—")} · ${t.items} материалов · ${t.outlets.length} изданий: ${esc((t.outlets || []).slice(0, 3).join(", "))}</div>
+          ${trendShapeRow(t)}
         </div>
         <div class="item-side">
           <span class="tag ${t.status === "ready" ? "tag-ok" : ""}">${esc(t.status)}</span>
@@ -2271,20 +2354,45 @@
       const data = await api("/api/sources/health");
       const summary = (data && data.summary) || {};
       const counts = summary.counts || {};
-      const problems = (summary.top_problems || []).slice(0, 3);
+      const problems = summary.top_problems || [];
+      // The endpoint returns at most five offenders; saying so beats implying
+      // the list is complete when the fleet has more sources in trouble.
+      const attention = Number(summary.attention || 0);
+      const hidden = Math.max(0, attention - problems.length);
+      const staleHours = Number(summary.stale_hours || 0);
       root.innerHTML =
         '<div class="item"><div class="item-main"><div class="item-title">Флот источников</div>'
-        + '<div class="item-meta">' + Number(summary.enabled || 0) + " включено · "
+        + '<div class="item-meta">' + Number(summary.total || 0) + " всего · "
+        + Number(summary.enabled || 0) + " включено · "
         + Number(counts.ok || 0) + " в порядке · " + Number(counts.due || 0) + " ждут проверки · "
-        + Number(counts.cooldown || 0) + " в карантине · " + Number(counts.failing || 0) + " сбоят</div></div></div>"
-        + problems.map((row) => {
-          const reason = String(row.reason || "").slice(0, 90);
-          return '<div class="item"><div class="item-main"><div class="item-title">' + esc(row.title || row.id) + "</div>"
-            + '<div class="item-meta">' + esc(row.state) + " · провалов " + Number(row.failures || 0)
-            + (reason ? " · " + esc(reason) : "") + "</div></div>"
-            + '<div class="item-side"><button class="btn btn-ghost btn-sm" type="button" data-source-reset="'
-            + esc(row.id) + '">Снять cooldown</button></div></div>';
-        }).join("");
+        + Number(counts.cooldown || 0) + " в карантине · " + Number(counts.failing || 0) + " сбоят · "
+        + Number(counts.disabled || 0) + " отключено</div></div>"
+        + '<div class="item-side"><span class="tag ' + (attention ? "tag-warn" : "tag-ok") + '">'
+        + attention + " требуют внимания</span></div></div>"
+        + '<div class="item"><div class="item-main"><div class="item-title">Молчание</div>'
+        + '<div class="item-meta">не проверялись ' + Number(summary.never_checked || 0)
+        + " · тише " + staleHours + " ч: " + Number(summary.stale || 0)
+        + " · снимок в " + esc(dt(summary.generated_at) || "—") + "</div></div></div>"
+        + (problems.length
+          ? problems.map((row) => {
+            const reason = String(row.reason || "").slice(0, 140);
+            // `dt()` describes the past; a cooldown ends in the future, so the
+            // clock text is the honest form here.
+            const parked = row.cooldown_until ? "пауза до " + clock(row.cooldown_until) : "";
+            const attempt = row.last_attempt_at ? "последняя попытка " + dt(row.last_attempt_at) : "попыток ещё не было";
+            return '<div class="item"><div class="item-main"><div class="item-title">' + esc(row.title || row.id) + "</div>"
+              + '<div class="item-meta" title="' + esc(row.reason || "") + '">' + esc(row.state) + " · провалов "
+              + Number(row.failures || 0) + " · " + esc(attempt)
+              + (parked ? " · " + esc(parked) : "")
+              + (reason ? " · " + esc(reason) : "") + "</div></div>"
+              + '<div class="item-side"><button class="btn btn-ghost btn-sm" type="button" data-source-reset="'
+              + esc(row.id) + '">Снять cooldown</button></div></div>';
+          }).join("")
+          : '<div class="item"><div class="item-main"><div class="item-meta">Сейчас ни один источник не в карантине и не в сбоях.</div></div></div>')
+        + (hidden
+          ? '<div class="item"><div class="item-main"><div class="item-meta">Показаны не все: ещё ' + hidden
+            + " в таком же состоянии — полный список в таблице ниже.</div></div></div>"
+          : "");
     } catch (error) {
       root.innerHTML = '<div class="empty">Здоровье источников недоступно: ' + esc(error?.message || error) + "</div>";
     }
@@ -2319,6 +2427,87 @@
       refresh();
     } catch (error) {
       toast("Не удалось снять cooldown: " + (error?.message || error), "err");
+    }
+  }
+
+  /* ------------------------------------------------ community rules history */
+  // GET /api/community-policy/history returns append-only snapshots, newest
+  // first. It stores `rules_hash` per snapshot but no "changed" flag, so the
+  // moment the rules themselves moved is derived the same way the writer does:
+  // the hash differs from the previous snapshot of the same destination.
+  const POLICY_VERDICT_RU = {
+    ok: ["правила подтверждены", "tag-ok"],
+    stale: ["правила устарели", "tag-warn"],
+    unknown: ["правила не прочитаны", "tag-err"],
+    no_target: ["место не выбрано", "tag-none"],
+  };
+
+  function policyVerdictChip(status) {
+    const key = String(status || "").trim().toLowerCase();
+    const known = POLICY_VERDICT_RU[key];
+    // An unrecognised verdict is printed verbatim, never mapped onto "ok".
+    return known
+      ? `<span class="tag ${known[1]}">${esc(known[0])}</span>`
+      : `<span class="tag tag-none">вердикт: ${esc(key || "нет данных")}</span>`;
+  }
+
+  function renderPolicyHistory(root, items) {
+    if (!items.length) {
+      root.innerHTML = '<div class="empty">История недоступна: по этому месту ещё не сохранялось ни одной проверки правил.</div>';
+      return;
+    }
+    root.innerHTML = items
+      .map((row, index) => {
+        const hash = String(row.rules_hash || "");
+        const older = items[index + 1];
+        const comparable = older
+          && String(older.platform) === String(row.platform)
+          && String(older.target_id) === String(row.target_id);
+        let changeChip;
+        if (comparable) {
+          changeChip = hash !== String(older.rules_hash || "")
+            ? '<span class="tag tag-warn">правила изменились</span>'
+            : '<span class="tag tag-none">без изменений</span>';
+        } else {
+          // No older row in this slice: claiming "unchanged" would be a guess.
+          changeChip = '<span class="tag tag-none">раньше этой записи история не спрашивалась</span>';
+        }
+        const requirements = (row.requirements || []).slice(0, 6);
+        return '<div class="policy-history-row' + (comparable && hash !== String(older.rules_hash || "") ? " is-changed" : "") + '">'
+          + '<div class="policy-history-head"><div class="item-main">'
+          + '<div class="item-title">' + esc(row.target_name || row.target_id || "Место без названия")
+          + " · " + esc(row.platform) + " · " + esc(row.target_type || "—") + "</div>"
+          + '<div class="item-meta">проверка ' + esc(dt(row.checked_at))
+          + " · правила " + (row.rules_available ? "прочитаны" : "не прочитаны")
+          + " · хэш " + esc(hash ? hash.slice(0, 12) : "—")
+          + " · уверенность " + Number(row.confidence || 0).toFixed(2) + "</div></div>"
+          + '<div class="item-side">' + policyVerdictChip(row.verdict_status) + changeChip + "</div></div>"
+          + (requirements.length
+            ? `<details class="policy-history-rules"><summary>Что требовали правила (${requirements.length} из ${(row.requirements || []).length})</summary>`
+              + `<ul>${requirements.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></details>`
+            : '<div class="item-meta">В этой записи не сохранено ни одного требования.</div>')
+          + "</div>";
+      })
+      .join("");
+  }
+
+  async function loadPolicyHistory(root, platform, targetId) {
+    root.textContent = "Читаю историю правил…";
+    delete root.dataset.loaded;
+    try {
+      const params = new URLSearchParams();
+      if (platform) params.set("platform", platform);
+      if (targetId) params.set("target_id", targetId);
+      params.set("limit", "30");
+      const data = await api("/api/community-policy/history?" + params.toString());
+      const items = (data && data.items) || [];
+      renderPolicyHistory(root, items);
+      // Only a real answer counts as loaded: after "история недоступна" the next
+      // click must retry the request instead of hiding the message.
+      if (items.length) root.dataset.loaded = "1";
+    } catch (error) {
+      root.innerHTML = '<div class="empty">История недоступна: ' + esc(error?.message || error) + "</div>";
+      delete root.dataset.loaded;
     }
   }
 
@@ -3260,6 +3449,7 @@
         redditMetrics: "/api/reddit/metrics",
         aiUsage: "/api/ai/usage?days=7",
         metricsFreshness: "/api/metrics/freshness",
+        metricsFormats: "/api/metrics/formats?days=30",
         distributionPlan: "/api/distribution/plan",
         agentBenchmark: "/api/agents/benchmark",
       };
@@ -3297,6 +3487,7 @@
       }
       if ("report" in data) renderReport(data.report);
       if ("metricsFreshness" in data) renderMetricsFreshness(data.metricsFreshness);
+      if ("metricsFormats" in data) renderMetricsFormats(data.metricsFormats);
       if ("runs" in data) {
         renderPipeline(data.runs.runs || []);
         renderRuns(data.runs.runs || []);
@@ -3482,6 +3673,11 @@
             ? "Перед завершением проверь, что эта тема отображается в редакторе."
             : "Перед завершением проверь, что это сообщество выбрано и теги подходят. Одобрение модераторов не гарантируется."}</small>
         </div>
+        ${selected ? `<div class="community-policy-history">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPolicyHistory('${esc(id)}','${esc(platform)}')">История правил</button>
+          <span class="community-policy-hint">Показывает, когда правила места менялись на самом деле, а не только текущую версию.</span>
+          <div class="policy-history-body" id="policy-history-${esc(id)}-${esc(platform)}"></div>
+        </div>` : ""}
         ${selected ? renderCandidate(selected, true) : ""}
         ${candidates.filter((item) => !selected || item.slug !== selected.slug).slice(0, 4).map((item) => renderCandidate(item)).join("")}
         ${notes.length ? `<ul class="community-target-notes">${notes.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
@@ -3491,6 +3687,24 @@
       root.textContent = "Не удалось подобрать место: " + (error?.message || error);
       toast("Подбор " + label + " не выполнен: " + (error?.message || error), "err");
     }
+  };
+
+  // Rules history of the destination that was just picked. Only the post id and
+  // the platform id (both validated server-side, no user text) go into the
+  // inline handler; the untrusted target id is read back from the stored plan.
+  window.tgfarmPolicyHistory = async (id, platform) => {
+    const root = document.getElementById("policy-history-" + id + "-" + platform);
+    if (!root) return;
+    if (root.dataset.loaded === "1") {
+      root.innerHTML = "";
+      delete root.dataset.loaded;
+      return;
+    }
+    const plan = (state.communityTargetPlans || {})[id + ":" + platform] || {};
+    const selected = plan.selected || null;
+    // Same precedence the writer uses for `CommunityPolicy.target_id`.
+    const targetId = String((selected && (selected.slug || selected.path || selected.name)) || "");
+    await loadPolicyHistory(root, platform, targetId);
   };
 
   window.tgfarmBuildEditorialPreview = async (id) => {

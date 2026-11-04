@@ -938,6 +938,16 @@ main {
   padding: 3px 7px;
   background: rgba(255,255,255,.02);
 }
+/* Shape of interest per cluster (S2): phase + window-over-window acceleration. */
+.trend-shape { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.trend-shape .tag { font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+/* A value the pipeline never measured: dashed and colourless, never a 0. */
+.tag-none {
+  background: transparent;
+  color: var(--text-faint);
+  border-color: var(--line);
+  border-style: dashed;
+}
 .platform-capability.capability-publish { color: #5ec98a; background: rgba(94,201,138,.08); border-color: rgba(94,201,138,.25); }
 .platform-capability.capability-manual_upload { color: #e0b341; background: rgba(224,179,65,.08); border-color: rgba(224,179,65,.25); }
 .platform-capability.capability-draft_only { color: #9ac1ff; background: rgba(91,140,255,.07); border-color: rgba(91,140,255,.22); }
@@ -1495,6 +1505,24 @@ main {
   border-color: rgba(224, 179, 65, .34);
   background: rgba(224, 179, 65, .07);
 }
+/* Rules history of one community destination (GET /api/community-policy/history). */
+.community-policy-history { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.community-policy-hint { font-size: 9px; line-height: 1.45; color: var(--text-faint); }
+.policy-history-body { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; }
+.policy-history-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .02);
+}
+/* The snapshot where `rules_hash` differs from the previous check of the same place. */
+.policy-history-row.is-changed { border-color: rgba(251, 191, 36, .38); background: var(--warn-soft); }
+.policy-history-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.policy-history-head .item-side { flex-wrap: wrap; justify-content: flex-end; }
+.policy-history-rules { margin-top: 6px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
+.policy-history-rules summary { cursor: pointer; color: var(--text-faint); }
+.policy-history-rules ul { margin: 4px 0 0; padding-left: 16px; }
+.policy-history-rules li { margin: 2px 0; overflow-wrap: anywhere; }
 .community-target-card {
   padding: 11px 12px;
   border: 1px solid var(--border);

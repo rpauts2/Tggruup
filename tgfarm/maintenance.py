@@ -146,6 +146,27 @@ def expire_unpublishable_drafts(hours: int | None = None) -> int:
         return result.rowcount or 0
 
 
+def _reprint_backfill() -> int:
+    """Link historical reprints to the document they copy, in one bounded slice.
+
+    Ingest only recognises a copy against rows it has already stored, so the
+    corpus written before that rule still reads as independent documents to
+    trends, niches, heat and `item_count`. The pass is time-boxed and reports its
+    own remainder; a maintenance step must never become the reason a cycle dies.
+    """
+    from tgfarm.s1_sources.backfill_reprints import backfill_reprints
+
+    report = backfill_reprints(budget_seconds=60.0)
+    log.info(
+        "maintenance: reprint backfill scanned %d, linked %d, %d left (%s)",
+        report.rows_scanned,
+        report.links_written,
+        report.candidates_remaining,
+        report.stopped_by,
+    )
+    return report.links_written
+
+
 def _close_stale_ai_reservations() -> int:
     """Close AI budget reservations whose process died mid-call.
 
@@ -167,6 +188,7 @@ def run_maintenance() -> dict[str, int | bool]:
         ("runs_pruned", prune_pipeline_runs),
         ("crosspost_logs_pruned", prune_crosspost_logs),
         ("unpublishable_drafts", expire_unpublishable_drafts),
+        ("reprint_backfill", _reprint_backfill),
         ("stale_ai_reservations", _close_stale_ai_reservations),
     ):
         try:
