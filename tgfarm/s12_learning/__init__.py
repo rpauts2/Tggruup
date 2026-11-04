@@ -1,4 +1,11 @@
-"""S12 — self-learning memory for the farm."""
+"""S12 — self-learning memory for the farm.
+
+Lessons live in `LearningMemory` under `kind`: `strategy`, `slot`, `mistake` and
+`format`. A format lesson is keyed `platform/format` per channel and is written
+only from posts S8 actually measured — an unmeasured publication is activity,
+not evidence, and a below-threshold sample is stored as an observation, never as
+a conclusion that may steer generation.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,7 @@ from sqlalchemy import select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import to_thread
+from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import LearningMemory, Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.s8_analytics import (
@@ -19,10 +27,16 @@ from tgfarm.s8_analytics import (
     recent_metrics,
     slot_performance,
 )
+from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
+from tgfarm.s8_analytics.formats import format_performance
 
 log = get_logger(__name__)
 
 MIN_SAMPLES = 3
+#: Window used when the caller does not name one. S8's own planner window is read
+#: from settings at call time; this is only the fallback when settings are
+#: unreadable, and it matches the window the planner measures over.
+FORMAT_WINDOW_DAYS = 60
 # Treat the equivalent of eight posts as prior evidence. Small samples move
 # strategy weights only a little; confidence rises as real observations accrue.
 PRIOR_STRENGTH = 8.0
@@ -161,6 +175,287 @@ def best_hook_style_weights(channel_id):
         if r["key"] == "hook_style_weights" and isinstance(r["value"], dict):
             return {str(k): float(v) for k, v in r["value"].items()}
     return None
+
+
+def _relative_quality(average: float, baseline: float) -> float:
+    """Measured engagement as a share of itself plus the platform average.
+
+    A ratio, not a percentile: with a dozen measured posts a percentile would be
+    a story told about noise, while ``avg / (avg + baseline)`` only says «лучше
+    или хуже среднего по этой площадке», stays monotone in the real number and
+    lands in the 0..1 range every other S12 score uses.
+    """
+    avg = max(0.0, float(average))
+    base = max(0.0, float(baseline))
+    total = avg + base
+    if total <= 0:
+        return 0.5
+    return round(avg / total, 4)
+
+
+def _channel_row(channel_id: str) -> tuple[str, str]:
+    """(platform, niche) of a channel as the farm's own catalogue states them."""
+    with session_scope() as session:
+        row = session.execute(
+            select(ChannelRow.platform, ChannelRow.niche).where(ChannelRow.id == channel_id)
+        ).one_or_none()
+    if row is None:
+        return "", ""
+    return str(row[0] or "").strip().lower(), str(row[1] or "").strip().lower()
+
+
+def _format_window_days() -> int:
+    """The window S8 measures formats over, so learning and planning agree."""
+    try:
+        from tgfarm.core.settings import get_settings
+
+        configured = getattr(get_settings(), "format_performance_window_days", FORMAT_WINDOW_DAYS)
+        return max(1, int(configured))
+    except Exception as exc:  # noqa: BLE001 - an unreadable setting is not a verdict
+        log.debug("s12: format window setting unreadable: %s", exc)
+        return FORMAT_WINDOW_DAYS
+
+
+def _format_state(sample_size: int, measured: int, min_sample: int) -> str:
+    """One of `not_measured` / `below_sample` / `reliable`, from the row alone.
+
+    The three are not interchangeable: a format nobody ever measured is a blind
+    spot, a format measured twice is a hint, and only `reliable` may steer work.
+    """
+    if int(measured or 0) <= 0 or int(sample_size or 0) <= 0:
+        return "not_measured"
+    if int(sample_size) < max(1, int(min_sample)):
+        return "below_sample"
+    return "reliable"
+
+
+def learn_format_lessons(
+    channel_id: str,
+    *,
+    platform: str | None = None,
+    days: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Store *measured* format outcomes as lessons; never store an unmeasured one.
+
+    S8 already answers «how did this format do on this platform» and already
+    carries the honest sample size, the `min_sample` and the `reliable` flag, so
+    this reuses those numbers instead of inventing a second threshold:
+
+    * the report is platform-scoped — a Reddit result has not earned the right to
+      decide a Дзен post, and an unknown platform stops learning rather than
+      pooling destinations into one number;
+    * a published post with no stats is not evidence: it raises `published`, never
+      an average, and a format whose measured count is zero writes no lesson;
+    * a format measured below `min_sample` is stored as an observation with its
+      sample size and state `below_sample`, never phrased as a conclusion;
+    * the score is shrunk toward «as good as the platform average» by the same
+      `_shrink_quality` prior the angles and slots use, so a lucky two-post
+      streak cannot outweigh a format measured across dozens.
+
+    Returns the run summary (rows written, per-format state, the not-measured
+    list) so a caller can report what it refused to learn.
+    """
+    channel = str(channel_id or "").strip()
+    if not channel:
+        return {
+            "channel_id": "", "platform": "", "written": 0,
+            "window_days": int(days) if days else _format_window_days(),
+            "min_sample": FORMAT_MIN_SAMPLE, "formats": {}, "not_measured": [],
+            "reason": "урок формата требует канала",
+        }
+
+    window = int(days) if days else _format_window_days()
+    known_platform, niche = _channel_row(channel)
+    platform_key = str(platform).strip().lower() if platform else known_platform
+    if not platform_key:
+        return {
+            "channel_id": channel, "platform": "", "written": 0, "window_days": window,
+            "min_sample": FORMAT_MIN_SAMPLE, "formats": {}, "not_measured": [],
+            "reason": "площадка канала неизвестна: смешивать платформы в одном уроке нельзя",
+        }
+
+    report = format_performance(window, platform=platform_key, now=now)
+    min_sample = max(1, int(report.get("min_sample") or FORMAT_MIN_SAMPLE))
+    formats = report.get("formats") or {}
+    measured_total = sum(int(item.get("measured") or 0) for item in formats.values())
+    engagement_total = sum(
+        float(item.get("avg_engagement") or 0.0) * int(item.get("measured") or 0)
+        for item in formats.values()
+    )
+    baseline = engagement_total / measured_total if measured_total else 0.0
+
+    written = 0
+    states: dict[str, dict[str, Any]] = {}
+    not_measured: list[str] = []
+    for raw_format, item in formats.items():
+        fmt = str(raw_format or "").strip().lower()
+        if not fmt:
+            continue
+        measured = int(item.get("measured") or 0)
+        published = int(item.get("published") or 0)
+        average = float(item.get("avg_engagement") or 0.0)
+        reliable = bool(item.get("reliable"))
+        if measured <= 0:
+            # Activity, not evidence: named as a blind spot in this run's summary,
+            # never stored as a row a later reader could mistake for a verdict.
+            states[fmt] = {
+                "state": "not_measured", "measured": 0, "published": published,
+                "sample_size": 0, "confidence": 0.0, "reliable": False,
+            }
+            not_measured.append(fmt)
+            continue
+
+        observed = _relative_quality(average, baseline)
+        quality = _shrink_quality(observed, 0.5, measured)
+        state = _format_state(measured, measured, min_sample)
+        confidence = _sample_confidence(measured)
+        value = {
+            "format": fmt,
+            "platform": platform_key,
+            "niche": niche,
+            "measured": measured,
+            "published": published,
+            "avg_engagement": round(average, 4),
+            "baseline_engagement": round(baseline, 4),
+            "relative_quality": observed,
+            "quality": quality,
+            "min_sample": min_sample,
+            "reliable": reliable,
+            "state": state,
+            "window_days": window,
+        }
+        if state == "reliable":
+            reason = (
+                f"формат {fmt} на {platform_key}: измерено {measured} из {published}, "
+                f"вовлечённость {average:.2f} против {baseline:.2f} по площадке; надёжно"
+            )
+        else:
+            reason = (
+                f"формат {fmt} на {platform_key}: измерено {measured} из {published} "
+                f"(порог {min_sample}) — наблюдение, не вывод"
+            )
+        _upsert(
+            channel, "format", f"{platform_key}/{fmt}", value,
+            quality, measured, confidence, reason,
+        )
+        states[fmt] = {
+            "state": state, "measured": measured, "published": published,
+            "sample_size": measured, "confidence": confidence, "reliable": reliable,
+        }
+        written += 1
+
+    return {
+        "channel_id": channel,
+        "platform": platform_key,
+        "niche": niche,
+        "written": written,
+        "window_days": window,
+        "min_sample": min_sample,
+        "measured_total": measured_total,
+        "published_total": int(report.get("published_total") or 0),
+        "baseline_engagement": round(baseline, 4),
+        "formats": states,
+        "not_measured": sorted(not_measured),
+        "reason": (
+            f"формат: {written} урок(ов) записано по {measured_total} измеренным публикациям"
+            if written
+            else "нет ни одного измеренного формата — уроков не записано"
+        ),
+    }
+
+
+def format_lessons(
+    channel_id: str = "",
+    *,
+    platform: str = "",
+    reliable_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Stored format lessons: value, sample size, confidence and the reason.
+
+    Rows are keyed ``platform/format`` and scoped per channel, so one format name
+    on two platforms stays two lessons and can never be averaged into one number.
+    `state` is read back from the row rather than re-guessed, which is what lets a
+    caller tell «not measured» apart from «measured and weak».
+    """
+    rows = lessons(channel_id, kind="format")
+    wanted_platform = str(platform or "").strip().lower()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        value = dict(row.get("value") or {})
+        head, _, tail = str(row.get("key") or "").partition("/")
+        fmt = str(value.get("format") or tail).strip().lower()
+        row_platform = str(value.get("platform") or head).strip().lower()
+        if wanted_platform and row_platform != wanted_platform:
+            continue
+        sample_size = int(row.get("sample_size") or 0)
+        min_sample = max(1, int(value.get("min_sample") or FORMAT_MIN_SAMPLE))
+        measured = int(value.get("measured") or sample_size)
+        state = str(value.get("state") or "") or _format_state(sample_size, measured, min_sample)
+        out.append(
+            {
+                **row,
+                "format": fmt,
+                "platform": row_platform,
+                "measured": measured,
+                "published": int(value.get("published") or 0),
+                "min_sample": min_sample,
+                "state": state,
+                "reliable": state == "reliable",
+                "reason": row.get("note") or "",
+            }
+        )
+    out.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            -int(item.get("sample_size") or 0),
+            str(item.get("platform") or ""),
+            str(item.get("format") or ""),
+        )
+    )
+    if reliable_only:
+        out = [item for item in out if item["reliable"]]
+    return out
+
+
+def format_state(channel_id: str, fmt: str, *, platform: str = "") -> dict[str, Any]:
+    """Honest state of one format on one channel, with a reason either way.
+
+    Missing history answers `not_measured` instead of pretending the format was
+    tried and failed — that difference is exactly what keeps an unmeasured post
+    from being read as a verdict.
+    """
+    wanted = str(fmt or "").strip().lower()
+    for item in format_lessons(channel_id, platform=platform):
+        if item["format"] == wanted:
+            return item
+    return {
+        "channel_id": str(channel_id or ""),
+        "platform": str(platform or "").strip().lower(),
+        "key": f"{str(platform or '').strip().lower()}/{wanted}",
+        "kind": "format",
+        "value": {},
+        "format": wanted,
+        "score": 0.0,
+        "sample_size": 0,
+        "measured": 0,
+        "published": 0,
+        "confidence": 0.0,
+        "min_sample": FORMAT_MIN_SAMPLE,
+        "state": "not_measured",
+        "reliable": False,
+        "reason": "нет ни одного измеренного наблюдения — вывод о формате сделать нельзя",
+    }
+
+
+def best_format_lesson(channel_id: str, *, platform: str = "") -> dict[str, Any] | None:
+    """Best trustworthy format lesson, or `None` when history cannot be trusted.
+
+    `None` is the point: with no honest sample the caller keeps its previous
+    strategy rather than promoting a preference invented from two posts.
+    """
+    candidates = format_lessons(channel_id, platform=platform, reliable_only=True)
+    return candidates[0] if candidates else None
 
 
 def record_gate_failure(channel_id: str, gate: str, reason: str) -> None:
@@ -339,6 +634,13 @@ def _learn_channel(channel_id):
             learned += 1
 
     from tgfarm.core.run import ensure_utc
+    try:
+        formats = learn_format_lessons(channel_id)
+    except Exception as exc:  # noqa: BLE001 - thin format data must not cost the other lessons
+        formats = {"written": 0}
+        log.debug("s12: format learning skipped for %s: %s", channel_id, exc)
+    learned += int(formats.get("written", 0))
+
     channel_metrics = [m for m in recent_metrics(14) if m.channel_id == channel_id]
     buckets = defaultdict(list)
     qualified_scores = []
@@ -414,5 +716,9 @@ __all__ = [
     "best_hook_style_weights",
     "best_hours",
     "mistakes",
+    "best_format_lesson",
+    "format_lessons",
+    "format_state",
+    "learn_format_lessons",
 ]
 

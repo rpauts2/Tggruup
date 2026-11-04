@@ -127,14 +127,28 @@ def test_niche_assignment(clean_items):
 
 
 def test_heat_rewards_multi_source_fresh_stories(clean_items):
+    """Four *independent* reports of one story — distinct documents, not reprints.
+
+    Deliberately rewritten for the dedup-survival contract (P27's family): four
+    outlets carrying the identical wire text are one document, heat is computed
+    over one survivor and the story legitimately stays below the threshold.
+    Multi-source heat can only be earned by four separate write-ups.
+    """
     from tgfarm import s2_trends
 
-    hot = "OpenAI выпустила GPT-5.5 с ценой 40 процентов ниже"
-    for i, src in enumerate(["a", "b", "c", "d"]):
-        _insert(hot, hot, src, 0.75, i * 2)
+    body = "Новая модель выполняет сорок процентов задач дешевле конкурентов."
+    core = "OpenAI выпустила модель GPT-5.5 с ценой подписки 40 процентов ниже конкурентов"
+    headlines = [
+        core,
+        core + " — аналитики ожидали большего до конца квартала",
+        core + ": разработчики уже тестируют новые тарифы массово",
+        core + ", однако конкуренты готовят ответный релиз",
+    ]
+    for i, (src, headline) in enumerate(zip(["a", "b", "c", "d"], headlines, strict=True)):
+        _insert(headline, body, src, 0.75, i * 2)
 
-    s2_trends._dedup_pass()
-    s2_trends._cluster_pass()
+    assert s2_trends._dedup_pass() == 0
+    assert s2_trends._cluster_pass() == 1
     s2_trends.assign_niches()
     assert s2_trends._score_pass() >= 1
     assert s2_trends.promote_ready() == 1
@@ -142,6 +156,7 @@ def test_heat_rewards_multi_source_fresh_stories(clean_items):
     with session_scope() as session:
         cluster = session.execute(select(Cluster)).scalar_one()
         assert cluster.heat > 0.62
+        assert cluster.item_count == 4
         assert cluster.status == "ready"
 
 

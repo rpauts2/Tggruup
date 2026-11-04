@@ -941,6 +941,12 @@ main {
 /* Shape of interest per cluster (S2): phase + window-over-window acceleration. */
 .trend-shape { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .trend-shape .tag { font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+/* Router skip report (S3): same chip look as «Почему?», but it lives inside the
+   main column and stacks, so a long reason cannot squeeze the cluster title. */
+.trend-skips { display: grid; gap: 4px; padding: 6px 0 0; }
+.trend-skip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.trend-skip-row .platform-capability { font-size: 9px; padding: 1px 6px; border-radius: 5px; }
+.trend-skip-why, .trend-skip-memory { color: var(--text-faint); }
 /* A value the pipeline never measured: dashed and colourless, never a 0. */
 .tag-none {
   background: transparent;

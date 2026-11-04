@@ -6,6 +6,8 @@ Four steps, each cheap enough to run on every cycle:
    simhash (cheap) and embedding cosine (accurate), and stay collapsed: a row
    with `duplicate_of` set is evidence of *copying*, never of independent
    interest, so every count below is taken over the rows that survived it.
+   A link always names the earliest *surviving* original — the same contract
+   ingest follows — never another copy, never a chain, never forward in time.
 2. `cluster`     — surviving items are greedily assigned to the nearest existing
    cluster above a similarity floor, otherwise they start one. A cluster is the
    farm's unit of "a story".
@@ -22,10 +24,11 @@ from __future__ import annotations
 import math
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
@@ -234,31 +237,111 @@ def acceleration_of(
 
 
 # ----------------------------------------------------------------- deduplicate
+# A malformed `duplicate_of` history (mutual pairs written by the old newest-first
+# pass, chains grown across cycles) must never be able to hang a cycle. Thirty-two
+# hops is far past any legitimate chain: after that the link is broken data.
+MAX_DUP_CHAIN_HOPS = 32
+
+
+def resolve_duplicate_root(
+    start_id: int,
+    parent_of: Callable[[int], int | None],
+) -> int | None:
+    """Walk a `duplicate_of` chain from `start_id` to the surviving document.
+
+    `parent_of(row_id)` returns the id the row is flagged as a duplicate of, or
+    None when the row itself survived — and must raise `LookupError` for a row
+    the store does not have, so a dangling chain resolves to nothing.
+
+    Returns the root id, or None when the chain is cyclic, dangling, or longer
+    than `MAX_DUP_CHAIN_HOPS`. Pure and store-agnostic by design: a link is only
+    ever written to what this resolves to, and the one-time repair pass over the
+    already-broken rows can reuse the exact same walk.
+    """
+    current = start_id
+    seen = {current}
+    for _ in range(MAX_DUP_CHAIN_HOPS):
+        try:
+            parent = parent_of(current)
+        except LookupError:
+            return None
+        if parent is None:
+            return current
+        if parent in seen:
+            return None
+        seen.add(parent)
+        current = parent
+    return None
+
+
 def _dedup_pass() -> int:
     """Mark exact/near duplicates among recent items. Returns rows flagged.
 
-    The match always points at a surviving item, so a reprint storm has exactly
-    one original at the bottom of it. A row whose `simhash` is absent (0 or NULL,
-    written before the column existed) is never treated as identical to anything:
-    a missing fingerprint carries no information, and `hamming(0, x)` is a
-    meaningless number.
+    One contract — the ingest one (`s1_sources.base.find_content_reprint`): a
+    copy links to the *earliest surviving original*, never to another copy and
+    never forward in time. So the window is walked oldest-first, by
+    `COALESCE(published_at, fetched_at)` with `id` as the tie-breaker, which
+    makes the survivor of a group deterministic even when timestamps collide;
+    and every match — including one found through the vector index, whose rows
+    are not all in this window — is resolved through any existing
+    `duplicate_of` chain to its root before the link is written.
+
+    A row whose `simhash` is absent (0 or NULL, written before the column
+    existed) is never treated as identical to anything: a missing fingerprint
+    carries no information, and `hamming(0, x)` is a meaningless number.
     """
     with session_scope() as session:
         cutoff = datetime.now(UTC) - timedelta(hours=CLUSTER_WINDOW_HOURS)
         rows = session.execute(
-            select(RawItemRow).where(
-                RawItemRow.fetched_at >= cutoff, RawItemRow.duplicate_of.is_(None)
-            ).order_by(RawItemRow.fetched_at.desc())
+            select(RawItemRow)
+            .where(RawItemRow.fetched_at >= cutoff, RawItemRow.duplicate_of.is_(None))
+            .order_by(
+                func.coalesce(RawItemRow.published_at, RawItemRow.fetched_at).asc(),
+                RawItemRow.id.asc(),
+            )
         ).scalars().all()
+
+        by_id = {row.id: row for row in rows}
+        # `duplicate_of` as known in-memory. Every window row was loaded unflagged;
+        # ancestors outside the window are fetched lazily while a chain resolves,
+        # and a row flagged by this pass records its new parent here.
+        parents: dict[int, int | None] = {row.id: None for row in rows}
+
+        def parent_of(target_id: int) -> int | None:
+            if target_id in parents:
+                return parents[target_id]
+            other = session.get(RawItemRow, target_id)
+            if other is None:
+                raise LookupError(target_id)
+            parents[target_id] = other.duplicate_of
+            return other.duplicate_of
+
+        def surviving_root(target_id: int, row: RawItemRow) -> int | None:
+            """The root a link to `target_id` must point at, or None when writing
+            it would break the contract: the root must exist, survive, not be the
+            row itself, and appear at or before the row (same appearance time,
+            the smaller id wins — which is the scan order, so an already-walked
+            survivor always passes and an undecided window row never does)."""
+            root = resolve_duplicate_root(target_id, parent_of)
+            if root is None or root == row.id:
+                return None
+            root_row = by_id.get(root) or session.get(RawItemRow, root)
+            if root_row is None or root_row.duplicate_of is not None:
+                return None
+            if (_item_time(root_row), root) >= (_item_time(row), row.id):
+                return None
+            return root
 
         seen_fp: dict[int, int] = {}
         seen_titles: dict[str, int] = {}
-        eligible = {row.id for row in rows}
         index = get_index()
         flagged = 0
 
         for row in rows:
-            # cheap pass: simhash first
+            # cheap pass: simhash first. `seen_fp`/`seen_titles` only ever hold
+            # survivors already walked — they are roots by construction and the
+            # scan order guarantees they appear at or before `row` — so their ids
+            # are written directly.
             match_id = None
             if row.simhash:
                 for fp, other_id in seen_fp.items():
@@ -273,13 +356,14 @@ def _dedup_pass() -> int:
             if match_id is None and row.embedding:
                 vec = unpack(row.embedding)
                 hits = index.search(vec, top_k=3, min_score=0.95, exclude={row.id})
-                match_id = next(
-                    (hit_id for hit_id, _ in hits if hit_id in eligible), None
-                )
+                for hit_id, _score in hits:
+                    match_id = surviving_root(hit_id, row)
+                    if match_id is not None:
+                        break
 
             if match_id is not None:
                 row.duplicate_of = match_id
-                eligible.discard(row.id)
+                parents[row.id] = match_id
                 flagged += 1
             else:
                 seen_titles[title_key(row.title)] = row.id

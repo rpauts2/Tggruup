@@ -726,12 +726,14 @@
           <div class="item-title">${esc(t.label || t.id)}</div>
           <div class="item-meta">${esc(t.niche || "—")} · ${t.items} материалов · ${t.outlets.length} изданий: ${esc((t.outlets || []).slice(0, 3).join(", "))}</div>
           ${trendShapeRow(t)}
+          <div class="trend-explain trend-skips" data-trend-skips-body="${esc(t.id || t.public_id || "")}"></div>
         </div>
         <div class="item-side">
           <span class="tag ${t.status === "ready" ? "tag-ok" : ""}">${esc(t.status)}</span>
           <div class="heat"><i style="width:${Math.round((t.heat || 0) * 100)}%"></i></div>
           <div class="heat-val">${(t.heat || 0).toFixed(2)}</div>
           <button class="btn btn-ghost btn-sm" type="button" data-trend-explain="${esc(t.id || t.public_id || "")}">Почему?</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-trend-skips="${esc(t.id || t.public_id || "")}" title="Куда история не ушла и почему">Пропуски?</button>
         </div>
         <div class="trend-explain" data-trend-explain-body="${esc(t.id || t.public_id || "")}"></div>
       </div>`).join("")
@@ -2419,6 +2421,59 @@
     }
   }
 
+  /* ------------------------------------------------------- router skip report */
+  // GET /api/router/skips/{cluster} answers out of S3's in-process registry: a
+  // restart empties it and the LRU drops the oldest clusters. So "no record" is
+  // rendered as absent data — never as "nothing was skipped".
+  const routerSkipRow = (item) => `
+    <div class="trend-reason trend-skip-row">
+      <b>${esc(item.channel_id || "нет данных")}</b>
+      <span>${esc(item.platform || "площадка не записана")}</span>
+      <span class="platform-capability capability-${esc(item.capability)}">${esc(item.capability_label || item.capability || "нет данных")}</span>
+      <span class="trend-skip-why">${esc(item.reason || "причина не записана")}</span>
+    </div>`;
+
+  function routerSkipsMemoryNote(data) {
+    const limit = Number(data && data.registry_limit);
+    const cap = Number.isFinite(limit) ? ` · лимит ${esc(limit)}` : "";
+    return `<div class="trend-reason trend-skip-memory">реестр в памяти процесса${cap}: после перезапуска список пуст</div>`;
+  }
+
+  function renderRouterSkips(data) {
+    const rows = (data && data.skipped) || [];
+    const memory = routerSkipsMemoryNote(data);
+    if (!data || data.remembered !== true) {
+      return '<div class="trend-reason"><span class="tag tag-none">нет данных</span> '
+        + esc((data && data.state_note) || "маршрутизатор не помнит этот кластер в текущем процессе")
+        + "</div>" + memory;
+    }
+    if (!rows.length) {
+      return '<div class="trend-reason">Ни одна площадка не пропущена: кластер роутился в этом процессе без исключений.</div>' + memory;
+    }
+    return rows.map(routerSkipRow).join("") + memory;
+  }
+
+  async function explainSkips(clusterId) {
+    const target = document.querySelector('[data-trend-skips-body="' + CSS.escape(clusterId) + '"]');
+    if (!target) return;
+    if (target.dataset.loaded === "1") {
+      target.innerHTML = "";
+      target.dataset.loaded = "0";
+      return;
+    }
+    target.textContent = "Считаю…";
+    try {
+      const data = await api("/api/router/skips/" + encodeURIComponent(clusterId));
+      target.innerHTML = renderRouterSkips(data);
+      target.dataset.loaded = "1";
+    } catch (error) {
+      // A failed answer is not cached as loaded: the next click retries it.
+      target.innerHTML = '<div class="trend-reason"><span class="tag tag-none">нет данных</span> '
+        + esc(error?.message || error)
+        + "</div>";
+    }
+  }
+
   async function resetSourceCooldown(sourceId) {
     try {
       await post("/api/sources/" + encodeURIComponent(sourceId) + "/cooldown/reset", {});
@@ -4082,9 +4137,15 @@
   if (trendsList) {
     trendsList.addEventListener("click", (event) => {
       const button = event.target.closest("[data-trend-explain]");
-      if (!button) return;
+      if (button) {
+        event.preventDefault();
+        explainTrend(button.dataset.trendExplain);
+        return;
+      }
+      const skipsButton = event.target.closest("[data-trend-skips]");
+      if (!skipsButton) return;
       event.preventDefault();
-      explainTrend(button.dataset.trendExplain);
+      explainSkips(skipsButton.dataset.trendSkips);
     });
   }
   const sourcesHealth = $("#sources-health");

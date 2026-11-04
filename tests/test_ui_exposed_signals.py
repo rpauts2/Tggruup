@@ -134,6 +134,8 @@ def test_server_text_reaches_the_dom_escaped(client):
         "const trendPhaseChip",
         "function renderMetricsFormats",
         "async function loadSourcesHealth",
+        "const routerSkipRow",
+        "function renderRouterSkips",
     ):
         body = script[script.index(marker):script.index(marker) + 3000]
         for leak in ('">${row.', '">${item.', "+ row.", "+ item."):
@@ -200,6 +202,90 @@ def test_unreliable_format_row_is_not_a_score(client):
     assert "мало данных" in body
     assert "row.measured || 0" in body
     assert 'class="tag tag-acc">внимание' in body
+
+
+# ---------------------------------------------------------------- router skips
+def test_skip_report_is_wired_to_the_real_endpoint(client):
+    script = _script(client)
+    assert 'api("/api/router/skips/" + encodeURIComponent(clusterId))' in script
+    body = _chunk(script, "async function explainSkips", "async function resetSourceCooldown")
+    assert 'data-trend-skips-body="' in body
+    assert "CSS.escape(clusterId)" in body
+    # A failed answer must not be cached as loaded, so the next click retries.
+    assert 'target.dataset.loaded = "1";' in body
+    assert body.index('target.dataset.loaded = "1";') < body.index("catch (error)")
+
+
+def test_trend_rows_carry_the_skips_button_and_body(client):
+    script = _script(client)
+    body = _chunk(script, "function renderTrends", "const STATUS_TAG")
+    assert 'data-trend-skips="' in body
+    assert 'data-trend-skips-body="' in body
+    assert "Пропуски?" in body
+    assert "trend-skips" in body
+
+
+def test_absent_skip_record_is_not_rendered_as_a_clean_plan(client):
+    """`remembered: false` means "this process has no record", not "nothing dropped".
+
+    S3's registry is process memory: a restart or an LRU eviction leaves no row
+    at all. Folding that into "all destinations planned" would tell the operator
+    the plan was complete when it was simply never measured here.
+    """
+    script = _script(client)
+    body = _chunk(script, "function renderRouterSkips", "async function explainSkips")
+    assert "data.remembered !== true" in body
+    assert "нет данных" in body
+    # Only the remembered branch may claim a clean plan.
+    assert "Ни одна площадка не пропущена" in body
+    assert "state_note" in body
+
+
+def test_skip_report_admits_its_memory_is_bounded(client):
+    script = _script(client)
+    body = _chunk(script, "function routerSkipsMemoryNote", "function renderRouterSkips")
+    assert "registry_limit" in body
+    assert "Number.isFinite(limit)" in body
+    assert "после перезапуска список пуст" in body
+    # A missing limit is not shown as "лимит undefined".
+    assert 'const cap = Number.isFinite(limit)' in body
+
+
+def test_unknown_skip_capability_is_printed_verbatim(client):
+    """An unrecognised reason code keeps its own colourless chip, never a guess."""
+    script = _script(client)
+    body = _chunk(script, "const routerSkipRow", "function routerSkipsMemoryNote")
+    for field in ("esc(item.channel_id", "esc(item.platform", "esc(item.reason"):
+        assert field in body
+    assert "capability-${esc(item.capability)}" in body
+    assert "esc(item.capability_label || item.capability" in body
+    assert "причина не записана" in body
+    assert "нет данных" in body
+
+
+def test_skipped_reason_never_reaches_the_dom_as_markup(client):
+    script = _script(client)
+    body = _chunk(script, "const routerSkipRow", "async function explainSkips")
+    for raw in ("${item.", "${row.", "${data.", "+ item.", "+ data."):
+        assert raw not in body, f"raw interpolation of {raw!r}"
+
+
+def test_skips_block_reuses_the_existing_explanation_control(client):
+    """No new widget: the report is the «Почему?» chip family with its own layout."""
+    script = _script(client)
+    css = client.get("/ui/app.css").text
+    body = _chunk(script, "const routerSkipRow", "function routerSkipsMemoryNote")
+    assert "trend-reason" in body
+    assert "platform-capability" in body
+    assert ".trend-explain" in css
+    assert ".trend-skips" in css
+    assert ".trend-skip-row" in css
+
+
+def test_trends_legend_explains_the_absent_skip_record(client):
+    html = client.get("/").text
+    assert "Пропуски?" in html
+    assert "не означает «ничего не пропущено»" in html
 
 
 # ---------------------------------------------------------------------- style

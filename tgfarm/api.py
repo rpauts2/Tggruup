@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -262,6 +262,81 @@ def _trends(limit: int) -> list[dict]:
                 }
             )
         return out
+
+
+def _skip_entry_present(cluster_public_id: str, skips: list) -> bool:
+    """Whether S3's registry really holds a record for this cluster.
+
+    `route_skips` collapses "no record" and "record with nothing skipped" into
+    the same empty list, so the panel could not tell a restart/eviction apart
+    from a clean plan. The registry map is consulted read-only; if that private
+    name ever disappears, the fallback only ever reports *fewer* remembered
+    clusters — it cannot invent a record that was never written.
+    """
+    from tgfarm import s3_router
+
+    registry = getattr(s3_router, "_SKIP_REGISTRY", None)
+    if isinstance(registry, Mapping):
+        return cluster_public_id in registry
+    return bool(skips)
+
+
+def _router_skip_report(cluster_public_id: str) -> dict | None:
+    """Skipped destinations of one cluster plus the memory facts around them.
+
+    Returns None only when the router has no record *and* the cluster is not in
+    the database either: a cluster that was simply never routed in this process
+    is an honest empty answer, not a missing object.
+    """
+    from tgfarm import s3_router
+
+    skips = s3_router.route_skips(cluster_public_id)
+    remembered = _skip_entry_present(cluster_public_id, skips)
+    with session_scope() as session:
+        in_db = bool(
+            session.execute(
+                select(func.count()).select_from(Cluster).where(Cluster.public_id == cluster_public_id)
+            ).scalar_one()
+        )
+    if not remembered and not in_db:
+        return None
+
+    if remembered and skips:
+        state = "skipped_recorded"
+        state_note = "Маршрутизатор записал эти площадки как пропущенные в текущем процессе."
+    elif remembered:
+        state = "routed_without_skips"
+        state_note = "Кластер роутился в этом процессе, и ни одна площадка не была исключена."
+    else:
+        state = "no_record"
+        state_note = (
+            "Записи нет: кластер либо ещё не роутился в этом процессе, либо его запись "
+            "вытеснило LRU, либо процесс перезапускался. Это НЕ значит, что ничего не пропущено."
+        )
+    return {
+        "cluster_public_id": cluster_public_id,
+        "skipped": [
+            {
+                "cluster_public_id": item.cluster_public_id,
+                "channel_id": item.channel_id,
+                "platform": item.platform,
+                "capability": item.capability,
+                "capability_label": item.capability_label,
+                "reason": item.reason,
+                "note": item.note(),
+            }
+            for item in skips
+        ],
+        "count": len(skips),
+        "remembered": remembered,
+        "cluster_in_db": in_db,
+        "state": state,
+        "state_note": state_note,
+        "storage": "in-process-memory",
+        "restart_clears": True,
+        "eviction": "lru",
+        "registry_limit": s3_router.SKIP_REGISTRY_LIMIT,
+    }
 
 
 def _sources() -> list[dict]:
@@ -1682,6 +1757,22 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         if not result or result.get("ok") is False:
             raise HTTPException(404, "Кластер не найден")
         return result
+
+    @app.get("/api/router/skips/{cluster_public_id}")
+    async def router_skips(cluster_public_id: str) -> dict:
+        """Which destinations S3 dropped from this cluster's plan, and why.
+
+        The report lives in the router's process memory only, so the answer
+        carries that fact: an empty list is never presented as "nothing was
+        skipped" unless the registry actually holds a record for the cluster.
+        """
+        cid = str(cluster_public_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", cid):
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор кластера.")
+        report = await io(_router_skip_report, cid)
+        if report is None:
+            raise HTTPException(404, "Нет записи маршрутизации для этого кластера")
+        return report
 
     @app.get("/api/sources/health")
     async def sources_health() -> dict:
