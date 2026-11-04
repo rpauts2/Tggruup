@@ -641,6 +641,10 @@ def _is_ambiguous_publish_error(exc: BaseException) -> bool:
     """
     kind = type(exc).__name__.lower()
     message = f"{kind}: {exc}".lower()
+    if isinstance(exc, PublishImageRequired):
+        # The publisher stopped before opening a browser: nothing was submitted,
+        # so this is a definite failure, not an unknown outcome.
+        return False
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
     if isinstance(status_code, int):
@@ -733,8 +737,69 @@ def _publish_retry_after_seconds(
     return min(max(0, seconds), max(0, int(max_seconds)))
 
 
+class PublishImageRequired(RuntimeError):
+    """The destination refuses text-only posts and no cover could be produced."""
+
+
+_COVER_KINDS = frozenset(
+    {"image", "ai_art", "template", "infographic", "quote", "cover", "photo", "article_image"}
+)
+
+
+def _ensure_cover_for_post(post_id: int) -> str | None:
+    """Return an existing image path, or render the deterministic cover now.
+
+    Dzen rejects text-only articles ("publication without image is forbidden"),
+    and retrying such a post only burns attempts: seven posts reached 13 attempts
+    with zero media rows. The farm can always render its local template cover, so
+    the publisher repairs the gap instead of failing blind.
+    """
+    from tgfarm.db.models import Media as MediaRow
+
+    with session_scope() as session:
+        post = session.get(PostRow, post_id)
+        if post is None:
+            return None
+        public_id = post.public_id
+        rows = session.execute(
+            select(MediaRow).where(MediaRow.post_id == post_id)
+        ).scalars().all()
+        for row in rows:
+            if row.kind in _COVER_KINDS and row.path and Path(row.path).exists():
+                return str(row.path)
+
+    from tgfarm.s5_quality import load_draft
+    from tgfarm.s6_visual import persist_media, render_for_post
+
+    loaded = load_draft(public_id)
+    if loaded is None:
+        return None
+    draft, channel_id = loaded
+    persona = get_config().persona(channel_id)
+    if persona is None:
+        return None
+    try:
+        asset = render_for_post(draft, persona)
+    except Exception as exc:  # noqa: BLE001 - a broken template must not kill the tick
+        log.error(
+            "cover render failed for %s: %s",
+            public_id,
+            redact_sensitive_text(exc, limit=200),
+        )
+        return None
+    if not asset.path:
+        return None
+    persist_media(public_id, asset)
+    log.info("s7: rendered a missing cover for %s before publishing", public_id)
+    return str(asset.path)
+
+
 def _is_permanent_publish_error(exc: BaseException) -> bool:
     """Explicit client rejections are terminal; rate limits remain retryable."""
+    if isinstance(exc, PublishImageRequired):
+        # No cover and no way to render one: another attempt would fail the same
+        # way, so stop burning the queue on it.
+        return True
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
     if not isinstance(status_code, int):
@@ -1075,6 +1140,12 @@ async def _publish_one(
     budget = publish_timeout_seconds(platform, settings)
     message_id = None
     try:
+        if platform == "dzen" and not media:
+            media = await to_thread(_ensure_cover_for_post, post_id)
+            if not media:
+                raise PublishImageRequired(
+                    "dzen rejects text-only posts and no cover could be rendered"
+                )
         if platform == "dzen":
             inline_images = inline_media
             if isinstance(inline_media, tuple):
