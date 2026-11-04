@@ -1784,6 +1784,36 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         return await io(build_distribution_plan)
 
+    @app.get("/api/editorial/plan")
+    async def editorial_plan() -> dict:
+        """Active global editorial plan; an ephemeral preview before first refresh."""
+
+        from tgfarm.editorial_plan import build_editorial_plan, get_active_plan
+
+        def _plan_or_preview() -> dict:
+            active = get_active_plan()
+            if active is not None:
+                return active
+            return build_editorial_plan(persist=False)
+
+        return await io(_plan_or_preview)
+
+    @app.post("/api/editorial/plan/refresh")
+    async def editorial_plan_refresh() -> dict:
+        """Rebuild and persist the plan; the previous snapshot stays as history."""
+
+        from tgfarm.editorial_plan import build_editorial_plan
+
+        return await io(build_editorial_plan)
+
+    @app.get("/api/editorial/plan/history")
+    async def editorial_plan_history(limit: int = Query(10, ge=1, le=50)) -> dict:
+        """Recent plan snapshots with per-revision summaries and diffs."""
+
+        from tgfarm.editorial_plan import plan_history
+
+        return {"plans": await io(plan_history, limit)}
+
     @app.put("/api/runtime/mode")
     async def set_runtime_mode(request: RuntimeModeRequest) -> dict:
         """Global kill switch; LIVE always requires a separate explicit confirmation."""

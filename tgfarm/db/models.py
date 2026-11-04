@@ -13,6 +13,7 @@ Design notes
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import uuid
 
 from sqlalchemy import (
     JSON,
@@ -441,8 +442,52 @@ class OperatorLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     action: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     target: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[str | None] = mapped_column(Text)
+
+
+class EditorialPlan(Base):
+    """Snapshot of the global editorial plan.
+
+    Every refresh creates a new snapshot and supersedes the previous active
+    one; superseded plans are kept as decision history, never overwritten.
+    """
+
+    __tablename__ = "editorial_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(
+        String(64), unique=True, default=lambda: uuid.uuid4().hex
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    horizon_days: Mapped[int] = mapped_column(Integer, default=7)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("editorial_plans.id"))
+    summary: Mapped[dict | None] = mapped_column(JSON)
+
+
+class EditorialPlanEntry(Base):
+    """One planned step for one topic: produce, schedule or hold."""
+
+    __tablename__ = "editorial_plan_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("editorial_plans.id"), index=True)
+    cluster_public_id: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(Text, default="")
+    niche: Mapped[str] = mapped_column(String(64), default="")
+    action: Mapped[str] = mapped_column(String(16), index=True)  # produce|schedule|hold
+    platform: Mapped[str | None] = mapped_column(String(32))
+    channel_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    format: Mapped[str | None] = mapped_column(String(32))
+    priority: Mapped[int] = mapped_column(Integer, default=2)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    reasons: Mapped[list | None] = mapped_column(JSON)
+    slot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
