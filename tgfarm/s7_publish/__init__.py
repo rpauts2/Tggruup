@@ -776,6 +776,160 @@ def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
         return result.rowcount or 0
 
 
+#: Errors that prove the material never reached the platform's submit step.
+#: Playwright reports DNS/connection failures from ``page.goto`` before any
+#: button is clicked, so a retry cannot create a duplicate.
+PRE_SUBMIT_ERROR_MARKERS = (
+    "err_name_not_resolved",
+    "err_internet_disconnected",
+    "err_connection_refused",
+    "err_address_unreachable",
+    "err_network_access_denied",
+    "err_connection_timed_out",
+    "getaddrinfo",
+    "name or service not known",
+    "network is unreachable",
+    "connection refused",
+)
+
+#: Errors that may have happened *after* the remote side accepted the material
+#: (or that destroyed the driver mid-flight). They must never be auto-retried.
+UNCERTAIN_DRIVER_MARKERS = (
+    "connection closed while reading from the driver",
+    "target page, context or browser has been closed",
+    "target closed",
+    "browser has been closed",
+)
+
+
+def _pre_submit_error(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in PRE_SUBMIT_ERROR_MARKERS)
+
+
+def _uncertain_driver_error(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in UNCERTAIN_DRIVER_MARKERS)
+
+
+def requeue_unsubmitted(
+    *,
+    platform: str | None = None,
+    limit: int = 100,
+    apply: bool = False,
+    max_age_hours: float = 48.0,
+) -> dict:
+    """Reanimate posts that never left the farm; park or expire the rest.
+
+    Three outcomes, each with a reason that survives in ``publish_error`` and in
+    the operator log:
+
+    * pre-submit transport failure and the material is still fresh — safe to
+      retry, because nothing was submitted and the topic is not stale;
+    * pre-submit transport failure but the material is older than
+      ``max_age_hours`` — terminal failure ("expired"), never published as fresh
+      news days later; the operator can still requeue it explicitly;
+    * a driver error with unknown remote outcome — ``publish_unknown``, never
+      retried automatically: a human verifies the destination first.
+
+    ``apply=False`` is a dry run.
+    """
+    from tgfarm.db.models import Channel as ChannelRow
+    from tgfarm.db.models import OperatorLog
+
+    target_platform = str(platform or "").strip().lower()
+    now = datetime.now(UTC)
+    candidates: list[tuple[int, str, str, str]] = []
+    with session_scope() as session:
+        stmt = (
+            select(PostRow, ChannelRow.platform)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id, isouter=True)
+            .where(
+                PostRow.status.in_(("scheduled", "failed")),
+                PostRow.publish_error.isnot(None),
+                PostRow.published_at.is_(None),
+            )
+            .order_by(PostRow.attempts.desc(), PostRow.id.asc())
+            .limit(max(1, int(limit)))
+        )
+        for post, row_platform in session.execute(stmt).all():
+            name = str(row_platform or "").lower()
+            if target_platform and name != target_platform:
+                continue
+            error = str(post.publish_error or "")
+            created = post.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            age_hours = (now - created).total_seconds() / 3600 if created else 0.0
+            if _pre_submit_error(error):
+                action = "requeue" if age_hours <= max(0.0, max_age_hours) else "expire"
+                candidates.append((post.id, post.public_id, action, error[:240]))
+            elif _uncertain_driver_error(error):
+                candidates.append((post.id, post.public_id, "unknown", error[:240]))
+
+    requeued = [row[1] for row in candidates if row[2] == "requeue"]
+    parked = [row[1] for row in candidates if row[2] == "unknown"]
+    expired = [row[1] for row in candidates if row[2] == "expire"]
+    summary = {
+        "apply": bool(apply),
+        "requeue": requeued,
+        "park_as_unknown": parked,
+        "expired": expired,
+        "max_age_hours": float(max_age_hours),
+        "changed": 0,
+    }
+    if not apply or not candidates:
+        return summary
+
+    changed = 0
+    with session_scope() as session:
+        for post_id, public_id, action, error in candidates:
+            post = session.get(PostRow, post_id)
+            if post is None or post.status not in ("scheduled", "failed") or post.published_at is not None:
+                continue
+            if action == "requeue":
+                post.status = "scheduled"
+                post.attempts = 0
+                post.scheduled_at = now
+                post.publish_error = (
+                    "requeued after pre-submit transport failure (nothing was submitted): " + error
+                )[:400]
+                log_action = "requeue-unsubmitted"
+            elif action == "expire":
+                post.status = "failed"
+                post.scheduled_at = None
+                post.publish_error = (
+                    "expired: never submitted and older than "
+                    f"{max_age_hours:g} h after a transport outage; content is stale. "
+                    "Requeue manually if it is still relevant. Last error: " + error
+                )[:400]
+                log_action = "expire-stale-unsubmitted"
+            else:
+                post.status = "publish_unknown"
+                post.scheduled_at = None
+                post.publish_error = (
+                    "outcome unknown: publisher driver died; verify the platform before retry. "
+                    "Last error: " + error
+                )[:400]
+                log_action = "park-publish-unknown"
+            session.add(
+                OperatorLog(
+                    action=log_action,
+                    target=public_id[:64],
+                    detail=error,
+                )
+            )
+            changed += 1
+    log.warning(
+        "requeue_unsubmitted: %d requeued, %d expired as stale, %d parked as unknown",
+        len(requeued),
+        len(expired),
+        len(parked),
+    )
+    summary["changed"] = changed
+    return summary
+
+
 def _touch_publish_heartbeat(post_id: int) -> bool:
     """Refresh liveness only while this worker still owns the publishing state."""
     with session_scope() as session:

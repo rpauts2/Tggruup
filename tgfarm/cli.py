@@ -553,6 +553,20 @@ def cmd_capability(args) -> int:
     return 0
 
 
+def cmd_requeue_unsubmitted(args) -> int:
+    """Requeue posts whose publication provably never left the farm."""
+    from tgfarm.s7_publish import requeue_unsubmitted
+
+    _bootstrap()
+    result = requeue_unsubmitted(
+        platform=args.platform,
+        limit=args.limit,
+        apply=bool(args.apply),
+    )
+    _print(result)
+    return 0
+
+
 def cmd_doctor(_args) -> int:
     from tgfarm.diagnostics import run_doctor
 
@@ -792,6 +806,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_reddit_test.set_defaults(func=cmd_reddit_test)
 
     sub.add_parser("channels", help="channel inventory").set_defaults(func=cmd_channels)
+    p_requeue = sub.add_parser(
+        "requeue-unsubmitted",
+        help="requeue posts that failed before submission; park uncertain ones",
+    )
+    p_requeue.add_argument("--platform", default=None, help="only this platform id")
+    p_requeue.add_argument("--limit", type=int, default=100)
+    p_requeue.add_argument(
+        "--apply",
+        action="store_true",
+        help="write the changes; without it the command is a dry run",
+    )
+    p_requeue.set_defaults(func=cmd_requeue_unsubmitted)
 
     p_report = sub.add_parser("report", help="performance report")
     p_report.add_argument("--days", type=int, default=7)
