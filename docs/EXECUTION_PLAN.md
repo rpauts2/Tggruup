@@ -42,7 +42,11 @@
 | P7b. LLM health из provenance черновиков | verified (локально) | tgfarm/core/llm_health.py, tgfarm/s4_generation (plans_after_llm_gate), tgfarm/s7_publish (_llm_recently_working), tests/test_llm_health_gate.py | пока все последние черновики офлайн, Дзен не генерируется и не публикуется (DZEN_REQUIRES_LLM); 153/156 отклонений за 6ч были именно такими офлайн-черновиками |
 | P7c. 403 consent не валит весь LLM-провайдер | verified (локально) | tgfarm/llm/client.py, tests/test_llm_model_level_403.py | причина «всё офлайн с 27.10»: 403 consent_required для первой free-модели убивал провайдера на час. Теперь паркуется только модель; 401/402 по-прежнему демоутят провайдера |
 | P7d. Честная проверка авторизации VK | verified (живой прогон) | tgfarm/platform_auth.py, tests/test_platform_auth_classification.py | VK 5.199 отдаёт response.groups объектом — KeyError(0) записывался как «доступ не пройден» (ложный алерт). Разбор обоих форматов; лимиты/5xx → authorized=None, а не False. Живьём: «Всякая всячина» подтверждена |
-| P9. Медиастудия (изображения/видео) | частично verified (живой прогон) | tgfarm/s6_visual/, tgfarm/s11_video/renderer.py, tgfarm/ui/app.js | обложки: детерминированный Pillow-рендер + AI-арт как опция (Pollinations упирается в free-лимит и уходит в шаблон). Вертикальное видео: канонический renderer (storyboard → кадры → ffmpeg zoompan → 1080×1920 MP4 + sidecar JSON) проверен живьём на опубликованном посте: 14 с, 1.98 МБ, запись Media kind=video. Кнопка «Создать вертикальное видео» есть в панели. Дублирующий модуль не создаём — один путь |
+| P11. Волна 1 (мультиагентная) | verified (локально) | tgfarm/platform_editorial.py, tgfarm/s3_router/__init__.py, tgfarm/api.py, tests/test_platform_editorial_policy.py, tests/test_router_capability.py | CommunityPolicy дошла до нативного редактора (бриф + промпт как инертные ограничения, audit с verified=False) и до маршрутизатора (недоступные уровни отбрасываются с причиной, ручные помечаются); API preview передаёт живую политику из вердикта селектора |
+| P12. Волна 2 (мультиагентная) | verified (локально) | tgfarm/s1_sources/health.py, tgfarm/s2_trends/explain.py, tgfarm/s10_format/__init__.py, tgfarm/api.py, tgfarm/pipeline.py | source_health + reset_source_cooldown; cluster_signals/explain_cluster (скорость/свежесть/насыщенность/повторяемость); plan_with_history (формат по выборке ≥ 3); API /api/sources/health, /api/trends/{id}/explain; алерт деградации источников называет три худших |
+| P13. Свежесть метрик в панели | verified (браузер) | tgfarm/s8_analytics/freshness.py, tgfarm/api.py, tgfarm/ui/, tests/test_metrics_freshness*.py | честные ok/stale/never/blocked по 32 площадкам, причина блокировки ВК (error 27); карточка «Свежесть метрик» на дашборде (0/2/29/1 живьём) |
+| P14. Матчинг метрик Дзена по заголовку | verified (локально) | tgfarm/s8_analytics/dzen_web.py, tests/test_dzen_metrics_matching.py | публикатор не сохраняет URL статьи (remote_id/url NULL у всех кросс‑постов) → метрики не сопоставлялись; теперь id из URL или однозначный заголовок (префикс ≥ 40 символов), неоднозначные не атрибутируются |
+| P15. Закрытие зависших резервов ИИ | verified (живой прогон) | tgfarm/llm/policy.py, tgfarm/maintenance.py, tests/test_stale_ai_reservations.py | 11 резервов закрыты без возврата бюджета (провайдер мог быть вызван); maintenance-шаг stale_ai_reservations; панель больше не кричит вечно |
 | P10c. Доска сверки оператора | verified (локально + браузер) | tgfarm/review.py, tgfarm/api.py (/api/review/queue), tgfarm/ui/index.html, tgfarm/ui/app.js, tgfarm/ui/app.css, tests/test_review_queue.py, tests/test_ui_pipeline_contracts.py | три корзины: publish_unknown (51), failed (365), gated без слота (41); у каждой карточки причина, возраст, число попыток и действия на существующих эндпоинтах (reconcile/retry/publish/reject); вкладка «Сверка» с счётчиком проверена в браузере |
 | P10. Интерфейс управления | in_progress | tgfarm/ui/, tgfarm/platforms.py, tgfarm/api.py | дефект ID ручного пакета исправлен + регрессия; статусы цикла/Promise.all уже верны и закрыты тестами; в карточке площадки — честный уровень возможности (см. P10b); добавлена вкладка «Сверка» (P10c) |
 | P10b. Честные уровни возможностей площадок | verified (локально) | tgfarm/platform_capability.py, tgfarm/platforms.py, tgfarm/cli.py, docs/PLATFORM_CENTER.md, tests/test_platform_capability.py | 5 уровней из кода (адаптеры + ручные пакеты): publish 23, draft_only 1 (vc.ru), manual_upload 8, read_only 0, unsupported 0; API-поля capability/capability_label/capability_note; CLI `capability --format markdown`; 10 тестов |
@@ -68,14 +72,16 @@
 
 - P10 (частично, 2026-11-04): подтверждён и исправлен дефект ID ручного пакета (`\${esc(p.id)}` внутри шаблонной строки давал литерал `${esc(p.id)}`, и getElementById/inline-onclick не находили узел); регрессия закреплена тестом `test_manual_package_controls_use_interpolated_ids`. Дефекты «HTTP-метод цикла» и «общий Promise.all» в текущем коде уже исправлены (POST + allSettled) и защищены tests/test_ui_pipeline_contracts.py.
 
+## Волны (мультиагентный режим)
+
+| Волна | Состав | Статус |
+| --- | --- | --- |
+| 1 | CommunityEditor (platform_editorial), RouterCapability (s3_router), MetricsFreshness (s8_analytics) | интегрирована и отправлена (`4c44884`) |
+| 2 | SourceHealth (s1_sources), TrendVelocity (s2_trends), FormatPlanner (s10_format) | интегрирована и отправлена (`0380674`) |
+
 ## Следующий конкретный шаг
 
-- 2026-11-04, continuous loop (9 коммитов от 59a5c87 до f428ee2): P3 закрыт; P10b уровни возможностей; P6c per-post deadline; P6d requeue/expire незапущенных (365 expired + 51 parked живьём); P6e обложка перед Дзеном (7 постов вылечены); P7b LLM health gate; P7c 403 consent не убивает провайдера; P7d разбор response.groups и authorized=None для лимитов; P8b сборщик метрик ВК.
-- 2026-11-04, доска сверки: `/api/review/queue` + вкладка «Сверка» с тремя корзинами (51/365/41) и действиями на существующих эндпоинтах; проверено в браузере на живой базе; тесты 1008 passed.
-
-## Следующий конкретный шаг
-
-1. Перезапустить ферму для загрузки P6e/P8b/P7d (в v20 ещё нет гарантии обложки и сборщика ВК) — после проверки, что нет постов в `publishing`.
-2. Блокер оператора: `VK_USER_TOKEN` (user scope wall) — без него метрики ВК и фото в ВК недоступны (error 27); после получения включить сбор и S12-обучение по ВК.
-3. LLM: free-тир ограничен (1 запрос/мин на модель, часть моделей требует consent на unorouter). После согласия на deepseek/flash цепочка начнёт отдавать онлайн-черновики — тогда Дзен оживёт сам (health-gate снимется по provenance).
-4. Дальше: reconcile 51 publish_unknown (нужна ручная сверка на Дзен), S12 по реальным метрикам, UI-раздел истории правил CommunityPolicy, медиастудия/видео.
+1. Блокер оператора: `VK_USER_TOKEN` (user scope wall) — без него метрики ВК и фото ВК недоступны (error 27); сборщик ВК и панель уже готовы.
+2. LLM: free-тир ограничен (1 запрос/мин на модель, часть моделей требует consent на unorouter). После согласия онлайн-черновики вернутся сами: health-gate снимется по provenance черновиков, Дзен продолжит.
+3. Оператору: 51 `publish_unknown` на сверку — вкладка «Сверка»; 365 expired не оживлять автоматически.
+4. Волна 3 (подготовлена): подключить `plan_with_history` в S4 и подать историю эффективности форматов из s8; показать `route_skips`, `explain_cluster` и `source_health` в панели (API готовы); история правил CommunityPolicy в панели; исторические публикации и дедупликация тем.
