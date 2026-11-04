@@ -808,6 +808,96 @@ async def _stop_publish_heartbeat(task: asyncio.Task | None) -> None:
         await task
 
 
+class PublishTimeout(RuntimeError):
+    """One publication exceeded its own budget; the batch keeps going.
+
+    This is deliberately a per-post deadline, not a tick-wide one: a hung browser
+    or a stalled HTTP request must not consume the whole publication window and
+    starve every other post.
+    """
+
+
+#: Conservative per-platform budgets. Dzen is a browser flow and needs the
+#: long deadline; API publishers should answer in seconds.
+DEFAULT_PUBLISH_TIMEOUT_S = {"telegram": 60.0, "vk": 120.0, "dzen": 600.0}
+MIN_PUBLISH_TIMEOUT_S = 10.0
+DEFAULT_PUBLISH_CANCEL_GRACE_S = 15.0
+
+
+def publish_timeout_seconds(platform: str, settings=None) -> float:
+    """Per-publication budget in seconds, overridable through settings."""
+    key = str(platform or "").lower()
+    if settings is None:
+        settings = get_settings()
+    raw = getattr(settings, f"{key}_publish_timeout_s", None)
+    if raw is None:
+        raw = DEFAULT_PUBLISH_TIMEOUT_S.get(key, 120.0)
+    try:
+        return max(MIN_PUBLISH_TIMEOUT_S, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_PUBLISH_TIMEOUT_S.get(key, 120.0)
+
+
+def publish_cancel_grace_seconds(settings=None) -> float:
+    if settings is None:
+        settings = get_settings()
+    try:
+        return max(0.0, float(getattr(settings, "publish_cancel_grace_s", DEFAULT_PUBLISH_CANCEL_GRACE_S)))
+    except (TypeError, ValueError):
+        return DEFAULT_PUBLISH_CANCEL_GRACE_S
+
+
+def _discard_task_result(task: "asyncio.Task") -> None:
+    """Consume an abandoned publisher's result so asyncio does not warn."""
+    if task.cancelled() or not task.done():
+        # ``cancelling`` is not ``done``: asking for the exception of a task that
+        # is still unwinding raises InvalidStateError.
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:  # pragma: no cover - defensive
+        return
+    if exc is not None:
+        log.error(
+            "abandoned publish worker failed: %s",
+            redact_sensitive_text(exc, limit=300),
+        )
+
+
+async def _await_publish(
+    coro,
+    *,
+    timeout_s: float,
+    platform: str,
+    post_id: int,
+    cancel_grace_s: float | None = None,
+):
+    """Await one platform call with its own deadline and bounded cancellation.
+
+    ``asyncio.wait_for`` alone is not enough here: a browser driver that swallows
+    cancellation would still block the tick. The coroutine is therefore wrapped in
+    a task, cancelled at the deadline, given a short grace period, and abandoned
+    (with its result consumed) if it refuses to die.
+    """
+    grace = DEFAULT_PUBLISH_CANCEL_GRACE_S if cancel_grace_s is None else cancel_grace_s
+    task = asyncio.ensure_future(coro)
+    done, _ = await asyncio.wait({task}, timeout=timeout_s)
+    if task in done:
+        return task.result()
+    task.cancel()
+    done, pending = await asyncio.wait({task}, timeout=grace)
+    if pending:
+        log.error(
+            "publish worker ignored cancellation for %s (%s); abandoning it to keep the tick alive",
+            post_id,
+            platform,
+        )
+    _discard_task_result(task)
+    raise PublishTimeout(
+        f"{platform} publish exceeded {timeout_s:g}s (deadline); outcome is unknown"
+    )
+
+
 async def _publish_one(
     post_id: int,
     target: int | str,
@@ -834,24 +924,40 @@ async def _publish_one(
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
     heartbeat_task = asyncio.create_task(_publish_heartbeat_loop(post_id))
+    budget = publish_timeout_seconds(platform, settings)
     message_id = None
     try:
         if platform == "dzen":
             inline_images = inline_media
             if isinstance(inline_media, tuple):
                 inline_images = [inline_media] if inline_media else None
-            outcome = await _publish_dzen(
-                post_id,
-                text,
-                media,
-                inline_images=inline_images,
+            outcome = await _await_publish(
+                _publish_dzen(
+                    post_id,
+                    text,
+                    media,
+                    inline_images=inline_images,
+                ),
+                timeout_s=budget,
+                platform=platform,
+                post_id=post_id,
             )
             message_id = outcome.get("message_id")
         elif platform == "vk":
-            outcome = await _publish_vk(post_id, text)
+            outcome = await _await_publish(
+                _publish_vk(post_id, text),
+                timeout_s=budget,
+                platform=platform,
+                post_id=post_id,
+            )
             message_id = outcome.get("message_id")
         elif settings.live and settings.telegram_bot_token:
-            message_id = await PUBLISHER.send(int(target), text, media)
+            message_id = await _await_publish(
+                PUBLISHER.send(int(target), text, media),
+                timeout_s=budget,
+                platform=platform,
+                post_id=post_id,
+            )
         else:
             log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
     except asyncio.CancelledError:
@@ -881,6 +987,10 @@ async def _publish_one(
                 retry_min = 60
         raw_error_text = str(exc)
         error_text = redact_sensitive_text(raw_error_text, limit=400)
+        if isinstance(exc, PublishTimeout):
+            log.error(
+                "publish deadline exceeded for %s (%s): %s", post_id, platform, error_text
+            )
         # A timeout/reset after sending may mean the platform already accepted it.
         ambiguous = _is_ambiguous_publish_error(exc)
         permanent = _is_permanent_publish_error(exc)
@@ -1126,14 +1236,27 @@ async def _publish_due_once(
                     # directions — the actual output is the honest signal.
                     skipped_llm += 1
                     continue
-            result = await _publish_one(
-                post_id,
-                target,
-                text,
-                media.get(post_id),
-                platform,
-                inline.get(post_id),
-            )
+            try:
+                result = await _publish_one(
+                    post_id,
+                    target,
+                    text,
+                    media.get(post_id),
+                    platform,
+                    inline.get(post_id),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one bad post must not stop the batch
+                failed += 1
+                errors.append(f"{platform}:{type(exc).__name__}")
+                log.error(
+                    "publish worker crashed for %s (%s): %s",
+                    post_id,
+                    platform,
+                    redact_sensitive_text(exc, limit=300),
+                )
+                continue
             if result.get("ok"):
                 if result.get("skipped"):
                     skipped += 1

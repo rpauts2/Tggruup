@@ -313,6 +313,12 @@ class Settings(BaseSettings):
     dzen_browser: str = Field(default="chrome", alias="DZEN_BROWSER")
     dzen_headless: bool = Field(default=False, alias="DZEN_HEADLESS")
     dzen_publish_timeout_s: int = Field(default=600, alias="DZEN_PUBLISH_TIMEOUT_S")
+    # Per-publication budget for the non-browser publishers. One hung request
+    # must never consume the whole tick: the batch continues after the deadline.
+    vk_publish_timeout_s: int = Field(default=120, alias="VK_PUBLISH_TIMEOUT_S")
+    telegram_publish_timeout_s: int = Field(default=60, alias="TELEGRAM_PUBLISH_TIMEOUT_S")
+    # How long to wait for a cancelled publisher before abandoning it.
+    publish_cancel_grace_s: int = Field(default=15, alias="PUBLISH_CANCEL_GRACE_S")
     # Stop retrying a primary publication after this many definite failures.
     primary_publish_max_attempts: int = Field(default=5, alias="PRIMARY_PUBLISH_MAX_ATTEMPTS")
     dzen_login_timeout_s: int = Field(default=600, alias="DZEN_LOGIN_TIMEOUT_S")
