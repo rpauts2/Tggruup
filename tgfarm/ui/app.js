@@ -3083,50 +3083,79 @@
     if (state.inFlight) return;
     state.inFlight = true;
     try {
-      const [status, report, runs, trends, posts, channels, sources, dzen, crossposts, deliveryHealth, memory, platforms, redditMetrics, aiUsage, distributionPlan, agentBenchmark] = await Promise.all([
-        api("/api/status"), api("/api/report?days=14"), api("/api/runs?limit=40"),
-        api("/api/trends?limit=25"),
-        api(`/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`),
-        api("/api/channels"), api("/api/sources"), api("/api/dzen/status"),
-        api("/api/crossposts?limit=100"), api("/api/crossposts/health"),
-        api(`/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`),
-        api("/api/platforms"), api("/api/reddit/metrics"), api("/api/ai/usage?days=7"),
-        api("/api/distribution/plan"), api("/api/agents/benchmark"),
-      ]);
+      const endpoints = {
+        status: "/api/status",
+        report: "/api/report?days=14",
+        runs: "/api/runs?limit=40",
+        trends: "/api/trends?limit=25",
+        posts: `/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`,
+        channels: "/api/channels",
+        sources: "/api/sources",
+        dzen: "/api/dzen/status",
+        crossposts: "/api/crossposts?limit=100",
+        deliveryHealth: "/api/crossposts/health",
+        memory: `/api/memory?limit=20${state.memoryQuery ? "&query=" + encodeURIComponent(state.memoryQuery) : ""}`,
+        platforms: "/api/platforms",
+        redditMetrics: "/api/reddit/metrics",
+        aiUsage: "/api/ai/usage?days=7",
+        distributionPlan: "/api/distribution/plan",
+        agentBenchmark: "/api/agents/benchmark",
+      };
+      // One failing endpoint must not kill the whole dashboard: degraded
+      // sections keep their previous content and are reported in a toast.
+      const settled = await Promise.allSettled(Object.values(endpoints).map((path) => api(path)));
+      const data = {};
+      const failed = [];
+      Object.keys(endpoints).forEach((key, index) => {
+        const outcome = settled[index];
+        if (outcome.status === "fulfilled") data[key] = outcome.value;
+        else failed.push(key);
+      });
+      if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
+      if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
 
-      const mode = status.mode || "?";
-      const pill = $("#mode-pill");
-      pill.textContent = mode === "live" ? "LIVE" : mode === "dry" ? "DRY-RUN" : "OFF";
-      pill.className = "pill " + (mode === "live" ? "pill-ok" : mode === "dry" ? "pill-warn" : "pill-err");
-      const farmPill = $("#farm-pill");
-      if (farmPill) {
-        farmPill.textContent = status.scheduler_running ? "Ферма: работает" : "Ферма: остановлена";
-        farmPill.className = "pill " + (status.scheduler_running ? "pill-ok" : "pill-err");
+      if ("status" in data) {
+        const mode = data.status.mode || "?";
+        const pill = $("#mode-pill");
+        pill.textContent = mode === "live" ? "LIVE" : mode === "dry" ? "DRY-RUN" : "OFF";
+        pill.className = "pill " + (mode === "live" ? "pill-ok" : mode === "dry" ? "pill-warn" : "pill-err");
+        const farmPill = $("#farm-pill");
+        if (farmPill) {
+          farmPill.textContent = data.status.scheduler_running ? "Ферма: работает" : "Ферма: остановлена";
+          farmPill.className = "pill " + (data.status.scheduler_running ? "pill-ok" : "pill-err");
+        }
+        $("#brand-sub").textContent =
+          `${data.status.channels} каналов · ${data.status.sources} источников · ${data.status.embedder}`;
+        renderAlerts(data.status.alerts || []);
+        renderKPIs(data.status.kpis || data.status);
       }
-      $("#brand-sub").textContent =
-        `${status.channels} каналов · ${status.sources} источников · ${status.embedder}`;
-
-      renderAlerts(status.alerts || []);
-      state.dzenStatus = dzen || {};
-      renderDzen(dzen || {});
-      renderKPIs(status.kpis || status);
-      renderReport(report);
-      renderPipeline(runs.runs || []);
-      renderTrends(trends.trends || []);
-      renderPosts(posts.posts || []);
-      renderChannels(channels.channels || []);
-      renderSources(sources.sources || []);
-      state.data.crossposts = crossposts;
-      renderCrosspostHealth(deliveryHealth || {});
-      renderCrossposts(crossposts.crossposts || []);
-      renderRuns(runs.runs || []);
-      renderMemory(memory || {});
+      if ("dzen" in data) {
+        state.dzenStatus = data.dzen;
+        renderDzen(data.dzen);
+      }
+      if ("report" in data) renderReport(data.report);
+      if ("runs" in data) {
+        renderPipeline(data.runs.runs || []);
+        renderRuns(data.runs.runs || []);
+      }
+      if ("trends" in data) renderTrends(data.trends.trends || []);
+      if ("posts" in data) renderPosts(data.posts.posts || []);
+      if ("channels" in data) renderChannels(data.channels.channels || []);
+      if ("sources" in data) renderSources(data.sources.sources || []);
+      if ("crossposts" in data) {
+        state.data.crossposts = data.crossposts;
+        renderCrossposts(data.crossposts.crossposts || []);
+      }
+      if ("deliveryHealth" in data) renderCrosspostHealth(data.deliveryHealth);
+      if ("memory" in data) renderMemory(data.memory);
       renderTopicDossier(state.topicDossier);
-      renderPlatforms(platforms || {});
-      renderDistributionPlan(distributionPlan || {});
-      renderRedditMetrics(redditMetrics || {});
-      renderAIUsage(aiUsage || {});
-      renderAgentBenchmark(agentBenchmark || {}, trends.trends || []);
+      if ("platforms" in data) renderPlatforms(data.platforms);
+      if ("distributionPlan" in data) renderDistributionPlan(data.distributionPlan);
+      if ("redditMetrics" in data) renderRedditMetrics(data.redditMetrics);
+      if ("aiUsage" in data) renderAIUsage(data.aiUsage);
+      if ("agentBenchmark" in data) {
+        renderAgentBenchmark(data.agentBenchmark, "trends" in data ? data.trends.trends || [] : []);
+      }
     } catch (e) {
       toast("Не удалось обновить данные: " + e.message, "err");
     } finally {
@@ -3140,7 +3169,7 @@
     btn.disabled = true;
     toast("Запущен цикл конвейера…");
     try {
-      const res = await api("/api/cycle?collect=true&max_clusters=8");
+      const res = await post("/api/cycle?collect=true&max_clusters=8", {});
       const ok = Object.values(res.stages || {}).filter((s) => s.ok).length;
       const bad = (res.errors || []).length;
       toast(bad ? `Цикл завершён с ошибками (${bad}) за ${res.duration_ms} мс`
