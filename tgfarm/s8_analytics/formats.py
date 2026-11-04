@@ -13,7 +13,9 @@ Honest limits, stated up front:
   cannot look good on the strength of unmeasured posts;
 * rows are per channel owner, not per crosspost destination;
 * a window with fewer than ``MIN_SAMPLE`` measured posts is reported with
-  ``reliable: False`` instead of a confident number.
+  ``reliable: False`` instead of a confident number;
+* ``platform`` scopes the whole report to one destination family, because a
+  format that works on Reddit has not earned the right to decide a Дзен post.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from tgfarm.core.logging import get_logger
-from tgfarm.db.models import Post, PostStat
+from tgfarm.db.models import Channel, Post, PostStat
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -39,26 +41,40 @@ def _aware(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def format_performance(days: int = 30, *, now: datetime | None = None) -> dict[str, Any]:
-    """Per-format published counts and measured engagement inside the window."""
+def format_performance(
+    days: int = 30,
+    *,
+    platform: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Published posts and measured engagement per post format inside the window.
+
+    ``platform`` restricts the report to channels of that platform; without it the
+    report mixes every destination and must not drive a per-platform choice.
+    """
     current = now or datetime.now(UTC)
     current = _aware(current) or current
     days = max(1, min(int(days), 365))
     since = current - timedelta(days=days)
+    platform_key = str(platform or "").strip().lower() or None
 
     rows: dict[str, dict[str, Any]] = {}
     with session_scope() as session:
-        posts = session.execute(
-            select(Post.id, Post.post_format, Post.published_at).where(
-                Post.status == "published",
-                Post.published_at.isnot(None),
-                Post.published_at >= since,
+        statement = select(Post.id, Post.post_format, Post.published_at).where(
+            Post.status == "published",
+            Post.published_at.isnot(None),
+            Post.published_at >= since,
+        )
+        if platform_key is not None:
+            statement = statement.join(Channel, Channel.id == Post.channel_id).where(
+                func.lower(Channel.platform) == platform_key
             )
-        ).all()
+        posts = session.execute(statement).all()
         if not posts:
             return {
                 "window_days": days,
                 "since": since.isoformat(),
+                "platform": platform_key,
                 "formats": {},
                 "measured_total": 0,
                 "published_total": 0,
@@ -110,11 +126,36 @@ def format_performance(days: int = 30, *, now: datetime | None = None) -> dict[s
     return {
         "window_days": days,
         "since": since.isoformat(),
+        "platform": platform_key,
         "formats": ordered,
         "measured_total": sum(item["measured"] for item in formats.values()),
         "published_total": sum(item["published"] for item in formats.values()),
         "min_sample": MIN_SAMPLE,
     }
+
+
+def planner_history(
+    platform: str,
+    *,
+    days: int = 30,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Rows shaped for `s10_format.plan_with_history`, scoped to one platform.
+
+    `measured` is what the planner gates its sample on: a published post nobody
+    ever measured is activity, not evidence. `published` travels alongside it so
+    the reason string can say how much of the window stayed unmeasured.
+    """
+    report = format_performance(days, platform=platform, now=now)
+    history: dict[str, dict[str, Any]] = {}
+    for fmt, item in report["formats"].items():
+        history[fmt] = {
+            "measured": int(item["measured"]),
+            "published": int(item["published"]),
+            "avg_engagement": float(item["avg_engagement"]),
+            "reliable": bool(item["reliable"]),
+        }
+    return history
 
 
 def best_format(days: int = 30, *, now: datetime | None = None) -> dict[str, Any] | None:
@@ -126,4 +167,4 @@ def best_format(days: int = 30, *, now: datetime | None = None) -> dict[str, Any
     return None
 
 
-__all__ = ["MIN_SAMPLE", "best_format", "format_performance"]
+__all__ = ["MIN_SAMPLE", "best_format", "format_performance", "planner_history"]

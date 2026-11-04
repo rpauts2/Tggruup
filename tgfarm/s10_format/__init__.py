@@ -313,8 +313,16 @@ def _normalise_media_kinds(media_kinds: Iterable[str] | str | None) -> set[str]:
 
 
 def _as_sample_size(row: Mapping[str, Any]) -> int:
-    """Posts behind a history row: `n` first, `published` as the documented alias."""
-    for key in ("n", "published"):
+    """Posts behind a history row: `measured` first, then `n`, then `published`.
+
+    Measured outranks the other keys on purpose, and a measured count of zero
+    counts as zero rather than as «no such key»: twelve posts nobody ever
+    measured is no evidence at all. Callers that only know a raw count still get
+    the old behaviour through `n`/`published`.
+    """
+    for key in ("measured", "n", "published"):
+        if key not in row:
+            continue
         value = row.get(key)
         if value is None or isinstance(value, bool):
             continue
@@ -322,9 +330,20 @@ def _as_sample_size(row: Mapping[str, Any]) -> int:
             size = int(float(value))
         except (TypeError, ValueError):
             continue
-        if size > 0:
-            return size
+        return max(0, size)
     return 0
+
+
+def _as_count(row: Mapping[str, Any], key: str) -> int | None:
+    """A positive integer under `key`, or None when the row does not carry it."""
+    value = row.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        size = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
 
 
 def _as_engagement(row: Mapping[str, Any]) -> float | None:
@@ -378,13 +397,22 @@ def _history_winner(
 def _history_overview(
     history: Mapping[str, Mapping[str, Any]] | None,
 ) -> dict[str, dict[str, float | int | None]]:
-    """Echo of the parsed history, so a panel can show what the decision saw."""
+    """Echo of the parsed history, so a panel can show what the decision saw.
+
+    `measured` and `published` stay separate: a panel that shows only one number
+    cannot tell a well-measured format from a rarely-measured one.
+    """
     overview: dict[str, dict[str, float | int | None]] = {}
     for raw_format, row in (history or {}).items():
         if not isinstance(row, Mapping):
             continue
         fmt = str(raw_format or "").strip().lower()
-        overview[fmt] = {"n": _as_sample_size(row), "avg_engagement": _as_engagement(row)}
+        overview[fmt] = {
+            "n": _as_sample_size(row),
+            "measured": _as_count(row, "measured"),
+            "published": _as_count(row, "published"),
+            "avg_engagement": _as_engagement(row),
+        }
     return overview
 
 
@@ -440,9 +468,12 @@ def plan_with_history(
 
     * format, length and outline come from `plan_format` + `fit_persona`, or
       straight from `plan_for_cluster` when a cluster is supplied;
-    * `history` (`{format: {published, avg_engagement, n}}`) may override the
-      format only when a row carries at least `MIN_HISTORY_SAMPLE` posts; below
-      that the base choice stands and the reason says «мало данных»;
+    * `history` (`{format: {published, measured, avg_engagement}}`) may override
+      the format only when a row carries at least `MIN_HISTORY_SAMPLE` *measured*
+      posts — published-but-never-measured posts are activity, not evidence.
+      `n` is still read as the sample size for callers without a measured count,
+      and `published` is never preferred over it. Below the threshold the base
+      choice stands and the reason says «мало данных»;
     * a destination whose capability is not `publish` keeps the same length
       window and is flagged `manual=True`, because a human finishes delivery;
     * nothing is invented: no history means the base plan plus an honest reason,

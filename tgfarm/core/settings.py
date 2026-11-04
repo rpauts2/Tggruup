@@ -333,6 +333,15 @@ class Settings(BaseSettings):
     # Dzen demotes template feeds: when every LLM is down, its posts must wait
     # in the queue instead of shipping deterministic composer text.
     dzen_requires_llm: bool = Field(default=True, alias="DZEN_REQUIRES_LLM")
+    # S4 may let measured format performance on *this* platform override the
+    # rules-only choice. Off by default: the live window carries 445 published
+    # but only 15 measured posts, so per-platform samples are mostly too thin to
+    # steer generation yet — turning this on before they are not would let noise
+    # pick the format.
+    format_performance_planner: bool = Field(default=False, alias="FORMAT_PERFORMANCE_PLANNER")
+    format_performance_window_days: int = Field(
+        default=60, ge=1, le=365, alias="FORMAT_PERFORMANCE_WINDOW_DAYS"
+    )
     # When Dzen shows the "I'm not a robot" box, the headed window stays open
     # and the farm waits this long for the operator to click it.
     dzen_captcha_wait_s: int = Field(default=180, alias="DZEN_CAPTCHA_WAIT_S")

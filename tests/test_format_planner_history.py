@@ -114,7 +114,14 @@ def test_small_sample_does_not_override_the_base_format():
     assert result["format"] == "news"
     assert result["source"] == "base"
     assert "мало данных" in result["reason"]
-    assert result["history"]["article"] == {"n": 2, "avg_engagement": 0.4}
+    # The echo now separates measured from published: a row that only carries a
+    # raw count reports `measured: None` rather than implying it was measured.
+    assert result["history"]["article"] == {
+        "n": 2,
+        "measured": None,
+        "published": 2,
+        "avg_engagement": 0.4,
+    }
 
 
 def test_video_history_is_ignored_while_no_footage_is_attached():

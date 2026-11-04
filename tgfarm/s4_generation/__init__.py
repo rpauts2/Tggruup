@@ -16,6 +16,7 @@ import random
 import re
 import uuid
 from datetime import date
+from typing import Any
 
 from sqlalchemy import select
 
@@ -992,11 +993,68 @@ def plans_after_llm_gate(plans: list, *, requires_llm: bool, llm_ok: bool) -> li
     return [plan for plan in plans if getattr(plan, "platform", "") != "dzen"]
 
 
+def _media_kinds(raw_items: list, video) -> set[str]:
+    """Media the story can actually be told with, as the planner expects it.
+
+    `video` is passed separately: footage licensed by S11 counts even when no
+    feed entry carried one.
+    """
+    kinds = {str(getattr(item, "media_kind", "") or "").strip().lower() for item in raw_items}
+    kinds.discard("")
+    if video is not None:
+        kinds.add("video")
+    return kinds
+
+
+def format_plan_for(
+    plan,
+    *,
+    cluster_view,
+    topic: str,
+    media_kinds: set[str],
+    has_video: bool,
+    history: dict[str, dict[str, Any]] | None,
+    use_performance: bool,
+) -> Any:
+    """One plan's format choice: rules only, or rules plus measured performance.
+
+    With ``use_performance`` off the planner is never consulted and the result is
+    byte-identical to `plan_for_cluster`, so switching the flag off restores the
+    previous generation strategy exactly.
+    """
+    from tgfarm.s10_format import as_format_plan, plan_for_cluster, plan_with_history
+
+    if not use_performance:
+        return plan_for_cluster(cluster_view, plan.persona, has_video=has_video)
+
+    platform_id = str(getattr(plan, "platform", "") or "").strip().lower()
+    chosen = plan_with_history(
+        plan.persona,
+        platform_id=platform_id,
+        media_kinds=media_kinds,
+        topic=topic,
+        history=history or {},
+        cluster=cluster_view,
+    )
+    measured = sum(int(row.get("measured") or 0) for row in chosen["history"].values())
+    log.info(
+        "s4 format plan %s/%s: %s source=%s confidence=%.2f measured=%d platform=%s",
+        plan.channel_id,
+        getattr(plan, "cluster_public_id", ""),
+        chosen["format"],
+        chosen["source"],
+        float(chosen["confidence"]),
+        measured,
+        platform_id,
+    )
+    return as_format_plan(chosen)
+
+
 async def run(cluster_public_id: str) -> list[str]:
     """Route a cluster, choose a format per channel, and generate drafts."""
     from tgfarm.s2_trends import mark_consumed
     from tgfarm.s3_router import plan_cluster
-    from tgfarm.s10_format import plan_for_cluster
+    from tgfarm.s8_analytics.formats import planner_history
     from tgfarm.s11_video import fetch_video_for
 
     with session_scope() as session:
@@ -1069,6 +1127,27 @@ async def run(cluster_public_id: str) -> list[str]:
             plans = gated
 
     with StageTimer("s4_generate") as timer:
+        kinds = _media_kinds(raw_items, video)
+        history_cache: dict[str, dict[str, Any]] = {}
+
+        async def _performance_history(platform_id: str) -> dict[str, dict[str, Any]]:
+            """One platform-scoped read per format, reused across this cluster's plans."""
+            if platform_id not in history_cache:
+                try:
+                    history_cache[platform_id] = await to_thread(
+                        planner_history,
+                        platform_id,
+                        days=settings.format_performance_window_days,
+                    )
+                except Exception as exc:  # noqa: BLE001 - no evidence beats a broken read
+                    history_cache[platform_id] = {}
+                    log.warning(
+                        "s4: format performance unreadable for %s (%s) — rules only",
+                        platform_id,
+                        exc,
+                    )
+            return history_cache[platform_id]
+
         for plan in plans:
             try:
                 cluster_view = ClusterSchema(
@@ -1078,8 +1157,19 @@ async def run(cluster_public_id: str) -> list[str]:
                     niche=cluster.niche,
                     heat=cluster.heat,
                 )
-                format_plan = plan_for_cluster(
-                    cluster_view, plan.persona, has_video=video is not None
+                history = (
+                    await _performance_history(str(getattr(plan, "platform", "") or ""))
+                    if settings.format_performance_planner
+                    else {}
+                )
+                format_plan = format_plan_for(
+                    plan,
+                    cluster_view=cluster_view,
+                    topic=cluster.label or "",
+                    media_kinds=kinds,
+                    has_video=video is not None,
+                    history=history,
+                    use_performance=settings.format_performance_planner,
                 )
                 draft = await generate(plan, raw_items, format_plan, video=video)
             except Exception as exc:  # noqa: BLE001 - one bad plan must not kill the cluster
