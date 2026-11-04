@@ -42,6 +42,7 @@ Thumbs.db
 
 # --- agent tool configs ----------------------------------------------
 .serena/
+.sharrowkin/
 
 # --- internal work artifacts (audit reports, diagnostics) ---------------------
 review/
