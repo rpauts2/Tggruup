@@ -126,6 +126,35 @@
       </div>`).join("");
   }
 
+  function renderMetricsFreshness(payload) {
+    const root = $("#metrics-freshness");
+    if (!root) return;
+    const platforms = (payload && payload.platforms) || {};
+    const summary = (payload && payload.summary) || {};
+    const meta = $("#metrics-freshness-meta");
+    if (meta) {
+      meta.textContent = `${summary.ok || 0} свежих · ${summary.stale || 0} устаревших · ${summary.never || 0} без данных · ${summary.blocked || 0} заблокировано`;
+    }
+    const order = { ok: 0, stale: 1, never: 2, blocked: 3 };
+    const rows = Object.values(platforms)
+      .filter((row) => row && (Number(row.snapshots || 0) > 0 || row.status === "blocked"))
+      .sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || String(a.id).localeCompare(String(b.id)));
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty">Метрик пока нет: ни один сборщик не записал снимок.</div>';
+      return;
+    }
+    const labels = { ok: "свежие", stale: "устарели", never: "нет данных", blocked: "сбор заблокирован" };
+    root.innerHTML = rows
+      .map((row) => {
+        const age = row.age_hours === null || row.age_hours === undefined ? "—" : `${Math.round(Number(row.age_hours))} ч`;
+        return '<div class="item"><div class="item-main"><strong>' + esc(row.name || row.id) + "</strong>"
+          + '<span class="tag">' + esc(labels[row.status] || row.status) + "</span></div>"
+          + '<div class="item-meta">снимков ' + Number(row.snapshots || 0) + " · последний " + age
+          + (row.reason ? " · " + esc(row.reason) : "") + "</div></div>";
+      })
+      .join("");
+  }
+
   function renderReport(report) {
     const hours = report.hours || {};
     const entries = Object.entries(hours)
@@ -3170,6 +3199,7 @@
         platforms: "/api/platforms",
         redditMetrics: "/api/reddit/metrics",
         aiUsage: "/api/ai/usage?days=7",
+        metricsFreshness: "/api/metrics/freshness",
         distributionPlan: "/api/distribution/plan",
         agentBenchmark: "/api/agents/benchmark",
       };
@@ -3206,6 +3236,7 @@
         renderDzen(data.dzen);
       }
       if ("report" in data) renderReport(data.report);
+      if ("metricsFreshness" in data) renderMetricsFreshness(data.metricsFreshness);
       if ("runs" in data) {
         renderPipeline(data.runs.runs || []);
         renderRuns(data.runs.runs || []);

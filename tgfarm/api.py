@@ -1666,6 +1666,25 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def trends(limit: int = Query(25, ge=1, le=200)) -> dict:
         return {"trends": await io(_trends, limit)}
 
+    @app.get("/api/trends/{cluster_public_id}/explain")
+    async def trend_explain(cluster_public_id: str) -> dict:
+        """Why this cluster is hot: numbers, not adjectives."""
+        from tgfarm.s2_trends.explain import explain_cluster
+
+        result = await io(explain_cluster, cluster_public_id)
+        if not result or result.get("ok") is False:
+            raise HTTPException(404, "Кластер не найден")
+        return result
+
+    @app.get("/api/sources/health")
+    async def sources_health() -> dict:
+        """Per-source fleet state: cooldown, failures and why."""
+        from tgfarm.s1_sources.health import source_health, source_health_summary
+
+        detail = await io(source_health)
+        summary = await io(source_health_summary)
+        return {"summary": summary, "sources": detail.get("sources") or []}
+
     @app.get("/api/sources")
     async def sources() -> dict:
         return {"sources": await io(_sources)}
@@ -4442,6 +4461,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
         except AgentBenchmarkError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/metrics/freshness")
+    async def metrics_freshness_api() -> dict:
+        """Which platforms actually have measured data, and when it was taken."""
+        from tgfarm.s8_analytics.freshness import freshness_summary, metrics_freshness
+
+        detail = await io(metrics_freshness)
+        summary = await io(freshness_summary)
+        return {"summary": summary, "platforms": detail.get("platforms") or {}}
 
     @app.get("/api/metrics")
     async def metrics() -> dict:

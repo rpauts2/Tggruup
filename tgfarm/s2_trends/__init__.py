@@ -481,3 +481,9 @@ def is_near_dup(fp_a: int, fp_b: int, threshold: int = 3) -> bool:
     return is_near_duplicate(fp_a, fp_b, threshold)
 
 
+# Explainability lives in its own module and is re-exported here so callers can
+# keep using `s2_trends.cluster_signals`. The import sits at the bottom on
+# purpose: `explain` must never be pulled in by the scoring path, and it does not
+# import anything back from this package.
+from tgfarm.s2_trends.explain import cluster_signals, explain_cluster  # noqa: E402
+

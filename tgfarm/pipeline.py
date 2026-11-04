@@ -389,12 +389,30 @@ def _source_health_alert(enabled_source_rows) -> dict | None:
                 "или cooldown. Проверь сеть и доступность источников; коллекция новостей может остановиться."
             ),
         }
+    # Name the worst offenders so the operator can act without another query.
+    detail = ""
+    try:
+        from tgfarm.s1_sources.health import source_health
+
+        rows = [
+            row
+            for row in (source_health().get("sources") or [])
+            if row.get("state") in {"cooldown", "failing"}
+        ]
+        rows.sort(key=lambda row: (row.get("cooldown_until") or "", -int(row.get("failures") or 0)))
+        names = [
+            f"{row.get('id')} ({row.get('state')}, {str(row.get('reason'))[:80]})" for row in rows[:3]
+        ]
+        if names:
+            detail = " Худшие: " + "; ".join(names) + "."
+    except Exception:  # noqa: BLE001 - the alert must exist even without the detail
+        detail = ""
     return {
         "level": "warning",
         "code": "source_fleet_degraded",
         "message": (
             f"{count} из {total} включённых источников не прошли несколько попыток и находятся "
-            "в cooldown/повторных ошибках. Остальные источники продолжают работать."
+            "в cooldown/повторных ошибках. Остальные источники продолжают работать." + detail
         ),
     }
 
