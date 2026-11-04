@@ -2700,7 +2700,7 @@
         <h4>Ручная подготовка для остальных площадок</h4>
         <p class="drawer-meta">TgFarm адаптирует заголовок, текст, теги и медиа. Этот режим ничего не публикует: проверь пакет и отправь его через официальный редактор площадки.</p>
         <div class="short-video-actions">
-          <select id="manual-platform-\${esc(p.id)}" aria-label="Площадка для ручной подготовки">
+          <select id="manual-platform-${esc(p.id)}" aria-label="Площадка для ручной подготовки">
             <option value="vk_clips">VK Клипы</option>
             <option value="rutube">RUTUBE</option>
             <option value="vc_ru">vc.ru</option>
@@ -2715,9 +2715,9 @@
             <option value="douyin">Douyin</option>
             <option value="rednote">RedNote / Xiaohongshu</option>
           </select>
-          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmPrepareManualDraft('\${esc(p.id)}')">Подготовить пакет</button>
+          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmPrepareManualDraft('${esc(p.id)}')">Подготовить пакет</button>
         </div>
-        <div class="manual-draft-result" id="manual-draft-result-\${esc(p.id)}"></div>
+        <div class="manual-draft-result" id="manual-draft-result-${esc(p.id)}"></div>
       </div>
 
       ${(p.claims || []).length ? `<div class="drawer-block"><h4>Проверенные утверждения</h4>
@@ -3348,6 +3348,7 @@
       const selected = result.selected || null;
       const candidates = result.candidates || [];
       const notes = result.general_notes || [];
+      const policyVerdict = result.policy_verdict || null;
       const renderCandidate = (item, isBest = false) => {
         const url = safeExternalUrl(item.url);
         const score = Math.max(0, Math.min(100, Number(item.score || 0)));
@@ -3382,6 +3383,9 @@
         <div class="community-target-summary">
           <strong>${selected ? "Место подобрано" : "Безопасное место не найдено"}</strong>
           <p>${esc(result.detail || "")}</p>
+          ${policyVerdict ? `<p class="community-policy-verdict ${policyVerdict.allow_publish ? "is-ok" : "is-blocked"}">CommunityPolicy: ${policyVerdict.allow_publish
+            ? `правила подтверждены, проверены ${Number(policyVerdict.age_hours || 0).toFixed(1)} ч назад`
+            : `публикация запрещена — ${esc(policyVerdict.reason || "правила не подтверждены")}`}</p>` : ""}
           <small>${platform === "vc_ru"
             ? "Перед завершением проверь, что эта тема отображается в редакторе."
             : "Перед завершением проверь, что это сообщество выбрано и теги подходят. Одобрение модераторов не гарантируется."}</small>

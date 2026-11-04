@@ -3,7 +3,7 @@
 Файл-реестр для продолжения работы без повторного исследования репозитория.
 Статусы: `todo`, `in_progress`, `blocked`, `implemented` (код + тесты локально), `verified` (есть подтверждающая проверка).
 
-Обновлён: 2026-11-04. Ветка: `main` (единственная рабочая). HEAD перед этапом: `1ccd67a`.
+Обновлён: 2026-11-04 (P3 закрыт). Ветка: `main` (единственная рабочая). HEAD перед этапом: `1ccd67a`.
 
 ## Ключевые факты о проекте
 
@@ -27,7 +27,7 @@
 | P0-fix. Резерв бюджета при ошибке настроек | verified (локально) | tgfarm/platform_editorial.py:566–602 | `get_settings()` перенесён внутрь try; тест добавлен (коммиты b43873e, 6d430b0, 8a15765) |
 | P1. Аудит возможностей S1–S12 | in_progress | docs/MODERNIZATION_STATUS.md, этот файл | матрица ниже; продолжается по ходу блоков |
 | P2. Глобальный редакционный план | verified (локально) | tgfarm/editorial_plan.py, tgfarm/api.py:1787–1809, tgfarm/ui/, tests/test_editorial_plan.py | динамический календарь, ревизии + история, балансировка каналов; API `/api/editorial/plan(/refresh|/history)`; вкладка «План тем» в UI проверена в браузере (0842834, eae4444) |
-| P3. Сообщества и правила (Reddit/Пикабу/VC.ru) | in_progress | tgfarm/community_policy.py, tests/test_community_policy.py | контракт CommunityPolicy написан (policy_from_pikabu/reddit/vc_candidate, assess_policy с проверкой свежести правил, правила — инертные строки); тесты: 1 passed / 6 failed — контрактные расхождения, см. «Известные проблемы» (контрольная точка 2026-11-04) |
+| P3. Сообщества и правила (Reddit/Пикабу/VC.ru) | verified (локально) | tgfarm/community_policy.py, tgfarm/db/models.py (CommunityPolicySnapshot), tgfarm/community_targets.py, tgfarm/community_drafts.py, tgfarm/s9_growth/reddit_scout.py, tgfarm/api.py, tgfarm/ui/app.js, tests/test_community_policy.py | контракт CommunityPolicy закрыт: policy_from_candidate/policy_from_reddit/policy_for_plan, assess_policy → {status, allow_publish, reason, blockers, age_hours}, gate_plan для панели, история правил (append-only + rules_hash + коллапс дублей), гейт перед публикацией Пикабу и Reddit, API /api/community-policy/history, плашка вердикта в панели. 15 тестов зелёные |
 | P4. Мультиагентная команда, бюджет, benchmark | todo | — | |
 | P5. Нативная адаптация под площадки | implemented (частично) | tgfarm/platform_editorial.py | есть профили, guardrail, фактчек-контроль чисел/URL |
 | P6. Автопубликация, очереди, восстановление | todo | — | есть heartbeat, retry-after, unknown-reconcile (по ROADMAP_NEXT) |
@@ -46,18 +46,20 @@
 ## Известные проблемы
 
 - CI №830 (run 41599822680) упал на тесте metadata; исправление выполнено и закоммичено в main (локально). Push был заблокирован: GitHub не был подключён в Sharrowkin; 2026-11-04 выполняется отправка накопленных коммитов (445+) в origin/main.
-- P3 checkpoint 2026-11-04: tests/test_community_policy.py — 6 failed / 1 passed. Причины (со стороны теста): 1) ожидается непустой rules_source у policy_from_pikabu_candidate; 2) policy_from_reddit вызывается без keyword-only subreddit; 3–5) assess_policy возвращает {status, reason, blockers}, тест ждёт allow_publish; 6) requirements round-trip: тест требует либо пусто, либо текст с «Запрещены», реализация хранит строки как есть. Исправление — выравнивание контракта (решить, какая сторона правильная); тесты не отключать.
+- P3 закрыт 2026-11-04. Принятое решение по контракту: `requirements` = правила назначения (verbatim, инертные) + editorial brief, в таком порядке; `rules_source` никогда не пуст (SELECTOR_RULES_SOURCE); `assess_policy` отдаёт `allow_publish` (гейт не пересчитывает статус). Один тест (`test_policy_from_pikabu_candidate`) требовал ровно `editorial_brief` и был несовместим с `test_to_dict_round_trip_and_inert_rules` (сохранение сырого текста правил) — обновлён сам тест, свойство безопасности сохранено.
 - Windows EXE локально: PyInstaller не уложился в 600 с при анализе общей среды; в CI сборка проходит отдельно.
 - UI-дефекты-кандидаты (метод запроса цикла, интерполяция manual package ID, общий Promise.all) — не исправлены.
 
 ## Последний завершённый этап
 
 - P2: UI-вкладка «План тем» — рендер плана/ревизий, кнопка фиксации, CSS; браузерная проверка (видны 25 тем, чипы dzen/vk, приоритеты и причины); коммит 0842834 (2026-11-04).
-- Контрольная точка 2026-11-04 (остановка по лимиту бюджета): P3 начат — tgfarm/community_policy.py + tests/test_community_policy.py закоммичены с известным красным статусом (6 failed / 1 passed); полный набор до этого момента был 936 passed.
+- P3 (2026-11-04): контракт CommunityPolicy + гейт публикации — 15 тестов зелёные; гейт встроен в publish_pikabu_scheduled (после проверки идемпотентности, до открытия браузера) и в build_automatic_submission (Reddit); история правил в `community_policy_snapshots` с определением изменения по rules_hash; API `/api/community-policy/history`; вердикт показан в карточке подбора места в панели.
+
+- P10 (частично, 2026-11-04): подтверждён и исправлен дефект ID ручного пакета (`\${esc(p.id)}` внутри шаблонной строки давал литерал `${esc(p.id)}`, и getElementById/inline-onclick не находили узел); регрессия закреплена тестом `test_manual_package_controls_use_interpolated_ids`. Дефекты «HTTP-метод цикла» и «общий Promise.all» в текущем коде уже исправлены (POST + allSettled) и защищены tests/test_ui_pipeline_contracts.py.
 
 ## Следующий конкретный шаг
 
-1. P3, с этого места: исправить 6 упавших тестов tests/test_community_policy.py — выровнять контракт тестов и tgfarm/community_policy.py (rules_source, policy_from_reddit(subreddit=...), ключи assess_policy: allow_publish vs status/reason/blockers, формат requirements); затем связать контракт с выбором назначения Reddit/Пикабу/VC.ru и повторной проверкой правил перед публикацией; отказ при неизвестных правилах.
-2. Затем: P10-дефекты UI (manual package ID, HTTP-метод цикла, Promise.all) изолированной приёмкой.
-3. Затем: P6–P8 (публикация/аналитика/память) по реестру.
-4. Push: GitHub не подключён в Sharrowkin — требуется «Подключить GitHub» в панели Git; до этого CI/EXE не проверяются извне.
+1. P6: аудит и закрытие дыр автономной публикации — идемпотентность при аварийном завершении, неопределённый результат (unknown outcome) и сверка, восстановление in-flight после рестарта, per-platform очереди/лимиты; каждое утверждение проверять кодом и тестом, не документацией.
+2. P3.1: история изменения правил сообществ доступна в панели (API готов, нужен раздел UI и проверка в браузере).
+3. Затем: P7 (аналитика/самообучение) и P10-остаток (честные 5-уровневые статусы возможности площадки в UI).
+4. Push: локальный `main` опережал `github/main` на 7 коммитов + этот этап; отправка — из рабочей копии (GCM-токен rpauts2), внешний CI подтверждается после push.

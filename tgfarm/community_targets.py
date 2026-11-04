@@ -530,6 +530,7 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
 
 async def recommend_community_target(platform_id: str, post_public_id: str) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError, _load_post
+    from tgfarm.community_policy import gate_plan
 
     platform_id = str(platform_id or "").strip().lower()
     if platform_id not in {"vc_ru", "pikabu"}:
@@ -539,7 +540,11 @@ async def recommend_community_target(platform_id: str, post_public_id: str) -> d
     post = await asyncio.to_thread(_load_post, post_public_id)
     if not post.get("title") or not post.get("body"):
         raise CommunityDraftError("У поста нет заголовка или текста для тематического подбора.")
-    return await (_vc(post) if platform_id == "vc_ru" else _pikabu(post))
+    plan = await (_vc(post) if platform_id == "vc_ru" else _pikabu(post))
+    # One auditable contract for every destination: the panel and the publish
+    # gate read the same verdict instead of re-deriving freshness themselves.
+    plan["policy_verdict"] = gate_plan(platform_id, plan)
+    return plan
 
 
 def _valid_pikabu_community_tags(values: list[str]) -> list[str]:
@@ -580,7 +585,16 @@ async def recommend_automatic_pikabu_target(
             continue
         tags = _valid_pikabu_community_tags(candidate.get("suggested_tags") or [])
         if tags:
-            return {"ok": True, "platform": "pikabu", "selected": candidate, "tags": tags}
+            return {
+                "ok": True,
+                "platform": "pikabu",
+                "selected": candidate,
+                "tags": tags,
+                # Provenance travels with the selection so the publish gate can
+                # rebuild the same CommunityPolicy contract the selector used.
+                "rules_source": result.get("rules_source") or "",
+                "auto_publish_supported": bool(result.get("auto_publish_supported")),
+            }
     return {
         "ok": False, "platform": "pikabu", "selected": None, "tags": [],
         "reason": (

@@ -31,6 +31,16 @@ def test_run_cycle_button_uses_post_not_get(client):
     assert 'await post("/api/cycle?collect=true&max_clusters=8", {})' in script
 
 
+def test_manual_package_controls_use_interpolated_ids(client):
+    script = client.get("/ui/app.js").text
+    # The manual-package block lives inside a template literal: an escaped
+    # ``\${...}`` would put a literal "${esc(p.id)}" into the DOM id, so
+    # getElementById() and the inline onclick handler could never find the row.
+    assert "manual-platform-${esc(p.id)}" in script
+    assert "manual-draft-result-${esc(p.id)}" in script
+    assert "\\${" not in script
+
+
 def test_dashboard_refresh_degrades_gracefully(client):
     body = _refresh_body(client.get("/ui/app.js").text)
     assert "Promise.allSettled(" in body

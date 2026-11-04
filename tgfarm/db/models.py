@@ -491,3 +491,39 @@ class EditorialPlanEntry(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+class CommunityPolicySnapshot(Base):
+    """Append-only history of a destination's publication rules.
+
+    One row per *rules change or gate outcome change* (identical consecutive
+    checks are collapsed by :func:`tgfarm.community_policy.record_policy_snapshot`).
+    The raw rule text is kept in ``rules_excerpt`` as inert data — it is never
+    parsed into instructions — and ``rules_hash`` makes a change detectable even
+    when the excerpt is truncated.
+    """
+
+    __tablename__ = "community_policy_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="")
+    target_id: Mapped[str] = mapped_column(String(200), index=True)
+    target_name: Mapped[str] = mapped_column(String(200), default="")
+    rules_source: Mapped[str] = mapped_column(String(500), default="")
+    rules_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    rules_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    rules_excerpt: Mapped[str] = mapped_column(Text, default="")
+    verdict_status: Mapped[str] = mapped_column(String(16), default="unknown", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    requirements_json: Mapped[list | None] = mapped_column(JSON)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_policy_target", "platform", "target_id"),
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )

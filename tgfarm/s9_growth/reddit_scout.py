@@ -741,6 +741,23 @@ async def build_automatic_submission(post_public_id: str) -> dict[str, Any]:
                     f"r/{name}: правила изменились или выявлен риск ({'; '.join(current['risk_flags'][:2])})."
                 )
                 continue
+            # CommunityPolicy gate: an unknown or stale ruleset means no
+            # submission. The same verdict is stored in the rules history.
+            from tgfarm.community_policy import (
+                assess_policy,
+                policy_from_reddit,
+                record_policy_snapshot,
+            )
+
+            reddit_policy = policy_from_reddit(current, subreddit=name)
+            reddit_verdict = assess_policy(reddit_policy)
+            if not reddit_verdict.get("allow_publish"):
+                rejection_reasons.append(
+                    f"r/{name}: CommunityPolicy не разрешает публикацию "
+                    f"({reddit_verdict.get('reason') or 'unknown'})."
+                )
+                continue
+            record_policy_snapshot(reddit_policy, reddit_verdict)
             draft = tailored.get("draft") or {}
             problems = validate_submission(
                 str(draft.get("title") or ""),

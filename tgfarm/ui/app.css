@@ -1422,6 +1422,24 @@ main {
   font-size: 9px;
   line-height: 1.45;
 }
+.community-policy-verdict {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 9px !important;
+  line-height: 1.45;
+  border: 1px solid transparent;
+}
+.community-policy-verdict.is-ok {
+  color: var(--ok, #5ec98a);
+  border-color: rgba(94, 201, 138, .32);
+  background: rgba(94, 201, 138, .07);
+}
+.community-policy-verdict.is-blocked {
+  color: var(--warn, #e0b341);
+  border-color: rgba(224, 179, 65, .34);
+  background: rgba(224, 179, 65, .07);
+}
 .community-target-card {
   padding: 11px 12px;
   border: 1px solid var(--border);

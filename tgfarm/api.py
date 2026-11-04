@@ -1939,6 +1939,18 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         )
         return result
 
+    @app.get("/api/community-policy/history")
+    async def community_policy_history(
+        platform: str | None = Query(None, max_length=32),
+        target_id: str | None = Query(None, max_length=200),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> dict:
+        """Append-only history of community rules checks and gate outcomes."""
+        from tgfarm.community_policy import policy_history
+
+        rows = await io(policy_history, platform=platform, target_id=target_id, limit=limit)
+        return {"items": rows, "count": len(rows)}
+
     @app.post("/api/platform-drafts/{platform_id}/{post_public_id}/editorial")
     async def platform_editorial_preview(platform_id: str, post_public_id: str) -> dict:
         """Create a native editorial preview for any catalogue destination; never publishes."""

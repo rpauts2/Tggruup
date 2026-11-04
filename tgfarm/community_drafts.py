@@ -992,6 +992,34 @@ async def publish_pikabu_scheduled(
     if previous and previous.get("status") in {"submitting", "unknown"}:
         raise CommunityDraftError("Предыдущая отправка Пикабу имеет неоднозначный результат; повтор заблокирован.")
 
+    # CommunityPolicy gate: the same contract the panel shows is re-assessed
+    # here, right before the browser is touched. Unknown or stale rules mean no
+    # publication — the pipeline keeps going with the other platforms instead.
+    from tgfarm.community_policy import assess_policy, policy_for_plan, record_policy_snapshot
+
+    policy = policy_for_plan("pikabu", {
+        "selected": target,
+        "rules_source": selection.get("rules_source") or "",
+        "auto_publish_supported": selection.get("auto_publish_supported"),
+    })
+    verdict = assess_policy(policy) if policy is not None else {
+        "status": "unknown",
+        "allow_publish": False,
+        "reason": "destination policy is missing",
+        "blockers": ["rules_unavailable"],
+    }
+    if policy is not None:
+        await asyncio.to_thread(record_policy_snapshot, policy, verdict)
+    if not verdict.get("allow_publish"):
+        return {
+            "ok": False,
+            "status": "skipped",
+            "detail": (
+                "Публикация в сообщество Пикабу пропущена: правила не подтверждены "
+                f"({verdict.get('reason') or 'unknown'})."
+            ),
+            "policy_verdict": verdict,
+        }
     lock = _LOCKS["pikabu"]
     if not lock.acquire(blocking=False):
         raise CommunityDraftError("Браузер Пикабу уже используется другой операцией.")
