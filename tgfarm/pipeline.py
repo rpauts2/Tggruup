@@ -1616,6 +1616,40 @@ async def _guarded_crosspost_tick() -> dict:
         return {"posted": 0, "failed": 0, "unknown": 0, "errors": [message]}
 
 
+#: How long the same alert text may repeat in the log before it is suppressed.
+#: The alert itself stays in /api/status and in the Telegram delivery path; this
+#: only stops a static condition (say, 51 posts awaiting manual reconciliation)
+#: from writing the same ERROR line every five minutes forever.
+ALERT_LOG_REPEAT_S = 3600.0
+_ALERT_LOG_SEEN: dict[str, tuple[float, str]] = {}
+
+
+def _log_alert_once(
+    alert: dict,
+    *,
+    now: float | None = None,
+    repeat_s: float = ALERT_LOG_REPEAT_S,
+) -> bool:
+    """Emit one alert line unless the same text was logged recently."""
+    code = str(alert.get("code") or "")
+    message = str(alert.get("message") or "")
+    moment = time.monotonic() if now is None else float(now)
+    previous = _ALERT_LOG_SEEN.get(code)
+    if previous is not None:
+        logged_at, logged_message = previous
+        if logged_message == message and moment - logged_at < repeat_s:
+            return False
+    _ALERT_LOG_SEEN[code] = (moment, message)
+    emit = log.error if alert.get("level") == "error" else log.warning
+    emit("alert [%s] %s", code, message)
+    return True
+
+
+def _reset_alert_log_state() -> None:
+    """Test hook: forget which alerts were already logged."""
+    _ALERT_LOG_SEEN.clear()
+
+
 async def _watchdog() -> None:
     """Keep the farm alive: alert on stale cycles and schedule a catch-up run.
 
@@ -1628,9 +1662,9 @@ async def _watchdog() -> None:
     global _watchdog_recovery_attempts, _watchdog_last_recovery_at
 
     alerts = await to_thread(collect_alerts)
-    for alert in alerts:
-        emit = log.error if alert["level"] == "error" else log.warning
-        emit("alert [%s] %s", alert["code"], alert["message"])
+    suppressed = sum(0 if _log_alert_once(alert) else 1 for alert in alerts)
+    if suppressed:
+        log.info("watchdog: %d alert(s) unchanged since the last log entry", suppressed)
 
     try:
         delivered = await deliver_alerts()
