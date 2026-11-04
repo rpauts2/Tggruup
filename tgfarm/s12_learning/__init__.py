@@ -638,7 +638,9 @@ def _learn_channel(channel_id):
         formats = learn_format_lessons(channel_id)
     except Exception as exc:  # noqa: BLE001 - thin format data must not cost the other lessons
         formats = {"written": 0}
-        log.debug("s12: format learning skipped for %s: %s", channel_id, exc)
+        # A skipped lesson is a lost learning cycle, and at debug level the farm
+        # stops learning formats without ever saying so.
+        log.warning("s12: format learning skipped for %s: %s", channel_id, exc)
     learned += int(formats.get("written", 0))
 
     channel_metrics = [m for m in recent_metrics(14) if m.channel_id == channel_id]

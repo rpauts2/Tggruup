@@ -85,3 +85,31 @@ def test_best_format_requires_a_reliable_sample():
     _post("news_single", engagement=5)  # alone: not reliable
     result = best_format(days=7)
     assert result is None or result["reliable"] is True
+
+
+def test_chunking_the_stat_read_does_not_lose_a_post(monkeypatch):
+    """Every published post must reach the grouped stats read, chunked or not.
+
+    Measured on a copy of the live database: past the SQLite variable limit the
+    single `IN` list died outright, so the format lesson simply stopped. Chunking
+    fixes that, and a chunk loop is exactly where an off-by-one would hide.
+    """
+    from tgfarm.s8_analytics import formats as formats_module
+
+    probe = f"chunk_probe_{uuid4().hex[:6]}"
+    for _ in range(5):
+        _post(probe, engagement=40)
+
+    monkeypatch.setattr(formats_module, "_IN_CHUNK", 2)
+    chunked = format_performance(days=7)["formats"][probe]
+    monkeypatch.setattr(formats_module, "_IN_CHUNK", 10_000)
+    whole = format_performance(days=7)["formats"][probe]
+
+    assert chunked["published"] == whole["published"]
+    assert chunked["measured"] == whole["measured"] == 5
+
+
+def test_the_chunk_stays_under_the_smallest_sqlite_variable_limit():
+    from tgfarm.s8_analytics import formats as formats_module
+
+    assert 0 < formats_module._IN_CHUNK <= 999

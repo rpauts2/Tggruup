@@ -329,6 +329,30 @@ def test_learning_cycle_writes_the_format_lesson(monkeypatch):
     assert row["value"]["state"] == "reliable"
 
 
+def test_a_broken_format_read_is_visible_as_a_warning(monkeypatch, caplog):
+    """Silence was the second half of the defect.
+
+    Past the SQLite variable limit the S8 read raised, `_learn_channel` swallowed
+    it at debug level, and the farm kept cycling while format learning stopped.
+    A lost learning cycle has to reach the log the operator reads.
+    """
+    import logging
+
+    from tgfarm import s12_learning
+
+    platform = _unique_platform("mastodon")
+    channel_id = _channel(platform)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("too many SQL variables")
+
+    monkeypatch.setattr(s12_learning, "learn_format_lessons", boom)
+    with caplog.at_level(logging.WARNING, logger="tgfarm.s12_learning"):
+        s12_learning._learn_channel(channel_id)
+
+    assert any("format learning skipped" in rec.getMessage() for rec in caplog.records)
+
+
 def test_format_kind_does_not_leak_into_the_other_readers():
     """`format` is a new kind, not a new meaning for an existing one.
 

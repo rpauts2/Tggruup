@@ -34,6 +34,10 @@ log = get_logger(__name__)
 #: Measured posts a format needs before its average may drive a decision.
 MIN_SAMPLE = 3
 
+#: Ids per `IN` list. SQLite's smallest historical bound is 999 variables per
+#: statement, so a chunk well under it stays safe on any build.
+_IN_CHUNK = 500
+
 
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
@@ -82,19 +86,24 @@ def format_performance(
             }
         post_ids = [row.id for row in posts]
         stats: dict[int, tuple[int, int, int]] = {}
-        # One grouped read instead of a query per post: the table can hold tens of
-        # thousands of snapshots and this runs inside the analytics stage.
-        for post_id, reactions, comments, forwards in session.execute(
-            select(
-                PostStat.post_id,
-                func.max(PostStat.reactions),
-                func.max(PostStat.comments),
-                func.max(PostStat.forwards),
-            )
-            .where(PostStat.post_id.in_(post_ids))
-            .group_by(PostStat.post_id)
-        ).all():
-            stats[int(post_id)] = (int(reactions or 0), int(comments or 0), int(forwards or 0))
+        # Grouped reads instead of a query per post: the table can hold tens of
+        # thousands of snapshots and this runs inside the analytics stage. Chunked
+        # because an `IN` list binds one variable per id and SQLite refuses the
+        # statement past its variable limit — measured at 40 015 published posts,
+        # where the read died and S12 quietly stopped learning formats.
+        for start in range(0, len(post_ids), _IN_CHUNK):
+            chunk = post_ids[start : start + _IN_CHUNK]
+            for post_id, reactions, comments, forwards in session.execute(
+                select(
+                    PostStat.post_id,
+                    func.max(PostStat.reactions),
+                    func.max(PostStat.comments),
+                    func.max(PostStat.forwards),
+                )
+                .where(PostStat.post_id.in_(chunk))
+                .group_by(PostStat.post_id)
+            ).all():
+                stats[int(post_id)] = (int(reactions or 0), int(comments or 0), int(forwards or 0))
 
     for row in posts:
         fmt = str(row.post_format or "news")
