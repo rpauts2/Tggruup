@@ -35,7 +35,13 @@ from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
-from tgfarm.crosspost_journal import JOURNAL_STATUS_POSTED
+from tgfarm.crosspost_journal import (
+    JOURNAL_STATUS_DRY_RUN,
+    JOURNAL_STATUS_PERMANENT,
+    JOURNAL_STATUS_POSTED,
+    JOURNAL_STATUS_SKIPPED,
+    JOURNAL_STATUS_UNKNOWN,
+)
 from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import CrosspostLog as CrosspostLogRow
 from tgfarm.db.models import Post as PostRow
@@ -72,10 +78,11 @@ STATUS_GATED = "gated"
 STATUS_SCHEDULED = "scheduled"
 STATUS_PUBLISHING = "publishing"
 #: "we sent it and cannot tell whether the platform took it". 51 live rows depend
-#: on this exact spelling. `"unknown"` is the *crosspost journal's* word for the
-#: same fact (`CrosspostResult.status`, a different table, `distribution.py:741`)
-#: and has never been a valid `posts.status`. The two vocabularies are named here
-#: rather than reconciled: unifying them is a data migration, not a rename.
+#: on this exact spelling. `JOURNAL_STATUS_UNKNOWN` is the *crosspost journal's*
+#: word for the same fact (`CrosspostResult.status`, a different table, counted by
+#: `tgfarm.distribution.build_distribution_plan`) and has never been a valid
+#: `posts.status`. The two vocabularies are named here rather than reconciled:
+#: unifying them is a data migration, not a rename.
 STATUS_PUBLISH_UNKNOWN = "publish_unknown"
 STATUS_PUBLISHED = "published"
 STATUS_REJECTED = "rejected"
@@ -83,9 +90,17 @@ STATUS_FAILED = "failed"
 
 #: Statuses the crosspost journal uses for the same facts. Present so the
 #: distinction is checkable rather than remembered: none of these may be written
-#: to `posts.status`.
+#: to `posts.status`. Every token is named through the owner's
+#: `JOURNAL_STATUS_*` constants, so this set cannot paraphrase the vocabulary it
+#: exists to keep apart.
 CROSSPOST_ONLY_STATUSES: frozenset[str] = frozenset(
-    {JOURNAL_STATUS_POSTED, "skipped", "permanent", "unknown", "dry_run"}
+    {
+        JOURNAL_STATUS_POSTED,
+        JOURNAL_STATUS_SKIPPED,
+        JOURNAL_STATUS_PERMANENT,
+        JOURNAL_STATUS_UNKNOWN,
+        JOURNAL_STATUS_DRY_RUN,
+    }
 )
 
 
@@ -1343,7 +1358,7 @@ def _journal_primary_dry_run(public_id: str, platform: str, post_id: int) -> boo
             .where(
                 CrosspostLog.post_public_id == public_id,
                 CrosspostLog.platform == platform,
-                CrosspostLog.status == "dry_run",
+                CrosspostLog.status == JOURNAL_STATUS_DRY_RUN,
             )
             .limit(1)
         ).scalar_one_or_none()
@@ -1353,7 +1368,7 @@ def _journal_primary_dry_run(public_id: str, platform: str, post_id: int) -> boo
         public_id,
         CrosspostResult(
             platform=platform,
-            status="dry_run",
+            status=JOURNAL_STATUS_DRY_RUN,
             remote_id=_dry_run_remote_id(platform, post_id),
         ),
     )
