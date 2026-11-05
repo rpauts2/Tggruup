@@ -110,17 +110,25 @@
     <article class="card">
       <header class="card-head">
         <h2>Покрытие измерений</h2>
-        <span class="card-sub" id="metrics-coverage-meta">Что из опубликованного вообще доходит до post_stats</span>
+        <span class="card-sub" id="metrics-coverage-meta">Что из опубликованного вообще доходит до post_stats — и у каких публикаций есть идентификатор, за который метрики можно зацепиться</span>
       </header>
       <div id="metrics-coverage" class="list">
         <div class="empty">Читаю, какие площадки кто измеряет…</div>
+      </div>
+      <!-- Привязка Дзена: сколько записей публикации вообще называют статью, без
+           чего метрики несопоставимы даже при работающем сборщике. Эти числа живут
+           только в блоке `dzen` отчёта /api/report (`metrics_status()`), поэтому
+           строка стоит под списком площадок и молчит честной фразой, когда отчёт
+           не ответил. -->
+      <div id="metrics-coverage-dzen" class="coverage-attribution">
+        <div class="item-meta">Читаю, какие публикации Дзена имеют идентификатор…</div>
       </div>
     </article>
 
     <article class="card">
       <header class="card-head">
         <h2>Форматы по факту</h2>
-        <span class="card-sub" id="metrics-formats-meta">Опубликовано против измерено: неоценённый пост не делает формат успешным</span>
+        <span class="card-sub" id="metrics-formats-meta">Опубликовано против измерено: неоценённый пост не делает формат успешным, а старый замер — живым</span>
       </header>
       <div id="metrics-formats" class="list">
         <div class="empty">Читаю статистику форматов…</div>

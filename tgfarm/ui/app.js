@@ -161,6 +161,21 @@
       .join("");
   }
 
+  // `blocked` and `unmeasured` each cover two opposite silences, and the panel has
+  // no right to merge them: a collector nobody wrote is OUR gap, closable in code,
+  // while a collector that exists and still comes back empty is waiting for
+  // something only the operator can hand over (a VK user token, an authorised
+  // Telegram session — see `BLOCKED_REASONS`, `SCHEDULED_COLLECTORS` and
+  // `SESSION_GATED_COLLECTORS` in coverage.py). The kind is derivable from the
+  // structured half of the row, so it is stated as its own chip; the reason
+  // string stays the server's own prose and carries the specific credential.
+  // Kept above `COVERAGE_STATUS` because the test that pins the four statuses
+  // reads the table between those two declarations and expects four entries.
+  const COVERAGE_GAP = {
+    ours: { cls: "tag-none", label: "сборщика нет — это наш пробел" },
+    operator: { cls: "tag-warn", label: "нужно только от оператора" },
+  };
+
   // The four statuses come from tgfarm/s8_analytics/coverage.py (STATUS_*). Each
   // gets its own colour and its own wording: "nobody measures this platform" and
   // "we measure it and throw the numbers away" are different defects, and an
@@ -214,17 +229,38 @@
         const collectorLine = row.collector
           ? "сборщик " + esc(row.collector)
           : "<b>сборщика метрик нет — эту площадку никто не измеряет</b>";
+        // Three different "has" statements that must never collapse into one:
+        // a publication the journal cannot name (no remote id, no url) can never
+        // be matched to its metrics even by a collector that works, and on
+        // Telegram even *asking* needs a message id — so «measured: 0» there is
+        // our bookkeeping, not the platform staying silent. `crosspost_posted`
+        // and `crosspost_with_remote` are plain ints in coverage.py
+        // (`int(... or 0)`), so `n()` is safe; `askable_posts` is deliberately
+        // `int | None` because no column describes it on the other platforms, so
+        // it rides on `items()` and prints «нет отчёта», never a fabricated zero.
+        const attributionLine = "публикаций с id/url: " + n(row.crosspost_with_remote)
+          + " из " + n(row.crosspost_posted)
+          + " · снимок имеют " + n(row.measured_posts) + " из " + n(row.published)
+          + " · id для запроса: " + items(row.askable_posts);
+        // Whose gap it is, from `collector` alone — see `COVERAGE_GAP`.
+        const gap = row.collector
+          ? (row.status === "blocked" ? COVERAGE_GAP.operator : null)
+          : (Number(row.published || 0) > 0 || Number(row.crosspost_posted || 0) > 0
+            ? COVERAGE_GAP.ours : null);
         return '<div class="item"><div class="item-main"><div class="item-title">'
           + esc(row.platform) + "</div>"
           + '<div class="item-meta">опубликовано ' + Number(row.published || 0)
           + " · со снимком " + Number(row.measured_posts || 0)
           + " · со значимым числом " + Number(row.measured_with_signal || 0)
           + " · строк метрик " + Number(row.stat_rows || 0) + "</div>"
+          + '<div class="item-meta">' + attributionLine + "</div>"
           + '<div class="item-meta">' + collectorLine
           + " · последний снимок " + esc(dt(row.last_snapshot_at)) + "</div>"
           + (row.reason ? '<div class="item-meta">' + esc(row.reason) + "</div>" : "")
           + '</div><div class="item-side"><span class="tag ' + status.cls + '">'
-          + esc(status.label) + "</span></div></div>";
+          + esc(status.label) + "</span>"
+          + (gap ? '<span class="tag ' + gap.cls + '">' + esc(gap.label) + "</span>" : "")
+          + "</div></div>";
       })
       .join("");
   }
@@ -340,15 +376,92 @@
       + gateRows;
   }
 
+  // Evidence states come from `tgfarm/s8_analytics/formats.py`: `EVIDENCE_OK`,
+  // `EVIDENCE_MIXED`, `EVIDENCE_STALE`, `EVIDENCE_NEVER` and the `blocked` spelling
+  // its `EVIDENCE_UNTRUSTED` set already names. The block exists because
+  // `measured: 9` and `measured: 9 with every snapshot six days old` are different
+  // facts — and only one of them moves the farm: `planner_history` hands the
+  // planner the LIVE counts, so a format measured solely by dead snapshots arrives
+  // there as `measured: 0` and the plan falls back to the rules. A panel that
+  // showed the same format as "enough data" would be claiming a readiness the
+  // planner has already refused, which is what the chips below prevent.
+  // An unrecognised code travels verbatim on the colourless chip like every other
+  // table here: a colour we never agreed on would dress a new server state up as a
+  // diagnosis we understand.
+  const EVIDENCE_STATUS = {
+    ok: { cls: "tag-ok", label: "замеры живые" },
+    mixed: { cls: "tag-warn", label: "живые и мёртвые вперемешку" },
+    stale: { cls: "tag-err", label: "все замеры устарели" },
+    never: { cls: "tag-none", label: "формат не измеряли" },
+    blocked: { cls: "tag-err", label: "сбор метрик заблокирован" },
+  };
+
+  // Mirror of `formats.EVIDENCE_UNTRUSTED`: states carrying no live evidence at
+  // all. Neither `stale` nor `never` nor `blocked` may ever borrow the green chip,
+  // however many snapshots it counts.
+  const EVIDENCE_UNTRUSTED = ["stale", "never", "blocked"];
+
+  // Newest of the ISO stamps the report carries, or null when none parses.
+  // `format_performance` emits per-format stamps only, so the card's "newest
+  // measurement" is the max over those — a derived number, and it says so by
+  // being labelled «самый новый замер» rather than a server field.
+  const latestMeasuredAt = (values) => values.reduce((newest, value) => (
+    typeof value === "string" && !Number.isNaN(Date.parse(value))
+      && (newest === null || Date.parse(value) > Date.parse(newest)) ? value : newest
+  ), null);
+
   function renderMetricsFormats(payload) {
     const root = $("#metrics-formats");
     if (!root) return;
     const data = payload || {};
     const formats = data.formats || {};
-    const minSample = Number(data.min_sample || 0);
+    // A threshold the server did not send is not a threshold of zero: the row has
+    // to say it does not know how many measurements it wanted.
+    const minSampleText = Number.isInteger(data.min_sample) && data.min_sample > 0
+      ? String(data.min_sample) : "нет отчёта";
     const meta = $("#metrics-formats-meta");
+    // The shared card contract: `error` is checked before a single total is
+    // printed. `format_performance` has no error field of its own today (a dead
+    // read throws, the endpoint answers 500 and refresh() counts the section as
+    // failed), so this branch is the contract rather than a live path — but the
+    // day the read learns to answer 200-with-error, the totals it would carry are
+    // zeros, and a zero here is indistinguishable from an unmeasured farm.
+    if (data.error) {
+      if (meta) meta.textContent = "Отчёт не прочитан — ниже не нули, а отсутствие данных";
+      root.innerHTML = '<div class="alert alert-err"><b>Форматы не прочитаны:</b> '
+        + esc(data.error) + "</div>"
+        + '<div class="empty">Ни одной цифры не показано: вместо них был бы ноль.</div>';
+      return;
+    }
+    // The freshness half of the same report. Absent means the panel is talking to
+    // a backend older than the block, and then the honest statement is "we do not
+    // know which snapshots are still alive" — never the old reading, which implied
+    // every measurement counted.
+    const measurement = (data.measurement && typeof data.measurement === "object")
+      ? data.measurement : null;
+    const newest = latestMeasuredAt(measurement
+      ? Object.values(measurement).map((entry) => (entry || {}).last_measured_at)
+      : []);
+    const threshold = Number.isInteger(data.stale_after_days) ? data.stale_after_days : null;
+    // The report's own verdict over every format (`evidence_status` at the top
+    // level). An unrecognised code is printed as it arrived rather than folded
+    // into a known one; `textContent` means no markup can reach the DOM here.
+    const overallKey = typeof data.evidence_status === "string" ? data.evidence_status : "";
+    const overallChip = measurement
+      ? (EVIDENCE_STATUS[overallKey] || { label: overallKey || "нет отчёта" }).label
+      : "нет отчёта";
     if (meta) {
-      meta.textContent = `${Number(data.published_total || 0)} опубликовано · ${Number(data.measured_total || 0)} с замерами · окно ${Number(data.window_days || 0)} дн`;
+      // The threshold and the newest stamp belong in the header because they are
+      // what turns "measured" into a fact an operator can weigh. `n()` ends in
+      // `|| 0` and must never receive a possibly-null counter, so the two counts
+      // this block adds ride on `items()`.
+      meta.textContent = `${Number(data.published_total || 0)} опубликовано · `
+        + `${Number(data.measured_total || 0)} с замерами · живых ${items(data.fresh_measured_total)}`
+        + ` · мёртвых ${items(data.stale_measured_total)}`
+        + ` · окно ${Number(data.window_days || 0)} дн`
+        + ` · порог живости ${threshold === null ? "нет отчёта" : `${threshold} дн`}`
+        + ` · самый новый замер ${newest === null ? "нет отчёта" : dt(newest)}`
+        + ` · вывод: ${overallChip}`;
     }
     const rows = Object.values(formats);
     if (!rows.length) {
@@ -359,21 +472,116 @@
       .map((row) => {
         const measured = Number(row.measured || 0);
         const reliable = row.reliable === true;
-        // `avg_engagement` is 0.0 for an all-unmeasured format: that is an empty
-        // average, not a score, so the number is only shown when measured > 0.
-        const attention = measured
-          ? `<span class="tag tag-acc">внимание ${esc(Number(row.avg_engagement || 0).toFixed(1))}</span>`
-          : '<span class="tag tag-none">внимание: нет данных</span>';
-        return '<div class="item"><div class="item-main"><div class="item-title">'
+        const evidence = measurement ? measurement[row.format] : undefined;
+        const hasEvidence = !!evidence && typeof evidence === "object";
+        const statusKey = hasEvidence && typeof evidence.evidence_status === "string"
+          ? evidence.evidence_status : "";
+        const known = EVIDENCE_STATUS[statusKey];
+        const untrusted = EVIDENCE_UNTRUSTED.indexOf(statusKey) !== -1;
+        const fresh = hasEvidence && typeof evidence.fresh === "number" ? evidence.fresh : null;
+        const stale = hasEvidence && typeof evidence.stale === "number" ? evidence.stale : null;
+        const evidenceChip = !hasEvidence
+          ? '<span class="tag tag-none">свежесть не измерена</span>'
+          : `<span class="tag ${known ? known.cls : "tag-none"}">`
+            + esc(known ? known.label : (statusKey || "статус не записан")) + "</span>";
+        const evidenceMeta = !hasEvidence
+          ? "отчёт о свежести не пришёл: живые и мёртвые снимки неразличимы"
+          : "живых " + items(fresh) + " · мёртвых " + items(stale)
+            + " · самый новый снимок " + dt(evidence.last_measured_at)
+            + (fresh ? " · самый новый живой " + dt(evidence.fresh_last_measured_at) : "");
+        // The average an operator may act on. `avg_engagement` blends dead
+        // snapshots into a mixed format, so the live-only figure is the one worth
+        // a chip; when there is no live snapshot at all, the old average is
+        // history and gets the red of a dead read instead of the accent blue of a
+        // score. An empty average is never printed as `0.0`, because "nothing was
+        // measured" is not "measured: nothing".
+        const attention = !hasEvidence
+          ? (measured
+            ? `<span class="tag tag-acc">внимание ${esc(Number(row.avg_engagement || 0).toFixed(1))}</span>`
+            : '<span class="tag tag-none">внимание: нет данных</span>')
+          : (fresh !== null && fresh > 0)
+            ? `<span class="tag tag-acc">внимание по живым `
+              + esc(typeof evidence.fresh_avg_engagement === "number"
+                ? evidence.fresh_avg_engagement.toFixed(1) : "нет данных") + "</span>"
+            : (measured
+              ? '<span class="tag tag-err">внимание: только мёртвые замеры</span>'
+              : '<span class="tag tag-none">внимание: нет данных</span>');
+        // Would the planner act on this? `planner_history` gates the sample on the
+        // LIVE count, so `fresh_reliable` is the only readiness claim the panel may
+        // make while the block is present — and a format that is merely old never
+        // gets "мало данных" either, because that would call a dead measurement a
+        // small live one. The verdict keys on the COUNTS (`fresh === 0`) and on a
+        // declared untrusted state, never on the code alone: a state the server
+        // invents tomorrow must not inherit the green chip by being unrecognised.
+        // `min_sample` is only trusted as a real threshold when it arrives as a
+        // positive int, else "довольно" would be measured against a zero.
+        const enoughDead = Number.isInteger(data.min_sample) && data.min_sample > 0
+          ? measured >= data.min_sample : false;
+        const noLiveEvidence = hasEvidence && (fresh === 0 || untrusted);
+        const readiness = !hasEvidence
+          ? `<span class="tag ${reliable ? "tag-ok" : "tag-none"}">`
+            + (reliable ? "данных достаточно" : "мало данных") + "</span>"
+          : noLiveEvidence
+            ? (enoughDead
+              ? '<span class="tag tag-err">замеров довольно, но они мертвы: план их отвергает</span>'
+              : '<span class="tag tag-none">мало живых данных</span>')
+            : evidence.fresh_reliable === true
+              ? '<span class="tag tag-ok">живых данных достаточно</span>'
+              : '<span class="tag tag-none">мало живых данных</span>';
+        return '<div class="item' + (noLiveEvidence ? " is-dead-evidence" : "")
+          + '"><div class="item-main"><div class="item-title">'
           + esc(FORMAT_RU[row.format] || row.format || "—") + "</div>"
           + '<div class="item-meta">опубликовано ' + Number(row.published || 0)
           + " · с замерами " + measured
-          + (reliable ? "" : " · нужно не меньше " + minSample) + "</div></div>"
-          + '<div class="item-side"><span class="tag ' + (reliable ? "tag-ok" : "tag-none") + '">'
-          + (reliable ? "данных достаточно" : "мало данных") + "</span>" + attention + "</div></div>";
+          + (reliable ? "" : " · нужно не меньше " + minSampleText) + "</div>"
+          + '<div class="item-meta">' + esc(evidenceMeta) + "</div></div>"
+          + '<div class="item-side">' + evidenceChip + readiness + attention + "</div></div>";
       })
       .join("");
   }
+
+  // The Dzen attribution split — the number `f0c317a` produced and the operator
+  // could not see. `metrics_status()` (`tgfarm/s8_analytics/dzen_web.py`, served as
+  // the `dzen` block of `/api/report`) counts posted Dzen rows two ways:
+  // `mapped_publications` is every row the journal records as posted, and
+  // `mapped_publications_with_id` is the subset that names the article it posted.
+  // Only the second one lets the Studio collector attach a scraped number to a
+  // post without guessing by headline — and a headline guess stops working the
+  // moment somebody edits the title, so a publication outside that subset is not
+  // "unmeasured by Dzen", it is unattributable by our own bookkeeping. This is the
+  // distinction the coverage rows above make with `crosspost_posted` and
+  // `crosspost_with_remote`; Dzen's stricter count exists only here, so it gets a
+  // line of its own under that card rather than being invented from data that does
+  // not describe it. A missing payload means the report read failed, and that is
+  // stated: the alternative is printing the zeros of an empty payload as a verdict.
+  function renderDzenAttribution(dzMetrics, failed) {
+    const root = $("#metrics-coverage-dzen");
+    if (!root) return;
+    if (failed || !dzMetrics) {
+      const why = failed ? String(failed.message || failed) : "";
+      root.innerHTML = '<div class="item-meta">'
+        + "<b>Привязка метрик Дзена не прочитана</b>: отчёт фермы не ответил — "
+        + "и это не «ни одна публикация не привязана».</div>"
+        + (why ? '<div class="item-meta">' + esc(why.slice(0, 120)) + "</div>" : "");
+      return;
+    }
+    const dz = dzMetrics;
+    // `metrics_status()` coerces every one of these with `int(... or 0)`, so they
+    // are ints, not unknowns; `items()` is used anyway because a payload from an
+    // older build simply lacks the keys, and a missing key is not a zero.
+    const withId = dz.mapped_publications_with_id;
+    const posted = dz.mapped_publications;
+    const note = dz.last_reason ? " · последняя причина сбора: " + esc(String(dz.last_reason)) : "";
+    root.innerHTML = '<div class="item-meta">Дзен: постов в статусе «published» '
+      + items(dz.published_posts)
+      + " · снимок имеют " + items(dz.measured_posts)
+      + " · записей «posted» " + items(posted)
+      + " · из них с id статьи " + items(withId) + note + "</div>"
+      + (posted === 0
+        ? '<div class="item-meta">Ни одной записи публикации Дзена: привязывать метрики пока не к чему — это не «сборщик молчит», это пустой журнал.</div>'
+        : "");
+  }
+
 
   function renderReport(report) {
     const hours = report.hours || {};
@@ -828,6 +1036,20 @@
     }
   }
 
+  // `tgfarm/pipeline.py` writes four values into the journal's `status` column,
+  // which is a bare String(16) with no CHECK: `ok`, `error`, `timeout` and — since
+  // `f038373` — `cancelled`. The old line here painted every non-`ok` red, so a
+  // cancellation looked exactly like a crash, and a cancellation is the one
+  // outcome the farm chose itself: the watchdog or the cycle limit stopped the
+  // stage on purpose. It gets its own colour and its own word, because an operator
+  // who reads "crash" goes looking for a defect that does not exist. An unknown
+  // status keeps the red on purpose: a code the panel has not been told about must
+  // not be quietly promoted to "nothing happened".
+  const STAGE_STATUS = {
+    ok: { cls: "stage-ok", word: null },
+    cancelled: { cls: "stage-cancelled", word: "прерван" },
+  };
+
   function renderPipeline(runs) {
     const byRun = new Map();
     for (const r of runs) {
@@ -850,8 +1072,14 @@
     const map = Object.fromEntries(stages.map((s) => [s.stage, s]));
     $("#pipeline-visual").innerHTML = order.map((key) => {
       const s = map[key];
-      const cls = !s ? "" : s.status === "ok" ? "stage-ok" : "stage-err";
-      const detail = s ? (s.status === "ok" ? `${items(s.out, s.counters_state)} · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
+      const state = s ? (STAGE_STATUS[s.status] || { cls: "stage-err", word: null }) : null;
+      const cancelled = !!state && s.status === "cancelled";
+      const cls = !s ? "" : state.cls;
+      // A cancelled stage's `error` is the sentence the timer wrote
+      // ("cancelled after 4500ms"), so it is kept — but prefixed with what it
+      // actually was, and still through `esc()`: the string is server data.
+      const detail = s ? (cancelled ? `прерван · ${esc((s.error || "").slice(0, 40))}`
+        : s.status === "ok" ? `${items(s.out, s.counters_state)} · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
       return `<div class="stage ${cls}"><span class="stage-dot"></span>
                 <span><b>${names[key]}</b><br>${detail}</span></div>`;
     }).join("");
@@ -3018,6 +3246,22 @@
     });
   }
 
+  // The run-level chip of the journal. It used to be two states and a cancelled
+  // run fell into "ок" — the exact opposite of what `f038373` added the outcome
+  // for, and a different lie from the pipeline strip's red: here the cancellation
+  // was reported as success. Three states now, and a run that both failed and was
+  // cut short still reports the failure first, because that is the one the
+  // operator has to act on.
+  const runOutcomeChip = (stages) => {
+    if (stages.some((s) => s.status === "error")) {
+      return '<span class="tag tag-warn">с ошибками</span>';
+    }
+    if (stages.some((s) => s.status === "cancelled")) {
+      return '<span class="tag tag-cancelled">прерван</span>';
+    }
+    return '<span class="tag tag-ok">ок</span>';
+  };
+
   function renderRuns(runs) {
     const byRun = new Map();
     for (const r of runs) {
@@ -3030,11 +3274,7 @@
           <div class="item-title mono">${esc(runId)} · ${dt(stages[0]?.at)}</div>
           <div class="item-meta">${stages.map((s) => `${esc(s.stage.replace(/^s\d_/, ""))}:${typeof s.out === "number" ? n(s.out) : "—"}`).join("  ")}</div>
         </div>
-        <div class="item-side">
-          <span class="tag ${stages.some((s) => s.status === "error") ? "tag-warn" : "tag-ok"}">
-            ${stages.some((s) => s.status === "error") ? "с ошибками" : "ок"}
-          </span>
-        </div>
+        <div class="item-side">${runOutcomeChip(stages)}</div>
       </div>`).join("") || `<div class="empty">Журнал пуст</div>`;
   }
 
@@ -3769,6 +4009,13 @@
       // verdict — and a failed read is re-rendered every pass, never cached.
       renderPublicationDecision("status" in data ? data.status : null,
         "status" in data ? null : reasons.status || new Error("статус не получен"));
+      // Same rule as the publication card above: a read that died must be said
+      // out loud on every pass, not left showing the previous run's attribution as
+      // if it were still current. The numbers ride on `/api/report`'s `dzen` block
+      // (`metrics_status()`), which the refresh already fetches for the report.
+      renderDzenAttribution(
+        "report" in data ? (data.report || {}).dzen : null,
+        "report" in data ? null : reasons.report || new Error("отчёт фермы не получен"));
       if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
       if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
 
