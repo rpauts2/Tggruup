@@ -542,6 +542,39 @@ def test_a_query_that_failed_is_not_reported_as_a_missing_column(store):
     assert "no such column" not in str(caught.value)
 
 
+def test_a_store_that_failed_to_answer_is_not_reported_as_the_drift(store):
+    """It is the predicate that decides the fallback, not the bare fact of an error.
+
+    Pinned because the tempting hardening — `except SQLAlchemyError: read the narrow
+    window` — passes every other test in this file: when the first read breaks, the
+    fallback usually breaks the same way with the same message, and a test that only
+    asks whether an error escaped cannot tell "propagated" from "failed twice". Here
+    the narrow read *would* have answered, so a swallowed failure returns a plausible
+    five rows stamped `plan_columns_missing` about a store that is merely corrupt.
+    """
+    channel_id, _persona = _channel(store, "telegram")
+    _post(store, channel_id)
+    window = (
+        Channel.platform == "telegram",
+        Channel.enabled.is_(True),
+        Post.status.in_(("gated", "scheduled")),
+    )
+    with store.factory() as real:
+        seen: list[object] = []
+
+        def execute(statement, *args, **kwargs):
+            seen.append(statement)
+            if len(seen) == 1:
+                raise SQLAlchemyError("database disk image is malformed")
+            return real.execute(statement, *args, **kwargs)
+
+        with pytest.raises(SQLAlchemyError) as caught:
+            distribution._primary_queue_preview(SimpleNamespace(execute=execute), window)
+
+    assert "malformed" in str(caught.value)
+    assert len(seen) == 1, f"a failed read was papered over by a second one: {len(seen)}"
+
+
 def test_the_drift_helper_is_not_handed_a_string(store):
     """The exact defect of `b271066`, pinned rather than remembered.
 
