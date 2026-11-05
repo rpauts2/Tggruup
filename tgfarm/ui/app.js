@@ -1778,6 +1778,7 @@
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.published_at ? clock(p.published_at) : "—"}</div>
+          ${postProvenanceChip(p)}
         </div>
         <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || p.status)}</span></div>
       </div>`).join("");

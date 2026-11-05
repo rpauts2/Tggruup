@@ -188,8 +188,10 @@ def test_the_provenance_is_drawn_where_the_operator_reads_the_post(postcard, que
     assert "postProvenanceChip(p)" in postcard, (
         "the cards still show a post without saying what ordered it"
     )
-    assert "postProvenanceChip(p)" in queue, (
-        "«Ближайшие публикации» still shows the slot without its provenance"
+    assert queue.count("postProvenanceChip(p)") == 2, (
+        "«Ближайшие публикации» has two branches — the queue and, when nothing is "
+        "waiting, the most recent posts — and provenance drawn in only one of them "
+        "disappears exactly when the operator has no queue to read"
     )
 
 
