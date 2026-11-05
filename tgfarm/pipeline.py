@@ -25,6 +25,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
+from tgfarm import plan_execution
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, counters_state, to_thread
@@ -2813,6 +2814,31 @@ def _build_scheduler():
             IntervalTrigger(minutes=max(30, settings.telegram_top_groups_interval_min)),
             id="telegram-top-groups",
             name="top public groups",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+
+    if settings.plan_execution_enabled:
+        # The editorial plan had a builder and three HTTP readers but no
+        # consumer, so on a live database it held zero rows and no planned slot
+        # ever reached a post. Two jobs, registered only behind the flag: the
+        # refresh, then the hand-off of a qualifying `schedule` entry to the
+        # existing scheduling path. Nothing here publishes — a hand-off queues.
+        scheduler.add_job(
+            plan_execution.build_plan_tick,
+            IntervalTrigger(hours=plan_execution.BUILD_INTERVAL_HOURS),
+            id=plan_execution.PLAN_BUILD_JOB_ID,
+            name="editorial plan refresh",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        scheduler.add_job(
+            plan_execution.apply_plan_tick,
+            IntervalTrigger(minutes=plan_execution.APPLY_INTERVAL_MINUTES),
+            id=plan_execution.PLAN_APPLY_JOB_ID,
+            name="editorial plan execution",
             max_instances=1,
             coalesce=True,
             misfire_grace_time=600,
