@@ -33,6 +33,20 @@ slot is due *and* ``now`` sits inside the channel's legal local hours. A slot in
 an illegal local hour is not rewritten — it waits for the window to open and is
 picked up by a later tick, which is the shift this module is allowed to make
 without touching the schema.
+
+Dry run: the same verdicts, none of the writes
+----------------------------------------------
+``apply_plan(dry_run=True)`` (``evaluate_plan`` is the name the CLI uses) walks
+the identical loop with the identical decision functions and withholds one thing:
+the ``unpublish`` call. Nothing else branches. That is the whole guarantee, and
+the reason it is worth having — the switch that lets the executor move rows also
+hides what it would decide, so the only way to read the verdicts today was to
+turn it on and restart the farm. A dry run therefore does *not* consult
+``plan_execution_enabled``: the flag gates the writes, never the judgement, and a
+report that answered ``plan_execution_disabled`` to every entry would tell an
+operator nothing they could not already read off the ``.env``. The flag is still
+reported, because the difference between "would queue three" and "would queue
+three if it were allowed" is the decision the operator is about to make.
 """
 
 from __future__ import annotations
@@ -97,6 +111,19 @@ _OUTCOME_SCHEDULED = "scheduled"
 _OUTCOME_HELD = "held"
 _OUTCOME_SKIPPED = "skipped"
 
+#: A dry-run row is a prediction, not a result, so it says so in its own words:
+#: `scheduled` would be read as "this happened". The three values map one-to-one
+#: onto the outcomes above, and `tests/test_plan_execution_dry_run.py` pins that
+#: a dry run run before a real one predicts exactly what the real one does.
+VERDICT_WOULD_SCHEDULE = "would_schedule"
+VERDICT_WOULD_HOLD = "would_hold"
+VERDICT_WOULD_SKIP = "would_skip"
+_VERDICTS = {
+    _OUTCOME_SCHEDULED: VERDICT_WOULD_SCHEDULE,
+    _OUTCOME_HELD: VERDICT_WOULD_HOLD,
+    _OUTCOME_SKIPPED: VERDICT_WOULD_SKIP,
+}
+
 
 @dataclass
 class _Target:
@@ -116,6 +143,79 @@ def _empty_result(*, flag_enabled: bool) -> dict[str, Any]:
         "no_plan": False,
         "reasons": {},
         "entries": [],
+    }
+
+
+def _dry_run_extras(result: dict[str, Any], moment: datetime) -> dict[str, Any]:
+    """Open a report that only judges. The keys are additive and only a dry run
+    carries them, so the shape of every report the pipeline reads today is
+    untouched.
+
+    `applied` stays 0 and means 0 — nothing was applied. `would_schedule` is the
+    number a real run at this same `judged_at` would hand over, and `judged_at`
+    is stated because the verdict is a function of the clock: the slot-due and
+    legal-local-hour checks read `now`, so a report without its instant would be
+    an answer to a different question than the one asked.
+    """
+    result["dry_run"] = True
+    result["judged_at"] = moment.isoformat()
+    result["would_schedule"] = 0
+    result["scanned"] = 0
+    result["verdicts"] = {}
+    return result
+
+
+def _judged(entry: dict[str, Any], target: _Target | None) -> dict[str, Any]:
+    """What the verdict below was made about, each field named by its source.
+
+    The plan's own words (`plan_*`) and the row that was actually measured
+    (`post_public_id`, `channel_*`) are kept apart on purpose: `_find_target`
+    joins on `cluster_public_id`, so the channel whose cap, local day and
+    timezone decided the verdict is the gated post's channel — which is not
+    necessarily the `channel_id` the planner wrote down. `target_read` is false
+    for an action that never reached a lookup (`hold`, `produce`, anything
+    unknown), so its empty `post_public_id` reads as "not looked at" instead of
+    "looked and found nothing".
+    """
+    channel = target.channel if target is not None else None
+    post = target.post if target is not None else None
+    return {
+        "plan_channel_id": entry.get("channel_id"),
+        "plan_platform": entry.get("platform"),
+        "plan_format": entry.get("format"),
+        "plan_slot_at": entry.get("slot_at"),
+        "target_read": target is not None,
+        "post_public_id": str(post.public_id) if post is not None else None,
+        "channel_id": str(channel.id) if channel is not None else None,
+        "channel_platform": str(channel.platform) if channel is not None else None,
+        "channel_timezone": channel.timezone if channel is not None else None,
+    }
+
+
+def _entry_row(
+    entry: dict[str, Any],
+    cluster_id: str,
+    action: str,
+    outcome: str,
+    reason: str,
+    target: _Target | None,
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """One entry as the report states it: the real shape, or its prediction."""
+    if not dry_run:
+        return {
+            "cluster_public_id": cluster_id,
+            "action": action,
+            "outcome": outcome,
+            "reason": reason,
+        }
+    return {
+        "cluster_public_id": cluster_id,
+        "action": action,
+        "verdict": _VERDICTS.get(outcome, outcome),
+        "reason": reason,
+        "judged": _judged(entry, target),
     }
 
 
@@ -405,17 +505,35 @@ def _decide_schedule(
     return _OUTCOME_SCHEDULED, ""
 
 
-def apply_plan(*, now: datetime | None = None, limit: int = MAX_ENTRIES_PER_RUN) -> dict[str, Any]:
+def apply_plan(
+    *,
+    now: datetime | None = None,
+    limit: int = MAX_ENTRIES_PER_RUN,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Act on the ACTIVE plan: qualified `schedule` entries become queued posts.
 
     Read the plan, decide per entry behind the limits, then hand the survivors to
     the existing scheduling transition in one call and report what the database
     actually says afterwards — never what the intent was.
+
+    `dry_run=True` keeps every step of that — the plan read, `_find_target`,
+    `_decide_schedule`, the in-run cap counters — and skips the one write: no
+    `unpublish`, no status change, no journal row, no plan rebuild. It is a
+    parameter rather than a second implementation because a judgement that
+    disagrees with the real run is worse than no judgement, and two copies of
+    eleven guards drift apart by the twelfth. The flag is deliberately not
+    consulted in that mode (it gates the writes, not the reading); the report
+    still carries `flag_enabled`, because the operator is deciding right now
+    whether to turn it on.
     """
     moment = ensure_utc(now) or datetime.now(UTC)
     settings = get_settings()
-    result = _empty_result(flag_enabled=bool(getattr(settings, "plan_execution_enabled", False)))
-    if not result["flag_enabled"]:
+    flag_enabled = bool(getattr(settings, "plan_execution_enabled", False))
+    result = _empty_result(flag_enabled=flag_enabled)
+    if dry_run:
+        _dry_run_extras(result, moment)
+    if not flag_enabled and not dry_run:
         _count(result["reasons"], REASON_DISABLED)
         log.info("plan: apply skipped — PLAN_EXECUTION_ENABLED is off")
         return result
@@ -429,6 +547,8 @@ def apply_plan(*, now: datetime | None = None, limit: int = MAX_ENTRIES_PER_RUN)
     result["plan_id"] = plan.get("public_id")
 
     entries = list(plan.get("entries") or [])[: max(0, int(limit))]
+    if dry_run:
+        result["scanned"] = len(entries)
     state = _RunState(
         moment=moment,
         settings=settings,
@@ -444,6 +564,7 @@ def apply_plan(*, now: datetime | None = None, limit: int = MAX_ENTRIES_PER_RUN)
         for entry in entries:
             cluster_id = str(entry.get("cluster_public_id") or "")
             action = str(entry.get("action") or "")
+            target: _Target | None = None
             if action == "hold":
                 # The plan already decided; this module never touches the row.
                 outcome, reason = _OUTCOME_SKIPPED, REASON_PLAN_HOLD
@@ -452,35 +573,65 @@ def apply_plan(*, now: datetime | None = None, limit: int = MAX_ENTRIES_PER_RUN)
             elif action == "schedule":
                 target = _find_target(session, cluster_id)
                 outcome, reason = _decide_schedule(session, state, entry, target)
-                if outcome == _OUTCOME_SCHEDULED:
+                if outcome == _OUTCOME_SCHEDULED and not dry_run:
                     handovers.append((entry, str(target.post.public_id)))
             else:
                 outcome, reason = _OUTCOME_SKIPPED, REASON_UNKNOWN_ACTION
 
             if outcome != _OUTCOME_SCHEDULED:
                 _count(result["reasons"], reason)
-                result["entries"].append(
-                    {
-                        "cluster_public_id": cluster_id,
-                        "action": action,
-                        "outcome": outcome,
-                        "reason": reason,
-                    }
-                )
                 if outcome == _OUTCOME_HELD:
                     result["held"] += 1
+                if dry_run:
+                    _count(result["verdicts"], str(_VERDICTS.get(outcome, outcome)))
+                result["entries"].append(
+                    _entry_row(entry, cluster_id, action, outcome, reason, target, dry_run=dry_run)
+                )
+            elif dry_run:
+                # The only difference from a real run, in both directions: this
+                # entry would have been handed over, and here it is only counted.
+                # `_decide_schedule` already spent the in-run cap for it, so the
+                # dry run reserves slots exactly like the run it predicts.
+                result["would_schedule"] += 1
+                _count(result["verdicts"], VERDICT_WOULD_SCHEDULE)
+                result["entries"].append(
+                    _entry_row(entry, cluster_id, action, outcome, reason, target, dry_run=True)
+                )
 
     if handovers:
         _hand_over(result, handovers)
 
-    log.info(
-        "plan: applied %d held %d (plan=%s, reasons=%s)",
-        result["applied"],
-        result["held"],
-        result["plan_id"],
-        dict(result["reasons"]),
-    )
+    if dry_run:
+        log.info(
+            "plan: dry run judged %d would schedule %d held %d (plan=%s, flag=%s, reasons=%s)",
+            result["scanned"],
+            result["would_schedule"],
+            result["held"],
+            result["plan_id"],
+            flag_enabled,
+            dict(result["reasons"]),
+        )
+    else:
+        log.info(
+            "plan: applied %d held %d (plan=%s, reasons=%s)",
+            result["applied"],
+            result["held"],
+            result["plan_id"],
+            dict(result["reasons"]),
+        )
     return result
+
+
+def evaluate_plan(
+    *, now: datetime | None = None, limit: int = MAX_ENTRIES_PER_RUN
+) -> dict[str, Any]:
+    """The verdicts `apply_plan` would reach, with the write withheld.
+
+    A named entry point so a caller cannot ask for a dry run by remembering the
+    keyword, and a thin one: it forwards to `apply_plan` instead of arranging its
+    own copy of the loop, which is what makes the two agree by construction.
+    """
+    return apply_plan(now=now, limit=limit, dry_run=True)
 
 
 def _hand_over(result: dict[str, Any], handovers: list[tuple[dict[str, Any], str]]) -> None:
@@ -656,8 +807,12 @@ __all__ = [
     "REASON_UNKNOWN_ACTION",
     "STAGE_APPLY",
     "STAGE_BUILD",
+    "VERDICT_WOULD_HOLD",
+    "VERDICT_WOULD_SCHEDULE",
+    "VERDICT_WOULD_SKIP",
     "apply_plan",
     "apply_plan_tick",
     "build_plan_job",
     "build_plan_tick",
+    "evaluate_plan",
 ]
