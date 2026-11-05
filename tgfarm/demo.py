@@ -9,6 +9,12 @@ gates, cover rendering, scheduling and crosspost logging.
 The demo is a release gate (`docs/AUTONOMY_ACCEPTANCE.md`), so it has to fail
 like one: `DemoGateError` is raised when a requested cycle reaches zero drafts,
 and every stage reports the counts it actually reached instead of an `ok`.
+
+What is deterministic is the stage trail — items, duplicates, clusters,
+promoted, drafts, gated, covers, scheduled and the named holds. It is identical
+on every run over a fresh store. The wording of one draft is not: S4 picks an
+angle through its own holdout lottery, so `final.sample` is evidence a human may
+read, never something the gate asserts on.
 """
 
 from __future__ import annotations
@@ -369,15 +375,152 @@ def _seed_items() -> int:
     return written
 
 
-async def run_demo(cycles: int = 1, offline: bool = True) -> dict:
+class DemoGateError(RuntimeError):
+    """A requested demo cycle did not reach a draft, a gate verdict and a slot.
+
+    The demo is the release gate named in `docs/AUTONOMY_ACCEPTANCE.md`, so its
+    exit status is part of its output: a run that seeded items, clustered them
+    and then produced nothing must not read as a successful cycle. Raising makes
+    the CLI exit non-zero and puts the stage trail it really reached in front of
+    the operator; the full report travels on `.report`.
+    """
+
+    def __init__(self, message: str, *, report: dict) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+def _stage_counts(
+    *,
+    seeded: int,
+    trends: dict,
+    ready_clusters: int,
+    drafts: int,
+    quality: dict,
+    visual: dict,
+    scheduled: int,
+    schedule_holds: dict,
+    publish: dict,
+    crosspost: dict,
+) -> dict:
+    """The numbers each stage really reached; none of them is a default."""
+    return {
+        "seeded_items": seeded,
+        "duplicates": int(trends.get("duplicates") or 0),
+        "clusters": int(trends.get("clusters") or 0),
+        "promoted": int(trends.get("promoted") or 0),
+        "ready_clusters": ready_clusters,
+        "drafts": drafts,
+        "gated": int(quality.get("passed") or 0),
+        "rejected": int(quality.get("rejected") or 0),
+        "deferred": int(quality.get("deferred") or 0),
+        "covers": int(visual.get("rendered") or 0),
+        "inline_images": int(visual.get("inline") or 0),
+        "scheduled": scheduled,
+        "schedule_holds": dict(schedule_holds),
+        "published": int(publish.get("published") or 0),
+        "dry_run": int(publish.get("dry_run") or 0),
+        "publish_holds": dict(publish.get("gates") or {}),
+        "crosspost": dict(crosspost),
+    }
+
+
+def _named_holds(holds: dict) -> dict:
+    """Only the gates that actually held something back, with their counts."""
+    return {reason: int(count) for reason, count in (holds or {}).items() if count}
+
+
+def _hold_note(holds: dict) -> str:
+    named = _named_holds(holds)
+    if not named:
+        return "no hold reason reported"
+    return "held: " + ", ".join(f"{reason}={count}" for reason, count in sorted(named.items()))
+
+
+def _log_stages(cycle: int, stages: dict) -> None:
+    """One line per stage with the count it reached.
+
+    A zero is only a warning when nothing explains it. `duplicates: 0` is a
+    measurement, and a publish stage that sent nothing because the farm is not
+    live is a decision with a name attached — both read differently from a stage
+    that quietly did no work, and the demo must not blur them into "ok".
+    """
+    schedule_holds = _named_holds(stages["schedule_holds"])
+    publish_holds = _named_holds(stages["publish_holds"])
+    publish_detail = f"dry_run={stages['dry_run']} {_hold_note(stages['publish_holds'])}"
+    rows = (
+        ("s2 reprints", stages["duplicates"], "documents excluded as copies", True),
+        ("s2 clusters", stages["clusters"], "stories grouped", False),
+        ("s2 promoted", stages["promoted"], "clusters above the heat threshold", False),
+        ("s4 drafts", stages["drafts"], f"from {stages['ready_clusters']} ready clusters", False),
+        ("s5 gated", stages["gated"], "drafts through the quality gate", False),
+        ("s6 covers", stages["covers"], "posts with primary media", False),
+        ("s7 scheduled", stages["scheduled"], _hold_note(stages["schedule_holds"]),
+         bool(schedule_holds)),
+        ("s7 published", stages["published"], publish_detail,
+         bool(publish_holds) or stages["dry_run"] > 0),
+    )
+    for name, count, detail, zero_explained in rows:
+        if count:
+            log.info("demo c%d %-16s %d  (%s)", cycle, name, count, detail)
+        elif zero_explained:
+            log.info("demo c%d %-16s 0  (%s)", cycle, name, detail)
+        else:
+            log.warning("demo c%d %-16s NOTHING  (%s)", cycle, name, detail)
+
+
+def _gate_failures(cycle: int, stages: dict) -> list[str]:
+    """Where this cycle stopped doing work, stated as counts.
+
+    Three things must hold for a demo cycle to count as a passed gate: S4
+    produced a draft, S5 gave it a verdict and left something alive, and S7 made
+    a named scheduling decision — a slot, or a hold reason that says why there
+    is no slot. Zero drafts is always fatal; so are zero survivors and a
+    scheduler that says nothing, because both are indistinguishable from a
+    healthy queue from the outside.
+    """
+    trail = (
+        f"cycle {cycle}: items={stages['seeded_items']} dup={stages['duplicates']} "
+        f"clusters={stages['clusters']} promoted={stages['promoted']} "
+        f"ready={stages['ready_clusters']} drafts={stages['drafts']} "
+        f"gated={stages['gated']} covers={stages['covers']} "
+        f"scheduled={stages['scheduled']}"
+    )
+    failures: list[str] = []
+    if not stages["drafts"]:
+        return [f"{trail} -> DEMO GATE FAILED: no draft was generated"]
+    if not stages["gated"]:
+        failures.append(f"{trail} -> DEMO GATE FAILED: no draft passed the quality gate")
+    if not stages["scheduled"] and not _named_holds(stages["schedule_holds"]):
+        failures.append(
+            f"{trail} -> DEMO GATE FAILED: scheduling decided nothing "
+            "and named no hold reason"
+        )
+    return failures
+
+
+def _enforce_gate(report: dict) -> dict:
+    """Turn a failed verdict into a raised named error; the caller exits non-zero."""
+    verdict = report.get("verdict") or {}
+    if verdict.get("ok") is False:
+        raise DemoGateError(verdict.get("reason") or "demo gate failed", report=report)
+    return report
+
+
+async def run_demo(cycles: int = 1, offline: bool = True, strict: bool = True) -> dict:
     """Run the synthetic end-to-end demo without publishing when offline=True.
 
     The offline guard temporarily overrides the cached Settings instance, so
     every publishing adapter and network-aware component sees mode="off".
     The caller's original mode is restored even if a pipeline stage raises.
+
+    `strict=True` (what the CLI uses) turns a cycle that reached no draft into a
+    `DemoGateError`, so the release gate cannot exit 0 while having produced
+    nothing. `strict=False` returns the same honest report for callers that want
+    to read the stage counts themselves.
     """
     if not offline:
-        return await _run_demo_workflow(cycles=cycles)
+        return _enforce_gate(await _run_demo_workflow(cycles=cycles))
 
     from tgfarm.core.settings import get_settings
 
@@ -385,9 +528,10 @@ async def run_demo(cycles: int = 1, offline: bool = True) -> dict:
     previous_mode = settings.mode
     settings.mode = "off"
     try:
-        return await _run_demo_workflow(cycles=cycles)
+        report = await _run_demo_workflow(cycles=cycles)
     finally:
         settings.mode = previous_mode
+    return _enforce_gate(report)
 
 
 async def _run_demo_workflow(cycles: int = 1) -> dict:
@@ -404,11 +548,14 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
     )
 
     await asyncio.to_thread(ensure_bootstrapped)
-    report: dict = {"seeded_items": await asyncio.to_thread(_seed_items)}
+    seeded = await asyncio.to_thread(_seed_items)
+    report: dict = {"seeded_items": seeded}
+    failures: list[str] = []
 
     for cycle in range(cycles):
         # --- S2: trends
-        report[f"cycle{cycle}_trends"] = await s2_trends.run()
+        trends = await s2_trends.run()
+        report[f"cycle{cycle}_trends"] = trends
 
         # --- S4: generate for every ready cluster
         clusters = await asyncio.to_thread(s2_trends.ready_clusters, 2)
@@ -418,61 +565,61 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
         report[f"cycle{cycle}_generated"] = {"clusters": len(clusters), "drafts": len(drafts)}
 
         # --- S5: quality
-        report[f"cycle{cycle}_quality"] = await s5_quality.run(drafts or None)
+        quality = await s5_quality.run(drafts or None)
+        report[f"cycle{cycle}_quality"] = quality
 
         # --- S6: covers for the survivors
         passed = await asyncio.to_thread(_passed_ids)
-        report[f"cycle{cycle}_visual"] = await s6_visual.run(passed)
+        visual = await s6_visual.run(passed)
+        report[f"cycle{cycle}_visual"] = visual
 
-        # --- S7: schedule
-        report[f"cycle{cycle}_schedule"] = {"scheduled": await asyncio.to_thread(
-            s7_publish.schedule_ready_posts
-        )}
+        # --- S7: schedule, keeping the reason when it schedules nothing.
+        # `schedule_ready_posts` names its gates through the `blocked`
+        # out-parameter; without it `scheduled: 0` is the same blind spot the
+        # publish stage already closed.
+        schedule_holds: dict[str, int] = {}
+        scheduled = await asyncio.to_thread(
+            s7_publish.schedule_ready_posts, 200, schedule_holds
+        )
+        report[f"cycle{cycle}_schedule"] = {"scheduled": scheduled, "holds": schedule_holds}
 
         # --- S7: publish everything (dry-run unless mode=live)
         await asyncio.to_thread(_backdate_all)
-        report[f"cycle{cycle}_publish"] = await s7_publish.publish_due(limit=50)
+        publish = await s7_publish.publish_due(limit=50)
+        report[f"cycle{cycle}_publish"] = publish
 
         # --- S9: crosspost (dry-run unless mode=live)
         await asyncio.to_thread(_backdate_published, minutes=30)
-        report[f"cycle{cycle}_crosspost"] = await s9_growth.run_crossposts(limit=20)
+        crosspost = await s9_growth.run_crossposts(limit=20)
+        report[f"cycle{cycle}_crosspost"] = crosspost
 
         # --- S8: analytics
         report[f"cycle{cycle}_analytics"] = await s8_analytics.run()
 
-    def _final() -> dict:
+        stages = _stage_counts(
+            seeded=seeded,
+            trends=trends,
+            ready_clusters=len(clusters),
+            drafts=len(drafts),
+            quality=quality,
+            visual=visual,
+            scheduled=scheduled,
+            schedule_holds=schedule_holds,
+            publish=publish,
+            crosspost=crosspost,
+        )
+        report[f"cycle{cycle}_stages"] = stages
+        _log_stages(cycle, stages)
+        failures.extend(_gate_failures(cycle, stages))
 
-        from tgfarm.db.models import Media, Post
-
-        with session_scope() as session:
-            posts = session.execute(select(Post)).scalars().all()
-            media_post_ids = {
-                row[0]
-                for row in session.execute(
-                    select(Media.post_id).where(Media.is_primary.is_(True))
-                ).all()
-            }
-            return {
-                "posts_total": len(posts),
-                "posts_published": sum(1 for p in posts if p.status == "published"),
-                "posts_rejected": sum(1 for p in posts if p.status == "rejected"),
-                "posts_with_cover": sum(1 for p in posts if p.id in media_post_ids),
-                "sample": [
-                    {
-                        "id": p.public_id,
-                        "channel": p.channel_id,
-                        "angle": p.angle,
-                        "status": p.status,
-                        "chars": p.char_len,
-                        "hook": p.hook[:90],
-                        "reason": (p.quality or {}).get("reason"),
-                    }
-                    for p in posts[:12]
-                ],
-            }
-
-    report["final"] = await asyncio.to_thread(_final)
+    report["final"] = await asyncio.to_thread(_final_stats)
     report["status"] = pipeline.status()
+    report["verdict"] = {
+        "ok": not failures,
+        "cycles": cycles,
+        "failures": failures,
+        "reason": "; ".join(failures)[:400],
+    }
     return report
 
 
@@ -486,6 +633,37 @@ def _passed_ids() -> list[str]:
             select(Post.public_id).where(Post.status == "gated")
         ).scalars().all()
         return list(rows)
+
+
+def _final_stats() -> dict:
+    from tgfarm.db.models import Media, Post
+
+    with session_scope() as session:
+        posts = session.execute(select(Post)).scalars().all()
+        media_post_ids = {
+            row[0]
+            for row in session.execute(
+                select(Media.post_id).where(Media.is_primary.is_(True))
+            ).all()
+        }
+        return {
+            "posts_total": len(posts),
+            "posts_published": sum(1 for p in posts if p.status == "published"),
+            "posts_rejected": sum(1 for p in posts if p.status == "rejected"),
+            "posts_with_cover": sum(1 for p in posts if p.id in media_post_ids),
+            "sample": [
+                {
+                    "id": p.public_id,
+                    "channel": p.channel_id,
+                    "angle": p.angle,
+                    "status": p.status,
+                    "chars": p.char_len,
+                    "hook": p.hook[:90],
+                    "reason": (p.quality or {}).get("reason"),
+                }
+                for p in posts[:12]
+            ],
+        }
 
 
 def _backdate_all() -> None:
@@ -512,4 +690,4 @@ def _backdate_published(minutes: int = 30) -> None:
             row.published_at = datetime.now(UTC) - timedelta(minutes=minutes)
 
 
-__all__ = ["RawItem", "run_demo", "SEED_STORIES"]
+__all__ = ["DemoGateError", "RawItem", "run_demo", "SEED_STORIES"]
