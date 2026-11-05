@@ -1,13 +1,18 @@
-"""W17-C: read-only autonomy chain report.
+"""W17-C / W19-A: read-only autonomy chain report.
 
 Walks one SQLite DB strictly in `mode=ro` and prints, for every link of the
-autonomy chain (source -> candidate -> ranked -> draft -> gate -> media ->
-schedule -> publish decision -> metrics -> recommendation):
+autonomy chain (source -> candidate -> ranked -> editorial plan -> draft -> gate
+-> media -> schedule -> publish decision -> metrics -> recommendation):
 
 - the stage journal row (status, timestamps, duration, three-state counters),
 - an attempt count (pipeline stages journal once per (run_id, stage); post
   retries live in `posts.attempts`, platform retries in `crosspost_logs.attempt`),
-- a coarse error category derived from the redacted error text.
+- a coarse error category derived from the redacted error text,
+- for the editorial plan, the numbers the plan and the executor really left
+  behind — entries per action, entries judged, slots booked and how many of the
+  booked slots read `scheduled` in `posts` — or `не прочитан` when the chain
+  never ran the plan. A zero is a measurement, so the report only prints one it
+  can point at in the DB.
 
 Default DB is the repo `tgfarm.db` (opened read-only; nothing here ever writes
 or imports the app, so the live file is safe to point at). Point it at the
@@ -23,6 +28,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +143,190 @@ def resolve_run_id(conn: sqlite3.Connection, requested: str | None) -> str | Non
     return row["run_id"] if row else None
 
 
+#: The executor journals its two plan stages under the run id of the plan job
+#: (`plan_execution._record` writes `plan-<8hex>`), not under the cycle's run id,
+#: so the rows of one chain can only be found by that chain's own time window.
+#: These are the executor's `STAGE_BUILD` / `STAGE_APPLY`; tests/test_w19a_chain_report.py
+#: pins them against `tgfarm.plan_execution`, because a report that drifted from
+#: those strings would quietly stop reporting the plan at all.
+PLAN_STAGE_BUILD = "editorial_plan_build"
+PLAN_STAGE_APPLY = "editorial_plan_apply"
+#: printed in place of a number the chain never produced. A zero is a measurement,
+#: so a zero may only be printed next to a row this tool can point at in the DB.
+PLAN_NOT_READ = "не прочитан"
+#: how long after the chain's last journal row a plan tick still counts as this
+#: chain's. The chain runs its own plan look inside the cycle, so its rows fall
+#: in the span; a few minutes of slack covers a scheduler firing just after the
+#: last stage row. Anything later than that was triggered by something else — a
+#: plan built an hour after the chain must never be reported as the chain's.
+PLAN_WINDOW_TAIL_SECONDS = 120.0
+
+
+def _meta_of(row: sqlite3.Row) -> dict:
+    raw = row["meta"]
+    try:
+        meta = json.loads(raw or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _num(value: Any) -> str:
+    """The stored number, or `?` when the stage left the column unmeasured.
+
+    `plan_execution` deliberately stores None for a counter it did not measure
+    (a `skipped` apply row has no scanned, no booked), so printing 0 here would
+    invent a measurement.
+    """
+    return "?" if value is None else str(value)
+
+
+def _reasons_text(reasons: Any) -> str:
+    if not isinstance(reasons, dict) or not reasons:
+        return "причин не записано"
+    return " ".join(f"{code}={count}" for code, count in sorted(reasons.items()))
+
+
+#: how SQLite's DATETIME column stores an instant; the window bounds must be
+#: built with the same separator or the string comparison would order wrong.
+STAMP_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime(STAMP_FORMAT)
+
+
+def journal_window(
+    conn: sqlite3.Connection, run_id: str, tail_seconds: float = PLAN_WINDOW_TAIL_SECONDS
+) -> tuple[str, str] | None:
+    """The run's own `created_at` span, widened by `tail_seconds` at the end."""
+    row = conn.execute(
+        "SELECT MIN(created_at), MAX(created_at) FROM pipeline_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None or row[0] is None or row[1] is None:
+        return None
+    end = _dt(row[1]) + timedelta(seconds=tail_seconds)
+    return str(row[0]), _stamp(end)
+
+
+def plan_journal_rows(
+    conn: sqlite3.Connection, window: tuple[str, str] | None
+) -> list[sqlite3.Row]:
+    """The plan's journal rows inside `window`; without a window, none."""
+    if window is None:
+        return []
+    sql = (
+        "SELECT id, run_id, stage, status, items_in, items_out, duration_ms, error, meta,"
+        " created_at FROM pipeline_runs"
+        " WHERE stage IN (:build, :apply) AND created_at BETWEEN :lo AND :hi"
+        " ORDER BY created_at, id"
+    )
+    return conn.execute(sql, {"build": PLAN_STAGE_BUILD, "apply": PLAN_STAGE_APPLY,
+                              "lo": window[0], "hi": window[1]}).fetchall()
+
+
+def _dt(value: Any) -> datetime:
+    """A stamp as a comparable instant; an unreadable one loses to everything."""
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return datetime.min
+
+
+def plan_slots_evidence(conn: sqlite3.Connection, plan_public_id: Any) -> tuple[int, int] | None:
+    """`(schedule entries whose post reads scheduled, schedule entries)` for one plan.
+
+    Both numbers count the same rows of `editorial_plan_entries`, so the second
+    cannot hide the first: a slot the plan booked but the DB does not read
+    `scheduled` is reported as a gap, and a `scheduled` post this plan never
+    listed is not counted as this plan's win. None when the plan's entries are
+    not in this schema, or when the plan booked no slot at all.
+    """
+    if not plan_public_id:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT e.cluster_public_id AS cpid, e.slot_at AS slot_at,"
+            " (SELECT COUNT(*) FROM posts p WHERE p.cluster_public_id = e.cluster_public_id"
+            "  AND p.status = 'scheduled' AND p.scheduled_at IS NOT NULL) AS booked_posts"
+            " FROM editorial_plan_entries e JOIN editorial_plans l ON l.id = e.plan_id"
+            " WHERE l.public_id = ? AND e.action = 'schedule'"
+            " GROUP BY e.cluster_public_id ORDER BY e.slot_at, e.cluster_public_id",
+            (str(plan_public_id),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    if not rows:
+        return None
+    return sum(1 for r in rows if int(r["booked_posts"] or 0) > 0), len(rows)
+
+
+def report_plan(conn: sqlite3.Connection, run_id: str | None) -> None:
+    print("\n=== editorial plan — entries, verdicts, slots ===")
+    if run_id is None:
+        return
+    window = journal_window(conn, run_id)
+    rows = plan_journal_rows(conn, window)
+    if not rows:
+        _report_plan_not_read(conn, window)
+        return
+    builds = sum(1 for r in rows if r["stage"] == PLAN_STAGE_BUILD)
+    applies = sum(1 for r in rows if r["stage"] == PLAN_STAGE_APPLY)
+    print(f"  план внутри этой цепочки: строк журнала {len(rows)} (build {builds},"
+          f" apply {applies}); run id журнала: "
+          f"{', '.join(sorted({str(r['run_id']) for r in rows}))} — план пишется под своим"
+          f" id, поэтому найден по окну цепочки "
+          f"{window[0] if window else '?'} .. {window[1] if window else '?'}")
+    for row in rows:
+        meta = _meta_of(row)
+        created = str(row["created_at"])[:19]
+        if row["stage"] == PLAN_STAGE_BUILD:
+            print(f"  {created} build  id={row['id']} run={row['run_id']} status={row['status']}"
+                  f" entries={_num(row['items_out'])} produce={_num(meta.get('produce'))}"
+                  f" schedule={_num(meta.get('schedule'))} hold={_num(meta.get('hold'))}"
+                  f" plan={meta.get('plan_id') or '?'}"
+                  f" dur_ms={_num(row['duration_ms'])}")
+            if row["error"]:
+                print(f"    error: {str(row['error'])[:160]}")
+            continue
+        booked = int(row["items_out"] or 0) if row["items_out"] is not None else None
+        evidence = plan_slots_evidence(conn, meta.get("plan_id"))
+        print(f"  {created} apply  id={row['id']} run={row['run_id']} status={row['status']}"
+              f" scanned={_num(row['items_in'])} booked={_num(row['items_out'])}"
+              f" held={_num(meta.get('held'))} plan={meta.get('plan_id') or '?'}"
+              f" ({_reasons_text(meta.get('reasons'))})")
+        if row["error"]:
+            print(f"    error: {str(row['error'])[:160]}")
+        if evidence is None:
+            print(f"  слоты плана {meta.get('plan_id') or '?'}: entries с action=schedule"
+                  f" в базе не найдены — бронировать было нечего")
+            continue
+        booked_now, planned = evidence
+        print(f"  слоты плана {meta.get('plan_id') or '?'} в базе: {booked_now}/{planned}"
+              f" запланированных читаются как scheduled (post) c scheduled_at;"
+              f" журнал booked={_num(booked)}")
+
+
+def _report_plan_not_read(conn: sqlite3.Connection, window: tuple[str, str] | None) -> None:
+    print(f"  {PLAN_STAGE_BUILD}: {PLAN_NOT_READ} — цепочка не строила план (строк журнала"
+          f" плана в её окне нет), поэтому сколько было бы entries, produce, schedule и hold"
+          f" — неизвестно")
+    print(f"  {PLAN_STAGE_APPLY}: {PLAN_NOT_READ} — цепочка не судила план: scanned, booked"
+          f" и held не измерялись, нули вместо этого были бы выдуманы")
+    if window is None:
+        print("  окно цепочки не определено (у её run_id нет ни одной строки журнала),"
+              " поэтому план искался бы по всей базе — и не искался")
+        return
+    elsewhere = int(conn.execute(
+        "SELECT COUNT(*) FROM pipeline_runs WHERE stage IN (:build, :apply)",
+        {"build": PLAN_STAGE_BUILD, "apply": PLAN_STAGE_APPLY},
+    ).fetchone()[0] or 0)
+    if elsewhere:
+        print(f"  всего строк плана в базе: {elsewhere} — они вне окна этой цепочки"
+              f" ({window[0]} .. {window[1]}), относятся к иным запускам")
+
+
 def report_stages(conn: sqlite3.Connection, run_id: str) -> int:
     rows = conn.execute(
         "SELECT stage, status, items_in, items_out, duration_ms, error, meta, created_at "
@@ -246,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
         else:
             rc = report_stages(conn, run_id)
+            report_plan(conn, run_id)
         report_publish_decisions(conn)
         report_metrics_and_learning(conn)
         print("\n=== chain links NOT drivable offline (unstubbed; strict-xfail in tests) ===")
