@@ -8,15 +8,23 @@ no single place that answers "what needs me now, and what exactly can I do".
 
 This module is presentation-only: it never changes state, it only reports the
 bucket, the reason and the actions that the existing endpoints already support.
+
+Two guarantees the operator can rely on, because every reason on this board is
+untrusted platform text: a row is never rendered with an empty reason, and a
+stored traceback or Playwright call log is never pasted into a card — it is
+redacted (no credential survives the cut) and collapsed to the one line that
+says why.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Channel, Post
 from tgfarm.db.session import session_scope
@@ -46,6 +54,36 @@ def _age_hours(value: datetime | None, now: datetime) -> float | None:
     return round((now - value).total_seconds() / 3600, 1)
 
 
+#: Lines that are log noise rather than a reason: Playwright's "Call log" block,
+#: Python traceback frames, RST-style separators and anything indented (an echoed
+#: source line or a `  - navigating to ...` bullet). The exception itself and a
+#: driver's one-line error are never indented, so they survive.
+_LOG_NOISE = re.compile(
+    r"(?i)^(?:\s|call log\b|traceback \(most recent call last\)|stack ?trace\b"
+    r"|during handling of|the above exception was|file \"|\^+|-{3,}|={3,})"
+)
+
+
+def _cause(value: object, *, limit: int) -> str:
+    """One redacted line out of a stored provider error, with the cause kept.
+
+    `publish_error` is untrusted platform text: it can carry a credential-bearing
+    URL, a whole traceback, or Playwright's call log. Redaction runs before any
+    slicing, so a cut can never leave half a token on the board. When the joined
+    text would not fit, the last surviving line wins — in both a traceback and a
+    driver dump the real exception is the last one.
+    """
+    text = redact_sensitive_text(value, limit=2000)
+    kept = [line.strip() for line in text.splitlines() if line.strip() and not _LOG_NOISE.match(line)]
+    if not kept:
+        # A pure-noise error must still not render as an empty cell.
+        return " ".join(text.split()).strip()[:limit].rstrip()
+    one = " ".join(kept)
+    if len(one) > limit and len(kept) > 1:
+        one = kept[-1]
+    return one[:limit].rstrip()
+
+
 def _held_reason(post: Post, platform: str, settings: Any) -> str:
     if getattr(settings, "approval_required", False):
         return "Ждёт одобрения оператора: включён режим TGFARM_APPROVAL_REQUIRED."
@@ -67,10 +105,12 @@ def _terminal_reason(post: Post) -> str:
         return "Публикация окончательно не удалась; причина не записана."
     # Our own machine-readable close-outs ("expired: …") are already the reason;
     # raw provider errors get a Russian framing so the board reads like a
-    # decision list, not a log dump.
+    # decision list, not a log dump. Either way the text is one redacted line:
+    # a close-out can ride along with a Playwright call log behind it, and that
+    # tail is neither bounded nor actionable.
     if error.startswith("expired:"):
-        return error
-    return f"Публикация не состоялась (финальный отказ): {error[:260]}"
+        return _cause(error, limit=260) or "Публикация окончательно не удалась; причина не записана."
+    return f"Публикация не состоялась (финальный отказ): {_cause(error, limit=260)}"
 
 
 def _item(post: Post, platform: str, bucket: str, reason: str, now: datetime) -> dict[str, Any]:
@@ -111,8 +151,12 @@ def review_queue(*, limit: int = 25) -> dict[str, Any]:
                 "Результат отправки неизвестен: проверь площадку перед повтором "
                 "(автоматический повтор запрещён, чтобы не создать дубль)."
             )
-            if post.publish_error:
-                reason = f"{reason} {str(post.publish_error)[:200]}"
+            # Rows the publication-evidence repair moved here carry their own
+            # English note ("history: marked published with no remote evidence…")
+            # and a NULL `published_at`; both belong on the board, one line each.
+            cause = _cause(post.publish_error, limit=200).strip() if post.publish_error else ""
+            if cause:
+                reason = f"{reason} {cause}"
         elif post.status == "failed":
             bucket = "terminal"
             reason = _terminal_reason(post)
