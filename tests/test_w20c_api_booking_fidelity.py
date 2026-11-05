@@ -253,7 +253,9 @@ def test_the_read_answers_six_states_and_names_the_registered_gate(client, owned
     # is what makes a code registered: a gate absent there is invisible in the
     # journal, which is the hole `d848eee` closed.
     gates = s7_publish.empty_gate_report()
-    assert len(gates) == 11, gates
+    # Twelve since W22-C, and this read still names the refusal: a corrected
+    # booking is a different outcome and is counted under its own key.
+    assert len(gates) == 12, gates
     assert payload["gate"]["code"] == s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS
     assert payload["gate"]["code"] in gates
     assert payload["gate"]["attribution"] == "tick", (

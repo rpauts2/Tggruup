@@ -512,7 +512,10 @@ def test_every_gate_code_the_module_declares_is_ledgered():
         if name.startswith("GATE_") and isinstance(value, str)
     }
     assert declared == VOCABULARY, declared ^ set(VOCABULARY)
-    assert len(VOCABULARY) == 11
+    # Twelve since W22-C: `GATE_SLOT_BOOKING_REBOUNDED` is a gate *outcome*, not
+    # a refusal, and it is registered here precisely so that a corrected booking
+    # cannot arrive as an unexplained `scheduled N`.
+    assert len(VOCABULARY) == 12
 
     for cell in CELLS:
         if cell.reason is not None:

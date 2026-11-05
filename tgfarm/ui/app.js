@@ -468,6 +468,12 @@
     // scheduler refuses rather than moving it, so the chip must say the slot is
     // the problem, not the post.
     slot_outside_local_hours: "слот плана вне локальных часов канала: публикация отложена",
+    // The same booking, corrected rather than parked (W22-C): the refused minute
+    // stays in the plan column and the post is scheduled at a legal one, so this
+    // chip counts an outcome that did NOT stay in the queue. It is labelled
+    // separately because "отложена" and "исправлена" are different answers, and
+    // reading one as the other is how a repaired booking looks like a stall.
+    slot_booking_rebounded: "слот плана исправлен на ближайший легальный: пост запланирован",
   };
 
   function renderPublicationDecision(statusPayload, failure) {
