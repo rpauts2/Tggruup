@@ -582,6 +582,27 @@ def test_a_re_openable_row_is_selected_again(journal, status) -> None:
     assert public_id in _growth_ids("jr-growth-retry")
 
 
+def test_growth_matches_the_stored_token_literally_not_through_the_normaliser(
+    journal,
+) -> None:
+    """The asymmetry the experiment measured, put on the record rather than hidden.
+
+    Health and the reconcile gate ask Python, so `journal_status_of` strips and
+    lower-cases a row before judging it. Growth asks the database for pairs whose
+    status *is* one of the retryable tokens, so a row written `"Failed "` stays out
+    of the IN-list and the pair is skipped in silence. The direction is safe — it
+    never re-offers something it cannot read — but it is not self-announcing, and
+    closing it means either normalising in SQL or making every writer store the
+    canonical token. Neither is this reader's call alone, so the behaviour is
+    pinned here: if a later block fixes it, this test is the one that must change.
+    """
+    mis_cased = journal("Failed ", platform="jr-growth-literal")
+    canonical = journal("failed", platform="jr-growth-literal")
+    selected = _growth_ids("jr-growth-literal")
+    assert canonical in selected
+    assert mis_cased not in selected
+
+
 def test_growth_follows_the_vocabulary_and_the_pin_above_is_the_tripwire(
     journal, monkeypatch
 ) -> None:
