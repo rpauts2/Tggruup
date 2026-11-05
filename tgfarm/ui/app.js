@@ -681,10 +681,12 @@
         // a chip; when there is no live snapshot at all, the old average is
         // history and gets the red of a dead read instead of the accent blue of a
         // score. An empty average is never printed as `0.0`, because "nothing was
-        // measured" is not "measured: nothing".
+        // measured" is not "measured: nothing" — and since P81 the report itself
+        // sends `null` here, so the absence is read as an absence rather than
+        // coerced: `Number(null || 0).toFixed(1)` would print that `0.0`.
         const attention = !hasEvidence
-          ? (measured
-            ? `<span class="tag tag-acc">внимание ${esc(Number(row.avg_engagement || 0).toFixed(1))}</span>`
+          ? (typeof row.avg_engagement === "number"
+            ? `<span class="tag tag-acc">внимание ${esc(row.avg_engagement.toFixed(1))}</span>`
             : '<span class="tag tag-none">внимание: нет данных</span>')
           : (fresh !== null && fresh > 0)
             ? `<span class="tag tag-acc">внимание по живым `

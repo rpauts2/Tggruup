@@ -195,7 +195,13 @@ def test_formats_report_is_wired_into_the_dashboard_refresh(client):
 
 
 def test_unreliable_format_row_is_not_a_score(client):
-    """`avg_engagement` is 0.0 when nothing was measured: an empty average."""
+    """`avg_engagement` is `null` when nothing was measured: an absence, not a zero.
+
+    S8 used to send `0.0` for an unmeasured format and the panel printed it as a
+    score; P81 made the absence cross the wire, so the panel must read it as an
+    absence too. `Number(null || 0).toFixed(1)` prints exactly the `0.0` the report
+    stopped lying about, so the line that coerced it is pinned out of the file.
+    """
     script = _script(client)
     body = _chunk(script, "function renderMetricsFormats", "function renderReport")
     assert "row.reliable === true" in body
@@ -203,6 +209,9 @@ def test_unreliable_format_row_is_not_a_score(client):
     assert "мало данных" in body
     assert "row.measured || 0" in body
     assert 'class="tag tag-acc">внимание' in body
+    assert 'typeof row.avg_engagement === "number"' in body
+    for coerced in ("row.avg_engagement || 0", "Number(row.avg_engagement"):
+        assert coerced not in body, f"{coerced} re-fabricates the zero S8 refuses to send"
 
 
 # ---------------------------------------------------------------- router skips
