@@ -218,11 +218,13 @@ def test_refusal_is_reported_and_not_silent(claim_gate: _ClaimGate, status: str,
     assert crosspost_journal.JOURNAL_REFUSAL_UNDECLARED_STATUS in message
 
 
-def test_already_done_reports_its_refusal_too(claim_gate: _ClaimGate, caplog) -> None:
-    """The gate in front of the loop is the same reader; its refusal is logged as
-    well, because the S9 loop drops the destination without a word.
+@pytest.mark.parametrize("status", UNRECOGNISED_STATUSES)
+def test_already_done_reports_its_refusal_too(claim_gate: _ClaimGate, status: str, caplog) -> None:
+    """The gate in front of the loop is the same reader and must refuse on its own
+    terms: the S9 loop drops the destination without a word, so if this one
+    quietly answers "not done", the claim below becomes the only line of defence.
     """
-    public_id = claim_gate.journal("queued")
+    public_id = claim_gate.journal(status)
     with caplog.at_level(logging.WARNING, logger="tgfarm.s9_growth.adapters"):
         assert adapters.already_done(public_id, TARGET_PLATFORM) is True
     assert "crosspost claim refused" in " ".join(r.getMessage() for r in caplog.records)
@@ -343,6 +345,40 @@ def test_planner_and_claim_gate_answer_identically_for_every_writable_status(
         assert claims == (planner_ids[status] in offered), (
             f"{status!r} in {mode} mode: planner offered={planner_ids[status] in offered}, "
             f"claim gate allowed={claims}"
+        )
+
+
+@pytest.mark.parametrize("mode", ["dry", "live"])
+def test_the_lock_alone_agrees_with_the_planner_for_every_writable_status(
+    both_gates, mode: str
+) -> None:
+    """The same matrix with `already_done` taken out.
+
+    The direct publish endpoints (TikTok, Douyin) call `begin_crosspost` without
+    consulting a plan or the gate in front of it, so the lock alone has to be the
+    same reader the queue is. The single permitted exception is asserted next to
+    it, because it is the one place the two components still differ on purpose.
+    """
+    harness, gate = both_gates
+    planner_ids: dict[str, str] = {}
+    gate_ids: dict[str, str] = {}
+    for status in EQUIVALENCE_CORPUS:
+        planner_ids[status] = harness.journal(status)
+        gate_ids[status] = gate.journal(status)
+
+    _entry, offered = _planner_offered(harness, mode)
+    for status in EQUIVALENCE_CORPUS:
+        gate.use_mode(mode)
+        claims = adapters.begin_crosspost(gate_ids[status], TARGET_PLATFORM) is not None
+        if status == crosspost_journal.JOURNAL_STATUS_DRY_RUN and mode == "dry":
+            # Preserved contract: `begin_crosspost` does not re-litigate the
+            # LIVE/dry switch, and dry mode never reaches it because the loop
+            # consults `already_done` first (pinned above).
+            assert claims is True and planner_ids[status] not in offered
+            continue
+        assert claims == (planner_ids[status] in offered), (
+            f"{status!r} in {mode} mode: planner offered={planner_ids[status] in offered}, "
+            f"begin_crosspost allowed={claims}"
         )
 
 
