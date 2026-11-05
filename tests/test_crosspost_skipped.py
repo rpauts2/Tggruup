@@ -6,7 +6,43 @@ import uuid
 import pytest
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
+
+#: The channels this file seeds. Without a teardown they stay in the session-wide
+#: test database, and `s8_analytics.formats` measures a platform, not a channel: a
+#: `published` Telegram post left here is read by every later format test as one
+#: more `news` publication — `Post.post_format` defaults to `news`, and
+#: `formats.py:407` maps a missing format to `news` again — which is how an
+#: unrelated file's assertion started depending on the order of the run.
+_OWNED_CHANNEL_PREFIXES = ("skip_", "youtube_auto_", "youtube_unconfigured_")
+
+
+@pytest.fixture(autouse=True)
+def _remove_seeded_rows():
+    """Take this file's posts out of the shared database after each test."""
+    from tgfarm.db.models import Channel, CrosspostLog, Post, PostStat
+    from tgfarm.db.session import session_scope
+
+    yield
+    with session_scope() as session:
+        channel_ids = list(
+            session.scalars(
+                select(Channel.id).where(
+                    or_(*(Channel.id.startswith(prefix) for prefix in _OWNED_CHANNEL_PREFIXES))
+                )
+            ).all()
+        )
+        if not channel_ids:
+            return
+        rows = list(session.scalars(select(Post).where(Post.channel_id.in_(channel_ids))).all())
+        post_ids = [row.id for row in rows]
+        public_ids = [row.public_id for row in rows]
+        if post_ids:
+            session.execute(delete(PostStat).where(PostStat.post_id.in_(post_ids)))
+        if public_ids:
+            session.execute(delete(CrosspostLog).where(CrosspostLog.post_public_id.in_(public_ids)))
+        session.execute(delete(Post).where(Post.id.in_(post_ids)))
+        session.execute(delete(Channel).where(Channel.id.in_(channel_ids)))
 
 
 def test_unconfigured_crosspost_does_not_accumulate_skipped_rows(monkeypatch):

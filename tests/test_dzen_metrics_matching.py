@@ -14,7 +14,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import delete, select
 
 from tgfarm.db.models import Channel, CrosspostLog, Post, PostStat
 from tgfarm.db.session import session_scope
@@ -24,6 +25,44 @@ from tgfarm.s8_analytics.dzen_web import (
     _title_matches,
     record_publication_metrics,
 )
+
+
+@pytest.fixture(autouse=True)
+def _remove_seeded_rows():
+    """Leave no Dzen publications behind for the rest of the session.
+
+    `s8_analytics.formats` measures a platform rather than a channel, so a
+    `published` Dzen post with a `posted` journal row that survives this file is
+    evidence for the next file's format lesson — with a real number of reactions
+    on it, because `record_publication_metrics` writes the stats here. The seeded
+    posts carry no explicit format, so they land in `news` — the column default,
+    re-asserted by `formats.py:407` — and are therefore evidence for a format the
+    next file never seeded.
+
+    The ids are recorded rather than matched by prefix on purpose: `dz_` is also
+    what `tests/test_pipeline.py` names its own channels with, and a cleanup that
+    sweeps another file's rows turns this file into a source of order-dependent
+    failures of its own.
+    """
+    yield
+    if not _seeded_channels:
+        return
+    with session_scope() as session:
+        channel_ids = list(_seeded_channels)
+        rows = list(session.scalars(select(Post).where(Post.channel_id.in_(channel_ids))).all())
+        post_ids = [row.id for row in rows]
+        public_ids = [row.public_id for row in rows]
+        if post_ids:
+            session.execute(delete(PostStat).where(PostStat.post_id.in_(post_ids)))
+        if public_ids:
+            session.execute(delete(CrosspostLog).where(CrosspostLog.post_public_id.in_(public_ids)))
+        session.execute(delete(Post).where(Post.id.in_(post_ids)))
+        session.execute(delete(Channel).where(Channel.id.in_(channel_ids)))
+    _seeded_channels.clear()
+
+
+#: Every channel `_seed` created and the teardown has not removed yet.
+_seeded_channels: list[str] = []
 
 
 def _seed(
@@ -36,6 +75,7 @@ def _seed(
     suffix = uuid4().hex[:8]
     channel_id = f"dz_{suffix}"
     public_id = f"dzstat{suffix}"
+    _seeded_channels.append(channel_id)
     with session_scope() as session:
         session.add(Channel(id=channel_id, title="Дзен", niche="tech", platform="dzen"))
         session.add(

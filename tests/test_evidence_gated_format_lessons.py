@@ -300,7 +300,13 @@ def test_fifty_publications_with_no_evidence_are_still_reported_as_fifty():
     assert value["evidenced_sample_size"] == 0
     assert value["state"] == "unevidenced" and value["reliable"] is False
     assert "доказательством отправки" in (row["note"] or "")
-    # named as a refusal of its own, not folded into «never measured»
+    # named as a refusal of its own, not folded into «never measured».
+    # The two `== []` / `== [fmt]` assertions below are deliberately about the
+    # whole platform report, not only about `fmt`: `format_performance` measures a
+    # platform, so a `published` post another test file leaves behind IS part of
+    # this report. When one of them fails on a format nobody seeded here, the
+    # culprit is that file's missing teardown, not this assertion — find it with
+    # `pytest <candidate> ::test_fifty_publications...` and add the cleanup.
     assert report["unevidenced"] == [fmt]
     assert report["not_measured"] == []
     assert report["formats"][fmt]["state"] == "unevidenced"
