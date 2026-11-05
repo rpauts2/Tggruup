@@ -18,6 +18,8 @@
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm agent-benchmark --cluster ID  compare writer vs writer + strategist (never publishes)
     tgfarm agent-benchmark --report      summarize paired benchmark history
+    tgfarm capability [--format]  honest capability level of every platform
+    tgfarm rules-status [--format] stored destination rules state, read only
     tgfarm doctor               diagnose configuration and connectivity
     tgfarm backup-test FILE     restore a backup to a temporary DB and verify it
     tgfarm demo                 seed synthetic data and run a cycle offline
@@ -36,6 +38,7 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 from tgfarm.core.logging import get_logger, setup_logging
 from tgfarm.core.settings import get_settings
@@ -575,6 +578,329 @@ def cmd_capability(args) -> int:
     return 0
 
 
+# -------------------------------------------------- destination rules, read side
+#: What this command prints wherever the stored row holds no value, instead of an
+#: empty cell, an invented hash or a `0 h` age (P34: `0` means "counted and
+#: empty"; a missing snapshot is not a measured zero, and a missing timestamp is
+#: not a fresh one).
+NO_RULES_SNAPSHOT = "нет снимка правил"
+
+#: How many destinations one read pass names at most — the same cap
+#: :func:`tgfarm.community_policy.policy_history` gives the panel. The scan is
+#: bounded and the report says when the bound cut it short.
+RULES_STATUS_HISTORY_LIMIT = 200
+
+#: The states of `tgfarm/maintenance.py::watch_destination_rules`, spelled with
+#: the same words, plus the sentence *this* command can prove for each of them.
+#: The step itself is never called from here: it opens the platform and records a
+#: snapshot, and a read command does neither, so it is imported for its watch set
+#: only. `tests/test_cli_rules_watch.py` fails if a state name here stops
+#: appearing in that step's source, which is what keeps the two vocabularies one
+#: vocabulary.
+RULES_STATE_MEANINGS: dict[str, str] = {
+    "nothing_to_watch": (
+        "ни одна площадка не настроена для наблюдения: переключатели выключены либо "
+        "история правил не называет ни одного назначения"
+    ),
+    "disabled": (
+        "это решение оператора: площадка выключена в центре площадок, поэтому её "
+        "правила не читаются и история не пополняется"
+    ),
+    "enabled_no_known_destination": (
+        "решения ещё нет: площадка включена и читатель правил есть, но история не "
+        "называет ни одного назначения, поэтому перечитывать нечего; первое "
+        "назначение появится из выбора цели или публикации"
+    ),
+    "watched": (
+        "площадка включена, читатель правил есть, история называет назначения; "
+        "показаны сохранённые снимки, этим прогоном ничего не перечитывалось"
+    ),
+    "no_rules_reader": (
+        "читателя правил этой площадки в коде TgFarm ещё нет — это наша лакуна, а "
+        "не отсутствие правил у площадки; назначения из истории не перечитываются"
+    ),
+}
+
+
+def _rules_status_utc(value: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes; an age must not depend on that quirk."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _rules_snapshot_destinations(*, history_limit: int) -> tuple[list[dict[str, Any]], int]:
+    """Newest stored rules row per destination, and how many destinations exist.
+
+    Returns ``(rows, destinations_total)``. The rows are oldest-check-first, the
+    order the operator reads as "most overdue", and every destination-authored
+    field leaves through :func:`tgfarm.community_policy.inert_external_text` — the
+    treatment ``policy_history`` gives the panel, because community rules are
+    untrusted data and never instructions (§45).
+
+    A bare connection instead of :func:`tgfarm.db.session.session_scope` on
+    purpose: ``session_scope`` commits on the way out, and a read command has
+    nothing to commit. `watch_destination_rules` is not reused either — it calls
+    the platforms. Both are the same table and the same newest-per-destination
+    shape; only the side effects are dropped.
+    """
+    from sqlalchemy import func, select
+
+    from tgfarm.community_policy import TARGET_ID_LIMIT, TARGET_NAME_LIMIT, inert_external_text
+    from tgfarm.db.models import CommunityPolicySnapshot as Snapshot
+    from tgfarm.db.session import get_engine
+
+    newest = (
+        select(
+            Snapshot.platform,
+            Snapshot.target_id,
+            func.max(Snapshot.id).label("newest_id"),
+        )
+        .group_by(Snapshot.platform, Snapshot.target_id)
+        .subquery()
+    )
+    cap = max(1, min(int(history_limit), RULES_STATUS_HISTORY_LIMIT))
+    columns = select(
+        Snapshot.platform,
+        Snapshot.target_type,
+        Snapshot.target_id,
+        Snapshot.target_name,
+        Snapshot.rules_hash,
+        Snapshot.verdict_status,
+        Snapshot.checked_at,
+    ).join(newest, Snapshot.id == newest.c.newest_id)
+    with get_engine().connect() as conn:
+        total = int(conn.execute(select(func.count()).select_from(newest)).scalar_one() or 0)
+        rows = conn.execute(
+            columns.order_by(Snapshot.checked_at.asc(), Snapshot.id.asc()).limit(cap)
+        ).all()
+        return (
+            [
+                {
+                    "platform": inert_external_text(row.platform, 32),
+                    "target_type": inert_external_text(row.target_type, 32),
+                    "target_id": inert_external_text(row.target_id, TARGET_ID_LIMIT),
+                    "target_name": inert_external_text(row.target_name, TARGET_NAME_LIMIT),
+                    "rules_hash": inert_external_text(row.rules_hash, 64),
+                    "verdict_status": inert_external_text(row.verdict_status, 16),
+                    "checked_at": _rules_status_utc(row.checked_at),
+                }
+                for row in rows
+            ],
+            total,
+        )
+
+
+def rules_status_report(
+    *,
+    platform: str | None = None,
+    target_id: str | None = None,
+    now: datetime | None = None,
+    history_limit: int = RULES_STATUS_HISTORY_LIMIT,
+) -> dict[str, Any]:
+    """What we already know about destination rules, without asking a platform.
+
+    The operator's question is registry row P67's: "under which rules did we
+    publish". Answering it used to need a maintenance run or a panel click,
+    because the only code that walks this history is the step that also re-reads
+    the platforms. So this reports the stored facts alone: per platform one of the
+    states `watch_destination_rules` itself uses, per destination the stored
+    `rules_hash`, the age of that snapshot and the verdict that came with it.
+
+    What it can prove and what it can only name: `disabled`, `no_rules_reader` and
+    `enabled_no_known_destination` are read off the switches and the table,
+    `nothing_to_watch` is their summary, and `watched` is reported with the same
+    three conditions the maintenance step checks before it reads anything
+    (switch on, reader exists, history names destinations). It is never a claim
+    that a re-read happened — no counters of a pass are printed here at all, and
+    whether a Reddit reader can actually be asked (OAuth) is a question for the
+    pass that would use it.
+    """
+    from tgfarm.maintenance import RULES_WATCH_PLATFORMS
+    from tgfarm.platforms import is_platform_enabled
+
+    current = _rules_status_utc(now) or datetime.now(UTC)
+    rows, destinations_total = _rules_snapshot_destinations(history_limit=history_limit)
+    scoped = [
+        row
+        for row in rows
+        if (not platform or row["platform"] == str(platform))
+        and (not target_id or row["target_id"] == str(target_id))
+    ]
+    # Three different numbers, because they answer three different questions: how
+    # many destinations the table holds, how many this bounded scan named, and how
+    # many are left once the operator's own filter is applied.
+    scanned = len(rows)
+    watch_set = set(RULES_WATCH_PLATFORMS)
+    named = {str(row["platform"]) for row in scoped}
+    universe = {str(platform)} if platform else (watch_set | named)
+
+    by_platform: dict[str, list[dict[str, Any]]] = {}
+    for row in scoped:
+        by_platform.setdefault(row["platform"], []).append(row)
+
+    entries: list[dict[str, Any]] = []
+    for name in sorted(universe):
+        has_reader = name in watch_set
+        known = by_platform.get(name, [])
+        enabled = bool(is_platform_enabled(name)) if has_reader else None
+        if not has_reader:
+            # The history names it and no reader exists: our gap, said as ours,
+            # whatever the switch says — a switch for a destination we cannot read
+            # is not the interesting fact.
+            state = "no_rules_reader"
+        elif not enabled:
+            state = "disabled"
+        elif not known:
+            state = "enabled_no_known_destination"
+        else:
+            state = "watched"
+        entry: dict[str, Any] = {
+            "platform": name,
+            "state": state,
+            "rules_reader": has_reader,
+            "destinations": len(known),
+            "reason": RULES_STATE_MEANINGS[state],
+            "known": [_rules_destination_view(row, current=current) for row in known],
+        }
+        if has_reader:
+            # The asymmetry maintenance keeps: a disabled platform carries a
+            # switch and no counters, a readerless one carries neither.
+            entry["switch"] = f"enabled.{name}"
+            entry["enabled"] = bool(enabled)
+        entries.append(entry)
+
+    blocked = [
+        f"{entry['platform']}:{entry['state']}"
+        for entry in entries
+        if entry["state"] not in {"disabled", "watched", "enabled_no_known_destination"}
+    ]
+    watched = [entry for entry in entries if entry["state"] == "watched"]
+    detail = RULES_STATE_MEANINGS["nothing_to_watch" if not watched else "watched"]
+    if platform or target_id:
+        detail += (
+            f" (область запроса: platform={platform or '-'} target={target_id or '-'}; "
+            "состояния вне неё не показаны)"
+        )
+    return {
+        "read_only": True,
+        "source": "community_policy_snapshots",
+        "generated_at": current.isoformat(),
+        "state": "nothing_to_watch" if not watched else "watched",
+        "detail": detail,
+        "destinations_stored": int(destinations_total),
+        "destinations_scanned": int(scanned),
+        "destinations_in_scope": len(scoped),
+        "truncated": bool(destinations_total > scanned),
+        "scope": {"platform": str(platform or ""), "target_id": str(target_id or "")},
+        "history_limit": max(1, min(int(history_limit), RULES_STATUS_HISTORY_LIMIT)),
+        "blocked": blocked,
+        "platforms": entries,
+    }
+
+
+def _rules_destination_view(row: dict[str, Any], *, current: datetime) -> dict[str, Any]:
+    """One destination rendered from its stored row: hash, age, verdict, nothing else."""
+    stored = row["checked_at"]
+    age_hours = (
+        round(max(0.0, (current - stored).total_seconds() / 3600.0), 2) if stored else None
+    )
+    return {
+        "target_id": row["target_id"],
+        "target_name": row["target_name"],
+        "target_type": row["target_type"],
+        "rules_hash": row["rules_hash"],
+        "verdict_status": row["verdict_status"],
+        "checked_at": stored.isoformat() if stored else "",
+        "age_hours": age_hours,
+        "age_text": NO_RULES_SNAPSHOT if age_hours is None else f"{age_hours:.1f} ч",
+        "label": (
+            f"{row['target_name']} ({row['target_id']})"
+            if row["target_name"] and row["target_name"] != row["target_id"]
+            else (row["target_id"] or NO_RULES_SNAPSHOT)
+        ),
+    }
+
+
+def render_rules_status(report: dict[str, Any], *, fmt: str = "text") -> list[str]:
+    """The human half of `rules-status`: one block per platform, never an empty table."""
+    if fmt == "markdown":
+        lines = [
+            "| Площадка | Состояние | Назначение | Хеш правил | Возраст снимка | Причина |",
+            "|---|---|---|---|---|---|",
+        ]
+    else:
+        summary = (
+            f"источник: {report['source']} | назначений в истории: "
+            f"{report['destinations_stored']} (посчитано) | просмотрено: "
+            f"{report['destinations_scanned']}"
+        )
+        if report["destinations_in_scope"] != report["destinations_scanned"]:
+            summary += f" | в области запроса: {report['destinations_in_scope']}"
+        if report["truncated"]:
+            summary += " | срезано лимитом"
+        lines = [
+            "читаем сохранённое: сеть не тронута, база не изменена",
+            summary,
+            f"всего: {report['state']} — {report['detail']}",
+        ]
+    for entry in report["platforms"]:
+        switch = f" (переключатель {entry['switch']})" if "switch" in entry else ""
+        reason = entry["reason"]
+        if fmt == "markdown":
+            if not entry["known"]:
+                # The empty path keeps the sentinel in every value slot: no stored
+                # snapshot is named as one, and no age is invented as `0 h`.
+                lines.append(
+                    f"| {entry['platform']} | {entry['state']} | {NO_RULES_SNAPSHOT} | "
+                    f"{NO_RULES_SNAPSHOT} | {NO_RULES_SNAPSHOT} | {reason} |"
+                )
+                continue
+            for row in entry["known"]:
+                lines.append(
+                    f"| {entry['platform']} | {entry['state']} | {row['label']} | "
+                    f"{row['rules_hash'] or NO_RULES_SNAPSHOT} | {row['age_text']} | {reason} |"
+                )
+            continue
+        lines.append(f"{entry['platform']}: {entry['state']}{switch}")
+        if entry["known"]:
+            for row in entry["known"]:
+                lines.append(
+                    f"  {row['label']} | правила: "
+                    f"{row['rules_hash'] or NO_RULES_SNAPSHOT} | возраст снимка: "
+                    f"{row['age_text']} | срез: {row['checked_at'] or NO_RULES_SNAPSHOT} | "
+                    f"вердикт: {row['verdict_status'] or NO_RULES_SNAPSHOT}"
+                )
+            lines.append(f"  назначений с сохранённым снимком правил: {entry['destinations']}")
+        else:
+            lines.append(f"  назначений с сохранённым снимком правил: {NO_RULES_SNAPSHOT}")
+        lines.append(f"  причина: {reason}")
+    if fmt != "markdown":
+        for item in report["blocked"]:
+            lines.append(f"пробел в коде TgFarm: {item}")
+    return lines
+
+
+def cmd_rules_status(args) -> int:
+    """Print the stored rules state of every destination we could publish to.
+
+    Deliberately *not* `watch_destination_rules`: that step re-reads Reddit and
+    Pikabu and appends a history row, and a read command makes no network calls
+    and writes nothing. This prints what the table and the switches already say,
+    in the state vocabulary that step owns, so "under which rules did we publish"
+    is answerable between two maintenance passes.
+    """
+    report = rules_status_report(
+        platform=str(getattr(args, "platform", "") or "") or None,
+        target_id=str(getattr(args, "target", "") or "") or None,
+        history_limit=int(getattr(args, "history_limit", RULES_STATUS_HISTORY_LIMIT)),
+    )
+    for line in render_rules_status(report, fmt=getattr(args, "format", "text")):
+        print(line)
+    _print(report)
+    return 0
+
+
 def cmd_publication_evidence(args) -> int:
     """Report (and optionally reclassify) publications with no remote evidence.
 
@@ -990,6 +1316,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="markdown prints the table used in docs/PLATFORM_CENTER.md",
     )
     p_capability.set_defaults(func=cmd_capability)
+
+    p_rules = sub.add_parser(
+        "rules-status",
+        help="сохранённое состояние правил назначений: без сети и без записей",
+    )
+    p_rules.add_argument(
+        "--format", choices=("text", "markdown"), default="text",
+        help="markdown prints the table used in docs/PLATFORM_CENTER.md",
+    )
+    p_rules.add_argument("--platform", default="", help="only this platform id")
+    p_rules.add_argument("--target", default="", help="only this destination id")
+    p_rules.add_argument(
+        "--history-limit",
+        type=int,
+        default=RULES_STATUS_HISTORY_LIMIT,
+        help=f"destinations one read names (1..{RULES_STATUS_HISTORY_LIMIT})",
+    )
+    p_rules.set_defaults(func=cmd_rules_status)
+
     sub.add_parser("backup", help="create and verify a SQLite backup").set_defaults(func=cmd_backup)
 
     p_backup_test = sub.add_parser(
