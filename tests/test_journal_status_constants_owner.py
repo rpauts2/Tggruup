@@ -54,23 +54,18 @@ OWNER_FILE = PKG_ROOT / "crosspost_journal.py"
 #: (`JOURNAL_STATUS_POSTED = "posted"`) is not a container and is not caught.
 _VOCAB_NAME = re.compile(r"^(?:JOURNAL|CROSSPOST)[A-Z0-9_]*STATUS[A-Z0-9_]*$")
 
-#: The consumers this block owns and fixed, relative to `tgfarm/`. They must stay
-#: free of spelled-out tokens; the scan below would already fail them, and naming
-#: them here says which files the guarantee is about.
-FIXED_CONSUMERS = ("distribution.py", "s7_publish/__init__.py")
+#: The consumers held to zero spelled-out tokens, relative to `tgfarm/`.
+#: `api.py` joined the list when its two sets were moved onto
+#: `JOURNAL_STATUS_UNKNOWN` / `JOURNAL_STATUS_PERMANENT`, which is what the gap
+#: allowlist below was registered for.
+FIXED_CONSUMERS = ("api.py", "distribution.py", "s7_publish/__init__.py")
 
-#: The remaining gap, registered by file and attribute — never by line number,
-#: which goes stale the moment someone edits above it. `tgfarm/api.py` is owned by
-#: another agent in this wave, so these two sets are reported, not edited; the
-#: coordinator moves them onto `JOURNAL_STATUS_UNKNOWN` / `JOURNAL_STATUS_PERMANENT`
-#: and deletes the entry. Deliberately one-sided: closing a gap does not break
-#: this file, adding a new one anywhere does.
-REGISTERED_GAPS = frozenset(
-    {
-        "api.py:JOURNAL_OPERATOR_ATTENTION_STATUSES",
-        "api.py:JOURNAL_RECONCILABLE_STATUSES",
-    }
-)
+#: Gaps that are reported rather than edited, by file and attribute — never by
+#: line number, which goes stale the moment someone edits above it. The list is
+#: empty: the two `api.py` sets this block registered are now named from the
+#: owner's constants, so the scan below has no exemption to honour and a new
+#: spelled-out vocabulary set anywhere in the package fails this file.
+REGISTERED_GAPS: frozenset[str] = frozenset()
 
 #: The rows this file writes all live under this channel/material prefix and are
 #: removed by the autouse fixture below, whatever a test asserts.
@@ -217,13 +212,15 @@ def test_the_classes_partition_exactly_the_known_statuses() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_registered_gaps_are_only_the_files_this_block_does_not_own() -> None:
-    """Registry hygiene: a gap is allowed in `api.py` and nowhere else.
+def test_the_gap_allowlist_is_empty_and_stays_empty() -> None:
+    """Zero-tolerance by construction: the scan has nothing to forgive.
 
-    Someone widening this list to a file they could have fixed is how an allowlist
-    becomes the defect again.
+    A gap re-added to `REGISTERED_GAPS` would be the same defect this block was
+    written to close, filed under an allowlist instead of fixed. The one file that
+    ever had an entry is in `FIXED_CONSUMERS` now, so there is no exempt consumer
+    left to widen this toward.
     """
-    assert all(gap.startswith("api.py:") for gap in REGISTERED_GAPS), sorted(REGISTERED_GAPS)
+    assert REGISTERED_GAPS == frozenset()
 
 
 def test_no_module_outside_the_owner_spells_a_status_vocabulary_container() -> None:

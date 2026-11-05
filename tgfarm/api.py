@@ -31,9 +31,11 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.crosspost_journal import (
     JOURNAL_STATUS_DRY_RUN,
     JOURNAL_STATUS_FAILED,
+    JOURNAL_STATUS_PERMANENT,
     JOURNAL_STATUS_POSTED,
     JOURNAL_STATUS_PUBLISHING,
     JOURNAL_STATUS_RETRY_AUTHORIZED,
+    JOURNAL_STATUS_UNKNOWN,
     JournalStatusClass,
     journal_status_class,
     journal_status_of,
@@ -1292,24 +1294,29 @@ CROSSPOST_PUBLISHING_STALE_AFTER = timedelta(minutes=30)
 #: consulted below, and only in the fail-closed direction; the timing conditions
 #: (an attempt ceiling, a staleness bound) stay this reader's own.
 #:
-#: `unknown` and `permanent` are literals because the shared module declares
-#: single-status constants for six of its nine tokens and these are not among
-#: them; both are members of `JOURNAL_SUPPRESSED_STATUSES`, and
-#: `tests/test_journal_readers_shared.py` pins this membership against any change
-#: of that vocabulary.
-JOURNAL_OPERATOR_ATTENTION_STATUSES = frozenset({"unknown", "permanent"})
+#: `unknown` and `permanent` are the owner's tokens, named here rather than
+#: re-typed: `tgfarm/crosspost_journal.py` declares a constant for every one of the
+#: nine statuses, and `tests/test_journal_status_constants_owner.py` fails a status
+#: set built out of spelled-out strings anywhere in the package. Both are members of
+#: `JOURNAL_SUPPRESSED_STATUSES`, and `tests/test_journal_readers_shared.py` pins
+#: this membership against any change of that vocabulary.
+JOURNAL_OPERATOR_ATTENTION_STATUSES = frozenset({JOURNAL_STATUS_UNKNOWN, JOURNAL_STATUS_PERMANENT})
 
 #: The newest-row statuses the operator may reconcile at all: the three this code
-#: cannot resolve by itself — the request may have been accepted (`unknown`), a
-#: claim died before the answer (`publishing`, further gated by
+#: cannot resolve by itself — the request may have been accepted
+#: (`JOURNAL_STATUS_UNKNOWN`), a claim died before the answer
+#: (`JOURNAL_STATUS_PUBLISHING`, further gated by
 #: `CROSSPOST_PUBLISHING_STALE_AFTER`), or the destination definitely refused
-#: (`permanent`). Explicit rather than derived from `JOURNAL_SUPPRESSED_STATUSES`
-#: because this gate *authorises a re-send*: `posted`/`scheduled` are suppressed
-#: for re-offer precisely because the destination is believed to hold the post,
-#: and a token the vocabulary grows tomorrow must become reconcilable through a
-#: decision in this line, never by omission. `retry_exhausted` is the only other
-#: way in, and it is an attempt count, not a status.
-JOURNAL_RECONCILABLE_STATUSES = frozenset({"unknown", JOURNAL_STATUS_PUBLISHING, "permanent"})
+#: (`JOURNAL_STATUS_PERMANENT`). Explicit rather than derived from
+#: `JOURNAL_SUPPRESSED_STATUSES` because this gate *authorises a re-send*:
+#: `posted`/`scheduled` are suppressed for re-offer precisely because the
+#: destination is believed to hold the post, and a token the vocabulary grows
+#: tomorrow must become reconcilable through a decision in this line, never by
+#: omission. `retry_exhausted` is the only other way in, and it is an attempt
+#: count, not a status.
+JOURNAL_RECONCILABLE_STATUSES = frozenset(
+    {JOURNAL_STATUS_UNKNOWN, JOURNAL_STATUS_PUBLISHING, JOURNAL_STATUS_PERMANENT}
+)
 
 
 def _crosspost_health() -> dict:
