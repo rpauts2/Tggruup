@@ -197,6 +197,13 @@ GOLDEN_WINDOW_NONE = [
         None,
     ),
     (
+        "fractional clock is truncated, not rounded forward",
+        datetime(2026, 11, 4, 21, 0, 37, 500000, tzinfo=UTC),
+        frozenset(),
+        UTC_CHANNEL,
+        MAIN_ILLEGAL_BOOKING,
+    ),
+    (
         "non-UTC timezone is still ignored, because nothing is forbidden",
         FROZEN_NOW,
         frozenset(),
@@ -294,6 +301,34 @@ def test_a_legal_window_skips_the_illegal_instant_main_booked() -> None:
     assert got == datetime(2026, 11, 5, 9, 30, tzinfo=UTC), got
     assert got != MAIN_ILLEGAL_BOOKING, "the refused booking is back"
     assert local_hours_allow(got, channel.timezone, config=config) is True
+
+
+def test_a_fractional_clock_is_booked_on_a_whole_minute_under_the_window_too() -> None:
+    """The window check reads the instant that gets written, seconds and all.
+
+    Measured on `main`: a clock at 21:00:37.5 booked 21:30:00 (the candidate is
+    truncated, never rounded forward) and a clock at 08:59:40 booked 09:29:00.
+    Under `[9, 18]` the first answer becomes 09:30:00 on 11-05 — still whole
+    minutes — while the second stays 09:29:00, because hour 9 is legal. A filter
+    that judged the untruncated candidate, or that wrote the raw candidate out,
+    moves one of these two.
+    """
+    config = _window_config(LEGAL_WINDOW)
+    no_window = _window_config(None)
+    late_clock = datetime(2026, 11, 4, 21, 0, 37, 500000, tzinfo=UTC)
+
+    late = _channel()
+    assert _next_free_slot(late, {}, late_clock, 7, config=no_window) == MAIN_ILLEGAL_BOOKING
+    got_late = _next_free_slot(late, {}, late_clock, 7, config=config)
+    assert got_late == datetime(2026, 11, 5, 9, 30, tzinfo=UTC), got_late
+    assert (got_late.second, got_late.microsecond) == (0, 0), got_late
+
+    early = _channel()
+    got_early = _next_free_slot(
+        early, {}, datetime(2026, 11, 4, 8, 59, 40, 123456, tzinfo=UTC), 7, config=config
+    )
+    assert got_early == datetime(2026, 11, 4, 9, 29, tzinfo=UTC), got_early
+    assert local_hours_allow(got_early, early.timezone, config=config) is True
 
 
 def test_the_window_is_judged_in_the_channels_own_timezone() -> None:
