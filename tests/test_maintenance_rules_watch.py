@@ -241,7 +241,7 @@ def test_nothing_configured_to_watch_names_the_state_and_invents_nothing(enable)
 
     assert report["state"] == "nothing_to_watch"
     assert report["detail"] == "nothing configured to watch"
-    assert report["considered"] == 0
+    assert report["attempted"] == 0
     assert report["checked"] == 0 and report["recorded"] == 0
     assert report["destinations"] == 0
     # An age that was not read stays None instead of becoming a fresh 0.0.
@@ -515,7 +515,7 @@ def test_limit_is_respected_and_the_remainder_is_stated(enable, fake_reddit):
     report = watch_destination_rules(limit=1, only_target_ids=subreddits)
 
     assert calls == [subreddits[0]], "the pass must take the most overdue destination"
-    assert report["considered"] == 1
+    assert report["attempted"] == 1
     assert report["checked"] == 1
     assert report["destinations"] == 3
     assert report["remaining"] == 2

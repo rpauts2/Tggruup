@@ -1055,6 +1055,12 @@ def watch_destination_rules(
 
     `only_target_ids` narrows the watch list to named destinations — the same
     filter `policy_history` and `latest_policy` already answer to.
+
+    Two counters with different scopes, because conflating them is how a card
+    starts lying: `destinations` is what this step is *able* to watch (enabled
+    platform, reader available), while `platforms[x]["destinations"]` is what the
+    history names for that platform whatever its state. So a platform can hold one
+    known destination and still contribute nothing to the top-level count.
     """
     from tgfarm.community_policy import latest_policy
     from tgfarm.platforms import is_platform_enabled
@@ -1064,6 +1070,11 @@ def watch_destination_rules(
     budget = max(1, min(int(limit), RULES_WATCH_BUDGET_MAX))
     deadline_seconds = max(1.0, float(budget_seconds))
 
+    # `attempted` = reads this pass started; `checked` = reads that came back with
+    # a verdict; `failed` = attempted - checked. `recorded` counts rows that
+    # actually appeared in the table afterwards, `collapsed` the reads the existing
+    # change detection swallowed, and `changed` the rows whose `rules_hash` differs
+    # from the one stored before the read. Everything here is measured by this pass.
     report: dict[str, Any] = {
         "limit": budget,
         "requested_limit": int(limit),
@@ -1072,7 +1083,7 @@ def watch_destination_rules(
         "detail": "nothing configured to watch",
         "platforms": {},
         "destinations": 0,
-        "considered": 0,
+        "attempted": 0,
         "checked": 0,
         "recorded": 0,
         "collapsed": 0,
@@ -1204,7 +1215,7 @@ def watch_destination_rules(
             report["skipped_by_deadline"] = int(report["skipped_by_deadline"]) + 1
             report["remaining"] = int(report["remaining"]) + 1
             continue
-        report["considered"] = int(report["considered"]) + 1
+        report["attempted"] = int(report["attempted"]) + 1
         entry = report["platforms"].get(platform)
         try:
             read = _run_existing_reader(_RULES_READER_FOR[platform], row)
