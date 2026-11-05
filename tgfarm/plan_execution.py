@@ -283,6 +283,26 @@ def _legal_local_hours(config) -> set[int] | None:
     return hours or None
 
 
+def local_hours_allow(
+    instant: datetime,
+    timezone_name: str | None,
+    *,
+    config: Any = None,
+) -> bool:
+    """True when `instant`, seen in the channel's own time, is a publishable hour.
+
+    One implementation of the window, deliberately reachable from outside this
+    module: `schedule_ready_posts` has to judge a *booked* slot (`Post.plan_slot_at`)
+    against exactly the hours `_decide_schedule` already judges a handover moment
+    against, and a second copy of the cadence reading is how two schedulers start
+    disagreeing about one plan. `None` — 24/7 — allows every instant.
+    """
+    allowed = _legal_local_hours(config if config is not None else get_config())
+    if allowed is None:
+        return True
+    return instant.astimezone(_zone(timezone_name)).hour in allowed
+
+
 def _slot_at(value: Any) -> datetime | None:
     """The plan's `slot_at` as an aware UTC datetime (`_plan_dict` returns ISO)."""
     if value is None:
@@ -571,17 +591,16 @@ def _decide_schedule(
         return _OUTCOME_HELD, REASON_NO_SLOT
     if slot > state.moment:
         return _OUTCOME_HELD, REASON_SLOT_NOT_DUE
-    allowed = _legal_local_hours(state.config)
-    if allowed is not None:
-        zone = _zone(channel.timezone)
-        # `unpublish` stamps `now`, so `now` is the hour this entry actually
-        # claims and the only one this check can honestly gate. A `slot_at` in an
-        # illegal local hour is not rewritten — that would be a column write — it
-        # waits for the window to open and a later tick hands it over, which is
-        # the shift this module is allowed to make. Checking the plan's own hour
-        # as well would stall such an entry forever instead.
-        if state.moment.astimezone(zone).hour not in allowed:
-            return _OUTCOME_HELD, REASON_LOCAL_HOURS
+    # `unpublish` stamps `now`, so `now` is the hour this entry actually claims and
+    # the only one this check can honestly gate. A `slot_at` in an illegal local
+    # hour is not rewritten — that would be a column write — it waits for the
+    # window to open and a later tick hands it over, which is the shift this module
+    # is allowed to make. Checking the plan's own hour as well would stall such an
+    # entry forever instead. The window itself comes from `local_hours_allow`, the
+    # one place it is derived, so this executor and the scheduler that obeys a
+    # booked slot cannot disagree about which hours a channel may publish in.
+    if not local_hours_allow(state.moment, channel.timezone, config=state.config):
+        return _OUTCOME_HELD, REASON_LOCAL_HOURS
 
     state.pending_channel[channel.id] = state.pending_channel.get(channel.id, 0) + 1
     if platform in s7_publish.PRIMARY_PLATFORM_DAILY_CAPS:
@@ -904,4 +923,5 @@ __all__ = [
     "build_plan_tick",
     "evaluate_plan",
     "generation_brief",
+    "local_hours_allow",
 ]

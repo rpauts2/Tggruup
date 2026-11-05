@@ -306,6 +306,13 @@ def schedule_ready_posts(
     Two modes come from config/slots.yaml: `interval` holds a 5-10 minute gap
     between posts of one channel, `weights` samples the peak-hour table.
 
+    A post the editorial plan booked — `plan_slot_at`, written once by `persist_draft`
+    — is scheduled at that instant instead: the cadence computes nothing for it, and
+    a booking outside the channel's legal local hours is reported as blocked rather
+    than moved. `scheduled_at` may be overwritten afterwards by a requeue or a retry;
+    `plan_slot_at` is not, which is why the booking and not the queue position is
+    what the plan can be audited against.
+
     `blocked` is an optional out-parameter naming the gates that returned a post
     to the queue unscheduled. `scheduled 0` is legitimate most of the time, and
     the operator can only tell that apart from a stall when the zero arrives with
@@ -314,6 +321,13 @@ def schedule_ready_posts(
     # Local import: `distribution` pulls in `platforms`/`s9_growth` lazily for its
     # own sake, so a module-level import here would close that cycle on s7.
     from tgfarm.distribution import clamp_channel_daily_cap
+
+    # Local import for the same reason, in the other direction: `plan_execution`
+    # imports this module at its own top level, so s7 may only reach back from
+    # inside a call. It needs one thing from there — the legal local hours, which
+    # that module already derives from the cadence owner — plus the reason code the
+    # same refusal carries there, so a booking gated twice keeps one spelling.
+    from tgfarm.plan_execution import REASON_LOCAL_HOURS, local_hours_allow
 
     config = get_config()
     settings = get_settings()
@@ -388,7 +402,28 @@ def schedule_ready_posts(
                 _blocked(GATE_DAILY_CAP)
                 continue
 
-            if interval_mode:
+            booked = _as_utc(getattr(post, "plan_slot_at", None))
+            if booked is not None and platform != "dzen":
+                # The plan already answered "when"; the cadence does not get to
+                # re-decide it. `plan_slot_at` is written once at insert and never
+                # touched again, so a booking is the only durable statement of what
+                # was ordered — honouring anything else would make it a note nobody
+                # reads. An overdue booking keeps its own instant, which makes the
+                # post due on the next tick rather than re-slotting the plan.
+                #
+                # The one limit that outranks a booking is the channel's legal local
+                # hours, and it refuses instead of moving: quietly re-slotting is
+                # how a booking becomes a suggestion and the plan becomes unsound.
+                # The window is read through `plan_execution`, which owns it, so the
+                # executor and this scheduler cannot disagree. A Dzen booking is not
+                # gated here because Dzen publishes at `now` whatever the plan said:
+                # judging an instant this branch never writes would refuse posts
+                # over a slot they were not given.
+                if not local_hours_allow(booked, getattr(channel, "timezone", None), config=config):
+                    _blocked(REASON_LOCAL_HOURS)
+                    continue
+                slot = booked
+            elif interval_mode:
                 last = cursor.get(post.channel_id) or _last_slot_for(session, post.channel_id)
                 slot = _interval_slot(now, last, cadence, rng, persona.posts_per_day)
                 if platform == "vk":
