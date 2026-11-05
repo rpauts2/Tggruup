@@ -399,6 +399,86 @@ def _journal_row(run_id: str, stage_name: str) -> dict | None:
         }
 
 
+#: The three actions `tgfarm.editorial_plan` may write for one entry. A fourth
+#: value means the planner and this harness disagree about what a decision is.
+PLAN_ACTIONS = frozenset({"produce", "schedule", "hold"})
+
+
+def _journal_by_stage(stage_name: str) -> list[dict]:
+    """Every `pipeline_runs` row written under one stage name, oldest first.
+
+    Read from the journal instead of the harness's own dict because the plan
+    ticks journal under their own `plan-…` run ids: they are driven through the
+    production scheduler entry points, not through the cycle's
+    `pipeline._stage`, so a run-scoped lookup would not see them at all.
+    """
+    from sqlalchemy import select
+
+    from tgfarm.db.models import PipelineRun
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(PipelineRun).where(PipelineRun.stage == stage_name).order_by(PipelineRun.id)
+        ).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "run_id": row.run_id,
+                "status": row.status,
+                "items_in": row.items_in,
+                "items_out": row.items_out,
+                "error": row.error,
+                "created_at": row.created_at,
+                "meta": dict(row.meta or {}),
+            }
+            for row in rows
+        ]
+
+
+def _journal_stage_id(stage_name: str) -> int | None:
+    """Journal sequence of a stage in this chain, None when it never ran."""
+    rows = _journal_by_stage(stage_name)
+    return rows[0]["id"] if rows else None
+
+
+def _persisted_plan(public_id: str | None) -> dict:
+    """The plan as the `editorial_plans` table holds it, with its entry rows."""
+    from sqlalchemy import select
+
+    from tgfarm.db.models import EditorialPlan, EditorialPlanEntry
+    from tgfarm.db.session import session_scope
+
+    if not public_id:
+        return {}
+    with session_scope() as session:
+        plan = session.execute(
+            select(EditorialPlan).where(EditorialPlan.public_id == public_id)
+        ).scalar_one_or_none()
+        if plan is None:
+            return {}
+        entries = session.execute(
+            select(EditorialPlanEntry)
+            .where(EditorialPlanEntry.plan_id == plan.id)
+            .order_by(EditorialPlanEntry.priority, EditorialPlanEntry.id)
+        ).scalars().all()
+        return {
+            "public_id": plan.public_id,
+            "status": plan.status,
+            "summary": dict(plan.summary or {}),
+            "entries": [
+                {
+                    "cluster_public_id": entry.cluster_public_id,
+                    "action": entry.action,
+                    "channel_id": entry.channel_id,
+                    "slot_at": entry.slot_at,
+                    "reasons": list(entry.reasons or []),
+                }
+                for entry in entries
+            ],
+        }
+
+
 def _chain_snapshot() -> dict:
     """Everything the per-link tests assert on, captured at build time.
 
@@ -510,6 +590,7 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
     production `pipeline._stage` wrapper, on a freshly bootstrapped empty DB."""
     from tgfarm import (
         pipeline,
+        plan_execution,
         s2_trends,
         s4_generation,
         s5_quality,
@@ -539,6 +620,26 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
     await stage("s2_trends", s2_trends.run)
     clusters = await to_thread(s2_trends.ready_clusters, 2)
 
+    # --- the editorial plan, between the ranked topic and the draft.
+    # Driven through the scheduler's own entry points, so the journal rows, the
+    # flag check and the reason codes are the ones a running farm writes; the
+    # harness adds no plan logic of its own. One look before drafting (what to
+    # make of the ranked queue) and one after the quality gate (what to do with
+    # the drafts that survived), which is the rhythm the two jobs have in
+    # production: build every 6 h, apply every 10 min.
+    plan_moments: list[datetime] = []
+
+    async def plan_look(moment: datetime) -> None:
+        plan_moments.append(moment)
+        await plan_execution.build_plan_tick(now=moment)
+        # The dry run is the judgement the operator can read before the writes
+        # are allowed, and it journals nothing of its own — the verdicts are
+        # asserted from the plan rows plus the apply journal below.
+        await to_thread(plan_execution.evaluate_plan, now=moment)
+        await plan_execution.apply_plan_tick(now=moment)
+
+    await plan_look(datetime.now(UTC).replace(microsecond=0))
+
     async def _generate() -> dict:
         created: list[str] = []
         for public_id, _label, _heat, _members in clusters:
@@ -547,6 +648,8 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
 
     await stage("s4_generate", _generate)
     await stage("s5_quality", lambda: s5_quality.run())
+
+    await plan_look(datetime.now(UTC).replace(microsecond=0))
 
     passed_ids = await to_thread(pipeline._passed_post_ids)
     if passed_ids:
@@ -578,6 +681,7 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
         "errors": list(result.errors),
         "ready_clusters": len(clusters),
         "passed_ids": list(passed_ids),
+        "plan_moments": list(plan_moments),
         "portfolio": portfolio_report,
         "snapshot": snapshot,
         "terminal": terminal,
@@ -592,11 +696,21 @@ def chain(tmp_path_factory):
     db_path = root / "chain.db"
     media_dir = root / "media"
 
-    watched_env = ("DATABASE_URL", "TGFARM_MEDIA_DIR", "TGFARM_MODE")
+    watched_env = (
+        "DATABASE_URL",
+        "TGFARM_MEDIA_DIR",
+        "TGFARM_MODE",
+        # The plan's two ticks refuse to write anything while this is off, and
+        # they journal nothing at all: the chain asserts on their journal rows,
+        # so the switch is part of the harness's own contract, not an accident
+        # of whichever `.env` sits next to the checkout.
+        "PLAN_EXECUTION_ENABLED",
+    )
     saved = {name: os.environ.get(name) for name in watched_env}
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
     os.environ["TGFARM_MEDIA_DIR"] = str(media_dir)
     os.environ["TGFARM_MODE"] = "off"
+    os.environ["PLAN_EXECUTION_ENABLED"] = "true"
 
     from tgfarm.db.bootstrap import ensure_bootstrapped
     from tgfarm.db.vector import get_index
@@ -668,6 +782,162 @@ def test_w17chain_ranked_topic_link_scores_and_phases(chain):
         "ranked topics carry no trend_phase"
     )
     assert chain["ready_clusters"] >= 1, "S2 promoted nothing that S4 may consume"
+
+
+def test_w17chain_plan_is_a_stage_between_ranking_and_drafting(chain):
+    """The decision link, proven from the journal and the plan table.
+
+    Before wave 19 nothing offline called `build_editorial_plan` at all, so a
+    green chain proved a running pipeline and not one editorial decision. These
+    assertions read `pipeline_runs` and `editorial_plans` directly, never a dict
+    the harness hands back about itself: the plan ticks are journalled under
+    their own `plan-…` run ids (they are driven through the production scheduler
+    entry points, not through the cycle's `pipeline._stage`), so a run-scoped
+    lookup would miss them and a harness that stopped running the plan could not
+    fake these rows either.
+    """
+    from tgfarm import plan_execution
+
+    builds = _journal_by_stage(plan_execution.STAGE_BUILD)
+    assert builds, (
+        f"no pipeline_runs row for stage {plan_execution.STAGE_BUILD!r}: the offline chain "
+        "never built an editorial plan, so it exercised the pipeline without making an "
+        "editorial decision"
+    )
+    for row in builds:
+        assert row["status"] == "ok", (
+            f"the plan build journalled status={row['status']}: {row['error']}"
+        )
+        assert row["error"] is None, f"the plan build journalled an error: {row['error']}"
+        assert row["created_at"] is not None, "the plan build journalled without a timestamp"
+        plan = _persisted_plan(row["meta"].get("plan_id"))
+        assert plan, (
+            f"the plan build journalled plan_id={row['meta'].get('plan_id')!r}, which is not "
+            "in editorial_plans: the journal claims a plan that was never persisted"
+        )
+        assert row["items_out"] == len(plan["entries"]), (
+            f"the plan build journalled items_out={row['items_out']} for "
+            f"{len(plan['entries'])} persisted entries"
+        )
+
+    # The stage sits where the acceptance chain puts it: after the topics were
+    # ranked, before any draft was written. Journal sequence, not wall clock.
+    ranked = _journal_stage_id("s2_trends")
+    drafted = _journal_stage_id("s4_generate")
+    assert ranked is not None and drafted is not None, "ranking or drafting left no journal row"
+    assert ranked < builds[0]["id"] < drafted, (
+        f"the plan stage is not between ranking and drafting: s2_trends id={ranked}, "
+        f"plan build id={builds[0]['id']}, s4_generate id={drafted}"
+    )
+
+
+def test_w17chain_plan_entries_are_recorded_and_every_one_judged(chain):
+    """Every decision the plan wrote down got an answer, and none was dropped.
+
+    `apply_plan` counts one reason code per entry it refused to book and books
+    the rest, so `sum(reasons) + booked == entries` is the arithmetic that says
+    the judgement actually read the plan: `applied: 0` with an empty `reasons`
+    is indistinguishable from a stage that never ran.
+    """
+    from tgfarm import plan_execution
+
+    applies = _journal_by_stage(plan_execution.STAGE_APPLY)
+    assert applies, (
+        f"no pipeline_runs row for stage {plan_execution.STAGE_APPLY!r}: the plan was "
+        "written down and never judged"
+    )
+    judged = 0
+    for row in applies:
+        assert row["status"] in {"ok", "skipped"}, f"apply journalled {row['status']}"
+        plan = _persisted_plan(row["meta"].get("plan_id"))
+        if not plan:
+            assert row["status"] == "skipped", "a run against no plan must not read as ok"
+            continue
+        entries = plan["entries"]
+        reasons = {str(code): int(n) for code, n in (row["meta"].get("reasons") or {}).items()}
+        booked = int(row["items_out"] or 0)
+        assert sum(reasons.values()) + booked == len(entries), (
+            f"the plan judgement accounted for {sum(reasons.values()) + booked} of "
+            f"{len(entries)} entries (reasons={reasons}, booked={booked})"
+        )
+        judged += len(entries)
+        for entry in entries:
+            assert entry["action"] in PLAN_ACTIONS, (
+                f"entry {entry['cluster_public_id']} carries action {entry['action']!r}, "
+                f"outside {sorted(PLAN_ACTIONS)}"
+            )
+            assert entry["reasons"], (
+                f"entry {entry['cluster_public_id']} decided {entry['action']} with no "
+                "stated reason"
+            )
+    assert judged, "no apply run judged a single plan entry"
+    # A fresh chain has gated nothing yet when the plan is built, so its
+    # produce/hold verdicts are the honest outcome — but a plan with no entry at
+    # all would mean the stage judged nothing, which is what this file forbids.
+    assert any(
+        e["action"] in {"produce", "hold"} for row in applies for e in _entries_of(row)
+    ), "the chain's plan recorded no produce/hold decision for the topics it ranked"
+
+
+def _entries_of(journal_row: dict) -> list[dict]:
+    """The persisted entries of the plan one apply row judged."""
+    return _persisted_plan(journal_row["meta"].get("plan_id")).get("entries") or []
+
+
+def test_w17chain_plan_bookings_are_slots_in_the_db_and_never_deliveries(chain):
+    """What the plan says it booked is a slot the DB reads, and nothing left."""
+    from tgfarm import plan_execution
+
+    applies = _journal_by_stage(plan_execution.STAGE_APPLY)
+    assert applies, "the plan was never applied, so no slot could be booked"
+    booked_clusters: list[str] = []
+    for row in applies:
+        plan = _persisted_plan(row["meta"].get("plan_id"))
+        if not plan:
+            continue
+        schedule_entries = [e for e in plan["entries"] if e["action"] == "schedule"]
+        booked = int(row["items_out"] or 0)
+        assert booked <= len(schedule_entries), (
+            f"the plan booked {booked} slots from a plan holding {len(schedule_entries)} "
+            "schedule decisions"
+        )
+        booked_clusters.extend(e["cluster_public_id"] for e in schedule_entries[:booked])
+        if not booked and plan["entries"]:
+            # The zero must stay explainable — the rule the shipped executor
+            # follows for its own report, asserted from the journal here. A plan
+            # with no entry at all is explained by its own emptiness.
+            assert row["meta"].get("reasons"), (
+                f"apply booked nothing and named no reason for plan {plan['public_id']}"
+            )
+
+    for public_id in booked_clusters:
+        post = next(
+            (p for p in chain["snapshot"]["posts"] if p["cluster_public_id"] == public_id), None
+        )
+        assert post is not None, f"the plan booked cluster {public_id}, which has no post"
+        assert post["status"] == "scheduled", (
+            f"the plan booked cluster {public_id} and its post reads {post['status']}"
+        )
+        assert post["scheduled_at"] is not None, f"booked post {post['public_id']} has no slot time"
+
+    # The invariant the whole harness exists for, restated at the link that can
+    # break it: an editorial decision that books a slot is not a publication.
+    assert chain["counts"]["post_stats"] == chain["baseline"]["post_stats"], (
+        "post_stats grew while the plan ran"
+    )
+    for post in chain["snapshot"]["posts"]:
+        assert post["status"] != "published", (
+            f"post {post['public_id']} became published around the plan stage"
+        )
+        assert post["published_at"] is None, (
+            f"post {post['public_id']} carries a publish stamp in the offline chain"
+        )
+    for log in chain["snapshot"]["logs"]:
+        assert log["status"] != "posted", f"a crosspost row says posted: {log}"
+    assert chain["calls_during_chain"] == [], (
+        f"the plan stage attempted {len(chain['calls_during_chain'])} outbound calls: "
+        f"{chain['calls_during_chain'][:5]}"
+    )
 
 
 def test_w17chain_draft_link_records_provenance(chain):
@@ -915,3 +1185,28 @@ async def test_w17chain_evidence_backed_lesson_is_unreachable_offline(chain):
         if lesson["kind"] in conclusion_kinds
     ]
     assert lessons and all(int(lesson["sample_size"]) > 0 for lesson in lessons)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the plan's schedule decision cannot be booked by a self-running chain, offline or "
+        "online: tgfarm.s4_generation.run is the only offline writer of a gated draft and it "
+        "calls tgfarm.s2_trends.mark_consumed, while tgfarm.editorial.queue lists only "
+        "clusters with status='ready' AND consumed_at IS NULL — so a cluster the farm just "
+        "drafted is never in the plan again, and tgfarm.editorial_plan can only answer "
+        "'produce'. The one writer that puts a draft back to 'gated' while its cluster stays "
+        "unconsumed is the panel's rewrite endpoint in tgfarm/api.py, which needs an HTTP "
+        "session and a human; an offline entry point for a bookable schedule decision does "
+        "not exist at this commit"
+    ),
+)
+def test_w17chain_plan_schedule_booking_is_unreachable_without_an_operator(chain):
+    from tgfarm import plan_execution
+
+    booked = [
+        row for row in _journal_by_stage(plan_execution.STAGE_APPLY) if int(row["items_out"] or 0)
+    ]
+    assert booked, (
+        "the chain's plan booked no slot: no plan entry reached Post.scheduled_at"
+    )
