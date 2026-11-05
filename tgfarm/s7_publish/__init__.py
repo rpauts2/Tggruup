@@ -88,6 +88,23 @@ CROSSPOST_ONLY_STATUSES: frozenset[str] = frozenset(
 )
 
 
+#: States in which a row is still eligible to be handed to a publisher. A send
+#: this worker could not record must not leave the row in one of them, or the next
+#: tick sends material the platform already has.
+SEND_AUTHORIZING_STATUSES: frozenset[str] = frozenset(
+    {STATUS_SCHEDULED, STATUS_GATED, STATUS_DRAFT}
+)
+
+
+#: The states a resolved send may land in. `draft`, `gated` and `rejected` are not
+#: outcomes of a send — they are what the generator, the gate and the rejection
+#: path say — so a publisher that named one of them would be writing a verdict it
+#: never observed, even while holding a legitimate claim.
+PUBLISH_OUTCOME_TARGETS: frozenset[str] = frozenset(
+    {STATUS_PUBLISHED, STATUS_PUBLISH_UNKNOWN, STATUS_FAILED, STATUS_SCHEDULED}
+)
+
+
 def canonical_post_status(value: str) -> str:
     """Return `value` when it is a persistable `posts.status`, else refuse loudly.
 
@@ -121,12 +138,12 @@ def publisher_owns(status: str | None) -> bool:
 def publish_outcome_allowed(current: str | None, target: str) -> bool:
     """Every outcome write of `posts.status` in this module passes through here.
 
-    Two independent refusals, both about fabrication: the target must be a word
-    the persisted vocabulary contains, and the row must still belong to this
-    worker — `scheduled` may be claimed, `publishing` may be resolved, and nothing
-    that already carries a verdict may be overwritten by a second one.
+    Two independent refusals, both about fabrication: the target must be a state a
+    send can actually resolve to, and the row must still belong to this worker —
+    `scheduled` may be claimed, `publishing` may be resolved, and nothing that
+    already carries a verdict may be overwritten by a second one.
     """
-    return target in POST_STATUSES and publisher_owns(current)
+    return target in PUBLISH_OUTCOME_TARGETS and publisher_owns(current)
 
 
 # ------------------------------------------------------------------ scheduling
@@ -1617,6 +1634,15 @@ async def _publish_one(
                         f"is now {row.status!r}; the destination may hold a copy this "
                         "database no longer owns"
                     )
+                    if row.status in SEND_AUTHORIZING_STATUSES:
+                        # The other half of the same fact: the platform has the
+                        # post, and a row that still says "queued" invites a second
+                        # send of it. Park it where the watchdog parks an attempt it
+                        # could not resolve, so nobody re-submits without checking.
+                        row.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
+                        row.publish_heartbeat_at = None
+                        row.publish_error = refusal[:400]
+                        refusal += f"; parked as {STATUS_PUBLISH_UNKNOWN} so it is not sent twice"
                     break
                 if not has_publication_evidence(
                     session,
