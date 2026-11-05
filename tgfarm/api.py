@@ -2367,6 +2367,27 @@ def _unknown_job_view(job_id: str) -> dict[str, Any]:
     return {"id": job_id, "registered": None, "next_run_at": None}
 
 
+def _iso_stamp(value: Any) -> str | None:
+    """One clock for every stamp this endpoint emits, or `None` when unreadable.
+
+    The two sources disagree by construction: SQLite hands the journal's
+    `created_at` back naive even though the column is `DateTime(timezone=True)`
+    (which is exactly what `_utc` exists to repair), while APScheduler reports
+    `next_run_time` in the scheduler's own zone, `settings.tz`. Printed as they
+    arrive, one response shows the same instant twice with two different
+    meanings, and a browser parsing the offset-less form reads it as wall-clock
+    local time — the tick lands hours from where the operator thinks it is.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return _utc(value).isoformat(timespec="seconds")
+
+
 def _plan_job_view(job_id: str) -> dict[str, Any]:
     """One consumer job as this process can see it.
 
@@ -2386,13 +2407,10 @@ def _plan_job_view(job_id: str) -> dict[str, Any]:
         return _unknown_job_view(job_id)
     if job is None:
         return {"id": job_id, "registered": False, "next_run_at": None}
-    next_run = getattr(job, "next_run_time", None)
     return {
         "id": job_id,
         "registered": True,
-        "next_run_at": (
-            next_run.isoformat(timespec="seconds") if isinstance(next_run, datetime) else None
-        ),
+        "next_run_at": _iso_stamp(getattr(job, "next_run_time", None)),
     }
 
 
@@ -2427,6 +2445,10 @@ def _last_apply_tick() -> tuple[dict[str, Any], str | None]:
     `applied` is the row's `items_out` read through `_stage_counters`, the owner
     of the placeholder-zero rule: an apply tick that found no plan journalled
     unmeasured counters, and its stored `0` must not be served as "applied zero".
+
+    Selected by stage rather than filtered out of `_runs`' newest-N window, so a
+    consumer that ran long ago is not reported as never having run — the window
+    would be a silent "no" to a question the journal can answer.
     """
     from tgfarm.plan_execution import STAGE_APPLY
 
@@ -2449,7 +2471,7 @@ def _last_apply_tick() -> tuple[dict[str, Any], str | None]:
     plan_id = meta.get("plan_id")
     return (
         {
-            "at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
+            "at": _iso_stamp(row.created_at),
             "plan_id": str(plan_id) if plan_id else None,
             "applied": applied,
             "held": _measured_int(meta.get("held")),
@@ -2475,8 +2497,8 @@ def _plan_headline(plan: dict[str, Any] | None) -> dict[str, Any]:
     summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
     coverage = summary.get("coverage")
     return {
-        "id": str(plan["public_id"]) if plan.get("public_id") else None,
-        "created_at": plan.get("created_at") if isinstance(plan.get("created_at"), str) else None,
+        "id": str(plan.get("public_id")) if plan.get("public_id") else None,
+        "created_at": _iso_stamp(plan.get("created_at")),
         "total": _measured_int(summary.get("total")),
         "produce": _measured_int(summary.get("produce")),
         "schedule": _measured_int(summary.get("schedule")),
@@ -2485,8 +2507,41 @@ def _plan_headline(plan: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _count_phrase(value: int | None) -> str:
-    return "не измерено" if value is None else str(value)
+def _active_plan_headline() -> dict[str, Any]:
+    """The ACTIVE plan's headline, read the way `/api/editorial/plan` reads it.
+
+    Deliberately not `build_editorial_plan(persist=False)`: that endpoint shows
+    an ephemeral preview when no plan exists, and this reader must not build a
+    plan — present or temporary — that the consumer never acted on. The swallow
+    is `api._backlog`'s: a plan this process cannot read costs the operator
+    nothing else, because the switch, the jobs and the journal are still known.
+    """
+    from tgfarm.editorial_plan import get_active_plan
+
+    try:
+        plan = get_active_plan()
+    except SQLAlchemyError as exc:
+        log.warning("active plan unread: %s", redact_sensitive_text(exc, limit=180))
+        return _plan_headline(None)
+    return _plan_headline(plan)
+
+
+def _tick_counters_phrase(applied: int | None, held: int | None, reasons: dict | None) -> str:
+    """What one apply tick did, in one clause that never rounds unknown up to nil.
+
+    A measured zero and an unmeasured counter are different sentences: `0` reads
+    as "the queue was empty", `не измерено` as "the tick did not report", and the
+    journal already says which of the two it holds.
+    """
+    if applied is None or held is None:
+        return "отработал, и его счётчики не измерены"
+    clause = f"применил {applied} и удержал {held}"
+    if reasons is None:
+        return clause + ", а причины удержания не записаны"
+    if not reasons:
+        return clause + ", и ни одной причины удержания не зафиксировано"
+    listed = ", ".join(f"{code}={count}" for code, count in sorted(reasons.items()))
+    return f"{clause} (причины удержания: {listed})"
 
 
 def _plan_execution_note(
@@ -2495,49 +2550,59 @@ def _plan_execution_note(
     last_apply: dict[str, Any],
     last_status: str | None,
 ) -> str:
-    """One sentence naming what this state means, and what it does not mean."""
+    """One sentence naming what this state means, and what it does not mean.
+
+    Two claims are refused on purpose. Nothing here says the jobs were or were
+    not registered — this process cannot see the scheduler that would answer it,
+    and "тикеты не регистрировались" was an accusation the journal could not
+    support. And the switch clause always leads: a panel that opened on
+    "применил 3" while the consumer sat switched off today would read as a live
+    queue, so those numbers are labelled as history of the last tick to run.
+    """
     from tgfarm.plan_execution import STAGE_APPLY
 
     if last_status is None:
         if enabled:
             return (
                 f"Потребитель плана включён, но в журнале {STAGE_APPLY} нет ни одной записи: "
-                "ни один тикет ещё не выполнялся и ничего не применялось."
+                "ни один тик ещё не отработал и ничего не применялось."
             )
         return (
             f"Потребитель плана выключен, и в журнале {STAGE_APPLY} нет ни одной записи: "
-            "тикеты не регистрировались и ничего не применялось."
+            "ничего не применялось, и не начнёт применяться, пока PLAN_EXECUTION_ENABLED "
+            "не будет включён и ферма перезапущена."
         )
+
+    at = last_apply["at"]
     if last_status == "error":
-        return (
-            f"Последний тикет {STAGE_APPLY} завершился ошибкой, "
-            "поэтому его счётчики ничего не подтверждают."
+        tick = f"последний тик {STAGE_APPLY} завершился ошибкой и его счётчики ничего не подтверждают"
+    elif last_status == "skipped":
+        tick = (
+            f"последний тик {STAGE_APPLY} в {at} был пропущен — активного плана не было, "
+            "применять было нечего"
         )
-    if last_status == "skipped":
-        return (
-            f"Последний тикет {STAGE_APPLY} был пропущен: активного плана не было, "
-            "применять было нечего."
+    elif last_status == "ok":
+        tick = (
+            f"последний тик {STAGE_APPLY} в {at} "
+            + _tick_counters_phrase(last_apply["applied"], last_apply["held"], last_apply["reasons"])
         )
-    reasons = last_apply["reasons"]
-    if reasons is None:
-        reason_phrase = "причины удержания не записаны"
-    elif not reasons:
-        reason_phrase = "ни одной причины удержания не зафиксировано"
     else:
-        reason_phrase = "причины: " + ", ".join(
-            f"{code}={count}" for code, count in sorted(reasons.items())
+        tick = (
+            f"последний тик {STAGE_APPLY} в {at} записан со статусом «{last_status}», "
+            "которого этот потребитель не пишет, поэтому его счётчикам верить нельзя"
         )
+
+    if enabled:
+        return f"Потребитель плана включён: {tick}."
     return (
-        f"Последний тикет {STAGE_APPLY} ({last_apply['at']}): "
-        f"применено {_count_phrase(last_apply['applied'])}, "
-        f"удержано {_count_phrase(last_apply['held'])}, {reason_phrase}."
+        f"Потребитель плана выключен, и ниже только история последнего отработавшего тика, "
+        f"а не текущее поведение: {tick}."
     )
 
 
 def _plan_execution_state() -> dict[str, Any]:
     """Assemble the consumer's state from settings, this process and the journal."""
     from tgfarm import plan_execution
-    from tgfarm.editorial_plan import get_active_plan
 
     settings = get_settings()
     enabled = bool(getattr(settings, "plan_execution_enabled", False))
@@ -2549,8 +2614,10 @@ def _plan_execution_state() -> dict[str, Any]:
             _plan_job_view(plan_execution.PLAN_APPLY_JOB_ID),
         ],
         "last_apply": last_apply,
-        "plan": _plan_headline(get_active_plan()),
-        "note": _plan_execution_note(enabled=enabled, last_apply=last_apply, last_status=last_status),
+        "plan": _active_plan_headline(),
+        "note": _plan_execution_note(
+            enabled=enabled, last_apply=last_apply, last_status=last_status
+        ),
     }
 
 
@@ -3024,7 +3091,9 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         Answers the four questions the plan endpoints cannot: the configured
         switch, whether this process can see the two jobs behind it, the newest
         apply tick the executor journalled, and the active plan it would act on.
-        Unknowns are `null`, never `False` or `0`.
+        Builds nothing, refreshes nothing, applies nothing and writes no row.
+        `null` means this process cannot know; a `False` or a `0` here is only
+        ever something that was actually measured.
         """
 
         return await io(_plan_execution_state)
