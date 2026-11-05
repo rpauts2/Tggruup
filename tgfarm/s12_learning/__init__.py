@@ -1,17 +1,26 @@
 """S12 — self-learning memory for the farm.
 
-Lessons live in `LearningMemory` under `kind`: `strategy`, `slot`, `mistake` and
-`format`. A format lesson is keyed `platform/format` per channel and is written
-only from posts S8 actually measured — an unmeasured publication is activity,
-not evidence, and a below-threshold sample is stored as an observation, never as
-a conclusion that may steer generation.
+Lessons live in `LearningMemory` under `kind` — today `strategy`, `slot`, `tactic`,
+`mistake` and `format` — and every one of them has a named reader:
+`tests/test_lesson_readers.py` derives the kinds written below from this module's own
+source and fails when a kind appears here with no read anywhere in `tgfarm/`. A format
+lesson is keyed `platform/format` per channel and is written only from posts S8
+actually measured — an unmeasured publication is activity, not evidence, and a
+below-threshold sample is stored as an observation, never as a conclusion that may
+steer generation.
+
+There used to be one more kind, `angle`: one row per eligible angle per channel per
+cycle, holding the same `er`/`ctr`/`quality`/`n` the strategy row is computed from.
+Nothing in the package ever read it — the per-angle conclusions are consumed as
+`strategy/angle_weights` (S3), `tactic/best_angle` and `mistake/worst_angle` (the S4
+prompt) — so the rows were a cache with no reader, and they are gone.
 """
 
 from __future__ import annotations
 
 import math
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -19,13 +28,12 @@ from sqlalchemy import select
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import to_thread
 from tgfarm.db.models import Channel as ChannelRow
-from tgfarm.db.models import LearningMemory, Post as PostRow
+from tgfarm.db.models import LearningMemory
 from tgfarm.db.session import session_scope
 from tgfarm.s8_analytics import (
     angle_performance,
     hook_style_performance,
     recent_metrics,
-    slot_performance,
 )
 from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
 from tgfarm.s8_analytics.formats import evidence_status_for, format_performance
@@ -570,6 +578,12 @@ def record_gate_failure(channel_id: str, gate: str, reason: str) -> None:
 
 
 def best_hours(channel_id):
+    """The hours this channel's own measured slots earned, and nothing else.
+
+    `sample_size >= MIN_SAMPLES` is the whole gate: below three measured posts in
+    `slot` rows (written by `_learn_channel` from `recent_metrics`) an hour is an
+    anecdote, and `s7_publish.plan_slot` doubles the weight of whatever comes back.
+    """
     rows = lessons(channel_id, kind="slot")
     out = sorted(rows, key=lambda r: r["score"], reverse=True)
     return [int(r["key"]) for r in out if r["sample_size"] >= MIN_SAMPLES][:5]
@@ -587,29 +601,17 @@ def _learn_channel(channel_id):
     perf = angle_performance(14, channel_id=channel_id)
     if perf:
         baseline, evidence = _confidence_weighted_qualities(perf)
-        for angle, data in perf.items():
-            lesson = evidence.get(angle)
-            if lesson is None:
-                continue
-            n = lesson["n"]
-            score = lesson["quality"]
-            observed = lesson["observed_quality"]
-            _upsert(
-                channel_id, "angle", angle,
-                {
-                    "er": data.get("er"),
-                    "ctr": data.get("ctr"),
-                    "quality": score,
-                    "observed_quality": observed,
-                    "baseline": baseline,
-                    "n": n,
-                },
-                score, n, _sample_confidence(n),
-                "angle %s: learned=%.3f observed=%.3f baseline=%.3f n=%d"
-                % (angle, score, observed, baseline, n),
-            )
-            learned += 1
-
+        # No `kind="angle"` row is written here any more. The loop that wrote one
+        # per eligible angle cost 5 rows and 10 statements (a SELECT and an INSERT
+        # per `_upsert`) per channel per cycle, ~1.9 ms each — 62% of this stage's
+        # DB writes (measured: 55 of 88 upserts, 103 of 209 ms over an
+        # 11-channel fleet) — and no code in `tgfarm/` ever read the kind back.
+        # What the angle evidence decides is already stored under kinds that do
+        # have readers, all computed from `evidence` below:
+        # `strategy/angle_weights` (read by `s12_learning.best_angle_weights`,
+        # consumed at `s3_router/__init__.py:514` and `:557`), `tactic/best_angle`
+        # and `mistake/worst_angle` (both rendered by
+        # `s4_generation/__init__.py:129-136`).
         # Do not overwrite a previously learned strategy until at least one
         # angle has enough observations to clear the sample-size threshold.
         qualities = {angle: item["quality"] for angle, item in evidence.items()}

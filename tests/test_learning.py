@@ -81,7 +81,15 @@ def test_strategy_is_not_replaced_by_below_threshold_samples(monkeypatch):
     assert not any(row["kind"] == "angle" for row in writes)
 
 
-def test_learning_records_observed_and_shrunk_quality(monkeypatch):
+def test_learning_records_shrunk_quality_in_a_kind_that_has_a_reader(monkeypatch):
+    """The lucky three-post streak is recorded shrunk, never raw.
+
+    This assertion used to live on a `kind="angle"` row that no code in `tgfarm/`
+    ever read, so it pinned a write that decided nothing; `angle` rows are gone
+    (`tests/test_lesson_readers.py` is the guard) and the same evidence now reaches
+    a decision only through `strategy/angle_weights` and the `tactic`/`mistake`
+    rows, which are what the readers named there actually query.
+    """
     from tgfarm import s12_learning
 
     writes = []
@@ -100,24 +108,28 @@ def test_learning_records_observed_and_shrunk_quality(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        s12_learning,
-        "angle_performance",
-        lambda days, channel_id=None: {
-            "lucky": {"n": 3, "quality": 0.99, "er": 0.05, "ctr": 0.12},
-            "stable": {"n": 30, "quality": 0.60, "er": 0.04, "ctr": 0.10},
-        },
-    )
+    perf = {
+        "lucky": {"n": 3, "quality": 0.99, "er": 0.05, "ctr": 0.12},
+        "stable": {"n": 30, "quality": 0.60, "er": 0.04, "ctr": 0.10},
+    }
+    monkeypatch.setattr(s12_learning, "angle_performance", lambda days, channel_id=None: dict(perf))
     monkeypatch.setattr(s12_learning, "hook_style_performance", lambda days, channel_id=None: {})
     monkeypatch.setattr(s12_learning, "recent_metrics", lambda days: [])
     monkeypatch.setattr(s12_learning, "_upsert", capture)
 
     s12_learning._learn_channel("learning-test-channel")
 
-    lucky = next(row for row in writes if row["kind"] == "angle" and row["key"] == "lucky")
-    assert lucky["value"]["observed_quality"] == pytest.approx(0.99)
-    assert lucky["value"]["quality"] < lucky["value"]["observed_quality"]
-    assert lucky["confidence"] == pytest.approx(_sample_confidence(3))
+    assert not any(row["kind"] == "angle" for row in writes), (
+        "kind='angle' has no reader in tgfarm/ - a write nobody queries is a lie "
+        "about the farm learning, see tests/test_lesson_readers.py"
+    )
+    baseline, evidence = _confidence_weighted_qualities(perf)
+    assert baseline < 0.99
+    tactic = next(row for row in writes if row["kind"] == "tactic" and row["key"] == "best_angle")
+    assert tactic["value"] == {"angle": "lucky"}
+    assert tactic["score"] == pytest.approx(evidence["lucky"]["quality"])
+    assert tactic["score"] < 0.99, "the raw streak was stored instead of the shrunk estimate"
+    assert tactic["confidence"] == pytest.approx(_sample_confidence(3))
     strategy = next(row for row in writes if row["kind"] == "strategy" and row["key"] == "angle_weights")
     assert strategy["sample_size"] == 33
     assert sum(strategy["value"].values()) == pytest.approx(1.0, abs=0.002)
