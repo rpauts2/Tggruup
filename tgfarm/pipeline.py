@@ -2526,6 +2526,23 @@ class CollectorTarget:
 
 
 @dataclass(frozen=True)
+class CollectorDestination:
+    """A second dated table written by the same tick as a spec's own job.
+
+    `module` is the farm-owned module holding that function and `entry` the dotted
+    call, in the same style as ``CollectorTarget.module``/``CollectorTarget.entry``:
+    the registry says which call lands rows in which table, so a report can name
+    the writer instead of guessing that a table "has no collector". A destination
+    here is not a job - it inherits the owning spec's `job_id`, `interval_hours`
+    and `run_stages`, because it *is* that job.
+    """
+
+    snapshot_table: str
+    module: str
+    entry: str
+
+
+@dataclass(frozen=True)
 class CollectorJobSpec:
     """One metrics-collector job pair exactly as the scheduler registers it.
 
@@ -2562,6 +2579,20 @@ class CollectorJobSpec:
     #: journal row at all, which the report reads as "unknowable", never as
     #: "zero runs".
     run_stages: tuple[str, ...] = ()
+    #: Dated tables this same tick also writes, besides `snapshot_table`. Not a
+    #: second job and not a second cadence: `metrics-and-learning` is one hour
+    #: interval whose `s8_analytics` stage rebuilds `channel_stats`
+    #: (`s8_analytics.write_daily_stats`, called at the top of `s8_analytics.run`,
+    #: pipeline.py:2366) and, through its dzen reader, refreshes the subscriber
+    #: count there too (`dzen_web.collect_and_record` -> `record_subscribers`,
+    #: dzen_web.py:1023). Before this field existed the registry could name only
+    #: one destination per spec, so a table with hundreds of live rows was
+    #: reported as one "no registered collector fills it" - false, and unfalsifiable
+    #: from the registry alone.
+    #: A destination belongs here only when an already-registered tick writes it;
+    #: a table written on demand from the API (e.g. `reddit_metric_snapshots`)
+    #: must NOT be added, or the report would claim a schedule that does not run.
+    additional_destinations: tuple[CollectorDestination, ...] = ()
     #: platform -> manual entry point an operator can press instead
     #: (wording only; the schedule text stays derived).
     manual: dict[str, str] = field(default_factory=dict)
@@ -2569,6 +2600,11 @@ class CollectorJobSpec:
     @property
     def platforms(self) -> tuple[str, ...]:
         return tuple(target.platform for target in self.targets)
+
+    @property
+    def destination_tables(self) -> tuple[str, ...]:
+        """Every dated table this job is responsible for filling, primary first."""
+        return (self.snapshot_table, *(item.snapshot_table for item in self.additional_destinations))
 
     def target(self, platform: str) -> CollectorTarget:
         return next(item for item in self.targets if item.platform == platform)
@@ -2599,6 +2635,12 @@ def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
 
     Every job also gets a one-shot `startup-*` twin so a fresh boot does not wait
     out the interval - both twins are registered from the same spec.
+
+    The specs whose ticks fill more than one dated table carry the rest in
+    `additional_destinations`, which `s8_analytics.freshness` reports under the
+    owning job's own cadence and journal stage. `channel_stats` is one of them;
+    `reddit_metric_snapshots` is deliberately not, because nothing on this
+    schedule writes it.
     """
     return (
         CollectorJobSpec(
@@ -2626,6 +2668,14 @@ def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
             # s8_analytics/__init__.py:436 - the CLI can force a Dzen read in any mode.
             manual={"dzen": "`tgfarm dzen-stats`"},
             run_stages=("s8_analytics",),
+            # The same hourly `s8_analytics` stage rebuilds the per-channel-per-day
+            # aggregate, so `channel_stats` is a collector destination of this job
+            # and not an orphan table: its newest row is this tick's newest number.
+            additional_destinations=(
+                CollectorDestination(
+                    "channel_stats", "tgfarm.s8_analytics", "s8_analytics.write_daily_stats"
+                ),
+            ),
         ),
         CollectorJobSpec(
             job_id="telegram-post-metrics",

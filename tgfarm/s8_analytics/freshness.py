@@ -37,6 +37,15 @@ Where a collector is scheduled and its table holds nothing, the honest word is
 run journal (``pipeline_runs``, under the stage names the registry itself
 declares) is then consulted to tell the two silences apart: "the tick never got
 as far as recording an attempt" and "the tick ran and produced no dated row".
+
+One registered tick can fill more than one dated table, and the registry says so:
+a spec's ``additional_destinations`` names the other tables its own job writes and
+the call that writes them. ``channel_stats`` is that case - the hourly
+``metrics-and-learning`` tick rebuilds it through ``s8_analytics.write_daily_stats``
+- so a table holding hundreds of live rows must not appear in the report as one
+"no registered task fills it". Such a table is reported as a destination of the job
+that fills it, judged by its own newest row, under the owner's cadence and journal
+stage. Only a dated table no registered tick writes may be called unfilled.
 """
 
 from __future__ import annotations
@@ -289,6 +298,33 @@ def _registry_collectors() -> tuple[tuple[Any, Any], ...]:
     )
 
 
+def _registry_destinations() -> tuple[tuple[Any, Any], ...]:
+    """``(spec, destination)`` pairs: the other tables these same ticks fill.
+
+    A destination is not a job. It inherits its owner's ``job_id``,
+    ``interval_hours`` and ``run_stages``, which is exactly the claim the report
+    is allowed to make: ``channel_stats`` is rebuilt by the hourly
+    ``metrics-and-learning`` tick, under the ``s8_analytics`` stage, and the
+    newest row there is that tick's newest number.
+    """
+    return tuple(
+        (spec, destination)
+        for spec in pipeline.collector_job_specs()
+        for destination in spec.additional_destinations
+    )
+
+
+def _registered_tables() -> frozenset[str]:
+    """Every table the registry takes responsibility for filling.
+
+    `destination_tables` is the primary table plus the additional ones, so the
+    orphan list below can only ever name a table no registered tick writes.
+    """
+    return frozenset(
+        table for spec in pipeline.collector_job_specs() for table in spec.destination_tables
+    )
+
+
 def _dated_tables() -> tuple[str, ...]:
     """Every ORM table that dates its rows with ``collected_at``, by name.
 
@@ -481,24 +517,22 @@ def _collector_reason(
     )
 
 
-def _collector_row(spec: Any, target: Any) -> dict[str, Any]:
-    """One collector described by the registry, with the data fields left empty."""
-    platform = str(target.platform)
+#: Which registry claim a row rests on. A row is either one platform reader of a
+#: job, one *additional* table the same job writes, or a dated table no registered
+#: tick writes at all. The third kind is the only one allowed to say "no collector
+#: fills this", and it is derived from the registry's own destination lists.
+KIND_PRIMARY = "primary_reader"
+KIND_DESTINATION = "secondary_destination"
+KIND_UNREGISTERED = "unregistered_table"
+
+
+def _unmeasured_fields() -> dict[str, Any]:
+    """The data half of a row before anything has been read: all of it ``None``.
+
+    Kept in one place so no row can start out with a ``0`` it never measured, and
+    so a new row kind cannot forget a field and make an absent table look empty.
+    """
     return {
-        "id": f"{spec.job_id}:{platform}",
-        "platform": platform,
-        "module": str(target.module),
-        "entry": str(target.entry),
-        "job_id": str(spec.job_id),
-        "startup_job_id": str(spec.startup_job_id),
-        "interval_hours": int(spec.interval_hours),
-        # The two schedule claims, kept in fields of their own so nothing below
-        # can mistake them for a statement about the data.
-        "scheduled": True,
-        "schedule": SCHEDULED_COLLECTORS.get(platform),
-        "snapshot_table": str(spec.snapshot_table),
-        "feeds_post_stats": bool(spec.feeds_post_stats),
-        "journal_stages": list(spec.run_stages),
         # Everything from here is read out of the table, or stays None.
         "rows": None,
         "last_collected_at": None,
@@ -514,30 +548,74 @@ def _collector_row(spec: Any, target: Any) -> dict[str, Any]:
     }
 
 
+def _collector_row(spec: Any, target: Any) -> dict[str, Any]:
+    """One collector described by the registry, with the data fields left empty."""
+    platform = str(target.platform)
+    return {
+        "id": f"{spec.job_id}:{platform}",
+        "kind": KIND_PRIMARY,
+        "platform": platform,
+        "module": str(target.module),
+        "entry": str(target.entry),
+        "job_id": str(spec.job_id),
+        "startup_job_id": str(spec.startup_job_id),
+        "interval_hours": int(spec.interval_hours),
+        # The two schedule claims, kept in fields of their own so nothing below
+        # can mistake them for a statement about the data.
+        "scheduled": True,
+        "schedule": SCHEDULED_COLLECTORS.get(platform),
+        "snapshot_table": str(spec.snapshot_table),
+        "feeds_post_stats": bool(spec.feeds_post_stats),
+        "journal_stages": list(spec.run_stages),
+        **_unmeasured_fields(),
+    }
+
+
+def _destination_row(spec: Any, destination: Any) -> dict[str, Any]:
+    """One additional table a registered tick writes, under that tick's own cadence.
+
+    Same shape as a collector row: same schedule claims, same data fields, same
+    verdict function. It differs in having no platform - `write_daily_stats`
+    rebuilds the aggregate for every channel at once, so pinning this row to
+    `dzen` or `vk` would be a claim the code does not make - and in naming the
+    writer that lands its rows rather than a platform reader.
+    """
+    table = str(destination.snapshot_table)
+    return {
+        "id": f"{spec.job_id}:{table}",
+        "kind": KIND_DESTINATION,
+        "platform": None,
+        "module": str(destination.module),
+        "entry": str(destination.entry),
+        "job_id": str(spec.job_id),
+        "startup_job_id": str(spec.startup_job_id),
+        "interval_hours": int(spec.interval_hours),
+        "scheduled": True,
+        "schedule": None,
+        "snapshot_table": table,
+        "feeds_post_stats": table == PostStat.__tablename__,
+        "journal_stages": list(spec.run_stages),
+        **_unmeasured_fields(),
+    }
+
+
 def _outside_table_row(name: str) -> dict[str, Any]:
     """A dated table the registry never names, reported rather than left unseen."""
     return {
         "id": name,
+        "kind": KIND_UNREGISTERED,
         "platform": None,
         "table": name,
+        "module": None,
+        "entry": None,
         "snapshot_table": name,
         "scheduled": False,
         "job_id": None,
         "startup_job_id": None,
-        "entry": None,
         "interval_hours": None,
+        "feeds_post_stats": name == PostStat.__tablename__,
         "journal_stages": [],
-        "rows": None,
-        "last_collected_at": None,
-        "age_hours": None,
-        "stale": False,
-        "fresh": False,
-        "data_status": COLLECTOR_UNREADABLE,
-        "reason": None,
-        "runs_recorded": None,
-        "last_run_at": None,
-        "last_run_status": None,
-        "scheduled_but_silent": False,
+        **_unmeasured_fields(),
     }
 
 
@@ -629,58 +707,65 @@ def _fill_outside_table(session, row: dict[str, Any], *, current: datetime) -> N
 
 def _load_collectors(
     current: datetime,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    """Per-collector and per-unregistered-table claims, in one read-only session.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """Per-collector, per-registered-destination and per-orphan-table claims.
 
-    Returns ``(collectors, tables_without_collector, error)``. The registry says
-    which reader exists, which call it makes and which table it should fill; every
-    freshness claim is then read out of that table, so no collector can be
-    ``ok`` because a job is registered.
+    Returns ``(collectors, destinations, tables_without_collector, error)``. The
+    registry says which reader exists, which call it makes and which tables it
+    should fill; every freshness claim is then read out of those tables, so no
+    collector can be ``ok`` because a job is registered.
     """
     collectors = [_collector_row(spec, target) for spec, target in _registry_collectors()]
-    registered = {row["snapshot_table"] for row in collectors}
+    destinations = [_destination_row(spec, item) for spec, item in _registry_destinations()]
+    registered = _registered_tables()
     outside = [_outside_table_row(name) for name in _dated_tables() if name not in registered]
 
     try:
         with session_scope() as session:
             journal_is_here = _table_is_here(session, PipelineRun.__tablename__)
-            for row in collectors:
+            for row in [*collectors, *destinations]:
                 _fill_collector(session, row, current=current, journal_is_here=journal_is_here)
             for row in outside:
                 _fill_outside_table(session, row, current=current)
     except SQLAlchemyError as exc:
         detail = redact_sensitive_text(exc, limit=200)
         log.warning("s8: collector freshness read failed: %s", detail)
-        for row in [*collectors, *outside]:
+        for row in [*collectors, *destinations, *outside]:
             row["data_status"] = COLLECTOR_UNREADABLE
             row["rows"] = None
             row["age_hours"] = None
             row["stale"] = False
             row["fresh"] = False
             row["reason"] = f"{NO_REPORT_CLAIM}: таблицы снимков недоступны: {detail}"
-        return collectors, outside, f"таблицы снимков недоступны: {detail}"
+        return collectors, destinations, outside, f"таблицы снимков недоступны: {detail}"
 
-    return collectors, outside, None
+    return collectors, destinations, outside, None
 
 
 def collector_freshness(now: datetime | None = None) -> dict[str, Any]:
     """Every registered collector, judged by the rows it left behind.
 
     The mapping is ``{"generated_at", "stale_after_hours", "collectors",
-    "tables_without_collector", "error"}``, where each collector row separates the
-    schedule claims (``scheduled``, ``job_id``, ``interval_hours``, ``schedule``)
-    from the data claims (``rows``, ``last_collected_at``, ``age_hours``,
-    ``stale``, ``fresh``, ``data_status``, ``reason``) and from the attempt claims
-    (``runs_recorded``, ``last_run_at``, ``last_run_status``). ``age_hours`` is
-    ``None`` whenever there is nothing to date, and ``data_status`` is then
-    ``no_report`` - never ``ok``, never ``fresh``.
+    "secondary_destinations", "tables_without_collector", "error"}``, where each
+    collector row separates the schedule claims (``scheduled``, ``job_id``,
+    ``interval_hours``, ``schedule``) from the data claims (``rows``,
+    ``last_collected_at``, ``age_hours``, ``stale``, ``fresh``, ``data_status``,
+    ``reason``) and from the attempt claims (``runs_recorded``, ``last_run_at``,
+    ``last_run_status``). ``age_hours`` is ``None`` whenever there is nothing to
+    date, and ``data_status`` is then ``no_report`` - never ``ok``, never ``fresh``.
+
+    ``secondary_destinations`` holds the *other* tables those same registered
+    ticks write, judged exactly the same way: ``channel_stats`` is not an orphan
+    table, it is the hourly ``metrics-and-learning`` job's aggregate, and the
+    report has to say which job's tick produced its newest number.
     """
     current = _utc(now) or datetime.now(UTC)
-    collectors, outside, error = _load_collectors(current)
+    collectors, destinations, outside, error = _load_collectors(current)
     return {
         "generated_at": current.isoformat(),
         "stale_after_hours": STALE_AFTER_HOURS,
         "collectors": collectors,
+        "secondary_destinations": destinations,
         "tables_without_collector": outside,
         "error": error,
     }
@@ -712,6 +797,7 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
           "collectors": [
             {
               "id": "telegram-post-metrics:telegram", "platform": "telegram",
+              "kind": "primary_reader",
               "job_id": ..., "interval_hours": 6, "scheduled": True, "schedule": ...,
               "snapshot_table": "post_stats",
               "rows": 0 | None, "last_collected_at": ... | None,
@@ -723,6 +809,11 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
             },
             ...
           ],
+          "secondary_destinations": [
+            { "id": "metrics-and-learning:channel_stats", "kind": "secondary_destination",
+              "platform": None, "job_id": "metrics-and-learning", "interval_hours": 1,
+              "snapshot_table": "channel_stats", ... },
+          ],
           "tables_without_collector": [ {...}, ... ],
           "collectors_error": None,
           "error": None,
@@ -732,15 +823,17 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
     channel platform is not in the catalog; per-platform counts only count what
     the catalog knows about.
 
-    ``collectors`` and ``tables_without_collector`` come from
-    ``_load_collectors`` and are the per-job side of the same question: a platform
-    row can only ever describe ``post_stats``, while a collector row is judged by
-    the table its own registered reader is supposed to fill. The platform status
-    is deliberately not derived from any of it.
+    ``collectors``, ``secondary_destinations`` and ``tables_without_collector``
+    come from ``_load_collectors`` and are the per-job side of the same question: a
+    platform row can only ever describe ``post_stats``, while a collector row is
+    judged by the table its own registered reader is supposed to fill, and a
+    destination row by the other table that same registered tick writes. Only a
+    table neither list names may be called unfilled. The platform status is
+    deliberately not derived from any of it.
     """
     current = _utc(now) or datetime.now(UTC)
     index, snapshots_total, vk_meaningful, dzen_publications, error = _load_facts()
-    collectors, outside, collectors_error = _load_collectors(current)
+    collectors, destinations, outside, collectors_error = _load_collectors(current)
     vk_token = _vk_token_present()
 
     platforms: dict[str, dict[str, Any]] = {}
@@ -785,6 +878,7 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
         "snapshots_total": snapshots_total,
         "platforms": platforms,
         "collectors": collectors,
+        "secondary_destinations": destinations,
         "tables_without_collector": outside,
         "collectors_error": collectors_error,
         "error": error,
@@ -807,6 +901,13 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
     ``claim`` spells out which table holds what since when, so the card can say
     "scheduled, but nothing collected since <that timestamp>" in the same breath
     as "scheduled" - and never because of it.
+
+    A registered job can write more than one dated table, so ``silent_collectors``
+    also carries the job's ``secondary_destinations`` (each entry says which it is),
+    counted in their own ``secondary_destinations_*`` fields rather than folded into
+    ``collectors_total``: the two lists answer to different registry claims - one
+    row per platform reader, one row per additional table - and a card that summed
+    them would be counting tables as if they were readers.
     """
     report = metrics_freshness(now)
     counts = {status: 0 for status in STATUSES}
@@ -827,24 +928,32 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
             }
 
     silent: list[dict[str, Any]] = []
+
+    def _silent_entry(collector: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": collector["id"],
+            "kind": collector["kind"],
+            "platform": collector["platform"],
+            "job_id": collector["job_id"],
+            "snapshot_table": collector["snapshot_table"],
+            "data_status": collector["data_status"],
+            "rows": collector["rows"],
+            "last_collected_at": collector["last_collected_at"],
+            "age_hours": collector["age_hours"],
+            "runs_recorded": collector["runs_recorded"],
+            "claim": collector["reason"],
+        }
+
     for collector in report["collectors"]:
         collector_counts[collector["data_status"]] += 1
-        if not collector["scheduled_but_silent"]:
-            continue
-        silent.append(
-            {
-                "id": collector["id"],
-                "platform": collector["platform"],
-                "job_id": collector["job_id"],
-                "snapshot_table": collector["snapshot_table"],
-                "data_status": collector["data_status"],
-                "rows": collector["rows"],
-                "last_collected_at": collector["last_collected_at"],
-                "age_hours": collector["age_hours"],
-                "runs_recorded": collector["runs_recorded"],
-                "claim": collector["reason"],
-            }
-        )
+        if collector["scheduled_but_silent"]:
+            silent.append(_silent_entry(collector))
+
+    destination_counts = {status: 0 for status in COLLECTOR_STATUSES}
+    for collector in report["secondary_destinations"]:
+        destination_counts[collector["data_status"]] += 1
+        if collector["scheduled_but_silent"]:
+            silent.append(_silent_entry(collector))
 
     return {
         "generated_at": report["generated_at"],
@@ -863,6 +972,13 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
         "collectors_no_report": collector_counts[COLLECTOR_NO_REPORT],
         "collectors_missing_table": collector_counts[COLLECTOR_MISSING_TABLE],
         "collectors_unreadable": collector_counts[COLLECTOR_UNREADABLE],
+        "secondary_destinations": report["secondary_destinations"],
+        "secondary_destinations_total": len(report["secondary_destinations"]),
+        "secondary_destinations_ok": destination_counts[COLLECTOR_OK],
+        "secondary_destinations_stale": destination_counts[COLLECTOR_STALE],
+        "secondary_destinations_no_report": destination_counts[COLLECTOR_NO_REPORT],
+        "secondary_destinations_missing_table": destination_counts[COLLECTOR_MISSING_TABLE],
+        "secondary_destinations_unreadable": destination_counts[COLLECTOR_UNREADABLE],
         "silent_collectors": silent,
         "tables_without_collector": report["tables_without_collector"],
         "collectors_error": report["collectors_error"],
@@ -877,6 +993,9 @@ __all__ = [
     "COLLECTOR_STATUSES",
     "COLLECTOR_STALE",
     "COLLECTOR_UNREADABLE",
+    "KIND_DESTINATION",
+    "KIND_PRIMARY",
+    "KIND_UNREGISTERED",
     "NO_REPORT_CLAIM",
     "STALE_AFTER_HOURS",
     "STATUSES",
