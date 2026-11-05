@@ -216,6 +216,10 @@ def _publication_block(
         "avg_engagement": _rate(sample_engagement_sum, sample),
         "reliable": sample >= MIN_SAMPLE,
         "fresh_sample_size": fresh_sample,
+        # The live count the freshness dimension reports, minus the rows this
+        # dimension disproves: a reader must be able to get from `fresh` to
+        # `fresh_sample_size` without guessing what was taken away.
+        "fresh_unevidenced": int(fresh_unevidenced),
         "fresh_avg_engagement": _rate(fresh_sample_engagement_sum, fresh_sample),
         "evidence_status": publication_evidence_status(evidenced, unevidenced, unrulled),
     }

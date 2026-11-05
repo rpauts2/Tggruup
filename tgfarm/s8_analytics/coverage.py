@@ -38,6 +38,15 @@ Three numbers per platform must never be conflated:
 * ``measured_with_signal`` - of those, posts whose newest snapshot has a counter
   above zero, because an all-zero snapshot is a failed read, not a measurement.
 
+A fourth must not be conflated with the first either: ``published`` is the farm's
+own claim, and the publisher used to stamp it on sends that never happened, so
+each platform now also reports how many of those rows anything on the platform
+side can point at (``published_evidenced`` / ``published_unevidenced`` /
+``published_unrulled``, under the proof rules ``s8_analytics.formats`` applies —
+the same ones ``maintenance.publication_evidence_repair`` moves such rows for).
+The totals stand so a reader can see both: a platform can be fully measured and
+still not be proven to have published anything.
+
 Attribution is reported separately, because a collector that cannot point a
 scraped row at a post is blocked by our own bookkeeping rather than by a platform:
 the Dzen publisher used to confirm a publication without storing its URL, which
@@ -61,6 +70,12 @@ from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import CrosspostLog, PostStat
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
+
+# One definition of "this publication can be pointed at", shared with the report
+# that computes format rates and with the sweep that repairs the rows: a coverage
+# audit and an analytics report that disagree about what a phantom publication is
+# would be the second copy of that rule, which is how this repo drifted before.
+from tgfarm.s8_analytics.formats import EVIDENCE_RULES, RULE_MESSAGE_ID
 
 log = get_logger(__name__)
 
@@ -212,6 +227,70 @@ STATUS_UNMEASURED = "unmeasured"
 STATUS_BLOCKED = "blocked"
 
 
+def _ratio(numerator: int, denominator: int) -> float | None:
+    """A share, or ``None`` when there is nothing to divide by.
+
+    ``0.0`` used to answer «no publication exists» with «nothing was measured»,
+    which is exactly the fabricated zero the operator rules out: a farm that has
+    published nothing and a farm nobody reads are two different facts, and a
+    reader who sees only the number cannot tell them apart.
+    """
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 4)
+
+
+def _proof_condition(platform: str):
+    """SQL for «anything on the platform side can point at this publication».
+
+    The rules are imported from `s8_analytics.formats`, which imports them from
+    the sweep in `maintenance` - one definition of a phantom publication, so the
+    coverage audit and the repair can never disagree about what it is counting.
+
+    ``None`` when the platform has no rule yet. That is not proof: it is the
+    absence of a way to disprove, and the rows are counted under
+    ``published_unrulled`` so the difference stays visible instead of quietly
+    reading as evidenced.
+    """
+    rule = EVIDENCE_RULES.get(platform)
+    if rule is None:
+        return None
+    if rule == RULE_MESSAGE_ID:
+        return PostRow.tg_message_id.isnot(None)
+    return (
+        select(CrosspostLog.id)
+        .where(
+            CrosspostLog.post_public_id == PostRow.public_id,
+            CrosspostLog.platform == platform,
+            CrosspostLog.status == "posted",
+        )
+        .exists()
+    )
+
+
+#: A journal row that carries something to point at — an id or a URL.
+def _attributed_condition(platform: str):
+    """SQL for «a published post the collector could match to a remote object».
+
+    Counted as *posts*, not as journal rows: `crosspost_with_remote` next to
+    `measured_posts: 0` read as coverage of 399 publications that had never been
+    measured once, which is the conflation this field exists to avoid.
+    """
+    return (
+        select(CrosspostLog.id)
+        .where(
+            CrosspostLog.post_public_id == PostRow.public_id,
+            CrosspostLog.platform == platform,
+            CrosspostLog.status == "posted",
+            or_(
+                CrosspostLog.remote_id.isnot(None) & (CrosspostLog.remote_id != ""),
+                CrosspostLog.url.isnot(None) & (CrosspostLog.url != ""),
+            ),
+        )
+        .exists()
+    )
+
+
 def _platform_keys() -> set[str]:
     """Platforms that have a channel or a posted crosspost row.
 
@@ -233,15 +312,14 @@ def _platform_keys() -> set[str]:
 
 def _platform_facts(platform: str) -> dict[str, Any]:
     askable_posts: int | None = None
+    proof = _proof_condition(platform)
+    published_filters = (PostRow.status == "published", func.lower(ChannelRow.platform) == platform)
     with session_scope() as session:
         published = int(
             session.execute(
                 select(func.count(PostRow.id))
                 .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
-                .where(
-                    func.lower(ChannelRow.platform) == platform,
-                    PostRow.status == "published",
-                )
+                .where(*published_filters)
             ).scalar_one()
             or 0
         )
@@ -278,6 +356,61 @@ def _platform_facts(platform: str) -> dict[str, Any]:
             .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
             .where(func.lower(ChannelRow.platform) == platform)
         ).scalar_one_or_none()
+        # What the platform itself can point at, kept apart from the count of rows
+        # that merely claim it: `published` is what the farm wrote down, and a dry
+        # run used to write that down too.
+        published_evidenced = int(
+            session.execute(
+                select(func.count(PostRow.id))
+                .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+                .where(*(published_filters + ((proof,) if proof is not None else ())))
+            ).scalar_one()
+            or 0
+        )
+        # Snapshots only cover the output when they hang off a publication: a
+        # snapshot of a draft is a measurement of something nobody published.
+        measured_published = int(
+            session.execute(
+                select(func.count(func.distinct(PostStat.post_id)))
+                .join(PostRow, PostRow.id == PostStat.post_id)
+                .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+                .where(
+                    func.lower(ChannelRow.platform) == platform,
+                    PostRow.status == "published",
+                )
+            ).scalar_one()
+            or 0
+        )
+        measured_evidenced = int(
+            session.execute(
+                select(func.count(func.distinct(PostStat.post_id)))
+                .join(PostRow, PostRow.id == PostStat.post_id)
+                .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+                .where(
+                    *(
+                        (
+                            func.lower(ChannelRow.platform) == platform,
+                            PostRow.status == "published",
+                        )
+                        + ((proof,) if proof is not None else ())
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        # Attribution as posts rather than as journal rows, so a platform whose
+        # 399 publications were never measured once cannot read as 399 attributed.
+        attributed_posts = int(
+            session.execute(
+                select(func.count(PostRow.id))
+                .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+                .where(
+                    *published_filters,
+                    _attributed_condition(platform),
+                )
+            ).scalar_one()
+            or 0
+        )
         if platform == "telegram":
             # How many published posts the collector could even ask about: a
             # message id plus the chat it lives in, on the channel or on the post.
@@ -322,6 +455,15 @@ def _platform_facts(platform: str) -> dict[str, Any]:
         "measured_posts": measured_posts,
         "stat_rows": stat_rows,
         "measured_with_signal": measured_with_signal,
+        # The publication-evidence split of `published`: `+ unevidenced + unrulled`
+        # is exactly `published`, and `unrulled` is the share nobody can disprove
+        # rather than a share somebody proved.
+        "published_evidenced": published_evidenced,
+        "published_unevidenced": max(0, published - published_evidenced),
+        "published_unrulled": published if proof is None else 0,
+        "measured_published": measured_published,
+        "measured_evidenced": measured_evidenced,
+        "attributed_posts": attributed_posts,
         "latest_snapshot_at": latest,
         "crosspost_posted": int(posted_rows[0] or 0),
         "crosspost_with_remote": int(posted_rows[1] or 0),
@@ -362,6 +504,28 @@ def _classify(row: dict[str, Any], platform: str) -> tuple[str, str | None]:
     if not has_anything:
         return STATUS_UNMEASURED, "публикаций этого платформа нет"
     if row["measured_with_signal"] > 0:
+        # A row that declares no `measured_published` is vouched for by its caller,
+        # exactly as `s10_format._row_evidence_status` reads a row that declares no
+        # state: hand-built rows keep the behaviour they always had, and only rows
+        # this module produced itself get the population check.
+        declared_measured = row.get("measured_published")
+        measured_published = int(declared_measured or 0)
+        if (
+            declared_measured is not None
+            and measured_published < row["published"]
+            and row["measured_posts"] > measured_published
+        ):
+            # Two populations, one ratio. A snapshot can hang off a post that was
+            # never published, and counting those as coverage would let a platform
+            # be called fully measured on the strength of drafts: the numerator and
+            # the denominator have to be about the same posts before either number
+            # means anything.
+            return (
+                STATUS_PARTIAL,
+                f"измерено {measured_published} из {row['published']} публикаций: "
+                f"{row['measured_posts'] - measured_published} снимков относятся не к "
+                "опубликованным постам, а к черновикам или отклонённым",
+            )
         if row["measured_posts"] < (row["published"] or row["measured_posts"]):
             gap = row["published"] - row["measured_posts"]
             note = ""
@@ -397,10 +561,22 @@ def _classify(row: dict[str, Any], platform: str) -> tuple[str, str | None]:
                 # the note names every stopping flag, so "scheduled" never reads
                 # as "covered".
                 note = f"; расписание есть: {SCHEDULED_COLLECTORS[platform]}{blocking}"
+            disproved = int(row.get("published_unevidenced") or 0)
+            rule = EVIDENCE_RULES.get(platform)
+            unevidenced = ""
+            if disproved and rule:
+                # The denominator is itself in question, and the sentence has to
+                # say so: these rows are publications the farm wrote down for a
+                # send it cannot point at, so "measured 1 of 4" is a ratio over a
+                # claim. Named, not removed - `published` above still counts them.
+                unevidenced = (
+                    f"; из {row['published']} публикаций {disproved} без доказательства "
+                    f"отправки (доказательство: {rule})"
+                )
             return (
                 STATUS_PARTIAL,
                 f"измерено {row['measured_posts']} из {row['published']}: "
-                f"{gap} публикаций без ни одного снимка{note}",
+                f"{gap} публикаций без ни одного снимка{note}{unevidenced}",
             )
         return STATUS_MEASURED, None
     if platform in BLOCKED_REASONS:
@@ -437,6 +613,10 @@ def measurement_coverage(*, now: datetime | None = None) -> dict[str, Any]:
 
     ``error`` is set instead of raising when the database has no analytics tables
     yet, so a caller can show the failure rather than an invented zero.
+
+    ``coverage`` and ``coverage_evidenced`` are ``None`` when there is nothing of
+    the kind they divide by: no publication means no share of publications, not a
+    share of zero.
     """
     current = now or datetime.now(UTC)
     platforms: dict[str, dict[str, Any]] = {}
@@ -474,21 +654,41 @@ def measurement_coverage(*, now: datetime | None = None) -> dict[str, Any]:
             row["measured_with_signal"] for row in platforms.values()
         ),
         "stat_rows": sum(row["stat_rows"] for row in platforms.values()),
+        "published_evidenced": sum(row["published_evidenced"] for row in platforms.values()),
+        "published_unevidenced": sum(row["published_unevidenced"] for row in platforms.values()),
+        "published_unrulled": sum(row["published_unrulled"] for row in platforms.values()),
+        "measured_published": sum(row["measured_published"] for row in platforms.values()),
+        "measured_evidenced": sum(row["measured_evidenced"] for row in platforms.values()),
+        "attributed_posts": sum(row["attributed_posts"] for row in platforms.values()),
     }
+    # `published + unevidenced + unrulled == published`, and it is the pair a
+    # reader needs: the first ratio answers «how much of what we claim is read»,
+    # the second answers «how much of what can be proved is read». Reported
+    # together, because dropping the unproven rows from the denominator and
+    # saying nothing would make the number look better, which is not the same
+    # thing as making it true.
+    coverage = _ratio(totals["measured_posts"], totals["published"])
+    coverage_evidenced = _ratio(
+        totals["measured_evidenced"],
+        totals["published_evidenced"] + totals["published_unrulled"],
+    )
     return {
         "generated_at": current.isoformat(),
         "platforms": platforms,
         "totals": totals,
-        "coverage": (
-            round(totals["measured_posts"] / totals["published"], 4)
-            if totals["published"]
-            else 0.0
-        ),
+        "coverage": coverage,
+        "coverage_evidenced": coverage_evidenced,
         "gaps": [
             {
                 "platform": row["platform"],
                 "status": row["status"],
                 "unmeasured": max(0, row["published"] - row["measured_posts"]),
+                "unmeasured_evidenced": max(
+                    0,
+                    row["published_evidenced"] + row["published_unrulled"]
+                    - row["measured_evidenced"],
+                ),
+                "unevidenced_published": row["published_unevidenced"],
                 "reason": row["reason"],
             }
             for row in sorted(
@@ -502,16 +702,27 @@ def measurement_coverage(*, now: datetime | None = None) -> dict[str, Any]:
 
 
 def coverage_table(*, now: datetime | None = None) -> list[dict[str, Any]]:
-    """The audit as rows a dashboard or a report can print directly."""
+    """The audit as rows a dashboard or a report can print directly.
+
+    `attributable` stays the journal-row count it always was, because a panel
+    reads it; `attributed_posts` is the same claim about *posts*, which is the
+    claim that has to sit next to `measured_posts` — 399 journal rows with remote
+    ids describe 399 publications nobody ever measured, not coverage.
+    """
     report = measurement_coverage(now=now)
     return [
         {
             "platform": row["platform"],
             "published": row["published"],
+            "published_evidenced": row["published_evidenced"],
+            "published_unevidenced": row["published_unevidenced"],
             "measured_posts": row["measured_posts"],
+            "measured_published": row["measured_published"],
+            "measured_evidenced": row["measured_evidenced"],
             "measured_with_signal": row["measured_with_signal"],
             "stat_rows": row["stat_rows"],
             "attributable": row["crosspost_with_remote"],
+            "attributed_posts": row["attributed_posts"],
             "collector": row["collector"] or "нет",
             "status": row["status"],
             "reason": row["reason"],
