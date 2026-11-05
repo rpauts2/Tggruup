@@ -15,6 +15,7 @@
     tgfarm channels             channel inventory + today's load
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
+    tgfarm plan-dry-run [--limit N]  what the plan executor would do; writes nothing
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm agent-benchmark --cluster ID  compare writer vs writer + strategist (never publishes)
     tgfarm agent-benchmark --report      summarize paired benchmark history
@@ -499,6 +500,54 @@ def cmd_editorial(args) -> int:
 
     _bootstrap()
     _print({"queue": queue(args.limit)})
+    return 0
+
+
+def plan_entry_limit() -> int:
+    """The executor's own per-run bound, read from its owner instead of copied here.
+
+    `--limit` defaults to it so the default judgement covers the whole snapshot
+    exactly like the scheduled job does; a literal in this file would be a second
+    number to keep in sync.
+    """
+    from tgfarm.plan_execution import MAX_ENTRIES_PER_RUN
+
+    return int(MAX_ENTRIES_PER_RUN)
+
+
+def cmd_plan_dry_run(args) -> int:
+    """Print what the plan executor would decide, and decide nothing.
+
+    `evaluate_plan` is `apply_plan` with the one write withheld, so these are the
+    same verdicts the scheduled job would reach, not a second reading of the
+    rules. `PLAN_EXECUTION_ENABLED` gates the writes and not the judgement, which
+    is the point: the switch can be turned on with evidence instead of trust.
+    """
+    from tgfarm import plan_execution
+
+    _bootstrap()
+    report = plan_execution.evaluate_plan(limit=int(args.limit))
+    _print(report)
+
+    if report["no_plan"]:
+        print(
+            "предпросмотр: активного плана нет, поэтому решения не по чему считать; "
+            "ни одна строка не изменена"
+        )
+        return 0
+
+    print(
+        f"предпросмотр: проверено {report['scanned']} записей плана на {report['judged_at']}; "
+        f"в очередь попало бы {report['would_schedule']}, удержано бы {report['held']}"
+    )
+    if not report["flag_enabled"]:
+        print(
+            "PLAN_EXECUTION_ENABLED выключен: реальный прогон сейчас не делает ничего, "
+            "цифры выше — только решение, а не обещание"
+        )
+    else:
+        print("PLAN_EXECUTION_ENABLED включён: следующий тик выполнит ровно эти решения")
+    print("ни один пост не изменён, план не перестроен, журнал не записан")
     return 0
 
 
@@ -1295,6 +1344,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_editorial = sub.add_parser("editorial", help="ranked queue of ready clusters")
     p_editorial.add_argument("--limit", type=int, default=25)
     p_editorial.set_defaults(func=cmd_editorial)
+
+    p_plan_dry = sub.add_parser(
+        "plan-dry-run",
+        help="what the plan executor would queue and what it would hold (writes nothing)",
+    )
+    p_plan_dry.add_argument(
+        "--limit",
+        type=int,
+        default=plan_entry_limit(),
+        help="plan entries judged by this run (default: the whole snapshot)",
+    )
+    p_plan_dry.set_defaults(func=cmd_plan_dry_run)
 
     p_audit = sub.add_parser("audit", help="content, source and AI usage audit")
     p_audit.add_argument("--days", type=int, default=7)
