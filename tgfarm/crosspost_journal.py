@@ -82,9 +82,30 @@ JOURNAL_STATUS_PUBLISHING = "publishing"
 #: The one journal status that *proves* a publication, so the code that decides
 #: whether a post may be called `published` names it rather than respelling it.
 JOURNAL_STATUS_POSTED = "posted"
+#: The destination took the material into its own queue. Suppressed for re-offer
+#: exactly like `posted`, and — unlike `posted` — it is not proof that anything
+#: landed, which is why the budget readers in `tgfarm/distribution.py` keep the
+#: two tokens in different sets. Named here so no reader has to spell it.
+JOURNAL_STATUS_SCHEDULED = "scheduled"
+#: The destination refused this exact content. Nothing was published, yet the
+#: pair stays out of the queue until an operator changes something, and the row
+#: is still a real attempt — evidence about the platform's tolerance of the text.
+JOURNAL_STATUS_PERMANENT = "permanent"
+#: A request went out and its answer was lost: neither a failure nor a success.
+#: Every reader fails closed on it, because the pair may already be published.
+#: This is the *journal's* word for that fact; `posts.status` spells the same
+#: situation `publish_unknown`, on a different column of a different table, and
+#: reconciling the two is a data migration rather than a rename.
+JOURNAL_STATUS_UNKNOWN = "unknown"
 
 JOURNAL_SUPPRESSED_STATUSES = frozenset(
-    {JOURNAL_STATUS_POSTED, "scheduled", "unknown", JOURNAL_STATUS_PUBLISHING, "permanent"}
+    {
+        JOURNAL_STATUS_POSTED,
+        JOURNAL_STATUS_SCHEDULED,
+        JOURNAL_STATUS_UNKNOWN,
+        JOURNAL_STATUS_PUBLISHING,
+        JOURNAL_STATUS_PERMANENT,
+    }
 )
 JOURNAL_TIME_BOUNDED_STATUSES = frozenset({JOURNAL_STATUS_FAILED, JOURNAL_STATUS_SKIPPED})
 JOURNAL_REOPEN_STATUSES = frozenset({JOURNAL_STATUS_DRY_RUN, JOURNAL_STATUS_RETRY_AUTHORIZED})
