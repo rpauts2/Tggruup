@@ -38,8 +38,8 @@ from tgfarm.s8_analytics import (
     hook_style_performance,
     recent_metrics,
 )
-from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
 from tgfarm.s8_analytics.formats import EVIDENCE_RULES, evidence_status_for, format_performance
+from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
 
 log = get_logger(__name__)
 
