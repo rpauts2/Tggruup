@@ -54,7 +54,7 @@ class _CountingAdapter:
 
     platform = TARGET_PLATFORM
 
-    def __init__(self, harness: "_JournalHarness") -> None:
+    def __init__(self, harness: _JournalHarness) -> None:
         self._harness = harness
 
     def configured(self) -> bool:
@@ -221,7 +221,9 @@ SUPPRESSED_CASES = [
 
 
 @pytest.mark.parametrize("status,rationale", SUPPRESSED_CASES, ids=[c[0] for c in SUPPRESSED_CASES])
-def test_indefinitely_suppressed_statuses_never_reopen(journal_env: _JournalHarness, status: str, rationale: str) -> None:
+def test_indefinitely_suppressed_statuses_never_reopen(
+    journal_env: _JournalHarness, status: str, rationale: str
+) -> None:
     assert status in distribution.JOURNAL_SUPPRESSED_STATUSES, rationale
     public_id = journal_env.journal(status)
     assert journal_env.reoffered(public_id) is False
@@ -234,7 +236,9 @@ def test_suppressed_status_stays_suppressed_in_live_mode(journal_env: _JournalHa
     assert journal_env.reoffered(public_id, mode="live") is False
 
 
-def test_suppressed_status_ignores_a_past_cooldown_and_the_attempt_count(journal_env: _JournalHarness) -> None:
+def test_suppressed_status_ignores_a_past_cooldown_and_the_attempt_count(
+    journal_env: _JournalHarness,
+) -> None:
     """These rows are not time-bounded: `retry_after_at` passing changes nothing."""
     public_id = journal_env.journal(
         "posted",
@@ -342,6 +346,17 @@ def test_skipped_decision_flips_on_the_timestamp_with_the_adapter_untouched(
     assert journal_env.adapter_configured is True
 
 
+def _compares_to_skipped(node: ast.If) -> bool:
+    """True when this `if` guard compares something against the "skipped" token."""
+    for walked in ast.walk(node.test):
+        if not isinstance(walked, ast.Compare):
+            continue
+        for operand in walked.comparators:
+            if isinstance(operand, ast.Constant) and operand.value == "skipped":
+                return True
+    return False
+
+
 def test_journal_status_dispatch_never_reads_adapter_configuration_for_skipped() -> None:
     """A re-added `and configured` conjunct here would be a tautology, so no
     behavioural test can see it — this one reads the guard itself.
@@ -354,14 +369,7 @@ def test_journal_status_dispatch_never_reads_adapter_configuration_for_skipped()
     source = textwrap.dedent(inspect.getsource(distribution.build_distribution_plan))
     tree = ast.parse(source)
     guards = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and any(
-            isinstance(compare, ast.Compare)
-            and any(isinstance(operand, ast.Constant) and operand.value == "skipped" for operand in compare.comparators)
-            for compare in ast.walk(node.test)
-        )
+        node for node in ast.walk(tree) if isinstance(node, ast.If) and _compares_to_skipped(node)
     ]
     assert len(guards) == 1, "expected exactly one `skipped` re-offer guard"
     condition = ast.get_source_segment(source, guards[0].test) or ""
