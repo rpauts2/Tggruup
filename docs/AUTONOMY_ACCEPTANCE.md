@@ -30,7 +30,7 @@ Run each against an isolated temporary database unless a row explicitly requires
 | Valid backup restore | Restore a verified snapshot into a temporary DB | Integrity, schema, row counts, and foreign keys pass |
 | Duplicate scheduling | Enqueue the same logical publish job twice | One active logical job / no duplicate remote delivery |
 | Stale worker heartbeat | Leave an active task without heartbeat updates | Watchdog flags it; recovery does not blindly republish |
-| Offline demo in live-configured environment | Run `tgfarm demo --cycles 1` with live env configured | Synthetic content only; zero outbound publish requests |
+| Offline demo in live-configured environment | Run `tgfarm demo --cycles 1` with live env configured (default store is a throwaway database; `--configured-store` opts into the production one) | Synthetic content only; zero outbound publish requests; the configured database is untouched unless `--configured-store` was passed |
 
 ## Platform acceptance
 
@@ -67,7 +67,7 @@ The autonomous loop is only considered end-to-end when each transition is persis
 
 Before enabling autonomous live mode:
 
-1. Run `pytest tests -q`, `ruff check tgfarm tests`, and `tgfarm demo --cycles 1`.
+1. Run `pytest tests -q`, `ruff check tgfarm tests`, and `tgfarm demo --cycles 1` (leave the default throwaway store; only add `--configured-store` when the point of the run is the live database).
 2. Run `tgfarm doctor` and resolve all critical findings.
 3. Verify a fresh backup with `tgfarm backup` and `tgfarm backup-test FILE`.
 4. Complete the relevant platform smoke-test runbook with an owner-controlled test account.
