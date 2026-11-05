@@ -2345,6 +2345,215 @@ def _is_trusted_host_request(
     )
 
 
+#: ---------------------------------------------------------------------------
+#: The plan consumer's observable state.
+#:
+#: `tgfarm.plan_execution` sits behind `PLAN_EXECUTION_ENABLED` and does its work
+#: on the scheduler's clock, so every fact an operator would ask about it lives in
+#: a different process or a different run: whether the switch is on, whether the
+#: two jobs were ever registered, whether a tick has ever journalled, and what
+#: that tick applied or held. These readers answer all four without building,
+#: refreshing or applying anything.
+#:
+#: `None` is the answer whenever the truth is not knowable from here, and it is
+#: never printed as `False` or `0`: a panel that renders "not registered" for a
+#: scheduler it cannot see would tell the operator the consumer is dead when all
+#: it knows is that it is looking in the wrong process.
+#: ---------------------------------------------------------------------------
+
+#: A job the API process cannot see at all, as one dict so no caller can
+#: accidentally downgrade it to `registered: False`.
+def _unknown_job_view(job_id: str) -> dict[str, Any]:
+    return {"id": job_id, "registered": None, "next_run_at": None}
+
+
+def _plan_job_view(job_id: str) -> dict[str, Any]:
+    """One consumer job as this process can see it.
+
+    `_scheduler` is `pipeline`'s module state: it stays `None` for an app built
+    without a scheduler, for a panel that talks to a remote API, and for a
+    scheduler that was built but has not started — in that last case APScheduler
+    keeps the registered jobs pending and `get_job` would answer `None` for a job
+    that does exist, so `running` has to be true before a `False` is trustworthy.
+    """
+    scheduler = getattr(pipeline, "_scheduler", None)
+    if scheduler is None or not bool(getattr(scheduler, "running", False)):
+        return _unknown_job_view(job_id)
+    try:
+        job = scheduler.get_job(job_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable registry is unknown, not absent
+        log.warning("plan jobs unreadable for %s: %s", job_id, redact_sensitive_text(exc, limit=180))
+        return _unknown_job_view(job_id)
+    if job is None:
+        return {"id": job_id, "registered": False, "next_run_at": None}
+    next_run = getattr(job, "next_run_time", None)
+    return {
+        "id": job_id,
+        "registered": True,
+        "next_run_at": (
+            next_run.isoformat(timespec="seconds") if isinstance(next_run, datetime) else None
+        ),
+    }
+
+
+def _measured_int(value: Any) -> int | None:
+    """An int the writer actually stored; a missing or foreign value stays unknown."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _reason_histogram(value: Any) -> dict[str, int] | None:
+    """The executor's refusal codes with their counts, or `None` when unrecorded.
+
+    An empty dict is kept as an empty dict: "the tick held nothing back" is a
+    measurement, and dropping the key would make it indistinguishable from
+    "the tick never wrote one".
+    """
+    if not isinstance(value, dict):
+        return None
+    counts: dict[str, int] = {}
+    for code, raw in value.items():
+        count = _measured_int(raw)
+        if count is None:
+            return None
+        counts[str(code)] = count
+    return counts
+
+
+def _last_apply_tick() -> tuple[dict[str, Any], str | None]:
+    """The newest apply tick's payload, plus its journal status for the note.
+
+    `applied` is the row's `items_out` read through `_stage_counters`, the owner
+    of the placeholder-zero rule: an apply tick that found no plan journalled
+    unmeasured counters, and its stored `0` must not be served as "applied zero".
+    """
+    from tgfarm.plan_execution import STAGE_APPLY
+
+    unknown = ({"at": None, "plan_id": None, "applied": None, "held": None, "reasons": None}, None)
+    try:
+        with session_scope() as session:
+            row = session.execute(
+                select(PipelineRun)
+                .where(PipelineRun.stage == STAGE_APPLY)
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        log.warning("plan apply tick unread: %s", redact_sensitive_text(exc, limit=180))
+        return unknown
+    if row is None:
+        return unknown
+    _, applied, _counters = _stage_counters(row)
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    plan_id = meta.get("plan_id")
+    return (
+        {
+            "at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
+            "plan_id": str(plan_id) if plan_id else None,
+            "applied": applied,
+            "held": _measured_int(meta.get("held")),
+            "reasons": _reason_histogram(meta.get("reasons")),
+        },
+        str(row.status or ""),
+    )
+
+
+def _plan_headline(plan: dict[str, Any] | None) -> dict[str, Any]:
+    """The active plan as the consumer's reader needs it, or all-unknowns."""
+    empty = {
+        "id": None,
+        "created_at": None,
+        "total": None,
+        "produce": None,
+        "schedule": None,
+        "hold": None,
+        "coverage": None,
+    }
+    if not isinstance(plan, dict):
+        return empty
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    coverage = summary.get("coverage")
+    return {
+        "id": str(plan["public_id"]) if plan.get("public_id") else None,
+        "created_at": plan.get("created_at") if isinstance(plan.get("created_at"), str) else None,
+        "total": _measured_int(summary.get("total")),
+        "produce": _measured_int(summary.get("produce")),
+        "schedule": _measured_int(summary.get("schedule")),
+        "hold": _measured_int(summary.get("hold")),
+        "coverage": dict(coverage) if isinstance(coverage, dict) else None,
+    }
+
+
+def _count_phrase(value: int | None) -> str:
+    return "не измерено" if value is None else str(value)
+
+
+def _plan_execution_note(
+    *,
+    enabled: bool,
+    last_apply: dict[str, Any],
+    last_status: str | None,
+) -> str:
+    """One sentence naming what this state means, and what it does not mean."""
+    from tgfarm.plan_execution import STAGE_APPLY
+
+    if last_status is None:
+        if enabled:
+            return (
+                f"Потребитель плана включён, но в журнале {STAGE_APPLY} нет ни одной записи: "
+                "ни один тикет ещё не выполнялся и ничего не применялось."
+            )
+        return (
+            f"Потребитель плана выключен, и в журнале {STAGE_APPLY} нет ни одной записи: "
+            "тикеты не регистрировались и ничего не применялось."
+        )
+    if last_status == "error":
+        return (
+            f"Последний тикет {STAGE_APPLY} завершился ошибкой, "
+            "поэтому его счётчики ничего не подтверждают."
+        )
+    if last_status == "skipped":
+        return (
+            f"Последний тикет {STAGE_APPLY} был пропущен: активного плана не было, "
+            "применять было нечего."
+        )
+    reasons = last_apply["reasons"]
+    if reasons is None:
+        reason_phrase = "причины удержания не записаны"
+    elif not reasons:
+        reason_phrase = "ни одной причины удержания не зафиксировано"
+    else:
+        reason_phrase = "причины: " + ", ".join(
+            f"{code}={count}" for code, count in sorted(reasons.items())
+        )
+    return (
+        f"Последний тикет {STAGE_APPLY} ({last_apply['at']}): "
+        f"применено {_count_phrase(last_apply['applied'])}, "
+        f"удержано {_count_phrase(last_apply['held'])}, {reason_phrase}."
+    )
+
+
+def _plan_execution_state() -> dict[str, Any]:
+    """Assemble the consumer's state from settings, this process and the journal."""
+    from tgfarm import plan_execution
+    from tgfarm.editorial_plan import get_active_plan
+
+    settings = get_settings()
+    enabled = bool(getattr(settings, "plan_execution_enabled", False))
+    last_apply, last_status = _last_apply_tick()
+    return {
+        "enabled": enabled,
+        "jobs": [
+            _plan_job_view(plan_execution.PLAN_BUILD_JOB_ID),
+            _plan_job_view(plan_execution.PLAN_APPLY_JOB_ID),
+        ],
+        "last_apply": last_apply,
+        "plan": _plan_headline(get_active_plan()),
+        "note": _plan_execution_note(enabled=enabled, last_apply=last_apply, last_status=last_status),
+    }
+
+
 def create_app(with_scheduler: bool = False) -> FastAPI:
     """Build the admin app.
 
@@ -2807,6 +3016,18 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.editorial_plan import plan_history
 
         return {"plans": await io(plan_history, limit)}
+
+    @app.get("/api/editorial/plan/execution")
+    async def editorial_plan_execution() -> dict:
+        """Read-only: is the plan's consumer on, did it run, and what did it apply?
+
+        Answers the four questions the plan endpoints cannot: the configured
+        switch, whether this process can see the two jobs behind it, the newest
+        apply tick the executor journalled, and the active plan it would act on.
+        Unknowns are `null`, never `False` or `0`.
+        """
+
+        return await io(_plan_execution_state)
 
     @app.put("/api/runtime/mode")
     async def set_runtime_mode(request: RuntimeModeRequest) -> dict:
