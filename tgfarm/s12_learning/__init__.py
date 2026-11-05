@@ -7,7 +7,10 @@ source and fails when a kind appears here with no read anywhere in `tgfarm/`. A 
 lesson is keyed `platform/format` per channel and is written only from posts S8
 actually measured — an unmeasured publication is activity, not evidence, and a
 below-threshold sample is stored as an observation, never as a conclusion that may
-steer generation.
+steer generation. Measured is a second question from «did it happen at all», and the
+lesson asks both: a `published` row the platform's own evidence rule disproves does
+not count toward the sample that makes a lesson `reliable`, so a format can be stored
+as `unevidenced` — measured often, provable never (`_format_state`).
 
 There used to be one more kind, `angle`: one row per eligible angle per channel per
 cycle, holding the same `er`/`ctr`/`quality`/`n` the strategy row is computed from.
@@ -36,7 +39,7 @@ from tgfarm.s8_analytics import (
     recent_metrics,
 )
 from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
-from tgfarm.s8_analytics.formats import evidence_status_for, format_performance
+from tgfarm.s8_analytics.formats import EVIDENCE_RULES, evidence_status_for, format_performance
 
 log = get_logger(__name__)
 
@@ -120,6 +123,25 @@ def _confidence_weighted_qualities(performance: dict) -> tuple[float, dict[str, 
         for key, (score, n) in observed.items()
     }
     return round(baseline, 4), evidence
+
+
+def _rounded_or_none(value: object) -> float | None:
+    """An average that may honestly be absent: `None` stays `None`, never `0`.
+
+    The house idiom, and the reason a reader of a lesson can tell «not one
+    evidenced measurement» from «an evidenced measurement that earned nothing»:
+    `s8_analytics.formats._rate` returns `None` for an empty sample, and S4 reads
+    that `None` as a refusal instead of a rankable zero.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return round(number, 4)
 
 
 def _upsert(channel_id, kind, key, value, score, sample_size, confidence, note=None):
@@ -224,15 +246,46 @@ def _format_window_days() -> int:
         return FORMAT_WINDOW_DAYS
 
 
-def _format_state(sample_size: int, measured: int, min_sample: int) -> str:
-    """One of `not_measured` / `below_sample` / `reliable`, from the row alone.
+def _format_state(
+    sample_size: int,
+    measured: int,
+    min_sample: int,
+    evidenced: int | None = None,
+) -> str:
+    """One of `not_measured` / `unevidenced` / `below_sample` / `reliable`.
 
-    The three are not interchangeable: a format nobody ever measured is a blind
-    spot, a format measured twice is a hint, and only `reliable` may steer work.
+    The four are not interchangeable: a format nobody ever measured is a blind
+    spot, a format whose rows nothing can point at is a *different* blind spot, a
+    format measured twice is a hint, and only `reliable` may steer work.
+
+    `evidenced` is the second question `s8_analytics.formats` already asks of the
+    same rows — of the posts counted above, how many are backed by proof the
+    publication happened (a telegram message id, a journalled `posted` row) — and
+    it is what decides here, exactly as it decides in `planner_history`
+    (`s8_analytics/formats.py:595`, `:602`). A `published` row the platform's own
+    rule disproves is activity, not an outcome, so it may not top up the sample
+    that flips a lesson to `reliable`; 50 phantoms are worth less than 3
+    provable posts, and a lesson built on them would teach the farm that a send
+    it cannot show ever happened is a send that worked.
+
+    `None` means the caller declares nothing about publication — a row written
+    before this gate existed, or a report built without the ``publication`` block
+    — and then the ladder keeps the meaning it has always had, the same courtesy
+    `s4_generation.durable_format_preference` extends to a lesson with no
+    freshness marker.
     """
     if int(measured or 0) <= 0 or int(sample_size or 0) <= 0:
         return "not_measured"
-    if int(sample_size) < max(1, int(min_sample)):
+    size = int(sample_size)
+    if evidenced is None:
+        return "reliable" if size >= max(1, int(min_sample)) else "below_sample"
+    provable = max(0, int(evidenced))
+    if provable <= 0 and provable < size:
+        # Not «too few measurements»: every measurement this format has is a
+        # publication nobody can point at. Collecting more of the same posts
+        # would not move it, which is why it is not called `below_sample`.
+        return "unevidenced"
+    if provable < max(1, int(min_sample)):
         return "below_sample"
     return "reliable"
 
@@ -255,6 +308,14 @@ def learn_format_lessons(
       pooling destinations into one number;
     * a published post with no stats is not evidence: it raises `published`, never
       an average, and a format whose measured count is zero writes no lesson;
+    * a measured post whose publication nothing can point at is not an outcome
+      either: the reliability sample is the *evidenced* subset S8 already
+      computes (`measurement[fmt]["publication"]["sample_size"]`), so phantoms
+      cannot top it up — while `measured`/`published`/`sample_size` on the row
+      keep counting what they always counted, and the disproved count travels in
+      `measured_unevidenced` and in the note. This is the same veto
+      `planner_history` applies to the live feed, so the two bodies of evidence
+      answer «may this steer work» with one word, not two;
     * a format measured below `min_sample` is stored as an observation with its
       sample size and state `below_sample`, never phrased as a conclusion;
     * the score is shrunk toward «as good as the platform average» by the same
@@ -268,10 +329,15 @@ def learn_format_lessons(
     while `s4_generation.durable_format_preference` refuses every status in
     `s8_analytics.formats.EVIDENCE_UNTRUSTED` — so a stale lesson can inform a
     reader but cannot steer a generation, and the choice falls back to the live
-    window or the rules instead of a fabricated priority.
+    window or the rules instead of a fabricated priority. A publication that cannot
+    be proven is treated the same way and for the same reason: the counts stay in
+    the row (`published_unevidenced`/`measured_unevidenced`), but they do not enter
+    the sample the verdict rests on, and `s4_generation` subtracts them from both
+    the count and the average it hands the planner — one standard, the one
+    `planner_history` already applies, not a second one.
 
-    Returns the run summary (rows written, per-format state, the not-measured
-    list) so a caller can report what it refused to learn.
+    Returns the run summary (rows written, per-format state, the not-measured and
+    the unevidenced lists) so a caller can report what it refused to learn.
     """
     channel = str(channel_id or "").strip()
     if not channel:
@@ -279,6 +345,7 @@ def learn_format_lessons(
             "channel_id": "", "platform": "", "written": 0,
             "window_days": int(days) if days else _format_window_days(),
             "min_sample": FORMAT_MIN_SAMPLE, "formats": {}, "not_measured": [],
+            "unevidenced": [],
             "reason": "урок формата требует канала",
         }
 
@@ -289,6 +356,7 @@ def learn_format_lessons(
         return {
             "channel_id": channel, "platform": "", "written": 0, "window_days": window,
             "min_sample": FORMAT_MIN_SAMPLE, "formats": {}, "not_measured": [],
+            "unevidenced": [],
             "reason": "площадка канала неизвестна: смешивать платформы в одном уроке нельзя",
         }
 
@@ -300,6 +368,9 @@ def learn_format_lessons(
     # is read long after the window it came from is gone, and a reader then has no
     # way to tell 3 live snapshots from 3 snapshots nobody refreshed in a month.
     measurement = report.get("measurement") or {}
+    # Report-level publication block: the counts the whole window was measured on.
+    # Read here instead of re-summed, so learning and the report cannot drift.
+    report_publication = report.get("publication") or {}
     stale_after_days = int(report.get("stale_after_days") or 0)
     measured_total = sum(int(item.get("measured") or 0) for item in formats.values())
     engagement_total = sum(
@@ -311,6 +382,7 @@ def learn_format_lessons(
     written = 0
     states: dict[str, dict[str, Any]] = {}
     not_measured: list[str] = []
+    unevidenced: list[str] = []
     for raw_format, item in formats.items():
         fmt = str(raw_format or "").strip().lower()
         if not fmt:
@@ -318,7 +390,6 @@ def learn_format_lessons(
         measured = int(item.get("measured") or 0)
         published = int(item.get("published") or 0)
         average = float(item.get("avg_engagement") or 0.0)
-        reliable = bool(item.get("reliable"))
         evidence = measurement.get(fmt) or {}
         fresh = int(evidence.get("fresh") or 0)
         stale = int(evidence.get("stale") or 0)
@@ -326,6 +397,22 @@ def learn_format_lessons(
             fresh, stale
         )
         fresh_average = float(evidence.get("fresh_avg_engagement") or 0.0)
+        # Third question of the same rows, answered by S8 and reused here verbatim:
+        # which of these publications can anything point at. An absent block is a
+        # report that declares nothing, and a declaring nothing is the old ladder —
+        # the same courtesy the freshness marker gets in S4.
+        publication = evidence.get("publication") or {}
+        declares = bool(publication)
+        published_evidenced = int(publication.get("published_evidenced") or 0)
+        published_unevidenced = int(publication.get("published_unevidenced") or 0)
+        published_unrulled = int(publication.get("published_unrulled") or 0)
+        measured_evidenced = int(publication.get("sample_size") or 0)
+        measured_unevidenced = int(publication.get("measured_unevidenced") or 0)
+        fresh_evidenced = int(publication.get("fresh_sample_size") or 0)
+        unevidenced_fresh = int(publication.get("fresh_unevidenced") or 0)
+        publication_status = str(publication.get("evidence_status") or "")
+        evidenced_average = publication.get("avg_engagement")
+        fresh_evidenced_average = publication.get("fresh_avg_engagement")
         if measured <= 0:
             # Activity, not evidence: named as a blind spot in this run's summary,
             # never stored as a row a later reader could mistake for a verdict.
@@ -333,13 +420,28 @@ def learn_format_lessons(
                 "state": "not_measured", "measured": 0, "published": published,
                 "sample_size": 0, "confidence": 0.0, "reliable": False,
                 "fresh_measured": 0, "stale_measured": 0, "evidence_status": "never",
+                # How much of that unpublished-looking activity is itself a
+                # phantom: «50 published, 35 provable» is the operator's read, not
+                # a number this function may quietly round down to 35.
+                "published_evidenced": published_evidenced,
+                "published_unevidenced": published_unevidenced,
+                "publication_evidence": publication_status,
             }
             not_measured.append(fmt)
             continue
 
         observed = _relative_quality(average, baseline)
         quality = _shrink_quality(observed, 0.5, measured)
-        state = _format_state(measured, measured, min_sample)
+        state = _format_state(
+            measured, measured, min_sample,
+            evidenced=measured_evidenced if declares else None,
+        )
+        reliable = state == "reliable"
+        if state == "unevidenced":
+            # A named refusal, in the same shape as `not_measured`: a caller that
+            # only counts written rows cannot tell «learned nothing» from «measured
+            # 50 posts and could prove none of them».
+            unevidenced.append(fmt)
         confidence = _sample_confidence(measured)
         value = {
             "format": fmt,
@@ -365,28 +467,66 @@ def learn_format_lessons(
             "fresh_avg_engagement": round(fresh_average, 4),
             "evidence_status": evidence_status,
             "evidence_stale_after_days": stale_after_days,
+            # Publication evidence, the veto that decides `state` above. Nothing in
+            # the four legacy counts was redefined: `measured`, `published`,
+            # `sample_size` (the stored column) and `avg_engagement` still mean what
+            # they meant when this lesson was written, and the provable subset
+            # travels beside them so a reader can see «50 published, 35 provable»
+            # instead of a silently smaller sample.
+            "publication_evidence": publication_status,
+            "publication_rule": EVIDENCE_RULES.get(platform_key),
+            "published_evidenced": published_evidenced,
+            "published_unevidenced": published_unevidenced,
+            "published_unrulled": published_unrulled,
+            "measured_evidenced": measured_evidenced if declares else measured,
+            "measured_unevidenced": measured_unevidenced,
+            # The sample a *decision* could rest on right now: live snapshots that
+            # are also evidenced, the same number `planner_history` calls
+            # `sample_size` and the same one S4 hands the planner.
+            "evidenced_sample_size": fresh_evidenced if declares else min(fresh, measured),
+            "unevidenced_fresh": unevidenced_fresh,
+            "evidenced_avg_engagement": _rounded_or_none(evidenced_average),
+            "fresh_evidenced_avg_engagement": _rounded_or_none(fresh_evidenced_average),
         }
         evidence_tail = (
             ""
             if evidence_status == "ok"
             else f"; живых измерений {fresh} из {measured}, состояние {evidence_status}"
         )
+        # Named in every note, not only in the payload: a reader of
+        # `learning_memory` must be able to see that the sample was gated, not
+        # that it shrank on its own.
+        publication_tail = (
+            ""
+            if not declares or measured_unevidenced <= 0
+            else f"; {measured_unevidenced} из {measured} измерений — публикации без "
+                 "доказательства отправки, в выборку не вошли"
+        )
         if state == "reliable":
             reason = (
                 f"формат {fmt} на {platform_key}: измерено {measured} из {published}, "
+                f"доказанных {measured_evidenced if declares else measured}, "
                 f"вовлечённость {average:.2f} против {baseline:.2f} по площадке; надёжно"
-                f"{evidence_tail}"
+                f"{evidence_tail}{publication_tail}"
+            )
+        elif state == "unevidenced":
+            reason = (
+                f"формат {fmt} на {platform_key}: измерено {measured} из {published}, "
+                f"но ни одну публикацию нельзя подтвердить доказательством отправки "
+                f"({measured_unevidenced} без доказательства) — наблюдение, не вывод"
             )
         else:
             reason = (
                 f"формат {fmt} на {platform_key}: измерено {measured} из {published} "
                 f"(порог {min_sample}) — наблюдение, не вывод{evidence_tail}"
+                f"{publication_tail}"
             )
         if evidence_status == "stale":
             reason = (
                 f"формат {fmt} на {platform_key}: {measured} измерений, но все снимки "
                 f"старше {stale_after_days} дн(а) — не живое доказательство, "
                 "план на этом уроке не строится"
+                f"{publication_tail}"
             )
         _upsert(
             channel, "format", f"{platform_key}/{fmt}", value,
@@ -397,6 +537,10 @@ def learn_format_lessons(
             "sample_size": measured, "confidence": confidence, "reliable": reliable,
             "fresh_measured": fresh, "stale_measured": stale,
             "evidence_status": evidence_status,
+            "measured_evidenced": measured_evidenced if declares else measured,
+            "measured_unevidenced": measured_unevidenced,
+            "evidenced_sample_size": fresh_evidenced if declares else min(fresh, measured),
+            "publication_evidence": publication_status,
         }
         written += 1
 
@@ -413,11 +557,22 @@ def learn_format_lessons(
         "stale_measured_total": int(report.get("stale_measured_total") or 0),
         "evidence_status": str(report.get("evidence_status") or ""),
         "stale_after_days": stale_after_days,
+        # The same window, third question, taken from the report rather than
+        # summed here so the two can never drift apart: what the farm can prove
+        # it published, beside what it claims it published.
+        "published_evidenced_total": int(report_publication.get("published_evidenced") or 0),
+        "published_unevidenced_total": int(report_publication.get("published_unevidenced") or 0),
+        "published_unrulled_total": int(report_publication.get("published_unrulled") or 0),
+        "evidenced_measured_total": int(report_publication.get("sample_size") or 0),
+        "publish_unknown_total": int(report_publication.get("publish_unknown") or 0),
+        "publication_evidence": str(report_publication.get("evidence_status") or ""),
         "baseline_engagement": round(baseline, 4),
         "formats": states,
         "not_measured": sorted(not_measured),
+        "unevidenced": sorted(unevidenced),
         "reason": (
             f"формат: {written} урок(ов) записано по {measured_total} измеренным публикациям"
+            f" (доказано {int(report_publication.get('published_evidenced') or 0)})"
             if written
             else "нет ни одного измеренного формата — уроков не записано"
         ),
@@ -435,7 +590,10 @@ def format_lessons(
     Rows are keyed ``platform/format`` and scoped per channel, so one format name
     on two platforms stays two lessons and can never be averaged into one number.
     `state` is read back from the row rather than re-guessed, which is what lets a
-    caller tell «not measured» apart from «measured and weak».
+    caller tell «not measured» apart from «measured and weak» — and, since P73,
+    «measured but not one publication provable» (`unevidenced`) apart from both.
+    `reliable` is the state read back, never a re-derived threshold, so a row
+    written under the evidence gate cannot be promoted by a reader that forgot it.
     """
     rows = lessons(channel_id, kind="format")
     wanted_platform = str(platform or "").strip().lower()
@@ -450,7 +608,16 @@ def format_lessons(
         sample_size = int(row.get("sample_size") or 0)
         min_sample = max(1, int(value.get("min_sample") or FORMAT_MIN_SAMPLE))
         measured = int(value.get("measured") or sample_size)
-        state = str(value.get("state") or "") or _format_state(sample_size, measured, min_sample)
+        # A row that declares its provable subset is judged on that subset; a row
+        # written before the gate existed declares nothing and keeps its old ladder.
+        declared_evidenced = value.get("measured_evidenced")
+        state = (
+            str(value.get("state") or "")
+            or _format_state(
+                sample_size, measured, min_sample,
+                evidenced=None if declared_evidenced is None else int(declared_evidenced),
+            )
+        )
         out.append(
             {
                 **row,
@@ -461,6 +628,12 @@ def format_lessons(
                 "min_sample": min_sample,
                 "state": state,
                 "reliable": state == "reliable",
+                "measured_evidenced": (
+                    measured if declared_evidenced is None else int(declared_evidenced)
+                ),
+                "measured_unevidenced": int(value.get("measured_unevidenced") or 0),
+                "published_unevidenced": int(value.get("published_unevidenced") or 0),
+                "publication_evidence": str(value.get("publication_evidence") or ""),
                 "reason": row.get("note") or "",
             }
         )
@@ -499,6 +672,10 @@ def format_state(channel_id: str, fmt: str, *, platform: str = "") -> dict[str, 
         "sample_size": 0,
         "measured": 0,
         "published": 0,
+        "measured_evidenced": 0,
+        "measured_unevidenced": 0,
+        "published_unevidenced": 0,
+        "publication_evidence": "",
         "confidence": 0.0,
         "min_sample": FORMAT_MIN_SAMPLE,
         "state": "not_measured",
