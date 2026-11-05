@@ -503,7 +503,11 @@ def _build_primary_platform_plan(
     settings: Any,
     platform_catalog: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Expose primary-channel budgets beside the crosspost distribution plan."""
+    """Expose primary-channel budgets beside the crosspost distribution plan.
+
+    The caps are the numbers s7 and s3 actually enforce, MAX_POSTS_PER_CHANNEL_DAY
+    included, so a plan can never promise a capacity the publisher refuses to use.
+    """
     personas = [
         persona for persona in get_config_personas()
         if persona.enabled and persona.platform in {"telegram", "vk", "dzen"}
@@ -514,11 +518,18 @@ def _build_primary_platform_plan(
         if not active:
             continue
         if platform_id == "dzen":
-            daily_cap = 2
+            daily_cap = clamp_channel_daily_cap(2)
         elif platform_id == "vk":
-            daily_cap = 3
+            daily_cap = clamp_channel_daily_cap(3)
         else:
-            daily_cap = sum(max(1, int(persona.posts_per_day)) for persona in active)
+            # The ceiling is per channel, and this branch reports a platform
+            # budget: it has to be clamped once per persona, because s7 and s3
+            # each grant every channel its own `clamp(max(1, posts_per_day))`.
+            # Clamping the summed figure instead would report one channel's
+            # budget for the whole platform and understate the fleet.
+            daily_cap = sum(
+                clamp_channel_daily_cap(max(1, int(persona.posts_per_day))) for persona in active
+            )
 
         midnight = now - timedelta(hours=24)
         with session_scope() as session:

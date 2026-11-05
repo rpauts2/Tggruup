@@ -37,6 +37,7 @@ from tgfarm.db.models import CrosspostLog, PostStat
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.platforms import CATALOG
+from tgfarm.s8_analytics.coverage import SCHEDULED_COLLECTORS, SESSION_GATED_COLLECTORS
 
 log = get_logger(__name__)
 
@@ -51,7 +52,13 @@ STATUSES: tuple[str, ...] = (STATUS_OK, STATUS_STALE, STATUS_NEVER, STATUS_BLOCK
 # Operator-facing texts. The VK wording names the exact API answer, so an
 # operator does not spend an evening retrying a group token.
 VK_TOKEN_REASON = "нужен VK_USER_TOKEN (групповой токен отклоняется с error 27)"
-TELEGRAM_NO_COLLECTOR_REASON = "сборщика метрик Telegram нет"
+# Telegram's collector exists and is on the scheduler's clock (`telegram-post-metrics`,
+# registered in `pipeline._build_scheduler`), so "there is no Telegram collector" has
+# been false since it was written. The wording is borrowed from `coverage`, not
+# paraphrased: two panels describing one platform in two ways is the defect.
+TELEGRAM_BLOCKED_REASON = (
+    f"{SCHEDULED_COLLECTORS['telegram']}: снимков метрик нет, и {SESSION_GATED_COLLECTORS['telegram']}"
+)
 DZEN_NO_PUBLICATIONS_REASON = "опубликованных статей нет"
 NO_SNAPSHOTS_REASON = "снимков метрик нет"
 
@@ -192,7 +199,7 @@ def _classify(
     if platform_id == "vk" and vk_meaningful == 0 and not vk_token:
         return STATUS_BLOCKED, VK_TOKEN_REASON
     if platform_id == "telegram" and snapshots == 0:
-        return STATUS_BLOCKED, TELEGRAM_NO_COLLECTOR_REASON
+        return STATUS_BLOCKED, TELEGRAM_BLOCKED_REASON
     if platform_id == "dzen" and snapshots == 0 and dzen_publications == 0:
         return STATUS_BLOCKED, DZEN_NO_PUBLICATIONS_REASON
 

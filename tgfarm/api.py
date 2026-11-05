@@ -1449,6 +1449,44 @@ def _reject(public_ids: list[str], reason: str) -> int:
         return result.rowcount or 0
 
 
+def _journal_identity(
+    session,
+    post_public_id: str,
+    platform: str,
+) -> tuple[str | None, str | None]:
+    """The best ``remote_id`` and ``url`` the journal already holds for one pair.
+
+    The journal is append-only and the newest row is usually an in-flight one
+    that learned nothing — ``publishing`` and ``unknown`` are written before the
+    platform answers — so reading an identifier off the row in hand and storing it
+    on the confirmation blanked out an id the journal did have, and every reader
+    that takes the newest ``posted`` row (the post detail's ``external_url`` and
+    ``remote_id``) went back to showing nothing. The same rule the Dzen matcher
+    uses (``s8_analytics.dzen_web._journal_id_index``): read across every status
+    except ``dry_run``, whose placeholder was never sent anywhere. The id itself is
+    kept verbatim rather than prefix-filtered, because a Medium slug may legitimately
+    start with ``dry``, and the status already says whether the post existed.
+    """
+    remote_id: str | None = None
+    url: str | None = None
+    for row in session.execute(
+        select(CrosspostLog)
+        .where(
+            CrosspostLog.post_public_id == post_public_id,
+            CrosspostLog.platform == platform,
+            CrosspostLog.status != "dry_run",
+        )
+        .order_by(CrosspostLog.id.desc())
+    ).scalars():
+        if remote_id is None and str(row.remote_id or "").strip():
+            remote_id = str(row.remote_id).strip()
+        if url is None and str(row.url or "").strip():
+            url = str(row.url).strip()
+        if remote_id and url:
+            break
+    return remote_id, url
+
+
 def _reconcile_crosspost_outcome(
     post_public_id: str,
     platform: str,
@@ -1509,13 +1547,18 @@ def _reconcile_crosspost_outcome(
 
         attempt = latest.attempt
         if action == "confirm_posted":
+            # Completing the confirmation from the journal rather than from the
+            # row answered from is what keeps a stored non-NULL from being
+            # replaced by a NULL: this new row is the newest `posted` one, so it
+            # is the row the post detail and the matchers read next.
+            known_remote_id, known_url = _journal_identity(session, post_public_id, platform)
             session.add(
                 CrosspostLog(
                     post_public_id=post_public_id,
                     platform=platform,
                     status="posted",
-                    remote_id=latest.remote_id,
-                    url=latest.url,
+                    remote_id=known_remote_id,
+                    url=known_url,
                     error="confirmed by operator; destination ID may be unavailable",
                     attempt=attempt,
                 )

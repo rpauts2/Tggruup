@@ -99,7 +99,12 @@ def test_empty_database_reports_never_or_blocked_without_raising(fresh_db):
         assert report["platforms"][platform_id]["status"] == "blocked"
 
     telegram = report["platforms"]["telegram"]
-    assert telegram["reason"] == "сборщика метрик Telegram нет"
+    # `f235908` put `tg_sync.collect_post_stats` on the scheduler, so the silence
+    # is a missing session, not a missing collector. Pinned as a negative because
+    # the old sentence was the defect: it told the operator to wait for code that
+    # already exists.
+    assert "сборщика" not in telegram["reason"]
+    assert telegram["reason"] == freshness.TELEGRAM_BLOCKED_REASON
 
     vk = report["platforms"]["vk"]
     assert "VK_USER_TOKEN" in vk["reason"]
@@ -202,7 +207,7 @@ def test_summary_counts_statuses_snapshots_and_freshest(fresh_db, monkeypatch):
 
     assert summary["ok"] == 1
     assert summary["stale"] == 1
-    assert summary["blocked"] == 1  # Telegram: there is no collector at all.
+    assert summary["blocked"] == 1  # Telegram: not one snapshot, and the dial is the session.
     assert summary["never"] == len(CATALOG) - 3
     assert summary["platforms_total"] == len(CATALOG)
     assert (
@@ -216,3 +221,37 @@ def test_summary_counts_statuses_snapshots_and_freshest(fresh_db, monkeypatch):
     assert freshest["status"] == "ok"
     assert freshest["collected_at"] == (NOW - timedelta(hours=1)).isoformat()
     assert freshest["age_hours"] == pytest.approx(1.0)
+
+
+def test_the_telegram_reason_names_the_job_and_the_session_not_a_missing_collector(fresh_db):
+    """The sentence was written when nobody scheduled Telegram metrics.
+
+    `f235908` registered `telegram-post-metrics` (plus the one-shot
+    `startup-telegram-post-metrics`) in `pipeline._build_scheduler`, so the
+    operator-actionable cause is now the read session, not a collector that has
+    still to be written. The status itself stays `blocked` — the platform really
+    is unread — only the reason was lying.
+    """
+    telegram = freshness.metrics_freshness(now=NOW)["platforms"]["telegram"]
+
+    assert telegram["status"] == "blocked"
+    assert "сборщика" not in telegram["reason"], "сборщик есть, и это надо говорить"
+    assert "telegram-post-metrics" in telegram["reason"]
+    assert "tg_sync.collect_post_stats" in telegram["reason"]
+    assert "нужна авторизованная пользовательская сессия" in telegram["reason"]
+    assert "tgfarm telegram login" in telegram["reason"], "причина обязана заканчиваться командой"
+
+
+def test_the_two_panels_say_one_and_the_same_thing_about_telegram(fresh_db):
+    """Freshness quotes `coverage`'s constants verbatim instead of rewording them.
+
+    A panel that describes one platform two ways is the defect this pins against:
+    if either wording changes, this test has to change with it, so the two
+    reports cannot drift apart silently.
+    """
+    from tgfarm.s8_analytics.coverage import SCHEDULED_COLLECTORS, SESSION_GATED_COLLECTORS
+
+    telegram = freshness.metrics_freshness(now=NOW)["platforms"]["telegram"]
+
+    assert SCHEDULED_COLLECTORS["telegram"] in telegram["reason"]
+    assert SESSION_GATED_COLLECTORS["telegram"] in telegram["reason"]
