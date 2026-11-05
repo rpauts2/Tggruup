@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -717,3 +718,144 @@ def plan_history(limit: int = 10) -> list[dict[str, Any]]:
             }
             for p in plans
         ]
+
+
+# ---------------------------------------------------------------------------
+# Provenance: what the plan decided about one post, resolved in exactly one place.
+#
+# ``posts.plan_entry_id`` is the soft reference to the entry row that ordered the
+# post and ``posts.plan_slot_at`` is the minute that entry booked; both are written
+# once, by ``s4_generation.persist_draft`` (wave 19-B). Two services answer the
+# operator's single question — «этот пост по плану или совпал?» — out of those two
+# columns: the post card (``_post_view`` in ``tgfarm/api.py``, which serves
+# ``GET /api/posts`` and the drawer) and the distribution queue preview
+# (``_build_primary_platform_plan`` in ``tgfarm/distribution.py``). Before this
+# block the first one answered from a hand-written dict and the second answered
+# with nothing at all, which is how two services of one object drift apart while
+# each keeps its own green test. Everything the transition «post row -> provenance
+# dict» decides lives here and nowhere else:
+#
+# * ``plan_entry_id`` — the entry the row names, as a positive ``int``, or ``None``.
+#   ``0``, a negative number, a ``bool`` and a string all mean "there is nothing to
+#   say": none of them can name an autoincrement row, and passing one through as a
+#   reference would let a reader render "the plan decided this" about a claim
+#   nobody made.
+# * ``plan_slot_at`` — the booked minute in one clock (``ensure_utc`` plus second
+#   precision, the same shape ``api._iso_stamp`` serves), or ``None`` when the
+#   column holds no moment. Text that does not parse is ``None``: it is never a
+#   fabricated date and never 1970.
+# * ``plan_public_id`` — the snapshot owning the named entry, or ``None``. ``None``
+#   covers both "no entry is named" and "the named row is gone" (the reference is
+#   soft by design: plan snapshots are append-only history a retention pass may
+#   prune). The two are told apart by ``plan_entry_id``, which is why the reference
+#   travels even when the answer does not.
+# * All three keys *absent* is a fourth state, the only one no value can express:
+#   this caller could not read the columns at all. ``provenance_not_read()`` is how
+#   a caller says it — an empty dict, because a reader shown ``null`` would have to
+#   be told the difference by a rule it cannot see in the payload (P34: an empty
+#   list is not a zero, and "not read" is not "matched").
+#
+# Placement: this is the plan module, the two columns describe a plan decision, and
+# the resolution must not need the HTTP layer or the publisher to run. Neither
+# ``tgfarm.distribution`` nor ``tgfarm.api`` is imported here, and neither imports
+# this module's *callers* back — ``plan_execution`` imports this module at module
+# level, so nothing below reaches for it (the same rule the module docstring keeps:
+# only a lazy, function-local import may point at ``plan_execution``).
+PROVENANCE_KEYS = ("plan_entry_id", "plan_slot_at", "plan_public_id")
+#: SQLite's own words for a store where the additive drift pass has not run yet,
+#: which is the live base today: ``posts`` there carries neither booking column.
+#: "The columns are not there" is a different answer from "no post is booked", and
+#: this is the one place that tells the two silences apart.
+PROVENANCE_DRIFT_MARKER = "no such column"
+PROVENANCE_COLUMNS_MISSING = "plan_columns_missing"
+
+
+def _entry_reference(value: Any) -> int | None:
+    """The entry a post names, as a positive int, or None when it names nothing.
+
+    Tighter than a bare ``int(value)`` on purpose: ``7.0`` is the same autoincrement
+    id as ``7`` and survives, while ``7.5`` names no row and must not be truncated
+    into one. ``bool`` is excluded before the numeric test because ``True`` is an
+    ``int`` in Python and would otherwise read as entry 1.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    measured = int(value)
+    if isinstance(value, float) and value != measured:
+        return None
+    return measured if measured > 0 else None
+
+
+def _slot_stamp(value: Any) -> str | None:
+    """The booked minute as one ISO string, or None when the value is not a moment."""
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    moment = ensure_utc(value)
+    return moment.isoformat(timespec="seconds") if moment is not None else None
+
+
+def resolve_plan_labels(session: Any, entry_ids: Iterable[Any]) -> dict[int, str]:
+    """Which plan snapshot owns each entry a batch of posts names, in one read.
+
+    Returns {} and touches no table when nothing is named: a store where every
+    post was produced with no plan in play must not pay one join per platform,
+    and a caller cannot tell "looked and found nothing" from "did not look" unless
+    the not-looked case is the one that keeps its keys absent. Batched rather than
+    per row because ``GET /api/posts`` serves up to 500 rows and the queue preview
+    serves one window per platform; one lookup each is a statement per row against
+    the shared database.
+    """
+
+    named = sorted({ref for ref in (_entry_reference(value) for value in entry_ids) if ref})
+    if not named:
+        return {}
+    rows = session.execute(
+        select(EditorialPlanEntry.id, EditorialPlan.public_id)
+        .join(EditorialPlan, EditorialPlanEntry.plan_id == EditorialPlan.id)
+        .where(EditorialPlanEntry.id.in_(named))
+    ).all()
+    return {int(entry_id): str(public_id) for entry_id, public_id in rows if public_id}
+
+
+def plan_provenance(row: Any, labels: Mapping[int, str]) -> dict[str, Any]:
+    """The three provenance keys for one post row, from that row's own columns.
+
+    ``labels`` is the caller's resolved entry -> snapshot map (``resolve_plan_labels``);
+    it is required rather than optional because an omitted lookup and an empty
+    result must not be the same object. ``row`` is anything carrying the two
+    columns — a ``Post`` entity or a query row — and unreadable values degrade to
+    ``None`` per key, never to a raise: a preview card that could not be resolved
+    still has to show the post it was showing before.
+    """
+
+    entry_id = _entry_reference(getattr(row, "plan_entry_id", None))
+    return {
+        "plan_entry_id": entry_id,
+        "plan_slot_at": _slot_stamp(getattr(row, "plan_slot_at", None)),
+        "plan_public_id": labels.get(entry_id) if entry_id is not None else None,
+    }
+
+
+def provenance_not_read() -> dict[str, Any]:
+    """The provenance of a read that could not look: no keys, not null keys.
+
+    A caller may only use this for the state ``provenance_columns_missing`` names.
+    Returning the three keys with nulls here would print "создан без плана" about
+    a store that has never been asked, which is the inversion this module's fourth
+    bullet exists to prevent.
+    """
+
+    return {}
+
+
+def provenance_columns_missing(exc: BaseException) -> bool:
+    """Is this failure the store not having the booking columns yet?"""
+
+    return PROVENANCE_DRIFT_MARKER in str(exc)
