@@ -745,8 +745,11 @@
      can actually prove, per `EVIDENCE_RULES` of `tgfarm/s8_analytics/formats.py`).
      The card above rendered the first two and ignored the third, which is how a
      format whose publications nobody can prove kept reading as «данных
-     достаточно»: live `news` carries legacy `reliable: true, n: 7` beside
-     `publication.sample_size: 0, reliable: false`.
+     достаточно»: on the live database, read 2026-11-05 over a 30-day window,
+     `news` carries legacy `reliable: true, n: 8, avg 59.375` while its own
+     publication block reports `sample_size: 1, reliable: false` — 414 published,
+     386 proven, 28 disproven — while `stat` sits at `measured: 0, sample_size: 0`
+     with 40 publications behind it.
 
      None of the freshness words is reused here, on purpose. `measured`,
      `avg_engagement`, `reliable`, `evidence_status` and `fresh` all exist in BOTH
@@ -790,7 +793,7 @@
       + " · знаменатель подтверждённой средней " + items(pub.sample_size)
       + " · средняя по подтверждённым " + pubAvg(pub.avg_engagement)
       + " · живой знаменатель " + items(pub.fresh_sample_size)
-      + " · средней по живым подтверждённым " + pubAvg(pub.fresh_avg_engagement);
+      + " · живая средняя по подтверждённым " + pubAvg(pub.fresh_avg_engagement);
   }
 
   function publicationChip(pub) {

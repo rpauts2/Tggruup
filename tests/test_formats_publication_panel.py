@@ -11,11 +11,13 @@ actually prove, per ``EVIDENCE_RULES`` in ``tgfarm/s8_analytics/formats.py``.
 The card is not legacy-only: ``renderMetricsFormats`` already rendered the first
 two. What it read nowhere was ``publication`` — in ``app.js`` that key reached only
 the publish-tick card and the backlog card — so the third question never appeared
-on the panel that answers it. On the live database that is exactly the sentence an
-operator is missing: format ``news`` carries legacy ``avg_engagement 67.8571,
-reliable true, n 7`` while its publication block says ``sample_size 0, reliable
-false``, and the scale is vk 403 published / 403 evidenced, dzen 57 / 35, telegram
-15 / 0.
+on the panel that answers it. Read from the live database (mode=ro) on 2026-11-05
+over the card's own 30-day window, that is exactly the sentence an operator is
+missing: format ``news`` carries legacy ``avg_engagement 59.375, n 8, reliable
+true`` while its own publication block says ``sample_size 1, reliable false``
+(414 published, 386 proven, 28 disproven), and the platform scale is vk 406
+published / 406 proven, dzen 57 / 35, telegram 15 / 0, with 51 rows sitting in
+``publish_unknown``.
 
 The trap this file pins is the naming collision. ``publication`` has its own
 ``measured``, ``avg_engagement``, ``reliable``, ``evidence_status`` and
