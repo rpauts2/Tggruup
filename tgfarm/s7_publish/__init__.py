@@ -37,6 +37,7 @@ from tgfarm.core.text import truncate
 from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
+from tgfarm.tg_sync import real_tg_chat_id
 
 log = get_logger(__name__)
 
@@ -1148,6 +1149,67 @@ async def _await_publish(
     )
 
 
+def _dry_run_remote_id(platform: str, post_id: int) -> str:
+    """The placeholder id the off-mode adapters have always journalled."""
+    return f"dry-{post_id}" if platform == "dzen" else f"dry-{platform}-{post_id}"
+
+
+def _dry_run_reason(platform: str, settings: Any) -> str | None:
+    """Name the outcome when nothing could possibly have reached the platform.
+
+    Two facts mean "we know for certain this was not sent": the farm is not in
+    `live` mode, and the Telegram bot token is missing. Each is reported under
+    its own code so the journal says which one the operator has to fix.
+
+    This is deliberately *not* `publish_unknown`: that state means "the remote
+    side may have it, verify before retrying", and a dry run is its opposite.
+    """
+    if not getattr(settings, "live", False):
+        return GATE_FARM_NOT_LIVE
+    if platform == "telegram" and not getattr(settings, "telegram_bot_token", ""):
+        return GATE_BOT_TOKEN_MISSING
+    return None
+
+
+def _journal_primary_dry_run(public_id: str, platform: str, post_id: int) -> bool:
+    """Record the skipped delivery once, the way the crosspost path does.
+
+    `tgfarm/distribution.py` treats a journalled `dry_run` as "this post was
+    already reported as not sent" and only offers it again once the farm goes
+    live; a fresh row per tick would grow the journal forever. Dzen and VK always
+    journalled their off-mode primary publish (the publisher is shared with the
+    crosspost path); Telegram has no crosspost journal, so its dry runs are
+    counted in the tick's decision ledger only.
+    """
+    from tgfarm.core.schemas import CrosspostResult
+    from tgfarm.db.models import CrosspostLog
+    from tgfarm.s9_growth.adapters import log_result
+
+    if platform not in {"dzen", "vk"}:
+        return False
+    with session_scope() as session:
+        already = session.execute(
+            select(CrosspostLog.id)
+            .where(
+                CrosspostLog.post_public_id == public_id,
+                CrosspostLog.platform == platform,
+                CrosspostLog.status == "dry_run",
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+    if already is not None:
+        return False
+    log_result(
+        public_id,
+        CrosspostResult(
+            platform=platform,
+            status="dry_run",
+            remote_id=_dry_run_remote_id(platform, post_id),
+        ),
+    )
+    return True
+
+
 async def _publish_one(
     post_id: int,
     target: int | str,
@@ -1156,20 +1218,59 @@ async def _publish_one(
     platform: str = "telegram",
     inline_media: tuple[str, str] | None = None,
 ) -> dict:
+    """Deliver one post, or say precisely why nothing was delivered.
+
+    A publish that did not happen must not be recorded as a publication: the
+    dry-run branch below returns before the post is claimed, so `status`,
+    `published_at`, `tg_message_id` and `tg_chat_id` keep their previous values
+    and no attempt is spent. What the post does afterwards is the queued-post
+    behaviour of `GATE_PLATFORM_DISABLED` — it stays `scheduled` with its slot,
+    and the reason is counted in the tick's ledger every tick.
+    """
+    public_id = ""
     with session_scope() as session:
         post = session.get(PostRow, post_id)
         if post is None:
             return {"ok": False, "error": "post disappeared"}
         if post.status == "published":
             return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
+        public_id = post.public_id
     from tgfarm.platforms import is_platform_enabled
 
     if not is_platform_enabled(platform):
-        return {"ok": True, "skipped": True, "reason": "platform_disabled"}
+        return {"ok": True, "skipped": True, "reason": GATE_PLATFORM_DISABLED}
     if platform not in {"telegram", "dzen", "vk"}:
         # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
         return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
     settings = get_settings()
+
+    if platform == "telegram" and real_tg_chat_id(target) is None:
+        # Live or not, a chat we cannot name is not a destination: `due_posts`
+        # stops this post from ever reaching here, and the guard is repeated for
+        # direct callers so `tg_chat_id = -1` cannot come back.
+        log.info(
+            "s7: post %s has no known telegram chat; wait for `sync_channels`",
+            public_id or post_id,
+        )
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": GATE_UNKNOWN_TG_CHAT,
+            "post_id": post_id,
+        }
+
+    dry_reason = _dry_run_reason(platform, settings)
+    if dry_reason is not None:
+        await to_thread(_journal_primary_dry_run, public_id, platform, post_id)
+        log.info(
+            "[dry-run] -> %s %s | %s (not sent: %s)",
+            platform,
+            target,
+            truncate(text, 90),
+            dry_reason,
+        )
+        return {"ok": True, "dry_run": True, "reason": dry_reason, "post_id": post_id}
+
     if not _claim_post(post_id):
         return {"ok": True, "skipped": True, "reason": "already claimed"}
 
@@ -1209,13 +1310,20 @@ async def _publish_one(
             message_id = outcome.get("message_id")
         elif settings.live and settings.telegram_bot_token:
             message_id = await _await_publish(
-                PUBLISHER.send(int(target), text, media),
+                PUBLISHER.send(real_tg_chat_id(target), text, media),
                 timeout_s=budget,
                 platform=platform,
                 post_id=post_id,
             )
         else:
-            log.info("[dry-run] -> telegram %s | %s", target, truncate(text, 90))
+            # Unreachable by construction: `_dry_run_reason` returned for every
+            # telegram post the farm could not actually send. Landing here means
+            # the predicate and this branch disagree, and the old behaviour was to
+            # log a dry run and then stamp the post `published` — the defect that
+            # left 15 live rows with no message id. Fail loudly instead.
+            raise PublishError(
+                "telegram send branch reached while the farm cannot publish"
+            )
     except asyncio.CancelledError:
         # Cancellation can happen during shutdown or a watchdog recovery. The
         # remote side effect may already have happened, so never leave a live
@@ -1331,7 +1439,9 @@ async def _publish_one(
                     row.tg_message_id = message_id
                     row.publish_heartbeat_at = None
                     if platform == "telegram":
-                        row.tg_chat_id = int(target)
+                        # Named by the chat guard before the post was claimed: an
+                        # unknown chat can no longer be written as `-1`.
+                        row.tg_chat_id = real_tg_chat_id(target)
                     row.publish_error = None
                 break
             except _OpErr as exc:
@@ -1356,6 +1466,15 @@ GATE_PERSONA_DISABLED = "persona_disabled"
 GATE_DAILY_CAP = "daily_cap"
 GATE_DZEN_QUEUE_GAP = "dzen_queue_gap"
 GATE_DZEN_NEEDS_ONLINE_MODEL = "dzen_needs_online_model"
+#: The farm is not in `live` mode: nothing was sent, and the posts are still
+#: queued. Counted here so a tick that "published 0" because it never sends says
+#: so, instead of looking like an empty queue.
+GATE_FARM_NOT_LIVE = "farm_not_live"
+#: `live` mode without a bot token — the same certain "not sent", different fix.
+GATE_BOT_TOKEN_MISSING = "telegram_bot_token_missing"
+#: The channel has no Telegram chat id yet (`sync_channels` fills it on the
+#: scheduler's clock). Named instead of guessed at `-1`.
+GATE_UNKNOWN_TG_CHAT = "unknown_tg_chat"
 
 
 def empty_gate_report() -> dict[str, int]:
@@ -1368,6 +1487,9 @@ def empty_gate_report() -> dict[str, int]:
         GATE_DAILY_CAP: 0,
         GATE_DZEN_QUEUE_GAP: 0,
         GATE_DZEN_NEEDS_ONLINE_MODEL: 0,
+        GATE_FARM_NOT_LIVE: 0,
+        GATE_BOT_TOKEN_MISSING: 0,
+        GATE_UNKNOWN_TG_CHAT: 0,
     }
 
 
@@ -1424,11 +1546,16 @@ def due_posts(
                 out.append((row.id, assemble_text(row, "vk"), "vk", platform))
                 continue
 
-            chat_id = channel.tg_chat_id if channel else None
+            chat_id = real_tg_chat_id(channel.tg_chat_id if channel else None)
             if chat_id is None:
-                settings = get_settings()
-                chat_id = settings.channel_ids[0] if settings.channel_ids else -1
-            out.append((row.id, assemble_text(row), int(chat_id), platform))
+                # "We do not know the chat" is a named state, not a number. The
+                # old fallback to `settings.channel_ids[0] or -1` posted one
+                # persona's text into another operator's channel and stamped the
+                # invented `-1` on the post as if Telegram had reported it.
+                # `sync_channels` fills the real id on the scheduler's clock.
+                _blocked(GATE_UNKNOWN_TG_CHAT)
+                continue
+            out.append((row.id, assemble_text(row), chat_id, platform))
     return out
 
 
@@ -1512,7 +1639,7 @@ async def _publish_due_once(
         post_ids = [p[0] for p in pending]
         media = await to_thread(_media_for, post_ids)
         inline = await to_thread(_inline_media_for, post_ids)
-        sent = failed = skipped = 0
+        sent = failed = skipped = dry_runs = 0
         errors: list[str] = []
         last_dzen = getattr(publish_due, "_last_dzen", None)
         db_last = await to_thread(_last_dzen_publish_time)
@@ -1558,8 +1685,19 @@ async def _publish_due_once(
                 )
                 continue
             if result.get("ok"):
+                if result.get("dry_run"):
+                    # Nothing was sent, so nothing is counted as sent. The reason
+                    # belongs in the ledger beside the gates: "published 0" in a
+                    # farm that is not live is a queue waiting, not a delivery.
+                    reason = str(result.get("reason") or GATE_FARM_NOT_LIVE)
+                    gates[reason] = gates.get(reason, 0) + 1
+                    dry_runs += 1
+                    continue
                 if result.get("skipped"):
                     skipped += 1
+                    reason = str(result.get("reason") or "")
+                    if reason == GATE_UNKNOWN_TG_CHAT:
+                        gates[reason] = gates.get(reason, 0) + 1
                     continue
                 sent += 1
                 if platform == "dzen":
@@ -1583,6 +1721,10 @@ async def _publish_due_once(
             **({"skipped_llm": gates[GATE_DZEN_NEEDS_ONLINE_MODEL]}
                if gates[GATE_DZEN_NEEDS_ONLINE_MODEL] else {}),
             **({"skipped": skipped} if skipped else {}),
+            # The count of posts this tick held back because nothing could be
+            # sent. Named separately from `skipped`, which also covers the posts
+            # another worker claimed first.
+            **({"dry_run": dry_runs} if dry_runs else {}),
         }
 
 

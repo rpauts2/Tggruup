@@ -94,21 +94,40 @@ def test_reason_table_pins_the_pipeline_vocabulary(client):
 
 
 def test_gate_table_covers_every_named_gate_the_publisher_counts(client):
+    """The chip table is derived from the server's own vocabulary.
+
+    It used to be a hand-copied list of seven codes, which is exactly why a new
+    reason could ship without a label; `empty_gate_report()` is the single place
+    the publisher names them, so the panel is now checked against all of it.
+    """
     from tgfarm import s7_publish
 
     script = _script(client)
     block = _chunk(script, "const PUBLICATION_GATE", "function renderPublicationDecision")
-    codes = [
-        s7_publish.GATE_PLATFORM_DISABLED,
-        s7_publish.GATE_PLATFORM_NOT_DELIVERABLE,
-        s7_publish.GATE_APPROVAL_REQUIRED,
-        s7_publish.GATE_PERSONA_DISABLED,
-        s7_publish.GATE_DAILY_CAP,
-        s7_publish.GATE_DZEN_QUEUE_GAP,
-        s7_publish.GATE_DZEN_NEEDS_ONLINE_MODEL,
-    ]
-    for code in codes:
+    for code in s7_publish.empty_gate_report():
+        assert f"{code}:" in block, f"{code} is counted by the server and unlabeled by the panel"
+
+
+def test_a_dry_run_is_labelled_as_nothing_sent(client):
+    """PART 2: the panel must be able to say "these posts were not delivered".
+
+    A post held back because the farm does not send is not an empty queue and not
+    a publication, and the wording has to carry that: "не отправлено" for both
+    dry-run codes, and "ждём sync_channels" for the chat we cannot name.
+    """
+    from tgfarm import s7_publish
+
+    script = _script(client)
+    block = _chunk(script, "const PUBLICATION_GATE", "function renderPublicationDecision")
+    for code in (
+        s7_publish.GATE_FARM_NOT_LIVE,
+        s7_publish.GATE_BOT_TOKEN_MISSING,
+    ):
         assert f"{code}:" in block
+        label = block.split(f"{code}:")[1].splitlines()[0]
+        assert "\u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e" in label, label
+    chat_label = block.split(f"{s7_publish.GATE_UNKNOWN_TG_CHAT}:")[1].splitlines()[0]
+    assert "sync_channels" in chat_label, chat_label
 
 
 def test_unknown_reason_is_printed_verbatim_and_stays_uncoloured(client):

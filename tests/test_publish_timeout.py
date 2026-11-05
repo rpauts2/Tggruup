@@ -45,7 +45,16 @@ def _seed_post(platform: str, body: str, *, minutes_ago: int = 1) -> tuple[int, 
     channel_id = f"deadline_{suffix}"
     with session_scope() as session:
         session.add(
-            Channel(id=channel_id, title="Deadline test", niche="test", platform=platform)
+            Channel(
+                id=channel_id,
+                title="Deadline test",
+                niche="test",
+                platform=platform,
+                # A telegram post is only eligible when the farm can name the chat
+                # it goes to; `sync_channels` normally fills this. Without it the
+                # queue now reports `unknown_tg_chat` instead of inventing `-1`.
+                tg_chat_id=-100123,
+            )
         )
         post = Post(
             public_id=f"deadline{suffix}",

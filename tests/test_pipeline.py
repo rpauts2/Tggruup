@@ -1069,7 +1069,17 @@ def test_due_posts_preserves_dzen_platform():
 
     now = datetime.now(UTC) - timedelta(minutes=1)
     with session_scope() as session:
-        session.merge(Channel(id="tg_due", title="TG", niche="tech", platform="telegram"))
+        session.merge(
+            Channel(
+                id="tg_due",
+                title="TG",
+                niche="tech",
+                platform="telegram",
+                # eligible only once the farm can name the chat; `sync_channels`
+                # fills this in production, `-1` was never a real one.
+                tg_chat_id=-100987,
+            )
+        )
         session.merge(Channel(id="dz_due", title="DZ", niche="general", platform="dzen"))
         session.add(
             Post(
@@ -1278,7 +1288,15 @@ def test_reconcile_publish_outcomes_require_explicit_unknown_state():
 
 
 @pytest.mark.asyncio
-async def test_dzen_dry_run_marks_published_and_logs_remote():
+async def test_dzen_dry_run_logs_remote_and_leaves_the_post_queued():
+    """A Dzen dry run journals `dry_run` and writes no publication.
+
+    The assertion this replaces read `status == "published"` on a post that never
+    opened a browser: `posts.status` is the denominator of every evidence number
+    the farm reports, so the dry run inflated it with a publication that did not
+    happen. The journal row (which the crosspost path already used for exactly
+    this case) is the honest record, and the post keeps its queue slot.
+    """
     from sqlalchemy import select
 
     from tgfarm.db.models import CrosspostLog, Post
@@ -1300,10 +1318,13 @@ async def test_dzen_dry_run_marks_published_and_logs_remote():
 
     result = await _publish_one(post_id, "zen_misc_ru", "Тело статьи для Дзена.", None, "dzen")
     assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["reason"] == "farm_not_live"
 
     with session_scope() as session:
         post = session.get(Post, post_id)
-        assert post is not None and post.status == "published"
+        assert post is not None and post.status == "scheduled"
+        assert post.published_at is None
         log_row = session.execute(
             select(CrosspostLog).where(CrosspostLog.post_public_id == "dzen-publish")
         ).scalar_one()

@@ -24,6 +24,7 @@
     tgfarm dzen-login           open Dzen and keep the Yandex session in a profile
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
     tgfarm repair-duplicates [--apply]  preview, then repoint stored duplicate links
+    tgfarm publication-evidence [--apply]  preview, then reclassify evidence-free publications
     tgfarm history-import FILE  import old publication exports (preview by default)
 """
 
@@ -573,6 +574,28 @@ def cmd_capability(args) -> int:
     return 0
 
 
+def cmd_publication_evidence(args) -> int:
+    """Report (and optionally reclassify) publications with no remote evidence.
+
+    Preview is the default, exactly like `repair-duplicates`: the numbers are the
+    product, and rewriting history needs both the operator's `--apply` and the
+    consent flag `PUBLICATION_EVIDENCE_REPAIR_APPLY`, on top of a fresh copy in
+    `backup/`. Without them nothing is written, and the report still says what is
+    sitting in the database claiming to be published.
+    """
+    from tgfarm.maintenance import publication_evidence_repair
+
+    _bootstrap()
+    report = publication_evidence_repair(apply=bool(args.apply), limit=args.limit)
+    _print(report)
+    if not args.apply:
+        print("предпросмотр: ни одна строка не изменена; повтори с --apply")
+    elif report.get("refused"):
+        print(f"отказано: {report['refused']}")
+        return 1
+    return 0
+
+
 def cmd_requeue_unsubmitted(args) -> int:
     """Requeue posts whose publication provably never left the farm."""
     from tgfarm.s7_publish import requeue_unsubmitted
@@ -810,6 +833,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="write for real; take a fresh copy of the database first",
     )
     p_repair_dupes.set_defaults(func=cmd_repair_duplicates)
+
+    p_pub_evidence = sub.add_parser(
+        "publication-evidence",
+        help="posts marked published with no remote id of any kind (preview by default)",
+    )
+    p_pub_evidence.add_argument(
+        "--limit", type=int, default=200, help="rows one apply pass may reclassify"
+    )
+    p_pub_evidence.add_argument(
+        "--apply",
+        action="store_true",
+        help="move the rows to publish_unknown; needs PUBLICATION_EVIDENCE_REPAIR_APPLY "
+        "and a fresh copy in backup/",
+    )
+    p_pub_evidence.set_defaults(func=cmd_publication_evidence)
 
     p_render = sub.add_parser("render", help="render a cover image")
     p_render.add_argument("post_id")

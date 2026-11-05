@@ -110,7 +110,15 @@ def session_id(public_id: str) -> int:
 
 
 @pytest.mark.asyncio
-async def test_vk_publish_dry_run_marks_published_and_logs():
+async def test_vk_publish_dry_run_journals_and_leaves_the_post_queued():
+    """A VK dry run must not be recorded as a publication.
+
+    The old assertion here was `row.status == "published"` with no remote id of
+    any kind: the farm had invented a publication it never made, which then fed
+    every evidence number in S8 and the panel. Nothing was sent, so the post stays
+    where it was, and the journal says `dry_run` — the vocabulary the crosspost
+    path already used.
+    """
     from sqlalchemy import select
 
     from tgfarm.db.models import CrosspostLog
@@ -124,12 +132,17 @@ async def test_vk_publish_dry_run_marks_published_and_logs():
 
     result = await _publish_one(post_id, "vk", "Текст для ВК", None, "vk")
     assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["reason"] == "farm_not_live"
 
     with session_scope() as session:
         from tgfarm.db.models import Post
 
         row = session.get(Post, post_id)
-        assert row.status == "published"
+        assert row.status == "scheduled"
+        assert row.published_at is None
+        assert row.tg_message_id is None
+        assert int(row.attempts or 0) == 0, "a dry run must not spend attempt budget"
         log = session.execute(
             select(CrosspostLog).where(CrosspostLog.post_public_id == "vk-dry")
         ).scalar_one()

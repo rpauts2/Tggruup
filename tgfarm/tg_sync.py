@@ -22,6 +22,35 @@ from tgfarm.db.session import session_scope
 log = get_logger(__name__)
 
 
+#: Values the farm used to *invent* for "this channel was never synced".
+#: `due_posts` fell back to `settings.channel_ids[0] or -1` and stamped the
+#: result on the post, so a placeholder travelled through the codebase looking
+#: exactly like an observed chat id.
+UNKNOWN_CHAT_PLACEHOLDERS = frozenset({0, -1})
+
+
+def real_tg_chat_id(value: object) -> int | None:
+    """Return the chat id only when it names a chat Telegram could answer about.
+
+    "We do not know the chat" is a distinct state, not a small number: a
+    supergroup really is negative (`-100…`), so the sign proves nothing, while
+    `None`, `0` and `-1` are placeholders this repository wrote for an unsynced
+    channel. Reading them as ids made the collector ask Telegram about chat -1
+    and let `s8_analytics.coverage` count an invented chat as an askable post.
+    Callers that get `None` back must report "run/wait for `sync_channels`",
+    never a number.
+    """
+    if value is None:
+        return None
+    try:
+        chat_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if chat_id in UNKNOWN_CHAT_PLACEHOLDERS:
+        return None
+    return chat_id
+
+
 def _normalise(text: str) -> str:
     return "".join(c for c in (text or "").lower() if c.isalnum() or c.isspace()).strip()
 
@@ -200,6 +229,10 @@ async def collect_post_stats(limit: int = 500) -> dict:
     the publisher fills it on the post, and either is enough — reading only the
     channel used to make every post published before the first sync unmeasurable,
     which is how the learning loop stayed hungry even after the collector worked.
+
+    "Enough" means a real id, not any stored number: `real_tg_chat_id` rejects
+    the `0`/`-1` placeholders the old queue builder wrote, so the collector never
+    asks Telegram about a chat that does not exist.
     """
     from tgfarm.tguser import fetch_post_stats
 
@@ -214,10 +247,14 @@ async def collect_post_stats(limit: int = 500) -> dict:
         )
         pairs: list[tuple[int, int]] = []
         chat_of: dict[int, int] = {}
+        unknown_chat = 0
         for row in rows:
             channel = session.get(Channel, row.channel_id)
-            chat_id = getattr(channel, "tg_chat_id", None) or row.tg_chat_id
+            chat_id = real_tg_chat_id(getattr(channel, "tg_chat_id", None)) or real_tg_chat_id(
+                row.tg_chat_id
+            )
             if not chat_id:
+                unknown_chat += 1
                 continue
             pairs.append((chat_id, row.tg_message_id))
             chat_of[row.id] = chat_id
@@ -229,7 +266,12 @@ async def collect_post_stats(limit: int = 500) -> dict:
                 "posts": 0,
                 "askable": 0,
                 "published_with_message_id": len(rows),
-                "reason": "posts have a message id but no chat id: run `sync_channels`",
+                "without_real_chat_id": unknown_chat,
+                "reason": (
+                    "posts have a message id but no real chat id: "
+                    f"{unknown_chat} of {len(rows)} name no chat (0/-1 is a placeholder, "
+                    "not an id) — run or wait for `sync_channels`"
+                ),
             }
         return {
             "ok": True,
@@ -297,4 +339,4 @@ def channel_reality() -> list[dict]:
         ]
 
 
-__all__ = ["channel_reality", "collect_post_stats", "sync_channels"]
+__all__ = ["channel_reality", "collect_post_stats", "real_tg_chat_id", "sync_channels"]

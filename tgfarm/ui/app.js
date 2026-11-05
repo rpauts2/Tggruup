@@ -290,6 +290,11 @@
     daily_cap: "дневной лимит площадки исчерпан",
     dzen_queue_gap: "пауза между постами Dzen",
     dzen_needs_online_model: "Dzen требует онлайн-модель",
+    // A dry run is not a delivery: the chip must say that nothing was sent,
+    // not leave the operator to read "published 0" as an empty queue.
+    farm_not_live: "ферма не в live-режиме: ничего не отправлено",
+    telegram_bot_token_missing: "нет токена Telegram-бота: ничего не отправлено",
+    unknown_tg_chat: "не знаем chat_id канала: ждём sync_channels",
   };
 
   function renderPublicationDecision(statusPayload, failure) {
