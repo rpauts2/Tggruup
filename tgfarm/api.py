@@ -224,7 +224,7 @@ def _status_payload() -> dict:
             select(func.count()).select_from(Media).where(Media.kind == "video")
         ).scalar_one()
         crossposts = session.execute(
-            select(func.count()).select_from(CrosspostLog).where(CrosspostLog.status == "posted")
+            select(func.count()).select_from(CrosspostLog).where(CrosspostLog.status == JOURNAL_STATUS_POSTED)
         ).scalar_one()
         avg_er = session.execute(
             select(func.avg(ChannelStat.err)).select_from(ChannelStat)
@@ -555,7 +555,7 @@ def _post_view(session, row: Post, *, detail: bool) -> dict:
             .where(
                 CrosspostLog.post_public_id == row.public_id,
                 CrosspostLog.platform == platform,
-                CrosspostLog.status.in_(("posted", "dry_run")),
+                CrosspostLog.status.in_((JOURNAL_STATUS_POSTED, JOURNAL_STATUS_DRY_RUN)),
             )
             .order_by(CrosspostLog.id.desc())
             .limit(1)
@@ -1976,7 +1976,7 @@ def _retry_failed_publish(public_id: str) -> dict:
                     # `platform` here is already lowercased, and the docstring of
                     # the shared guard promises these two paths cannot disagree.
                     func.lower(CrosspostLog.platform) == platform,
-                    CrosspostLog.status == "posted",
+                    CrosspostLog.status == JOURNAL_STATUS_POSTED,
                 ).limit(1)
             ).scalar_one_or_none()
             is not None
