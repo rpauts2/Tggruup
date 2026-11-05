@@ -512,11 +512,30 @@ def test_every_gate_code_the_module_declares_is_ledgered():
         if name.startswith("GATE_") and isinstance(value, str)
     }
     assert declared == VOCABULARY, declared ^ set(VOCABULARY)
-    assert len(VOCABULARY) == 10
+    assert len(VOCABULARY) == 11
 
     for cell in CELLS:
         if cell.reason is not None:
             assert cell.reason in declared, cell
+
+
+def test_a_refused_booking_is_ledgered_under_the_plan_layers_own_words():
+    """One fact, two modules, one string — and a place in the pre-zeroed ledger.
+
+    `schedule_ready_posts` refuses a plan booking that falls outside the channel's
+    legal local hours; `plan_execution` holds the same entry on the same rule. Each
+    names it with its own constant, so the two can drift apart silently and an
+    operator then reads two different reasons for one refusal — the pin below makes
+    that a test failure instead. The code also has to be a key of
+    `empty_gate_report()`: a gate counted only when it fires is indistinguishable
+    from a gate that does not exist in a tick where nothing was refused.
+    """
+    from tgfarm import plan_execution, s7_publish
+
+    assert s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS == plan_execution.REASON_LOCAL_HOURS
+    gates = s7_publish.empty_gate_report()
+    assert plan_execution.REASON_LOCAL_HOURS in gates, gates
+    assert gates[plan_execution.REASON_LOCAL_HOURS] == 0
 
 
 # --------------------------------------------------------------- the class, closed

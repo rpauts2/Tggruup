@@ -283,11 +283,13 @@ def test_a_booking_outside_the_legal_local_hours_is_refused_not_moved(monkeypatc
     assert after.status == "gated", f"a refused booking must not leave the gated state: {after}"
     assert after.scheduled_at is None, f"the post was silently moved to {after.scheduled_at}"
     assert _aware(after.plan_slot_at) == booked, "the refusal must not rewrite the booking"
-    # The refusal is recorded with the code the local-hours rule already uses in
-    # the plan-execution layer, so one fact keeps one spelling across the two
-    # schedulers. A reason outside the published ledger is the honest case here:
-    # the closed 10-code gate vocabulary is a UI contract this change may not edit.
-    assert gates.get(REASON_LOCAL_HOURS) == 1, gates
+    # The refusal is recorded under this module's own gate code, which is the same
+    # string the plan-execution layer holds the entry under — one fact, one spelling
+    # across the two schedulers. It is a registered ledger key (the vocabulary went
+    # from ten to eleven codes at intake, each with a panel label), so the hold shows
+    # up in a tick where nothing was refused too, instead of only when it fires.
+    assert gates.get(s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS) == 1, gates
+    assert REASON_LOCAL_HOURS == s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS
 
 
 def test_a_booking_inside_the_legal_local_hours_is_not_refused(monkeypatch):

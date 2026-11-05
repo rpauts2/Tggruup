@@ -325,9 +325,10 @@ def schedule_ready_posts(
     # Local import for the same reason, in the other direction: `plan_execution`
     # imports this module at its own top level, so s7 may only reach back from
     # inside a call. It needs one thing from there — the legal local hours, which
-    # that module already derives from the cadence owner — plus the reason code the
-    # same refusal carries there, so a booking gated twice keeps one spelling.
-    from tgfarm.plan_execution import REASON_LOCAL_HOURS, local_hours_allow
+    # that module already derives from the cadence owner. The refusal it produces
+    # is counted under this module's own gate code, kept byte-identical to
+    # `plan_execution.REASON_LOCAL_HOURS` by a pin in the gate matrix.
+    from tgfarm.plan_execution import local_hours_allow
 
     config = get_config()
     settings = get_settings()
@@ -420,7 +421,7 @@ def schedule_ready_posts(
                 # judging an instant this branch never writes would refuse posts
                 # over a slot they were not given.
                 if not local_hours_allow(booked, getattr(channel, "timezone", None), config=config):
-                    _blocked(REASON_LOCAL_HOURS)
+                    _blocked(GATE_SLOT_OUTSIDE_LOCAL_HOURS)
                     continue
                 slot = booked
             elif interval_mode:
@@ -1770,6 +1771,12 @@ GATE_BOT_TOKEN_MISSING = "telegram_bot_token_missing"
 #: The channel has no Telegram chat id yet (`sync_channels` fills it on the
 #: scheduler's clock). Named instead of guessed at `-1`.
 GATE_UNKNOWN_TG_CHAT = "unknown_tg_chat"
+#: A slot the editorial plan booked falls outside the channel's legal local
+#: hours, so this scheduler refuses it. The plan layer calls the same fact
+#: `plan_execution.REASON_LOCAL_HOURS`, and the two spellings are pinned equal
+#: by `tests/test_publish_gate_matrix.py`: one fact, one string, in whichever
+#: ledger it is counted.
+GATE_SLOT_OUTSIDE_LOCAL_HOURS = "slot_outside_local_hours"
 
 
 def empty_gate_report() -> dict[str, int]:
@@ -1785,6 +1792,7 @@ def empty_gate_report() -> dict[str, int]:
         GATE_FARM_NOT_LIVE: 0,
         GATE_BOT_TOKEN_MISSING: 0,
         GATE_UNKNOWN_TG_CHAT: 0,
+        GATE_SLOT_OUTSIDE_LOCAL_HOURS: 0,
     }
 
 

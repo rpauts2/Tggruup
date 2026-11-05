@@ -464,6 +464,10 @@
     farm_not_live: "ферма не в live-режиме: ничего не отправлено",
     telegram_bot_token_missing: "нет токена Telegram-бота: ничего не отправлено",
     unknown_tg_chat: "не знаем chat_id канала: ждём sync_channels",
+    // A booking the plan made for an hour this channel may not publish in: the
+    // scheduler refuses rather than moving it, so the chip must say the slot is
+    // the problem, not the post.
+    slot_outside_local_hours: "слот плана вне локальных часов канала: публикация отложена",
   };
 
   function renderPublicationDecision(statusPayload, failure) {
