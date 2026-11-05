@@ -317,10 +317,20 @@ def schedule_ready_posts(
     `Settings.plan_execution_enabled`: with the plan layer off this is the base
     refusal, byte for byte, journal included.
 
-    `blocked` is an optional out-parameter naming the gates that returned a post
-    to the queue unscheduled. `scheduled 0` is legitimate most of the time, and
-    the operator can only tell that apart from a stall when the zero arrives with
-    its reason.
+    `blocked` is an optional out-parameter naming this pass's gate *outcomes*:
+    one count per gate code that had something to say about a post. Almost all
+    of them answer "a gate returned a post to the queue unscheduled", and the
+    one that does not is `GATE_SLOT_BOOKING_REBOUNDED`, which answers "a booking
+    was corrected and this pass scheduled the post at the corrected instant".
+    The parameter keeps its name — every caller in `pipeline`, `demo` and the
+    gate tests already passes it by keyword, and a rename would be a wider diff
+    than the finding is worth — so what a code means is stated by the code's own
+    comment above, not by the dictionary it lands in. Where a corrected booking
+    is counted, and what would have to change for the other reading to be right,
+    is pinned by
+    `tests/test_w22c_booked_slot_rebinding.py::test_the_ledger_counts_a_correction_as_an_outcome_under_a_gate_that_scheduled_the_post`.
+    `scheduled 0` is legitimate most of the time, and the operator can only tell
+    that apart from a stall when the zero arrives with its reason.
     """
     # Local import: `distribution` pulls in `platforms`/`s9_growth` lazily for its
     # own sake, so a module-level import here would close that cycle on s7.
@@ -351,7 +361,16 @@ def schedule_ready_posts(
     plan_layer_enabled = bool(getattr(settings, "plan_execution_enabled", False))
     rebinds: list[dict[str, object]] = []
 
-    def _blocked(reason: str, count: int = 1) -> None:
+    def _count_gate(reason: str, count: int = 1) -> None:
+        """Add one gate outcome to the caller's ledger.
+
+        Named for what it does rather than for the first thing it counted: an
+        outcome is something a gate decided about a post, and since W22-C the
+        decision is not always a refusal. `GATE_SLOT_BOOKING_REBOUNDED` goes
+        through here and the post it names is then *scheduled*, which is the one
+        entry in this ledger that did not go back to the queue — the docstring
+        above says so, and the test named there fails if either half moves.
+        """
         if blocked is not None:
             blocked[reason] = blocked.get(reason, 0) + count
 
@@ -365,7 +384,7 @@ def schedule_ready_posts(
                     select(PostRow.public_id).where(PostRow.status == "gated")
                 ).scalars().all()
             )
-        _blocked(GATE_APPROVAL_REQUIRED, waiting)
+        _count_gate(GATE_APPROVAL_REQUIRED, waiting)
         log.info("s7: approval mode — %d posts wait for a human", waiting)
         return 0
     cadence = config.schedule.cadence or {}
@@ -388,7 +407,7 @@ def schedule_ready_posts(
         for post in posts:
             persona = config.persona(post.channel_id)
             if persona is None or not persona.enabled:
-                _blocked(GATE_PERSONA_DISABLED)
+                _count_gate(GATE_PERSONA_DISABLED)
                 continue
 
             channel = session.get(ChannelRow, post.channel_id)
@@ -403,7 +422,7 @@ def schedule_ready_posts(
                 # rot in the queue and be skipped on every tick. It is the same
                 # fact the tick reports, so it names itself the same way — this
                 # was the one gate in S7 that dropped a post silently.
-                _blocked(GATE_DZEN_NEEDS_ONLINE_MODEL)
+                _count_gate(GATE_DZEN_NEEDS_ONLINE_MODEL)
                 continue
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
                 if platform not in platform_daily_counts:
@@ -416,7 +435,7 @@ def schedule_ready_posts(
                 today_count = _posts_today(session, post.channel_id, now)
                 daily_cap = clamp_channel_daily_cap(max(1, int(persona.posts_per_day)))
             if today_count >= daily_cap:
-                _blocked(GATE_DAILY_CAP)
+                _count_gate(GATE_DAILY_CAP)
                 continue
 
             booked = _as_utc(getattr(post, "plan_slot_at", None))
@@ -449,9 +468,13 @@ def schedule_ready_posts(
                         # Nothing to correct to — no legal free minute in the
                         # horizon, or the plan layer is off. The base refusal is
                         # the honest answer, and it is still counted in full.
-                        _blocked(GATE_SLOT_OUTSIDE_LOCAL_HOURS)
+                        _count_gate(GATE_SLOT_OUTSIDE_LOCAL_HOURS)
                         continue
-                    _blocked(GATE_SLOT_BOOKING_REBOUNDED)
+                    # The one outcome in this ledger that does not `continue`:
+                    # the post is scheduled below, at `corrected`, and the count
+                    # says so. It is recorded as a gate outcome because the gate
+                    # decided it, not because the queue kept the post.
+                    _count_gate(GATE_SLOT_BOOKING_REBOUNDED)
                     rebinds.append(
                         {
                             "post_public_id": str(post.public_id),
@@ -1838,7 +1861,18 @@ GATE_SLOT_BOOKING_REBOUNDED = "slot_booking_rebounded"
 
 
 def empty_gate_report() -> dict[str, int]:
-    """Zero-filled ledger so a missing reason never reads as "gate absent"."""
+    """Zero-filled ledger so a missing reason never reads as "gate absent".
+
+    One dictionary, two producers, and the same meaning in both: a key counts a
+    *gate outcome* — something a gate decided about a post — not necessarily a
+    post that stayed unscheduled. `due_posts` only ever counts posts it dropped
+    without changing their state; `schedule_ready_posts` counts the refusals the
+    same way and, since W22-C, one outcome that moves the post forward:
+    `GATE_SLOT_BOOKING_REBOUNDED`, a corrected booking that this pass then
+    scheduled. A reader that assumed every key means "blocked" would call a
+    repaired booking a stall, which is the mistake the docstring of
+    `schedule_ready_posts` and the test named there exist to prevent.
+    """
     return {
         GATE_PLATFORM_DISABLED: 0,
         GATE_PLATFORM_NOT_DELIVERABLE: 0,
