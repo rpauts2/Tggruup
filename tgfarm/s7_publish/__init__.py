@@ -308,10 +308,14 @@ def schedule_ready_posts(
 
     A post the editorial plan booked — `plan_slot_at`, written once by `persist_draft`
     — is scheduled at that instant instead: the cadence computes nothing for it, and
-    a booking outside the channel's legal local hours is reported as blocked rather
-    than moved. `scheduled_at` may be overwritten afterwards by a requeue or a retry;
+    a booking outside the channel's legal local hours is corrected to the first
+    instant the channel may publish in, journalled under
+    `GATE_SLOT_BOOKING_REBOUNDED`, while `plan_slot_at` keeps the refused minute.
+    `scheduled_at` may be overwritten afterwards by a requeue or a retry;
     `plan_slot_at` is not, which is why the booking and not the queue position is
-    what the plan can be audited against.
+    what the plan can be audited against. The correction runs only behind
+    `Settings.plan_execution_enabled`: with the plan layer off this is the base
+    refusal, byte for byte, journal included.
 
     `blocked` is an optional out-parameter naming the gates that returned a post
     to the queue unscheduled. `scheduled 0` is legitimate most of the time, and
@@ -324,16 +328,28 @@ def schedule_ready_posts(
 
     # Local import for the same reason, in the other direction: `plan_execution`
     # imports this module at its own top level, so s7 may only reach back from
-    # inside a call. It needs one thing from there — the legal local hours, which
-    # that module already derives from the cadence owner. The refusal it produces
-    # is counted under this module's own gate code, kept byte-identical to
-    # `plan_execution.REASON_LOCAL_HOURS` by a pin in the gate matrix.
-    from tgfarm.plan_execution import local_hours_allow
+    # inside a call. It needs three things from there — the legal local hours and
+    # the walk to the next one, both owned by that module, and the journal writer
+    # that records what this pass corrected. The refusal it produces is counted
+    # under this module's own gate code, kept byte-identical to
+    # `plan_execution.REASON_LOCAL_HOURS` by a pin in the gate matrix, and the
+    # correction likewise against `plan_execution.REASON_SLOT_REBOUND`.
+    from tgfarm.plan_execution import (
+        local_hours_allow,
+        rebound_for_illegal_booking,
+        record_slot_rebinds,
+    )
 
     config = get_config()
     settings = get_settings()
     now = datetime.now(UTC)
     scheduled = 0
+    # The switch that gates the plan layer's writes also gates this transition,
+    # because the transition is the plan layer's judgement of a plan's booking:
+    # with the flag off, a booked minute outside the window is refused exactly as
+    # it was before W22-C and nothing is journalled.
+    plan_layer_enabled = bool(getattr(settings, "plan_execution_enabled", False))
+    rebinds: list[dict[str, object]] = []
 
     def _blocked(reason: str, count: int = 1) -> None:
         if blocked is not None:
@@ -413,17 +429,41 @@ def schedule_ready_posts(
                 # post due on the next tick rather than re-slotting the plan.
                 #
                 # The one limit that outranks a booking is the channel's legal local
-                # hours, and it refuses instead of moving: quietly re-slotting is
-                # how a booking becomes a suggestion and the plan becomes unsound.
-                # The window is read through `plan_execution`, which owns it, so the
-                # executor and this scheduler cannot disagree. A Dzen booking is not
-                # gated here because Dzen publishes at `now` whatever the plan said:
-                # judging an instant this branch never writes would refuse posts
-                # over a slot they were not given.
+                # hours, and since W22-C it corrects instead of parking: quietly
+                # re-slotting *the booking* is how a plan becomes unsound, so the
+                # refused minute stays in `plan_slot_at` and the corrected one goes
+                # to `scheduled_at`, the column this queue owns and that requeue and
+                # retry already move. The window and the walk are both read through
+                # `plan_execution`, which owns them, so the executor and this
+                # scheduler cannot correct one booking to two instants. A Dzen
+                # booking is not gated here because Dzen publishes at `now` whatever
+                # the plan said: judging an instant this branch never writes would
+                # refuse posts over a slot they were not given.
                 if not local_hours_allow(booked, getattr(channel, "timezone", None), config=config):
-                    _blocked(GATE_SLOT_OUTSIDE_LOCAL_HOURS)
-                    continue
-                slot = booked
+                    corrected = None
+                    if plan_layer_enabled and channel is not None:
+                        corrected = rebound_for_illegal_booking(
+                            session, channel, booked, config=config
+                        )
+                    if corrected is None:
+                        # Nothing to correct to — no legal free minute in the
+                        # horizon, or the plan layer is off. The base refusal is
+                        # the honest answer, and it is still counted in full.
+                        _blocked(GATE_SLOT_OUTSIDE_LOCAL_HOURS)
+                        continue
+                    _blocked(GATE_SLOT_BOOKING_REBOUNDED)
+                    rebinds.append(
+                        {
+                            "post_public_id": str(post.public_id),
+                            "cluster_public_id": str(post.cluster_public_id or ""),
+                            "channel_id": str(channel.id),
+                            "refused_slot_at": booked.isoformat(),
+                            "corrected_slot_at": corrected.isoformat(),
+                        }
+                    )
+                    slot = corrected
+                else:
+                    slot = booked
             elif interval_mode:
                 last = cursor.get(post.channel_id) or _last_slot_for(session, post.channel_id)
                 slot = _interval_slot(now, last, cadence, rng, persona.posts_per_day)
@@ -449,6 +489,13 @@ def schedule_ready_posts(
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
                 platform_daily_counts[platform] = today_count + 1
             scheduled += 1
+
+    # Outside the session on purpose: the journal is a fact about the pass, not
+    # part of the write the pass makes, and `pipeline._record` swallows its own
+    # failures — a correction this function could not write down is a missing
+    # metric, never a post left unscheduled. One row per pass that rebound
+    # anything, so five ticks that repaired one booking name it once.
+    record_slot_rebinds(rebinds, source="publish_tick")
 
     log.info("s7: scheduled %d posts (mode=%s)", scheduled, "interval" if interval_mode else "weights")
     return scheduled
@@ -1777,6 +1824,17 @@ GATE_UNKNOWN_TG_CHAT = "unknown_tg_chat"
 #: by `tests/test_publish_gate_matrix.py`: one fact, one string, in whichever
 #: ledger it is counted.
 GATE_SLOT_OUTSIDE_LOCAL_HOURS = "slot_outside_local_hours"
+#: The same booking, corrected. Since W22-C a minute the channel may never
+#: publish in is not left to rot in the queue: this scheduler asks the planner's
+#: own slot arithmetic for the first legal instant at or after the refused one,
+#: writes *that* to `scheduled_at` and counts the replacement here. The booking
+#: column keeps the refused minute (P100 — written once, and it is what the plan
+#: can be audited against), so the two numbers together are the whole fact: this
+#: is why the outcome gets its own code instead of hiding inside `scheduled N`.
+#: The plan consumer names the same transition `plan_execution.REASON_SLOT_REBOUND`,
+#: and the equality is pinned by `tests/test_publish_gate_matrix.py` exactly like
+#: the refusal above.
+GATE_SLOT_BOOKING_REBOUNDED = "slot_booking_rebounded"
 
 
 def empty_gate_report() -> dict[str, int]:
@@ -1793,6 +1851,7 @@ def empty_gate_report() -> dict[str, int]:
         GATE_BOT_TOKEN_MISSING: 0,
         GATE_UNKNOWN_TG_CHAT: 0,
         GATE_SLOT_OUTSIDE_LOCAL_HOURS: 0,
+        GATE_SLOT_BOOKING_REBOUNDED: 0,
     }
 
 

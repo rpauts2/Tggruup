@@ -90,6 +90,50 @@ def _pick_channel(niche: str, channels: list[Channel], load: dict[int, int]) -> 
     return min(channels, key=lambda c: load.get(c.id, 0))
 
 
+def _first_free_and_legal_slot(
+    channel: Channel,
+    occupied: set[datetime],
+    start: datetime,
+    limit: datetime,
+    steps: int,
+    *,
+    config: Any,
+) -> datetime | None:
+    """The walk itself, shared by a fresh booking and by a correction.
+
+    One arithmetic, two floors: ``_next_free_slot`` starts it shortly after
+    ``now`` because a new booking must not land in the past, and
+    ``next_legal_slot_after`` starts it at a refused instant because a correction
+    must not go backwards past the minute the plan ordered. Anything else — the
+    90-minute grid, the truncation to whole minutes, the occupancy skip and the
+    ``local_hours_allow`` test on the instant that will actually be written — is
+    the same code for both, and a second copy is how two schedulers start
+    disagreeing about one plan.
+    """
+    # Local import, and it has to stay local: `plan_execution` imports this
+    # module at its own top level (`tgfarm/plan_execution.py:75`), so a
+    # module-level import here would close that cycle the other way round. The
+    # same discipline is already in `tgfarm/s7_publish/__init__.py`, which
+    # reaches back for exactly one thing — the legal local hours this module
+    # must book inside. Nothing is re-derived here: a second copy of the
+    # cadence reading is how two schedulers start disagreeing about one plan.
+    from tgfarm.plan_execution import local_hours_allow
+
+    candidate = start
+    for _ in range(steps):
+        key = candidate.replace(second=0, microsecond=0)
+        # Free and legal, or not a booking at all: when the horizon has no
+        # legal free instant the answer is None, never the nearest illegal one.
+        # Substituting an instant the channel cannot publish in would put the
+        # refusal back where this change found it.
+        if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
+            return key
+        candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
+        if candidate > limit:
+            break
+    return None
+
+
 def _next_free_slot(
     channel: Channel,
     taken: dict[int, set[datetime]],
@@ -97,6 +141,7 @@ def _next_free_slot(
     horizon_days: int,
     *,
     config: Any = None,
+    floor: datetime | None = None,
 ) -> datetime | None:
     """First free slot this channel is actually allowed to publish in.
 
@@ -123,43 +168,125 @@ def _next_free_slot(
       ``channel.timezone`` reading — the same predicate, the same channel column
       and the same cadence owner the executor and the scheduler already use, so
       the three cannot disagree about which hours a channel may publish in;
-    * rows already in the database are not repaired. ``slot_at`` on a persisted
-      plan entry is a snapshot of a decision that was really made, and this is
-      the build path, not a migration: an old illegal booking stays illegal and
-      keeps being refused until a newer snapshot supersedes it.
-      ``tests/test_w20a_plan_slot_local_hours.py`` pins that as a residue.
+    * rows already in the database are not repaired *here*. ``slot_at`` on a
+      persisted plan entry is a snapshot of a decision that was really made, and
+      this is the build path, not a migration. What W20-A left as an open residue
+      — a row still holding an illegal booking, refused by ``schedule_ready_posts``
+      on every tick and unreachable by any later snapshot because
+      ``plan_slot_at`` is written once — is closed by ``next_legal_slot_after``,
+      which corrects the instant the queue writes without touching the instant
+      the plan booked.
 
     ``config`` is the cadence owner, and ``None`` means "whatever the farm loads"
     — ``local_hours_allow`` resolves it, and a channel with no window (24/7)
     allows every instant, which is the pre-W20-A behaviour bit for bit.
+
+    ``floor`` is for the other direction of the same question. A fresh booking
+    starts from the clock; a *correction* of a booking the channel may never
+    publish in starts from the refused instant, which is what
+    ``next_legal_slot_after`` passes. The walk, the grid and the predicate are
+    identical either way, and with ``floor`` unset nothing below moves by a
+    second — the W20-A golden cells are measured against that path.
     """
-
-    # Local import, and it has to stay local: `plan_execution` imports this
-    # module at its own top level (`tgfarm/plan_execution.py:75`), so a
-    # module-level import here would close that cycle the other way round. The
-    # same discipline is already in `tgfarm/s7_publish/__init__.py`, which
-    # reaches back for exactly one thing — the legal local hours this module
-    # must book inside. Nothing is re-derived here: a second copy of the
-    # cadence reading is how two schedulers start disagreeing about one plan.
-    from tgfarm.plan_execution import local_hours_allow
-
     occupied = taken.get(channel.id, set())
-    start = now + timedelta(minutes=SLOT_START_OFFSET_MINUTES)
-    limit = now + timedelta(days=horizon_days)
-    candidates = int(horizon_days * 24 * 60 / SLOT_STEP_MINUTES) + 2
-    candidate = start
-    for _ in range(candidates):
-        key = candidate.replace(second=0, microsecond=0)
-        # Free and legal, or not a booking at all: when the horizon has no
-        # legal free instant the answer is None, never the nearest illegal one.
-        # Substituting an instant the channel cannot publish in would put the
-        # refusal back where this change found it.
-        if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
-            return key
-        candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
-        if candidate > limit:
-            break
-    return None
+    base = now if floor is None else floor
+    start = floor if floor is not None else now + timedelta(minutes=SLOT_START_OFFSET_MINUTES)
+    limit = base + timedelta(days=horizon_days)
+    return _first_free_and_legal_slot(
+        channel,
+        occupied,
+        start,
+        limit,
+        int(horizon_days * 24 * 60 / SLOT_STEP_MINUTES) + 2,
+        config=config,
+    )
+
+
+def occupied_slots(
+    session,
+    *,
+    moment: datetime,
+    horizon_days: int,
+) -> dict[int, set[datetime]]:
+    """Slots this fleet already committed to, per channel, over one horizon.
+
+    The occupancy half of the planner's input, read in one query and shared by
+    the build path and by a correction (``next_legal_slot_after``): the two must
+    skip the same minutes, or the plan and the queue would disagree about which
+    instants are still free. Truncated to whole minutes because that is the
+    granularity the walk compares against.
+
+    Normalized to aware UTC with the module's own ``ensure_utc``, and that is not
+    decoration: SQLite's ``DATETIME`` column type reads back naive (the dialect
+    stores no offset), and a naive set member never compares equal to the aware
+    candidate the walk generates — ``datetime(2026, 11, 5, 9, 30) != datetime
+    (2026, 11, 5, 9, 30, tzinfo=UTC)`` is true for every pair of instants in the
+    database. Left alone, ``key not in occupied`` is a constant ``True`` on this
+    backend and the occupancy skip does nothing at all: the planner books a
+    minute another post already holds, and a correction re-proposes an instant
+    the queue has just written. This was measured, not inferred —
+    ``tests/test_w22c_booked_slot_rebinding.py`` seeds a full horizon and asks
+    for the correction, and with the naive set it returns the first legal minute
+    it was supposed to skip.
+    """
+    taken: dict[int, set[datetime]] = defaultdict(set)
+    for slot_at, channel_id in session.execute(
+        select(Post.scheduled_at, Post.channel_id)
+        .where(Post.status.in_(["scheduled", "published"]))
+        .where(Post.scheduled_at.is_not(None))
+        .where(Post.scheduled_at.between(moment, moment + timedelta(days=horizon_days)))
+    ):
+        if slot_at is not None and channel_id is not None:
+            aware = ensure_utc(slot_at)
+            if aware is not None:
+                taken[channel_id].add(aware.replace(second=0, microsecond=0))
+    return taken
+
+
+def next_legal_slot_after(
+    channel: Channel,
+    taken: dict[int, set[datetime]],
+    refused: datetime,
+    *,
+    horizon_days: int = PLAN_HORIZON_DAYS,
+    config: Any = None,
+) -> datetime | None:
+    """The first instant this channel may publish in, at or after a refused booking.
+
+    This is the correction side of W20-A's residue. The builder was fixed to book
+    only legal minutes, but a minute booked *before* that fix — or one made
+    illegal afterwards, by a narrowed cadence window or a changed channel
+    timezone — stayed on ``posts.plan_slot_at``, and ``schedule_ready_posts``
+    refused it on every tick, forever: the booking column is written once (P100),
+    and ``s4_generation.apply_plan_booking`` only ever claims rows where it is
+    still NULL, so no newer snapshot could replace it. The row was claimed by a
+    minute that can never happen.
+
+    The rule this serves, stated tightly:
+
+    * the floor is the refused instant itself, never ``now``. A correction that
+      reached backwards would move a post earlier than the plan ordered, and one
+      anchored to the clock would land on a different minute every tick — the
+      oscillation the boundedness test exists to forbid;
+    * the answer is always an instant ``local_hours_allow`` admits, or ``None``.
+      It is never the nearest illegal candidate: that would put the refusal back
+      where this function found it (the same discipline
+      ``_next_free_slot`` holds for a full horizon);
+    * the persisted booking is not touched. This function returns a number the
+      caller writes to ``posts.scheduled_at``, the column the queue owns;
+      ``posts.plan_slot_at`` keeps the refused minute so the plan stays auditable
+      against what it actually ordered;
+    * ``taken`` is read through ``occupied_slots``, the build path's own query,
+      so a corrected minute cannot collide with a post that already holds it.
+    """
+    return _next_free_slot(
+        channel,
+        taken,
+        refused,
+        horizon_days,
+        config=config,
+        floor=refused,
+    )
 
 
 def _priority(rank: int, total: int, row: dict[str, Any]) -> int:
@@ -532,15 +659,9 @@ def build_editorial_plan(
         ):
             gated.setdefault(post.cluster_public_id, (post, channel))
 
-        taken: dict[int, set[datetime]] = defaultdict(set)
-        for slot_at, channel_id in session.execute(
-            select(Post.scheduled_at, Post.channel_id)
-            .where(Post.status.in_(["scheduled", "published"]))
-            .where(Post.scheduled_at.is_not(None))
-            .where(Post.scheduled_at.between(moment, moment + timedelta(days=horizon_days)))
-        ):
-            if slot_at is not None and channel_id is not None:
-                taken[channel_id].add(slot_at.replace(second=0, microsecond=0))
+        taken: dict[int, set[datetime]] = occupied_slots(
+            session, moment=moment, horizon_days=horizon_days
+        )
 
         published_by_platform = dict(
             session.execute(

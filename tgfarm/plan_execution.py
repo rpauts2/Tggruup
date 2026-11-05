@@ -41,8 +41,21 @@ it is still held, exactly as at base, when the tick itself sits in such an hour,
 because a release makes the post due on the next publish tick. Neither consumer
 of a booked slot is more permissive than the other, and the planner only books
 minutes this predicate admits (``editorial_plan`` asks it before reserving one),
-so the entries that reach the new hold are the config-drift ones: a cadence
-window narrowed after the snapshot was built.
+so the entries that reach this branch are the ones the builder could not have
+made: a cadence window narrowed after the snapshot was built, and the rows W20-A
+left behind, booked before its fix.
+
+Since W22-C a refused booked minute is corrected here instead of held forever.
+The queue only selects ``gated AND scheduled_at IS NULL`` and the plan's writer
+only claims rows whose ``plan_slot_at`` is still NULL, so a booking the window
+closed was refused on every tick with nothing able to repair it — a dead letter,
+not a policy. Both consumers now ask ``rebound_for_illegal_booking`` (the
+planner's own slot arithmetic, walked from the refused instant rather than from
+the clock) and stamp that minute, journalled as ``REASON_SLOT_REBOUND``; the
+booking column keeps the instant the plan ordered, so registry P100 survives and
+the correction is auditable instead of invisible. A horizon with no legal free
+minute still answers ``None``, and then the base refusal still stands:
+substituting an illegal instant is the lie this gate exists to prevent.
 
 Why ``schedule_ready_posts`` is not the handover function
 ---------------------------------------------------------
@@ -75,7 +88,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -100,6 +113,13 @@ PLAN_BUILD_JOB_ID = "editorial-plan-build"
 PLAN_APPLY_JOB_ID = "editorial-plan-apply"
 STAGE_BUILD = "editorial_plan_build"
 STAGE_APPLY = "editorial_plan_apply"
+#: The journal row one tick's worth of corrected bookings gets
+#: (`record_slot_rebinds`). It is its own stage because it is its own fact: the
+#: apply row says what the plan decided about its entries, this one says which
+#: booked minutes the plan could not keep and what it wrote instead, per post.
+#: Both the plan consumer and the queue's scheduling pass route their rebinds
+#: through it, so one transition has one ledger whoever asked for it.
+STAGE_SLOT_REBIND = "plan_slot_rebind"
 BUILD_INTERVAL_HOURS = 6
 APPLY_INTERVAL_MINUTES = 10
 
@@ -127,6 +147,16 @@ REASON_BUDGET = "ai_daily_budget_exhausted"
 REASON_NO_SLOT = "no_slot_planned"
 REASON_SLOT_NOT_DUE = "slot_not_due"
 REASON_LOCAL_HOURS = "slot_outside_local_hours"
+#: The booked minute was outside the channel's legal local hours and the plan
+#: could name a legal one in its place, so this module corrected the instant it
+#: hands over instead of holding the entry forever. Registered beside
+#: `REASON_LOCAL_HOURS` because it is one deviation with two honest answers, and
+#: kept byte-equal to `s7_publish.GATE_SLOT_BOOKING_REBOUNDED`: the same rule
+#: `GATE_SLOT_OUTSIDE_LOCAL_HOURS == REASON_LOCAL_HOURS` is pinned by
+#: `tests/test_publish_gate_matrix.py` for the refusal, and
+#: `tests/test_w22c_booked_slot_rebinding.py` pins for the correction. A bare
+#: literal would put this outcome in no ledger at all (registry P95).
+REASON_SLOT_REBOUND = "slot_booking_rebounded"
 REASON_HANDOVER_REFUSED = "handover_refused"
 
 _OUTCOME_SCHEDULED = "scheduled"
@@ -321,6 +351,99 @@ def local_hours_allow(
     return instant.astimezone(_zone(timezone_name)).hour in allowed
 
 
+def rebound_for_illegal_booking(
+    session,
+    channel: Channel,
+    refused: datetime,
+    *,
+    config: Any = None,
+    extra_taken: tuple[datetime, ...] = (),
+) -> datetime | None:
+    """The instant this channel may publish in that replaces a refused booking.
+
+    The other half of `local_hours_allow`. That predicate answers «may this
+    minute be published at all»; when the answer is no, the question the queue
+    and the plan consumer both have to answer is «then what minute may» — and at
+    this base neither did, which is what left a post booked into a closed hour
+    refused on every tick forever (`GATE_SLOT_OUTSIDE_LOCAL_HOURS` counted on
+    tick 1, 2 and 5, `scheduled_at` never written, and no later snapshot able to
+    reach the row because `s4_generation.apply_plan_booking` only claims rows
+    whose `plan_slot_at` is still NULL).
+
+    Three things this deliberately is not:
+
+    * it is not a rewrite of the booking. The value it returns belongs to
+      `posts.scheduled_at`, the column the queue owns and that requeue and retry
+      already move. `posts.plan_slot_at` keeps the refused minute, so the plan
+      stays auditable against the decision it really made (registry P100) and the
+      booking-vs-fact read still has both numbers to subtract;
+    * it is not a fresh clock. The floor is the refused instant, so the answer is
+      a function of the booking and the window and not of the minute the tick
+      happened to run in — which is what makes a rebind stable (the same refused
+      minute always corrects to the same instant) and what stops a released row
+      from drifting one slot further on every retry;
+    * it is not a substitute. `None` means the horizon holds no legal free minute
+      at all, and the caller must keep refusing under the registered
+      `REASON_LOCAL_HOURS` rather than stamp an hour the operator closed — the
+      rule `editorial_plan._next_free_slot` already holds for a full horizon.
+
+    The arithmetic is the planner's own (`editorial_plan.next_legal_slot_after`,
+    which is `_next_free_slot` walked from a floor), and the occupancy it skips
+    is the build path's own query, widened by `extra_taken` for instants this
+    run has reserved but not yet written. `config` is the cadence owner the
+    caller already read, so the judgement and the correction cannot come from
+    two different windows.
+    """
+    from tgfarm.editorial_plan import PLAN_HORIZON_DAYS, next_legal_slot_after, occupied_slots
+
+    taken = occupied_slots(session, moment=refused, horizon_days=PLAN_HORIZON_DAYS)
+    if extra_taken:
+        bucket = taken.setdefault(channel.id, set())
+        bucket.update(instant.replace(second=0, microsecond=0) for instant in extra_taken)
+    return next_legal_slot_after(
+        channel,
+        taken,
+        refused,
+        horizon_days=PLAN_HORIZON_DAYS,
+        config=config if config is not None else get_config(),
+    )
+
+
+def record_slot_rebinds(rebinds: list[dict[str, Any]], *, source: str) -> None:
+    """Journal the corrected bookings one pass made, per post, and name the pass.
+
+    The count is in the tick's ledger (`empty_gate_report` for the queue,
+    `reasons` for the plan consumer) and that count has to be attributable: a
+    rebind is a transition that wrote an instant the plan did not book, so each
+    one gets a durable record of the post, the refused minute, the corrected
+    minute and the channel whose window decided. One row per pass, because the
+    pass is the unit that ran: five ticks that rebind nothing add nothing to the
+    journal, and a post that is rebound a second time can only get there through
+    a second pass, which writes a second row. That correspondence — rebinds never
+    outnumber journal records naming them — is the bound this transition runs
+    under, and `tests/test_w22c_booked_slot_rebinding.py` pins it.
+
+    Telemetry never breaks a stage: `pipeline._record` swallows its own failure,
+    and a row this function could not write is a missing metric, not a post that
+    was not scheduled.
+    """
+    if not rebinds:
+        return
+    started = time.monotonic()
+    _record(
+        STAGE_SLOT_REBIND,
+        "ok",
+        len(rebinds),
+        len(rebinds),
+        int((time.monotonic() - started) * 1000),
+        {
+            "outcome": REASON_SLOT_REBOUND,
+            "source": source,
+            "rebinds": [dict(record) for record in rebinds],
+        },
+    )
+
+
 def _slot_at(value: Any) -> datetime | None:
     """The plan's `slot_at` as an aware UTC datetime (`_plan_dict` returns ISO)."""
     if value is None:
@@ -510,6 +633,11 @@ class _RunState:
     pending_platform: dict[str, int]
     day_cache: dict[str, int]
     platform_cache: dict[str, int]
+    #: Instants this run has already committed to but not yet written. A second
+    #: entry on one channel must not be corrected onto the first entry's minute,
+    #: so `rebound_for_illegal_booking` is shown them beside the rows the
+    #: database already holds — the same reason `pending_channel` exists for caps.
+    pending_slot: list[datetime] = field(default_factory=list)
 
     def platform_enabled(self, platform: str) -> bool:
         from tgfarm.platforms import is_platform_enabled
@@ -634,20 +762,41 @@ def _decide_schedule(
     # could only say `now` — an entry whose reserved minute fell in an illegal
     # hour waited for a legal tick and was then queued at that tick's hour, a
     # shift the plan never ordered and the only reading W20-C could give was
-    # `shifted`. Such an entry is now refused by name until the plan reserves it
-    # somewhere the channel may post; the planner asks this same predicate before
-    # booking a minute (`editorial_plan._next_free_slot`), so the entries that
-    # reach that hold are the config-drift ones — a cadence window narrowed after
-    # the snapshot was built.
+    # `shifted`. Such an entry is now corrected by name to the first minute this
+    # channel may publish in (`REASON_SLOT_REBOUND`), and only refuses when the
+    # horizon holds no legal free minute at all; the planner asks this same
+    # predicate before booking a minute (`editorial_plan._next_free_slot`), so the
+    # entries that reach either branch are the config-drift ones — a cadence
+    # window narrowed after the snapshot was built — and the rows W20-A left
+    # behind, booked before the builder was fixed, which used to be refused on
+    # every tick with no way out.
+    release_instant = slot
     if not local_hours_allow(slot, channel.timezone, config=state.config):
-        return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
+        # Since W22-C this is where the entry gets a corrected minute rather than
+        # a life sentence: `rebound_for_illegal_booking` answers with the first
+        # instant this channel may publish in at or after the refused one, and the
+        # verdict below is then made about *that* instant, which is the one
+        # `unpublish` will stamp. `None` — no legal free minute in the horizon —
+        # keeps the base refusal, because substituting an illegal instant is the
+        # lie this gate exists to prevent.
+        corrected = rebound_for_illegal_booking(
+            session, channel, slot, config=state.config, extra_taken=tuple(state.pending_slot)
+        )
+        if corrected is None:
+            return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
+        release_instant = corrected
     if not local_hours_allow(state.moment, channel.timezone, config=state.config):
         return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
 
     state.pending_channel[channel.id] = state.pending_channel.get(channel.id, 0) + 1
     if platform in s7_publish.PRIMARY_PLATFORM_DAILY_CAPS:
         state.pending_platform[platform] = state.pending_platform.get(platform, 0) + 1
-    return _OUTCOME_SCHEDULED, "", slot
+    state.pending_slot.append(release_instant)
+    return (
+        _OUTCOME_SCHEDULED,
+        REASON_SLOT_REBOUND if release_instant is not slot else "",
+        release_instant,
+    )
 
 
 def apply_plan(
@@ -702,8 +851,10 @@ def apply_plan(
         pending_platform={},
         day_cache={},
         platform_cache={},
+        pending_slot=[],
     )
-    handovers: list[tuple[dict[str, Any], str, datetime]] = []
+    handovers: list[tuple[dict[str, Any], str, datetime, str, dict[str, Any] | None]] = []
+
 
     with session_scope() as session:
         for entry in entries:
@@ -722,11 +873,35 @@ def apply_plan(
                 target = _find_target(session, cluster_id)
                 outcome, reason, release = _decide_schedule(session, state, entry, target)
                 if outcome == _OUTCOME_SCHEDULED and not dry_run:
-                    # `release` is the entry's own reserved minute, already gated
-                    # by `_decide_schedule` for due-ness and for the channel's
-                    # legal local hours: it travels to the transition instead of
-                    # the transition inventing a clock of its own.
-                    handovers.append((entry, str(target.post.public_id), release))
+                    # `release` is the entry's own reserved minute — or the
+                    # corrected one `_decide_schedule` chose for it — already gated
+                    # for due-ness and for the channel's legal local hours: it
+                    # travels to the transition instead of the transition
+                    # inventing a clock of its own.
+                    #
+                    # `rebind` travels with it and is `None` unless this verdict
+                    # replaced the booked instant. The naming is deliberately left
+                    # to `_hand_over`: this module reports corrections from the row
+                    # as it reads after the write, and a corrected booking whose
+                    # handover lost a race is not a correction that happened.
+                    handovers.append(
+                        (
+                            entry,
+                            str(target.post.public_id),
+                            release,
+                            reason,
+                            _rebind_record(entry, target, release)
+                            if reason == REASON_SLOT_REBOUND
+                            else None,
+                        )
+                    )
+                elif outcome == _OUTCOME_SCHEDULED and reason == REASON_SLOT_REBOUND:
+                    # A dry run has no row to re-read, so the verdict *is* the
+                    # report, and it names the correction under the same code and
+                    # in the same dictionary the refusals use — a prediction that
+                    # hid which instant a real run would stamp would be a
+                    # prediction of a different run.
+                    _count(result["reasons"], reason)
             else:
                 outcome, reason, release = _OUTCOME_SKIPPED, REASON_UNKNOWN_ACTION, None
 
@@ -787,7 +962,8 @@ def evaluate_plan(
 
 
 def _hand_over(
-    result: dict[str, Any], handovers: list[tuple[dict[str, Any], str, datetime]]
+    result: dict[str, Any],
+    handovers: list[tuple[dict[str, Any], str, datetime, str, dict[str, Any] | None]],
 ) -> None:
     """The one write this module makes, and it is not a column write.
 
@@ -806,26 +982,34 @@ def _hand_over(
     pins.
 
     Each entry is then reported from the row as it now reads, so a handover that
-    raced with another worker is counted as the other worker's, not as ours.
+    raced with another worker is counted as the other worker's, not as ours — and
+    the same rule decides when a corrected booking is allowed to name itself: an
+    entry whose row lost that race is not a post this pass re-slotted, so neither
+    its reason nor its journal record is claimed here, and the status writes the
+    honest `already scheduled` / `handover refused` instead.
     """
     batches: dict[datetime, list[str]] = {}
-    for _entry, public_id, release in handovers:
+    for _entry, public_id, release, _reason, _rebind in handovers:
         batches.setdefault(release, []).append(public_id)
     for release, public_ids in batches.items():
         s7_publish.unpublish(public_ids, at=release)
+    rebinds: list[dict[str, Any]] = []
     with session_scope() as session:
-        for entry, public_id, _release in handovers:
+        for entry, public_id, _release, reason, rebind in handovers:
             status = session.execute(
                 select(Post.status).where(Post.public_id == public_id)
             ).scalar_one_or_none()
             if status == s7_publish.STATUS_SCHEDULED:
                 result["applied"] += 1
+                if rebind is not None:
+                    _count(result["reasons"], reason)
+                    rebinds.append(rebind)
                 result["entries"].append(
                     {
                         "cluster_public_id": str(entry.get("cluster_public_id") or ""),
                         "action": "schedule",
                         "outcome": _OUTCOME_SCHEDULED,
-                        "reason": "",
+                        "reason": reason if rebind is not None else "",
                     }
                 )
                 continue
@@ -840,6 +1024,29 @@ def _hand_over(
                     "reason": reason,
                 }
             )
+    record_slot_rebinds(rebinds, source="plan_apply")
+
+
+def _rebind_record(
+    entry: dict[str, Any], target: _Target, corrected: datetime | None
+) -> dict[str, Any]:
+    """One corrected booking, in the shape its journal row carries it.
+
+    Both instants travel together, on purpose: the record is the difference
+    between what the plan ordered and what the row now carries, and a reader that
+    only sees the corrected minute cannot tell a rebind from a booking. `refused`
+    is quoted from the entry rather than recomputed, so the journal states the
+    plan's own words; `corrected` is the instant `_decide_schedule` returned and
+    `_hand_over` just stamped, so the two can never be two different numbers.
+    """
+    return {
+        "post_public_id": str(target.post.public_id),
+        "cluster_public_id": str(entry.get("cluster_public_id") or ""),
+        "channel_id": str(target.channel.id) if target.channel is not None else None,
+        "refused_slot_at": entry.get("slot_at"),
+        "corrected_slot_at": corrected.isoformat() if corrected else None,
+    }
+
 
 
 # ------------------------------------------------------------------- journaling
@@ -974,9 +1181,11 @@ __all__ = [
     "REASON_POST_MISSING",
     "REASON_POST_NOT_GATED",
     "REASON_SLOT_NOT_DUE",
+    "REASON_SLOT_REBOUND",
     "REASON_UNKNOWN_ACTION",
     "STAGE_APPLY",
     "STAGE_BUILD",
+    "STAGE_SLOT_REBIND",
     "VERDICT_WOULD_HOLD",
     "VERDICT_WOULD_SCHEDULE",
     "VERDICT_WOULD_SKIP",
@@ -987,4 +1196,6 @@ __all__ = [
     "evaluate_plan",
     "generation_brief",
     "local_hours_allow",
+    "rebound_for_illegal_booking",
+    "record_slot_rebinds",
 ]
