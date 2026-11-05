@@ -602,6 +602,11 @@
     // zeros, and a zero here is indistinguishable from an unmeasured farm.
     if (data.error) {
       if (meta) meta.textContent = "Отчёт не прочитан — ниже не нули, а отсутствие данных";
+      const failedPublication = $("#metrics-formats-publication");
+      if (failedPublication) {
+        failedPublication.innerHTML = '<div class="empty">Форматы не прочитаны, поэтому и '
+          + "подтверждённость публикаций не измерялась: вместо этих цифр был бы ноль.</div>";
+      }
       root.innerHTML = '<div class="alert alert-err"><b>Форматы не прочитаны:</b> '
         + esc(data.error) + "</div>"
         + '<div class="empty">Ни одной цифры не показано: вместо них был бы ноль.</div>';
@@ -638,6 +643,14 @@
         + ` · вывод: ${overallChip}`;
     }
     const rows = Object.values(formats);
+    // The report-level publication line is drawn before the row check: a window
+    // with no published posts still has an evidence answer to give (and a
+    // `publish_unknown` count that outlives the window), and an absent block must
+    // say so once here instead of silently dropping the whole dimension.
+    const publication = (data.publication && typeof data.publication === "object")
+      ? data.publication : null;
+    const publicationRoot = $("#metrics-formats-publication");
+    if (publicationRoot) publicationRoot.innerHTML = formatsPublicationPanel(publication, data);
     if (!rows.length) {
       root.innerHTML = '<div class="empty">В этом окне не было опубликовано ни одного поста — про форматы ничего не известно.</div>';
       return;
@@ -702,16 +715,164 @@
             : evidence.fresh_reliable === true
               ? '<span class="tag tag-ok">живых данных достаточно</span>'
               : '<span class="tag tag-none">мало живых данных</span>';
+        // The third subset of this same row, kept apart from both blocks above:
+        // `formats[fmt].measured` counts every measurement, this one only those
+        // the platform can prove were published. Absent means the panel talks to a
+        // backend older than the block, and then it says «не вернул».
+        const pub = hasEvidence && evidence.publication
+          && typeof evidence.publication === "object" ? evidence.publication : null;
         return '<div class="item' + (noLiveEvidence ? " is-dead-evidence" : "")
+          + (pub ? "" : " is-without-publication")
           + '"><div class="item-main"><div class="item-title">'
           + esc(FORMAT_RU[row.format] || row.format || "—") + "</div>"
           + '<div class="item-meta">опубликовано ' + Number(row.published || 0)
           + " · с замерами " + measured
           + (reliable ? "" : " · нужно не меньше " + minSampleText) + "</div>"
-          + '<div class="item-meta">' + esc(evidenceMeta) + "</div></div>"
-          + '<div class="item-side">' + evidenceChip + readiness + attention + "</div></div>";
+          + '<div class="item-meta">' + esc(evidenceMeta) + "</div>"
+          + formatPublicationRow(pub, row) + "</div>"
+          + '<div class="item-side">' + evidenceChip + readiness + attention
+          + publicationChip(pub) + "</div></div>";
       })
       .join("");
+  }
+
+  /* ------------------------------------------------- publication: the third
+     denominator
+     `format_performance` answers three questions about the same rows and keeps
+     them in three blocks: `formats[fmt]` (every published post of the window),
+     `measurement[fmt]` (how many of its snapshots are still live) and
+     `measurement[fmt].publication` (how many of those publications the platform
+     can actually prove, per `EVIDENCE_RULES` of `tgfarm/s8_analytics/formats.py`).
+     The card above rendered the first two and ignored the third, which is how a
+     format whose publications nobody can prove kept reading as «данных
+     достаточно»: live `news` carries legacy `reliable: true, n: 7` beside
+     `publication.sample_size: 0, reliable: false`.
+
+     None of the freshness words is reused here, on purpose. `measured`,
+     `avg_engagement`, `reliable`, `evidence_status` and `fresh` all exist in BOTH
+     blocks with different denominators, so one shared label would fuse two
+     numbers that disagree — and the disagreement is the finding. Nothing is
+     removed from `published`: it is joined by the proven subset and by
+     `sample_size`, the count the proven average divides by. `publish_unknown` is
+     the report's COUNT of rows the repair sweep could not place; it belongs to no
+     denominator above and keeps its own wording, because a count is not the
+     `publish_unknown` STATUS the backlog card labels «ждёт оператора».
+
+     P34 holds on every cell: counts through `items()`, averages through
+     `pubAvg()`, tri-state verdicts through `pubWord()`. An absent key prints
+     «нет отчёта», a measured empty set prints `0 шт`, and no `Number(x || 0)`
+     stands anywhere in this path.
+  */
+  const PUBLICATION_EVIDENCE_CHIP = {
+    ok: { cls: "tag-ok", label: "публикации подтверждены" },
+    mixed: { cls: "tag-warn", label: "подтверждённые и без подтверждения вперемешку" },
+    never: { cls: "tag-err", label: "ни одной подтверждённой публикации" },
+    unknown: { cls: "tag-none", label: "для этих площадок нет правила" },
+  };
+
+  // A block an older server never sent is not a block of zeros, and it must not
+  // print as one: «не вернул» stays the file's single idiom for an absent key.
+  const PUBLICATION_ABSENT = "сервер не вернул блок publication: подтверждённость "
+    + "публикаций не измерялась — это не «ноль подтверждённых», это нет отчёта";
+
+  const pubAvg = (v) => (typeof v === "number" ? v.toFixed(1) : NO_REPORT);
+  const pubWord = (v, yes, no) => (typeof v === "boolean" ? (v ? yes : no) : NO_REPORT);
+
+  // Every number says which set it divides, because the same key one line above
+  // divides another one.
+  function publicationCounters(pub) {
+    return "публикаций всего " + items(pub.published)
+      + " · подтверждено правилом " + items(pub.published_evidenced)
+      + " · правило есть, не подтверждено " + items(pub.published_unevidenced)
+      + " · для площадки правила нет " + items(pub.published_unrulled)
+      + " · замеров всего " + items(pub.measured)
+      + " · подтверждённых замеров " + items(pub.measured_evidenced)
+      + " · знаменатель подтверждённой средней " + items(pub.sample_size)
+      + " · средняя по подтверждённым " + pubAvg(pub.avg_engagement)
+      + " · живой знаменатель " + items(pub.fresh_sample_size)
+      + " · средней по живым подтверждённым " + pubAvg(pub.fresh_avg_engagement);
+  }
+
+  function publicationChip(pub) {
+    if (!pub) return '<span class="tag tag-none">подтверждённость: нет отчёта</span>';
+    const key = typeof pub.evidence_status === "string" ? pub.evidence_status : "";
+    const known = PUBLICATION_EVIDENCE_CHIP[key];
+    return '<span class="tag ' + (known ? known.cls : "tag-none") + '">'
+      + "публикации: " + esc(known ? known.label : (key || "статус не записан"))
+      + "</span>";
+  }
+
+  // The rules arrive as platform -> the server's own rule string. They are data,
+  // so each half travels escaped and verbatim: a paraphrase would be a second,
+  // possibly wrong definition of what counts as proof.
+  function publicationRules(pub) {
+    const rules = pub.rules && typeof pub.rules === "object" ? pub.rules : null;
+    if (!rules) {
+      return "правила доказательства сервер не вернул: чем подтверждается публикация — нет отчёта";
+    }
+    return Object.entries(rules).map(([platform, rule]) => esc(platform) + " — " + esc(rule)).join(" · ");
+  }
+
+  // Report-level only, and a count: `formats.py` says these rows sit in no
+  // denominator above, so the sentence has to carry that with the number.
+  function publicationUnknownCount(pub) {
+    return "в статусе publish_unknown: " + items(pub.publish_unknown)
+      + " — эти строки не входят ни в один знаменатель выше";
+  }
+
+  // Where the legacy row and the publication block disagree, both verdicts print
+  // and neither is corrected: the UI has no basis for choosing, and a reader handed
+  // a resolved version cannot see that the two numbers never measured the same set.
+  function publicationConflict(legacy, pub) {
+    if (typeof pub.reliable !== "boolean") return "";
+    const legacyReliable = typeof legacy.reliable === "boolean" ? legacy.reliable : null;
+    if (legacyReliable === null || legacyReliable === pub.reliable) return "";
+    return "знаменатели разошлись: "
+      + (legacyReliable
+        ? "по всем замерам — данных достаточно (" + items(legacy.measured)
+          + "), по подтверждённым публикациям — мало (" + items(pub.sample_size) + ")"
+        : "по всем замерам — мало данных (" + items(legacy.measured)
+          + "), по подтверждённым публикациям — достаточно (" + items(pub.sample_size) + ")")
+      + " · расхождение не разрешено: это два разных вопроса, а не два значения одного";
+  }
+
+  function formatPublicationRow(pub, legacy) {
+    if (!pub) {
+      return '<div class="item-meta formats-pub-absent">' + esc(PUBLICATION_ABSENT) + "</div>";
+    }
+    const verdict = pubWord(pub.reliable,
+      "подтверждённых публикаций довольно", "подтверждённых публикаций мало");
+    const conflict = publicationConflict(legacy || {}, pub);
+    return '<div class="item-meta formats-pub-row">'
+      + esc(publicationCounters(pub)) + " · вывод: " + esc(verdict) + "</div>"
+      + (conflict
+        ? '<div class="item-meta formats-pub-conflict">' + esc(conflict) + "</div>"
+        : "");
+  }
+
+  // The report-level line stands next to the report-level legacy totals for the
+  // same reason the per-format row does: `published_total` counts every published
+  // post, `publication.published_evidenced` counts the provable subset of them.
+  function formatsPublicationPanel(pub, totals) {
+    const data = totals || {};
+    const head = '<div class="list-label">Подтверждённость публикаций</div>';
+    const legacyLine = "по отчёту целиком: опубликовано " + items(data.published_total)
+      + " · с замерами " + items(data.measured_total);
+    if (!pub) {
+      return head + '<div class="item"><div class="item-main">'
+        + '<div class="item-meta formats-pub-absent">' + esc(PUBLICATION_ABSENT) + "</div>"
+        + '<div class="item-meta">' + esc(legacyLine) + "</div>"
+        + '</div><div class="item-side">' + publicationChip(null) + "</div></div>";
+    }
+    const verdict = pubWord(pub.reliable,
+      "подтверждённых публикаций довольно", "подтверждённых публикаций мало");
+    return head + '<div class="item"><div class="item-main">'
+      + '<div class="item-meta">' + esc(legacyLine) + "</div>"
+      + '<div class="item-meta formats-pub-row">' + esc(publicationCounters(pub))
+      + " · вывод: " + esc(verdict) + "</div>"
+      + '<div class="item-meta">' + esc(publicationUnknownCount(pub)) + "</div>"
+      + '<div class="item-meta">правило подтверждения: ' + publicationRules(pub) + "</div>"
+      + '</div><div class="item-side">' + publicationChip(pub) + "</div></div>";
   }
 
   // «Что происходит с очередью» used to be answerable only by hand-written SQL,
