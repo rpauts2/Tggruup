@@ -588,14 +588,30 @@ async def _publish_dzen(
         inline_image=inline_images[0][0] if inline_images else None,
         inline_caption=inline_images[0][1] if inline_images else None,
     )
+    from tgfarm.dzen_web import canonical_publication_url, publication_ref
+
+    # The identifier is only worth anything if it reaches the journal. A page that
+    # named a URL but not in the shape the publisher parses still carries the id,
+    # and an id without a URL is still exact, so both columns are completed from
+    # whichever one exists before the row is written.
+    remote_id = published.remote_id or publication_ref(published.url)
+    url = canonical_publication_url(remote_id) or published.url
     result = CrosspostResult(
         platform="dzen",
         status="posted",
-        remote_id=published.remote_id,
-        url=published.url,
+        remote_id=remote_id,
+        url=url,
     )
     log_result(public_id, result)
-    log.info("dzen published: %s", published.url or published.remote_id)
+    if remote_id:
+        log.info("dzen published: %s", url or remote_id)
+    else:
+        # Not a failure: the article is live. It is the loss of the attribution
+        # key, which leaves S8 to match this post by headline alone.
+        log.warning(
+            "dzen published %s without an article id; S8 must attribute it by headline",
+            public_id,
+        )
 
     # Mirror a Dzen post to VK only when VK has no channel of its own.
     if _vk_has_own_channel():

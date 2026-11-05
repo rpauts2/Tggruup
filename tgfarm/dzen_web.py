@@ -57,6 +57,17 @@ PUBLISH_BUTTON = re.compile(r"^\s*Опубликовать(\s+статью)?\s*$
 CAPTCHA_TEXT = re.compile(r"Подтвердите, что вы не робот|Я не робот|капч", re.I)
 PUBLICATION_URL = re.compile(r"https://dzen\.ru/(?:a|media)/[^\s\"'<>]+")
 
+# The same article id, however the page happens to spell it. Dzen's post-publish
+# page is the publications list and its anchors carry a ROOT-RELATIVE href
+# (`/a/auXXXX`), which the absolute pattern above cannot see: measured on the
+# live database, 29 of the 37 `posted` Dzen rows stored neither url nor
+# remote_id, because `_wait_published` only recognised the absolute form. The
+# optional host keeps both spellings one regex, and `{6,}` rejects the editor's
+# own short path segments.
+PUBLICATION_REF = re.compile(r"(?:https?://dzen\.ru)?/(?:a|b)/([A-Za-z0-9_-]{6,})")
+# A media story nests the slug under the publisher: `/media/<pub>/<slug>`.
+MEDIA_REF = re.compile(r"(?:https?://dzen\.ru)?/media/[^/]+/([A-Za-z0-9_-]{6,})")
+
 # A Dzen "article" is the long-form surface; shorter pieces go out as a "post".
 # The cut mirrors S10's article floor (1200 chars) so the choice tracks the
 # generated format instead of a second, unrelated threshold.
@@ -116,6 +127,86 @@ def publication_url(text: str) -> str | None:
     """Find the public article URL in a page URL, an href or a page dump."""
     match = PUBLICATION_URL.search(text or "")
     return match.group(0) if match else None
+
+
+def publication_ref(text: str | None) -> str | None:
+    """The per-article identifier in an absolute URL, a relative href or a slug.
+
+    ``/a/auXXXX``, ``https://dzen.ru/a/auXXXX`` and ``/media/<pub>/<slug>`` all
+    name one article, and only the identifier survives being stored in a column —
+    so this is the function that decides what the durable attribution key is.
+    It returns ``None`` rather than a plausible guess for any other path.
+    """
+    value = str(text or "")
+    match = PUBLICATION_REF.search(value) or MEDIA_REF.search(value)
+    return match.group(1) if match else None
+
+
+def canonical_publication_url(ref: str | None) -> str | None:
+    """Rebuild the share URL from an identifier; ``None`` in, ``None`` out."""
+    cleaned = str(ref or "").strip().strip("/")
+    return f"https://dzen.ru/a/{cleaned}" if cleaned else None
+
+
+def _title_key(text: str | None) -> str:
+    """Lowercase word form of a headline, punctuation dropped.
+
+    Deliberately the same shape as the analytics side's normalisation: the
+    publisher and the Studio reader have to compare titles the same way or the
+    identifier this module stores never lines up with the row it matches.
+    """
+    lowered = " ".join(str(text or "").replace("…", " ").lower().split())
+    for char in "«»\"'`.,:;!?()[]{}—–-":
+        lowered = lowered.replace(char, " ")
+    return " ".join(lowered.split())
+
+
+def pick_publication_ref(candidates: list[tuple[str, str]], title: str = "") -> str | None:
+    """Which article the page we just landed on refers to.
+
+    ``candidates`` are ``(href, visible text)`` pairs in document order. The
+    post-publish page is the publication list, and it still shows every older
+    article, so "take the first link" would happily credit an old article's
+    metrics to the post we just wrote. Three rules, in order of evidence:
+
+    * a headline equal to ours, or containing / contained in it with at least
+      20 comparable characters (Dzen truncates long titles with an ellipsis, so
+      containment must work in both directions);
+    * exactly one candidate link on the page;
+    * nothing else — and ``None``, because a wrong identifier is worse than
+      none: S8 trusts an id match and stops looking.
+
+    Ties break on document order, which is newest-publication-first on that
+    list, so a repeated headline still points at the article we just published.
+    """
+    keyed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for href, text in candidates:
+        ref = publication_ref(href)
+        if ref and ref not in seen:
+            seen.add(ref)
+            keyed.append((ref, _title_key(text)))
+    if not keyed:
+        return None
+
+    needle = _title_key(title)
+    if needle:
+        matches = [ref for ref, text_key in keyed if _same_headline(needle, text_key)]
+        if matches:
+            return matches[0]
+    if len(keyed) == 1:
+        return keyed[0][0]
+    return None
+
+
+def _same_headline(needle: str, text_key: str) -> bool:
+    """Title evidence strong enough to name an article: equal or containment."""
+    if not needle or not text_key:
+        return False
+    if needle == text_key:
+        return True
+    shorter, longer = sorted((needle, text_key), key=len)
+    return len(shorter) >= 20 and shorter in longer
 
 
 def split_body_for_image(body: str, after: int = 2) -> tuple[str, str]:
@@ -389,12 +480,16 @@ class DzenWebPublisher:
                     await self._upload_cover(page, Path(cover_path))
 
                 await self._click_publish(page, title)
-                url = await self._wait_published(page)
+                url = await self._wait_published(page, title)
                 await self._save_debug(page, "dzen-published")
+                ref = self._remote_id(url)
                 return DzenPublishResult(
                     status="posted",
-                    url=url,
-                    remote_id=self._remote_id(url),
+                    # The canonical form is stored, not the address the browser
+                    # happened to be on: a share link with a tracking query is the
+                    # same article and should read as the same URL forever.
+                    url=canonical_publication_url(ref) or url,
+                    remote_id=ref,
                 )
             except DzenWebError:
                 page = await self._first_page(context)
@@ -857,22 +952,42 @@ class DzenWebPublisher:
         await asyncio.sleep(self.rng.uniform(2.0, 3.5))
         await self._wait_out_captcha(page)
 
-    async def _wait_published(self, page) -> str:
+    async def _wait_published(self, page, title: str = "") -> str | None:
+        """Wait for Dzen's confirmation and bring back the article's own URL.
+
+        The identifier in that URL is what makes metric attribution exact, so the
+        page is read as ``(href, visible text)`` pairs and resolved by
+        ``pick_publication_ref`` instead of "the first absolute href": on the
+        post-publish list page every article link is relative (``/a/auXXXX``) and
+        the older articles sit right next to ours. ``None`` means "published,
+        identifier unknown" — the caller still journals the success and S8 falls
+        back to the headline.
+        """
         deadline = time.monotonic() + max(30, self.publish_timeout_s)
         while time.monotonic() < deadline:
             await self._wait_out_captcha(page)
             url = publication_url(page.url)
             if url:
-                return url
+                # Canonical, so a share link with a tracking query and the plain
+                # article address are stored — and matched — as one and the same.
+                return canonical_publication_url(publication_ref(url)) or url
             try:
-                hrefs = await page.locator(
-                    "a[href*='dzen.ru/a/'], a[href*='/a/'], a[href*='/media/']"
+                links = await page.locator(
+                    "a[href*='dzen.ru/a/'], a[href*='/a/'], a[href*='/b/'], a[href*='/media/']"
                 ).all()
-                for link in hrefs:
+                candidates: list[tuple[str, str]] = []
+                for link in links:
                     href = await link.get_attribute("href")
-                    found = publication_url(href or "")
-                    if found:
-                        return found
+                    if not href:
+                        continue
+                    try:
+                        text = await link.inner_text()
+                    except Exception:  # noqa: BLE001 - a detached node still has an href
+                        text = ""
+                    candidates.append((str(href), str(text or "")))
+                found = pick_publication_ref(candidates, title)
+                if found:
+                    return canonical_publication_url(found)
                 published_text = await page.get_by_text(re.compile("Опубликовано|Публикация опубликована")).count()
                 if published_text:
                     await asyncio.sleep(1.5)
@@ -882,9 +997,12 @@ class DzenWebPublisher:
                         return None
                     url = publication_url(page.url)
                     if url:
-                        return url
+                        return canonical_publication_url(publication_ref(url)) or url
             except Exception as exc:  # noqa: BLE001 - page is navigating
-                pass
+                log.debug(
+                    "дзен: страница публикации читается с ошибкой: %s",
+                    redact_sensitive_text(exc, limit=120),
+                )
             await asyncio.sleep(1.0)
         raise DzenWebError("не дождался подтверждения публикации")
 
@@ -957,9 +1075,14 @@ class DzenWebPublisher:
 
     @staticmethod
     def _remote_id(url: str | None) -> str | None:
-        if not url:
-            return None
-        return url.rstrip("/").rsplit("/", 1)[-1] or None
+        """The article identifier a publication URL names.
+
+        Delegates to ``publication_ref`` so the publisher, the durable journal
+        and the Studio reader agree on one form of the key: the last path segment
+        happened to be right for ``/a/<id>`` and wrong for a media story, where
+        the slug is not the whole path.
+        """
+        return publication_ref(url)
 
 
 __all__ = [
@@ -968,7 +1091,10 @@ __all__ = [
     "DzenPublishResult",
     "DzenWebError",
     "DzenWebPublisher",
+    "canonical_publication_url",
     "chunk_text",
     "dzen_publication_kind",
+    "pick_publication_ref",
+    "publication_ref",
     "publication_url",
 ]

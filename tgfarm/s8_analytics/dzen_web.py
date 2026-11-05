@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
@@ -615,15 +615,54 @@ def _unmatched_sample(item: DzenPublicationMetrics, reason: str) -> dict[str, st
     }
 
 
+def _dry_run_only_public_ids(session) -> set[str]:
+    """Posts whose Dzen journal says "we never actually published them".
+
+    A dry run journals a ``dry_run`` row and still flips the post to
+    ``published``, so the post looks delivered while nothing left the machine.
+    Measured on a read-only copy of the production database (2026-11-05): the 22
+    published Dzen posts that have no ``posted`` row are exactly the 22 whose only
+    Dzen journal row is a dry run — they were never "lost writes", they were never
+    sent. Their headline must not be a candidate for a real Studio article, because
+    attaching live numbers to an unpublished post teaches the farm a result it
+    never produced.
+    """
+    posted = {
+        row
+        for (row,) in session.execute(
+            select(CrosspostLog.post_public_id).where(
+                CrosspostLog.platform == "dzen",
+                # A row that means the browser was really pointed at Dzen: a
+                # confirmed publish, or an attempt whose outcome is unknown.
+                CrosspostLog.status.in_(("posted", "unknown", "publishing")),
+                CrosspostLog.post_public_id.isnot(None),
+            )
+        ).all()
+    }
+    dry = {
+        row
+        for (row,) in session.execute(
+            select(CrosspostLog.post_public_id).where(
+                CrosspostLog.platform == "dzen",
+                CrosspostLog.status == "dry_run",
+                CrosspostLog.post_public_id.isnot(None),
+            )
+        ).all()
+    }
+    return dry - posted
+
+
 def _headline_index(session) -> dict[str, list[str]]:
     """Normalised headline -> farm post ids that could be this article.
 
-    Two sources are indexed, because live data shows both matter. The crosspost
-    log records what the browser publisher confirmed; a Dzen channel post is
-    published without one whenever the log write was lost - 22 of the 57
-    published Dzen posts have no ``posted`` row at all, and an article nobody can
-    point at is an article nobody can measure. The uniqueness rule below still
-    gates every attribution, so widening the index cannot invent a match.
+    Two sources are indexed, because a post can be published with no journal row
+    and an article nobody can point at is an article nobody can measure. The
+    second source is narrowed by ``_dry_run_only_public_ids``: on the production
+    copy every published Dzen post that lacked a ``posted`` row turned out to have
+    a ``dry_run`` one instead, so what was left in the index are the genuine
+    bookkeeping accidents rather than the publications that never happened. The
+    uniqueness rule below still gates every attribution, so widening the index
+    cannot invent a match.
     """
     by_title: dict[str, list[str]] = {}
 
@@ -634,6 +673,7 @@ def _headline_index(session) -> dict[str, list[str]]:
             if public_id not in ids:
                 ids.append(public_id)
 
+    never_sent = _dry_run_only_public_ids(session)
     for row in session.execute(
         select(CrosspostLog).where(
             CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
@@ -654,34 +694,92 @@ def _headline_index(session) -> dict[str, list[str]]:
             PostRow.status == "published",
         )
     ).all():
+        if public_id in never_sent:
+            continue
         add(public_id, hook)
 
     return by_title
 
 
+def _journal_id_index(session) -> tuple[dict[str, str], dict[str, str]]:
+    """``remote_id -> post`` and ``url -> post`` straight from the publish journal.
+
+    Read across every Dzen status except ``dry_run``, not just the ``posted``
+    ones. The browser publisher is the only writer that ever learns the article
+    id, and an operator reconciliation adds a *second* ``posted`` row copying the
+    id of the row it answered — which is the empty ``publishing`` one. Filtering
+    by ``posted`` would therefore discard the ids we do have whenever a post was
+    confirmed by hand, and the dry-run placeholder ``dry-<post id>`` is not a
+    Dzen id at all, so it stays out by name as well as by status.
+    """
+    by_remote: dict[str, str] = {}
+    by_url: dict[str, str] = {}
+    for row in session.execute(
+        select(CrosspostLog)
+        .where(CrosspostLog.platform == "dzen", CrosspostLog.status != "dry_run")
+        .order_by(CrosspostLog.id)
+    ).scalars():
+        if not row.post_public_id:
+            continue
+        if row.url:
+            by_url[_normalise_url(row.url)] = row.post_public_id
+            from_url = publication_id(row.url) or _remote_from_url(row.url)
+            if from_url:
+                by_remote[from_url] = row.post_public_id
+        ref = str(row.remote_id or "").strip()
+        if ref and not ref.startswith("dry"):
+            by_remote[ref] = row.post_public_id
+    return by_remote, by_url
+
+
+def _remember_remote_id(session, public_id: str, remote_key: str, url: str | None) -> bool:
+    """Put the identifier on the journal row we just attributed, if it lacks one.
+
+    CrosspostLog is append-only and this writes NULLs only: a row whose publisher
+    already stored an id is left exactly as it was. Without the step, the couple
+    of hundred Dzen posts published before the id was kept have to be guessed by
+    headline on every future collection, and every headline change in Studio
+    breaks them again.
+    """
+    if not remote_key:
+        return False
+    row = session.execute(
+        select(CrosspostLog)
+        .where(
+            CrosspostLog.post_public_id == public_id,
+            CrosspostLog.platform == "dzen",
+            CrosspostLog.status == "posted",
+            or_(CrosspostLog.remote_id.is_(None), CrosspostLog.remote_id == ""),
+        )
+        .order_by(desc(CrosspostLog.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    row.remote_id = remote_key
+    if url and not row.url:
+        row.url = _normalise_url(str(url))
+    return True
+
+
 def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str, Any]:
     """Store changed snapshots for publications already logged as posted."""
     saved = unchanged = 0
+    by_id = by_url_hit = by_title_hit = ids_stored = 0
     unmatched: list[dict[str, str]] = []
     with session_scope() as session:
-        by_remote: dict[str, str] = {}
-        by_url: dict[str, str] = {}
-        for row in session.execute(
-            select(CrosspostLog).where(
-                CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
-            )
-        ).scalars():
-            if row.remote_id:
-                by_remote[row.remote_id] = row.post_public_id
-            if row.url:
-                by_url[_normalise_url(row.url)] = row.post_public_id
+        by_remote, by_url = _journal_id_index(session)
         by_title = _headline_index(session)
 
         for item in items:
             remote_key = item.remote_id or _remote_from_url(item.url) or ""
-            public_id = by_remote.get(remote_key) or by_url.get(
-                _normalise_url(item.url)
-            )
+            public_id = by_remote.get(remote_key) if remote_key else None
+            if public_id:
+                by_id += 1
+            else:
+                public_id = by_url.get(_normalise_url(item.url))
+                if public_id:
+                    by_url_hit += 1
             if not public_id and item.title:
                 key = _normalise_title(item.title)
                 candidates: list[str] = []
@@ -693,12 +791,17 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
                 unique = list(dict.fromkeys(candidates))
                 if len(unique) == 1:
                     public_id = unique[0]
+                    by_title_hit += 1
                 elif len(unique) > 1:
                     unmatched.append(_unmatched_sample(item, "headline_ambiguous"))
                     continue
             if not public_id:
                 unmatched.append(_unmatched_sample(item, "headline_not_attributable"))
                 continue
+            # A title match is the last guess we are willing to make: the id we
+            # just proved belongs here is stored so the next run matches exactly.
+            if remote_key and _remember_remote_id(session, public_id, remote_key, item.url):
+                ids_stored += 1
             post = session.execute(
                 select(PostRow).where(PostRow.public_id == public_id)
             ).scalar_one_or_none()
@@ -739,6 +842,12 @@ def record_publication_metrics(items: list[DzenPublicationMetrics]) -> dict[str,
         "unchanged": unchanged,
         "unmatched": len(unmatched),
         "unmatched_samples": unmatched[:8],
+        # Which key attributed what: `matched_by_title` is the number that drops
+        # as the journal fills with ids, and `remote_ids_stored` says how fast.
+        "matched_by_remote_id": by_id,
+        "matched_by_url": by_url_hit,
+        "matched_by_title": by_title_hit,
+        "remote_ids_stored": ids_stored,
     }
 
 
@@ -807,6 +916,17 @@ def metrics_status() -> dict[str, Any]:
                 CrosspostLog.platform == "dzen", CrosspostLog.status == "posted"
             )
         ).scalar_one()
+        # The honest measure of the attribution problem: how many of those rows
+        # name the article they posted. Everything else is a headline guess, and
+        # a headline guess only works while nobody edits the title.
+        mapped_with_id = session.execute(
+            select(func.count(CrosspostLog.id)).where(
+                CrosspostLog.platform == "dzen",
+                CrosspostLog.status == "posted",
+                CrosspostLog.remote_id.isnot(None),
+                CrosspostLog.remote_id != "",
+            )
+        ).scalar_one()
         published_posts = session.execute(
             select(func.count(PostRow.id))
             .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
@@ -829,6 +949,7 @@ def metrics_status() -> dict[str, Any]:
             else None
         ),
         "mapped_publications": int(mapped or 0),
+        "mapped_publications_with_id": int(mapped_with_id or 0),
         "last_run": state.get("collected_at"),
         "last_result": {
             key: state.get(key)
@@ -843,6 +964,10 @@ def metrics_status() -> dict[str, Any]:
                 "drop_reasons",
                 "listed_publications",
                 "metrics_not_in_table",
+                "matched_by_remote_id",
+                "matched_by_url",
+                "matched_by_title",
+                "remote_ids_stored",
                 "status",
             )
             if key in state
