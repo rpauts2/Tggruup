@@ -188,6 +188,21 @@ class Post(Base):
     variant: Mapped[str] = mapped_column(String(8), default="a")
 
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # W19-B — the editorial plan's decision, stored on the row it produced.
+    # `plan_entry_id` is the provenance link to the `editorial_plan_entries` row
+    # that ordered this post, so "which plan entry created it" is a column read
+    # instead of a guess from `cluster_public_id` (a cluster can be planned more
+    # than once, and a superseded snapshot is kept forever). It is deliberately a
+    # soft integer reference, the same shape `CrosspostLog.post_public_id` uses:
+    # plan snapshots are append-only history that a future retention pass may
+    # prune, and a database-enforced FK would make pruning a post-creating entry
+    # impossible. `plan_slot_at` is the slot that entry booked: `scheduled_at` is
+    # overwritten by every later queue move (requeue, retry, `unpublish`), so
+    # without a column of its own the booked slot is unobservable afterwards —
+    # which is exactly the hole `plan_execution` documented as "the shift this
+    # module is allowed to make without touching the schema".
+    plan_entry_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    plan_slot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Refreshed while a worker is actively waiting on a platform/browser. The
     # stuck detector uses this heartbeat so slow but live uploads are not
     # incorrectly marked outcome-unknown just because they exceed the timeout.
