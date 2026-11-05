@@ -229,6 +229,117 @@
       .join("");
   }
 
+  // The machine answer to «почему ферма ничего не публикует»: the reason the
+  // newest publish_tick journalled in `meta.decision` (`tgfarm/pipeline.py`
+  //::_publish_decision). The six reason codes and the seven gate codes below are
+  // the server's own vocabulary (reasons above; gates are the GATE_* constants
+  // of tgfarm/s7_publish/__init__.py). An unknown code coming from the server is
+  // printed verbatim on the colourless `tag-none` chip — exactly like the
+  // coverage statuses above — because a invented colour would present a code we
+  // never agreed on as a diagnosis we understand.
+  const PUBLICATION_REASON = {
+    published: { cls: "tag-ok", label: "публикует" },
+    publish_failed: { cls: "tag-err", label: "публикация не удалась" },
+    gated: { cls: "tag-warn", label: "удержано гейтами" },
+    attempted_not_sent: { cls: "tag-warn", label: "пытались отправить, не вышло" },
+    nothing_due: { cls: "tag-none", label: "очередей на отправку нет" },
+    stage_error: { cls: "tag-none", label: "измерение не удалось" },
+  };
+
+  const PUBLICATION_GATE = {
+    platform_disabled: "платформа выключена",
+    platform_not_deliverable: "платформа не доставляет",
+    approval_required: "пост ждёт ручного одобрения",
+    persona_disabled: "персона-канал выключен",
+    daily_cap: "дневной лимит площадки исчерпан",
+    dzen_queue_gap: "пауза между постами Dzen",
+    dzen_needs_online_model: "Dzen требует онлайн-модель",
+  };
+
+  function renderPublicationDecision(statusPayload, failure) {
+    const root = $("#publication-decision");
+    if (!root) return;
+    const meta = $("#publication-decision-meta");
+    // Three honest states, three different wordings: «данных ещё нет», «сервер
+    // ответил ошибкой» и «сеть не отвечает». They must not collapse into each
+    // other, and none of them may paint a zero — an operator reading "0
+    // опубликовано" out of a failed read is reading a phantom.
+    if (failure) {
+      const message = String(failure.message || failure || "");
+      // `api()` rejects HTTP failures as "<path> -> <code>"; anything else is
+      // the fetch never reaching the server at all.
+      const httpError = /\s->\s\d/.test(message);
+      if (meta) meta.textContent = httpError ? "статус ответил ошибкой" : "сервер не ответил";
+      root.innerHTML = '<div class="alert alert-err">'
+        + (httpError
+          ? "<b>Решение о публикации не прочитано:</b> " + esc(message)
+          : "<b>Сеть не отвечает:</b> последнее решение о публикации не получено — " + esc(message))
+        + "</div><div class=\"empty\">Ни одной цифры не показано: вместо них был бы ноль.</div>";
+      return;
+    }
+    const payload = statusPayload || {};
+    // `error` is checked before any totals for the same reason the coverage
+    // card checks it: an empty payload's counters are all zeros, and a zero
+    // here is indistinguishable from a quiet farm.
+    if (payload.error) {
+      if (meta) meta.textContent = "статус не свёлся к решению";
+      root.innerHTML = '<div class="alert alert-err"><b>Статус фермы нечитаем:</b> '
+        + esc(payload.error) + "</div>";
+      return;
+    }
+    const decision = payload.publication;
+    if (!decision || typeof decision !== "object") {
+      if (meta) meta.textContent = "решений в журнале пока нет";
+      root.innerHTML = '<div class="empty">Нет данных: ни один publish-тик ещё не записал '
+        + "решение в журнал прогонов. Это не «публикует ноль» — это отсутствие ответа.</div>";
+      return;
+    }
+    if (decision.measured === false) {
+      if (meta) meta.textContent = "тик отработал без измерения";
+      root.innerHTML = '<div class="item"><div class="item-main"><div class="item-title">'
+        + "Последний publish-тик не вернул никакого ответа</div>"
+        + '<div class="item-meta">счётчики не измерены: из-за очереди, опубликовано и '
+        + "не отправлено остались неизвестными, а не нулями</div></div>"
+        + '<div class="item-side"><span class="tag tag-none">нет данных</span></div></div>';
+      return;
+    }
+    const reasonKey = typeof decision.reason === "string" ? decision.reason : "";
+    const known = PUBLICATION_REASON[reasonKey];
+    // Unknown code: verbatim text on the colourless chip. Known code: agreed
+    // label and colour. Nothing in between.
+    const chip = known
+      ? `<span class="tag ${known.cls}">${esc(known.label)}</span>`
+      : `<span class="tag tag-none">${esc(reasonKey || "причина не записана")}</span>`;
+    // Counters pass through `items()` (the d4d8ef1 guard), never through
+      // `n()` directly: a missing number must stay "нет отчёта", because `n()`
+      // ends in `|| 0` and would re-fabricate the zero the journal fixed.
+    const counters = "из очереди " + items(decision.due)
+      + " · опубликовано " + items(decision.published)
+      + " · с ошибкой " + items(decision.failed)
+      + " · намечено " + items(decision.scheduled);
+    const gates = decision.gates && typeof decision.gates === "object"
+      ? Object.entries(decision.gates) : [];
+    const gateRows = gates.map(([code, count]) => {
+      const label = PUBLICATION_GATE[code];
+      return '<div class="item"><div class="item-main"><div class="item-title">'
+        + esc(label || code) + "</div>"
+        + (label ? '<div class="item-meta">код ' + esc(code) + "</div>" : "")
+        + '</div><div class="item-side"><span class="tag '
+        + (label ? "tag-warn" : "tag-none") + '">'
+        + (typeof count === "number" ? esc(n(count)) + " шт" : "нет данных")
+        + "</span></div></div>";
+    }).join("");
+    if (meta) {
+      meta.textContent = (known ? "причина: " + known.label : "причина не распознана")
+        + (gates.length ? ` · гейтов с удержанными постами: ${gates.length}` : "");
+    }
+    root.innerHTML = '<div class="item"><div class="item-main"><div class="item-title">'
+      + "Последний publish-тик</div>"
+      + '<div class="item-meta">' + esc(counters) + "</div></div>"
+      + '<div class="item-side">' + chip + "</div></div>"
+      + gateRows;
+  }
+
   function renderMetricsFormats(payload) {
     const root = $("#metrics-formats");
     if (!root) return;
@@ -3642,11 +3753,22 @@
       const settled = await Promise.allSettled(Object.values(endpoints).map((path) => api(path)));
       const data = {};
       const failed = [];
+      const reasons = {};
       Object.keys(endpoints).forEach((key, index) => {
         const outcome = settled[index];
         if (outcome.status === "fulfilled") data[key] = outcome.value;
-        else failed.push(key);
+        else {
+          failed.push(key);
+          reasons[key] = outcome.reason;
+        }
       });
+      // The publication card answers the one question the whole dashboard
+      // exists for, so it is rendered before the all-failed throw below: when
+      // every endpoint is down the other sections keep their stale silence,
+      // but this one must say «сеть не отвечает» instead of freezing on an old
+      // verdict — and a failed read is re-rendered every pass, never cached.
+      renderPublicationDecision("status" in data ? data.status : null,
+        "status" in data ? null : reasons.status || new Error("статус не получен"));
       if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
       if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
 
