@@ -282,6 +282,21 @@ def test_no_reader_owns_a_status_token_container(reader, name: str) -> None:
     assert _token_containers(reader) == [], f"{name} still carries its own status literals"
 
 
+def test_the_literal_scan_sees_a_literal_when_one_exists() -> None:
+    """The scan's own aim, so an empty result above cannot mean a broken scanner.
+
+    This is what `s9_growth._pending_crossposts` carried before this block, and it
+    still trips here.
+    """
+
+    def _was_the_defect(rows) -> list:
+        return [row for row in rows if row.status in ("failed", "retry_authorized", "unknown")]
+
+    assert _token_containers(_was_the_defect) == [
+        frozenset({"failed", "retry_authorized", "unknown"})
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 2. Reader 1 — the fleet/sources "needs attention" counter.
 # ---------------------------------------------------------------------------
