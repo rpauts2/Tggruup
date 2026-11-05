@@ -90,24 +90,72 @@ def _pick_channel(niche: str, channels: list[Channel], load: dict[int, int]) -> 
 
 
 def _next_free_slot(
-    channel: Channel, taken: dict[int, set[datetime]], now: datetime, horizon_days: int
+    channel: Channel,
+    taken: dict[int, set[datetime]],
+    now: datetime,
+    horizon_days: int,
+    *,
+    config: Any = None,
 ) -> datetime | None:
-    """First free slot in the channel's schedule inside the horizon.
+    """First free slot this channel is actually allowed to publish in.
 
     Slots are spaced SLOT_STEP_MINUTES apart starting shortly after ``now``;
     slots already occupied by scheduled/published posts of this channel are
-    skipped. Returns None when the horizon is full.
+    skipped, and so is every instant that falls outside the channel's legal
+    local hours. Returns None when the horizon holds no slot that passes both.
+
+    Why the window belongs here (W20-A): the slot computed here is written to
+    ``EditorialPlanEntry.slot_at``, copied once into ``Post.plan_slot_at`` at
+    insert (S4) and then obeyed literally by ``schedule_ready_posts``, which
+    refuses a booking outside those same hours instead of moving it
+    (``GATE_SLOT_OUTSIDE_LOCAL_HOURS``, commit d848eee). A planner that ignored
+    the window therefore booked a slot that could never be slotted: measured on
+    ``main`` with the clock at 21:00 UTC and a ``[9, 18]`` window, this function
+    returned the 21:30 booking that the scheduler then refused forever — no
+    ``scheduled_at``, and the same gate counted on every tick. Choosing only a
+    legal instant at booking time is the one place the conflict can be settled
+    without breaking either rule.
+
+    Two limits of this fix are stated rather than hidden:
+
+    * the window is judged on the instant this function returns, in the
+      ``channel.timezone`` reading — the same predicate, the same channel column
+      and the same cadence owner the executor and the scheduler already use, so
+      the three cannot disagree about which hours a channel may publish in;
+    * rows already in the database are not repaired. ``slot_at`` on a persisted
+      plan entry is a snapshot of a decision that was really made, and this is
+      the build path, not a migration: an old illegal booking stays illegal and
+      keeps being refused until a newer snapshot supersedes it.
+      ``tests/test_w20a_plan_slot_local_hours.py`` pins that as a residue.
+
+    ``config`` is the cadence owner, and ``None`` means "whatever the farm loads"
+    — ``local_hours_allow`` resolves it, and a channel with no window (24/7)
+    allows every instant, which is the pre-W20-A behaviour bit for bit.
     """
+
+    # Local import, and it has to stay local: `plan_execution` imports this
+    # module at its own top level (`tgfarm/plan_execution.py:75`), so a
+    # module-level import here would close that cycle the other way round. The
+    # same discipline is already in `tgfarm/s7_publish/__init__.py`, which
+    # reaches back for exactly one thing — the legal local hours this module
+    # must book inside. Nothing is re-derived here: a second copy of the
+    # cadence reading is how two schedulers start disagreeing about one plan.
+    from tgfarm.plan_execution import local_hours_allow
 
     occupied = taken.get(channel.id, set())
     start = now + timedelta(minutes=SLOT_START_OFFSET_MINUTES)
     limit = now + timedelta(days=horizon_days)
     candidates = int(horizon_days * 24 * 60 / SLOT_STEP_MINUTES) + 2
+    timezone_name = getattr(channel, "timezone", None)
     candidate = start
     for _ in range(candidates):
         key = candidate.replace(second=0, microsecond=0)
-        if key not in occupied:
-            return candidate.replace(second=0, microsecond=0)
+        # Free and legal, or not a booking at all: when the horizon has no
+        # legal free instant the answer is None, never the nearest illegal one.
+        # Substituting an instant the channel cannot publish in would put the
+        # refusal back where this change found it.
+        if key not in occupied and local_hours_allow(key, timezone_name, config=config):
+            return key
         candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
         if candidate > limit:
             break
