@@ -15,7 +15,8 @@ from __future__ import annotations
 import random
 import re
 import uuid
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -898,8 +899,20 @@ def persist_draft(
     plan: ChannelPlan,
     format_plan=None,
     video=None,
+    *,
+    plan_entry_id: int | None = None,
+    plan_slot_at: datetime | None = None,
 ) -> str:
-    """Write a draft as a `posts` row and return its public id."""
+    """Write a draft as a `posts` row and return its public id.
+
+    `plan_entry_id` and `plan_slot_at` are the editorial plan's booking for this
+    topic, stored on the row it ordered: the id answers "which entry created
+    this", the slot answers "when was it meant to go out". Both are `None` when no
+    plan ordered the draft — the flag off, a manual run, a demo — and the row is
+    then written exactly as it was before this pair existed. They are written once,
+    at insert, because the question is about creation: a later snapshot that books
+    the topic again does not move the link on a row it did not create.
+    """
     public_id = uuid.uuid4().hex[:12]
     embedder = get_embedder()
 
@@ -954,6 +967,8 @@ def persist_draft(
             hook_style=getattr(draft, "hook_style", None),
             variant=getattr(draft, "variant", "a"),
             char_len=draft.editorial_len,
+            plan_entry_id=plan_entry_id,
+            plan_slot_at=plan_slot_at,
         )
         session.add(post)
 
@@ -1489,8 +1504,74 @@ def format_plan_for(
     return format_plan
 
 
+#: Names the editorial plan as the owner of a format choice, in `format_reason`,
+#: so an operator reading a post can tell a booked shape from a measured one.
+BOOKED_FORMAT_MARK = "формат из редакционного плана"
+
+
+def apply_booked_format(format_plan: Any, booked: str | None) -> Any:
+    """Obey the format the editorial plan booked, when it booked one.
+
+    The plan's `format` column is free text, so a booking S10 has no length budget
+    for is refused rather than guessed at: the planner's own choice stands, the
+    run continues, and the refusal is logged. A booking that matches what the
+    planner already chose keeps the planner's reason, because a reason claiming an
+    override that changed nothing would misreport who decided.
+
+    Only the shape is taken from the plan — format and its length budget. The
+    planner's media flags and outline stay: the plan says *what shape*, not *what
+    evidence* the post ships with.
+    """
+    if not booked:
+        return format_plan
+    from tgfarm.s10_format import LENGTH_BUDGET, FormatPlan
+
+    budget = LENGTH_BUDGET.get(booked)
+    if budget is None:
+        log.warning(
+            "s4: editorial plan booked format %r, which S10 has no budget for — %s stands",
+            booked,
+            getattr(format_plan, "fmt", "news"),
+        )
+        return format_plan
+    if getattr(format_plan, "fmt", None) == booked:
+        return format_plan
+    low, high = budget
+    decided_by = (
+        f"{BOOKED_FORMAT_MARK}: {booked} (S10 выбрала {format_plan.fmt})"
+        if format_plan is not None
+        else f"{BOOKED_FORMAT_MARK}: {booked} (S10 не ответила)"
+    )
+    base = format_plan if format_plan is not None else FormatPlan()
+    return replace(base, fmt=booked, min_chars=low, max_chars=high, reason=decided_by)
+
+
+def plans_for_booking(plans: list, booked_channel_id: str) -> list:
+    """Keep only the destination the editorial plan booked for this topic.
+
+    An empty `booked_channel_id` means there was no booking to obey — no plan, the
+    flag off, or an entry that named no channel — and every routed plan stays,
+    which is the base path unchanged. When a destination *is* named, only the plans
+    that reach it are written; an empty result is a real answer and not a fallback,
+    because quietly publishing a planned topic on some *other* channel is exactly
+    the failure this filter exists to refuse.
+    """
+    if not booked_channel_id:
+        return plans
+    return [plan for plan in plans if str(getattr(plan, "channel_id", "")) == booked_channel_id]
+
+
 async def run(cluster_public_id: str) -> list[str]:
-    """Route a cluster, choose a format per channel, and generate drafts."""
+    """Route a cluster, choose a format per channel, and generate drafts.
+
+    The editorial plan is asked first, and only for this topic: when a `produce`
+    entry booked a destination, that is the channel written for; when it booked a
+    format S10 knows, that is the shape generated. A booked destination routing
+    cannot reach stops the run rather than moving it elsewhere, and the topic stays
+    unconsumed so a rebuilt plan can still serve it. With no booking — the flag
+    off, no plan, no entry for this cluster — every step below is the base path.
+    """
+    from tgfarm.plan_execution import generation_brief
     from tgfarm.s2_trends import mark_consumed
     from tgfarm.s3_router import plan_cluster
     from tgfarm.s8_analytics.formats import planner_history
@@ -1510,6 +1591,17 @@ async def run(cluster_public_id: str) -> list[str]:
 
     plans = await plan_cluster(cluster_public_id)
     if not plans:
+        return []
+
+    brief = await to_thread(generation_brief, cluster_public_id)
+    plans = plans_for_booking(plans, str(getattr(brief, "channel_id", "") or ""))
+    if brief is not None and not plans:
+        log.warning(
+            "s4: editorial plan %s booked %s for %s and routing refused it — nothing generated",
+            brief.plan_public_id,
+            brief.channel_id,
+            cluster_public_id,
+        )
         return []
 
     # One video lookup for the whole cluster — S11 does the licensing gate.
@@ -1649,6 +1741,9 @@ async def run(cluster_public_id: str) -> list[str]:
                     use_performance=settings.format_performance_planner,
                     preference=preference,
                 )
+                # The plan's booking outranks the measured choice when it named a
+                # format at all; the row keeps both voices in its reason.
+                format_plan = apply_booked_format(format_plan, getattr(brief, "fmt", None))
                 draft = await generate(plan, raw_items, format_plan, video=video)
             except Exception as exc:  # noqa: BLE001 - one bad plan must not kill the cluster
                 log.warning("generation failed for %s: %s", plan.channel_id, exc)
@@ -1673,7 +1768,13 @@ async def run(cluster_public_id: str) -> list[str]:
                 )
                 continue
             public_id = await to_thread(
-                persist_draft, draft, plan, format_plan, video
+                persist_draft,
+                draft,
+                plan,
+                format_plan,
+                video,
+                plan_entry_id=getattr(brief, "entry_id", None),
+                plan_slot_at=getattr(brief, "slot_at", None),
             )
             created.append(public_id)
 

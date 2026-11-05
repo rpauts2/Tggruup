@@ -9,6 +9,11 @@ untouched) this module is the missing consumer:
 
 * :func:`build_plan_job` refreshes the persisted plan on the scheduler's clock —
   no HTTP call, no panel click.
+* :func:`generation_brief` is the reader S4 asks about a topic before it writes:
+  the ACTIVE plan's `produce` booking — destination, format, slot, entry id — so
+  the plan's decision survives the handoff into generation instead of being
+  re-derived downstream and lost. Reading is all it does; this module still never
+  generates and never calls a model.
 * :func:`apply_plan` reads the ACTIVE plan and turns a qualifying ``schedule``
   entry into a real queued post through the existing scheduling path. It never
   assigns ``Post.status``/``Post.scheduled_at`` itself, never generates, never
@@ -65,7 +70,7 @@ from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import ensure_utc, to_thread
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import Channel, Post
+from tgfarm.db.models import Channel, EditorialPlan, EditorialPlanEntry, Post
 from tgfarm.db.session import session_scope
 from tgfarm.editorial_plan import build_editorial_plan, get_active_plan
 from tgfarm.platform_capability import capability_of
@@ -91,7 +96,7 @@ MAX_ENTRIES_PER_RUN = 40
 REASON_DISABLED = "plan_execution_disabled"
 REASON_NO_PLAN = "no_active_plan"
 REASON_PLAN_HOLD = "plan_action_hold"
-REASON_NO_GENERATION = "no_generation_entry_point"
+REASON_NO_GENERATION = "produce_entry_not_generated_here"
 REASON_UNKNOWN_ACTION = "unknown_action"
 REASON_POST_MISSING = "gated_post_missing"
 REASON_ALREADY_SCHEDULED = "already_scheduled"
@@ -288,6 +293,85 @@ def _slot_at(value: Any) -> datetime | None:
         return ensure_utc(datetime.fromisoformat(str(value)))
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------- the generation brief
+@dataclass(frozen=True)
+class GenerationBrief:
+    """One `produce` booking, in the form the writer can obey.
+
+    The fields are the plan's own words read straight off
+    `editorial_plan_entries`, not a re-derivation: `channel_id` is the destination
+    the entry said the post belongs to, `fmt` the shape it booked (a free-text
+    column, so it may name a format S10 has no length budget for), `slot_at` the
+    instant it reserved, and `entry_id` the row a produced post has to name as its
+    origin. `plan_public_id` and `confidence` travel along so a log line — and
+    later the panel — can say *which* snapshot decided, not only what it decided.
+    """
+
+    entry_id: int
+    plan_public_id: str
+    cluster_public_id: str
+    channel_id: str
+    platform: str
+    fmt: str | None
+    slot_at: datetime | None
+    confidence: float | None
+
+
+def generation_brief(cluster_public_id: str) -> GenerationBrief | None:
+    """The ACTIVE plan's `produce` booking for one topic, or `None`.
+
+    Off the flag this returns without opening a session, which is the whole point
+    of putting the test here: the base path has no plan consumer at all, and even
+    an unread row would make the two paths differ in what they touch. S4 calls
+    this on every cluster and, on `None`, decides exactly as it did before the
+    plan existed.
+
+    The newest snapshot owns the topic — `get_active_plan`'s own rule, spelled as
+    one bounded read here because the caller is a per-cluster stage and not the
+    portfolio loop — and `entry_id` breaks a tie inside that snapshot so a topic
+    cannot alternate between two of its rows from run to run. A `hold` or a
+    `schedule` entry is not an order to write something, so neither is a brief.
+    """
+    if not getattr(get_settings(), "plan_execution_enabled", False):
+        return None
+    topic = str(cluster_public_id or "").strip()
+    if not topic:
+        return None
+    with session_scope() as session:
+        row = session.execute(
+            select(
+                EditorialPlanEntry.id,
+                EditorialPlan.public_id,
+                EditorialPlanEntry.channel_id,
+                EditorialPlanEntry.platform,
+                EditorialPlanEntry.format,
+                EditorialPlanEntry.slot_at,
+                EditorialPlanEntry.confidence,
+            )
+            .join(EditorialPlan, EditorialPlanEntry.plan_id == EditorialPlan.id)
+            .where(
+                EditorialPlan.status == "active",
+                EditorialPlanEntry.cluster_public_id == topic,
+                EditorialPlanEntry.action == "produce",
+            )
+            .order_by(EditorialPlan.created_at.desc(), EditorialPlanEntry.id.desc())
+            .limit(1)
+        ).first()
+    if row is None:
+        return None
+    booked_format = str(row[4] or "").strip().lower() or None
+    return GenerationBrief(
+        entry_id=int(row[0]),
+        plan_public_id=str(row[1]),
+        cluster_public_id=topic,
+        channel_id=str(row[2] or ""),
+        platform=str(row[3] or ""),
+        fmt=booked_format,
+        slot_at=_slot_at(row[5]),
+        confidence=float(row[6]) if row[6] is not None else None,
+    )
 
 
 # ---------------------------------------------------------------------- the plan
@@ -569,6 +653,9 @@ def apply_plan(
                 # The plan already decided; this module never touches the row.
                 outcome, reason = _OUTCOME_SKIPPED, REASON_PLAN_HOLD
             elif action == "produce":
+                # Writing the post is S4's job, not this loop's. The booking is
+                # read per topic by `generation_brief`, so the honest statement is
+                # "not generated here", not "nothing consumes this entry".
                 outcome, reason = _OUTCOME_SKIPPED, REASON_NO_GENERATION
             elif action == "schedule":
                 target = _find_target(session, cluster_id)
@@ -784,6 +871,7 @@ async def apply_plan_tick(
 __all__ = [
     "APPLY_INTERVAL_MINUTES",
     "BUILD_INTERVAL_HOURS",
+    "GenerationBrief",
     "MAX_ENTRIES_PER_RUN",
     "PLAN_APPLY_JOB_ID",
     "PLAN_BUILD_JOB_ID",
@@ -815,4 +903,5 @@ __all__ = [
     "build_plan_job",
     "build_plan_tick",
     "evaluate_plan",
+    "generation_brief",
 ]
