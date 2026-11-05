@@ -590,7 +590,20 @@ def best_hours(channel_id):
 
 
 def mistakes(channel_id):
+    """Every `mistake` row stored for one channel, as plain dicts.
+
+    The kind has one consumer: `tgfarm/s4_generation/_persona_block`, which ranks
+    the rows by `sample_size` and renders at most five `Избегать:` lines into the
+    draft prompt. `tests/test_mistake_lesson_consumer.py` pins that path row by row,
+    including the live shape (`score=0.0`, `sample_size=1`, `confidence` 0.2-0.3),
+    so a reader that grew a confidence threshold — which no production row reaches
+    — fails a test instead of silently unplugging the loop. `score` and `confidence`
+    themselves have no consumer for this kind: every writer stores `score=0.0`,
+    because a rejected draft is a counted event, not a measured quality.
+    """
     return lessons(channel_id, kind="mistake")
+
+
 def _channel_ids():
     from tgfarm.config import get_config
     return [p.id for p in get_config().enabled_personas]
