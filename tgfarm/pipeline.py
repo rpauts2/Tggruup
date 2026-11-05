@@ -25,7 +25,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
-from tgfarm import plan_execution
+from tgfarm import plan_execution, s4_generation
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, counters_state, to_thread
@@ -2822,9 +2822,11 @@ def _build_scheduler():
     if settings.plan_execution_enabled:
         # The editorial plan had a builder and three HTTP readers but no
         # consumer, so on a live database it held zero rows and no planned slot
-        # ever reached a post. Two jobs, registered only behind the flag: the
-        # refresh, then the hand-off of a qualifying `schedule` entry to the
-        # existing scheduling path. Nothing here publishes — a hand-off queues.
+        # ever reached a post. Three jobs, registered only behind the flag: the
+        # refresh, the hand-off of a qualifying `schedule` entry to the
+        # existing scheduling path, and the pass that writes the planned minute
+        # itself on the draft. Nothing here publishes — a hand-off queues, a
+        # booking writes one column.
         scheduler.add_job(
             plan_execution.build_plan_tick,
             IntervalTrigger(hours=plan_execution.BUILD_INTERVAL_HOURS),
@@ -2839,6 +2841,24 @@ def _build_scheduler():
             IntervalTrigger(minutes=plan_execution.APPLY_INTERVAL_MINUTES),
             id=plan_execution.PLAN_APPLY_JOB_ID,
             name="editorial plan execution",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+        # The third pass, and the reason the two above were not enough on their
+        # own: `apply_plan` hands a *due* entry to `unpublish`, which stamps
+        # `scheduled_at = now`, and holds a future one — so neither path ever put
+        # the plan's own minute on the row. `s4_generation.book_plan_slots` did
+        # that work since `15afbe1`, but its only caller was the offline chain's
+        # stage, so a live farm left `posts.plan_slot_at` NULL and let
+        # `schedule_ready_posts` re-derive a slot the plan had already decided.
+        # This registration is what makes that pass run on the clock. It writes
+        # one column and publishes nothing.
+        scheduler.add_job(
+            s4_generation.book_plan_tick,
+            IntervalTrigger(minutes=s4_generation.BOOKING_INTERVAL_MINUTES),
+            id=s4_generation.PLAN_BOOKING_JOB_ID,
+            name="editorial plan slot booking",
             max_instances=1,
             coalesce=True,
             misfire_grace_time=600,

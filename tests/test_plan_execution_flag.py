@@ -3,7 +3,8 @@
 Flag off must mean *base*: the same nineteen job ids ``_build_scheduler``
 registered at ``094a67f``, no plan rows written, no journal rows written, and
 both ticks on the floor before they read the database. Flag on must add exactly
-two jobs — the refresh and the apply — because the live database measured
+three jobs — the refresh, the apply, and since ``w21a`` the booking pass that
+writes the plan's minute on the draft — because the live database measured
 ``editorial_plans = 0`` rows and ``editorial_plan_entries = 0`` rows: the plan had
 a builder and three HTTP readers and no consumer at all.
 
@@ -23,7 +24,7 @@ import pytest
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import delete, func, select, update
 
-from tgfarm import pipeline, plan_execution
+from tgfarm import pipeline, plan_execution, s4_generation
 from tgfarm.core.settings import Settings, reset_settings_cache
 from tgfarm.db.models import Cluster, EditorialPlan, EditorialPlanEntry, PipelineRun
 from tgfarm.db.session import session_scope
@@ -186,23 +187,25 @@ def test_flag_off_leaves_the_scheduler_exactly_as_base():
     assert _job_ids() == set(BASELINE_JOB_IDS)
 
 
-def test_flag_on_adds_exactly_two_jobs(monkeypatch):
+def test_flag_on_adds_exactly_three_jobs(monkeypatch):
     _flag(monkeypatch, enabled=True)
     try:
         assert _job_ids() - set(BASELINE_JOB_IDS) == {
             plan_execution.PLAN_BUILD_JOB_ID,
             plan_execution.PLAN_APPLY_JOB_ID,
+            s4_generation.PLAN_BOOKING_JOB_ID,
         }
     finally:
         reset_settings_cache()
 
 
-def test_flag_off_registers_neither_of_the_two_jobs(monkeypatch):
+def test_flag_off_registers_none_of_the_three_plan_jobs(monkeypatch):
     _flag(monkeypatch, enabled=False)
     try:
         ids = _job_ids()
         assert plan_execution.PLAN_BUILD_JOB_ID not in ids
         assert plan_execution.PLAN_APPLY_JOB_ID not in ids
+        assert s4_generation.PLAN_BOOKING_JOB_ID not in ids
     finally:
         reset_settings_cache()
 

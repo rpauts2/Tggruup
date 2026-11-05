@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import random
 import re
+import time
 import uuid
 from dataclasses import replace
 from datetime import date, datetime
@@ -1018,6 +1019,23 @@ PLAN_BOOKING_STATES = (
     PLAN_BOOKING_CLAIM_LOST,
 )
 
+# ------------------------------------------------ the scheduler's pass over it
+#: Job id, journal stage and rhythm of the third plan job, declared here rather
+#: than in `plan_execution.py` because that module belongs to another package
+#: this wave, while the work it would schedule is this one's: `book_plan_slots`
+#: and its id live in the same file so a rename cannot leave the registry naming
+#: a function that no longer exists. `pipeline._build_scheduler` reads all three,
+#: exactly as it reads `plan_execution.PLAN_BUILD_JOB_ID` and friends.
+#:
+#: The interval matches the apply tick's because the two are one decision told in
+#: two steps: the apply hand-over needs a row the scheduler will obey, and the
+#: booking writes exactly that instant. A pass slower than the apply would let
+#: an entry age into `slot_not_due` before anything reserved it; a faster one
+#: would re-read a ledger the plan has not changed yet.
+PLAN_BOOKING_JOB_ID = "editorial-plan-booking"
+STAGE_BOOKING = "s4_plan_booking"
+BOOKING_INTERVAL_MINUTES = 10
+
 
 def _plan_moment(value: Any) -> datetime | None:
     """The plan's `slot_at` as an aware UTC instant, or None when it is not one.
@@ -1165,7 +1183,7 @@ def book_plan_slots(*, limit: int = MAX_BOOKINGS_PER_RUN) -> dict[str, Any]:
     """
     from tgfarm.editorial import open_order_cluster_ids
 
-    with StageTimer("s4_plan_booking") as timer:
+    with StageTimer(STAGE_BOOKING) as timer:
         cluster_ids = open_order_cluster_ids(limit)
         decisions = [apply_plan_booking(public_id) for public_id in cluster_ids]
         states: dict[str, int] = {}
@@ -1187,6 +1205,93 @@ def book_plan_slots(*, limit: int = MAX_BOOKINGS_PER_RUN) -> dict[str, Any]:
         states or "no open order to carry",
     )
     return result
+
+
+def _journal_booking_tick(
+    status: str,
+    items_in: int | None,
+    items_out: int | None,
+    duration_ms: int,
+    meta: dict[str, Any],
+    error: str | None = None,
+) -> None:
+    """Journal one scheduled booking pass with the pipeline's own writer.
+
+    Imported lazily and deliberately: `pipeline` registers this tick, so a
+    module-level import would be a cycle, and `pipeline._record` owns the
+    three-state counter rule (`None` is stored as 0 with the truth written
+    beside it in `meta`), which is the thing P34 was filed for. Telemetry must
+    never break a stage, and the writer already swallows its own failures.
+    """
+    from tgfarm.pipeline import _record as pipeline_record
+
+    pipeline_record(
+        f"s4-plan-{uuid.uuid4().hex[:8]}",
+        STAGE_BOOKING,
+        status,
+        items_in=items_in,
+        items_out=items_out,
+        duration_ms=duration_ms,
+        error=error,
+        meta=meta,
+    )
+
+
+async def book_plan_tick(*, limit: int = MAX_BOOKINGS_PER_RUN) -> dict[str, Any]:
+    """Give the booking pass the live caller it never had.
+
+    Measured at the base of this package, `book_plan_slots` had exactly one
+    caller in the repository — the stage the offline chain walks — so a
+    self-running farm built the plan (`editorial-plan-build`), applied its
+    verdicts (`editorial-plan-apply`), and never wrote `posts.plan_slot_at`.
+    The plan's minute stayed in `editorial_plan_entries` while
+    `schedule_ready_posts` re-derived a slot for the row from cadence, which is
+    the gap between "the plan said when" and "the farm published when". This is
+    the third job that closes it, and it is deliberately a wrapper:
+
+    * it calls `book_plan_slots` and nothing else — no plan build, no hand-over,
+      no publish, no status write; those are the two `plan_execution` ticks' and
+      `s7_publish`'s own jobs, and a tick that could do them would be a second
+      scheduler with a second set of bugs.
+    * it journals what the pass returned under `STAGE_BOOKING`, the same stage
+      name the cycle writes when it runs the identical work, so the panel can
+      read one row per booking pass whoever triggered it.
+    * a database failure is merged, not raised: APScheduler would log it and
+      drop the job, and the farm would look healthy while the ledger stopped
+      being answered. The two neighbouring ticks already answer the same way —
+      `log.warning`, an `error` journal row with unmeasured counters, and a
+      report that names the exception — so this tick says it in the same words.
+    * off `PLAN_EXECUTION_ENABLED` it returns before opening a session, which is
+      how the neighbours keep a flag-off pass byte-identical to base.
+    """
+    if not bool(getattr(get_settings(), "plan_execution_enabled", False)):
+        return {"skipped": PLAN_BOOKING_DISABLED}
+    started = time.monotonic()
+    try:
+        report = await to_thread(book_plan_slots, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - a booking failure must not kill the scheduler
+        message = f"{type(exc).__name__}: {exc}"
+        log.warning("s4: plan booking tick failed: %s", message[:200])
+        _journal_booking_tick(
+            "error",
+            None,
+            None,
+            int((time.monotonic() - started) * 1000),
+            {"job": PLAN_BOOKING_JOB_ID},
+            error=message,
+        )
+        return {"error": message}
+    _journal_booking_tick(
+        "ok",
+        int(report["considered"]),
+        int(report["booked"]),
+        int((time.monotonic() - started) * 1000),
+        {
+            "job": PLAN_BOOKING_JOB_ID,
+            "states": dict(report["states"]),
+        },
+    )
+    return report
 
 
 DUP_THRESHOLD = DEFAULT_DUPLICATE_SIMILARITY
@@ -1995,8 +2100,12 @@ async def run(cluster_public_id: str) -> list[str]:
 
 
 __all__ = [
+    "BOOKING_INTERVAL_MINUTES",
+    "PLAN_BOOKING_JOB_ID",
+    "STAGE_BOOKING",
     "apply_plan_booking",
     "book_plan_slots",
+    "book_plan_tick",
     "generate",
     "normalise",
     "persist_draft",
