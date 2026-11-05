@@ -31,18 +31,18 @@ and the honest reading of the module's own design was that an entry's delivery
 minute was this loop's tick, plus up to ``APPLY_INTERVAL_MINUTES`` of it — the
 plan reserved a minute it never reached, and the panel said so.
 
-The one limit that follows the stamped instant rather than the tick is the
-channel's legal local hours: an entry whose reserved minute falls in an hour the
-channel may not post in is now held under ``REASON_LOCAL_HOURS`` instead of being
-queued at a later tick's hour. That is the same verdict ``schedule_ready_posts``
-already returns for the same minute under the registered gate
-``GATE_SLOT_OUTSIDE_LOCAL_HOURS``, through the same ``local_hours_allow`` — so the
-two consumers of a booked slot still cannot disagree about which hours mean
-anything, and a booking the cadence forbids stays a named refusal rather than
-becoming a shift the plan never ordered. The planner only books minutes this
-predicate admits (``editorial_plan`` asks it before reserving one), so the entries
-that reach that hold are the config-drift ones: a cadence window narrowed after
-the snapshot was built.
+The one limit that moved with the stamped instant is the channel's legal local
+hours, and it moved by growing a second term rather than losing one: an entry is
+held under ``REASON_LOCAL_HOURS`` when the minute it would stamp falls in an hour
+the channel may not post in — which is the identical verdict
+``schedule_ready_posts`` returns for the same minute under the registered gate
+``GATE_SLOT_OUTSIDE_LOCAL_HOURS``, through the same ``local_hours_allow`` — and
+it is still held, exactly as at base, when the tick itself sits in such an hour,
+because a release makes the post due on the next publish tick. Neither consumer
+of a booked slot is more permissive than the other, and the planner only books
+minutes this predicate admits (``editorial_plan`` asks it before reserving one),
+so the entries that reach the new hold are the config-drift ones: a cadence
+window narrowed after the snapshot was built.
 
 Why ``schedule_ready_posts`` is not the handover function
 ---------------------------------------------------------
@@ -310,10 +310,10 @@ def local_hours_allow(
 
     One implementation of the window, deliberately reachable from outside this
     module: `schedule_ready_posts` has to judge a *booked* slot (`Post.plan_slot_at`)
-    against exactly the hours `_decide_schedule` judges the very minute it stamps as
-    `scheduled_at` against, and a second copy of the cadence reading is how two
-    schedulers start disagreeing about one plan. `None` — 24/7 — allows every
-    instant.
+    against exactly the hours `_decide_schedule` judges the minute it stamps as
+    `scheduled_at` — and the tick that stamps it — against, and a second copy of
+    the cadence reading is how two schedulers start disagreeing about one plan.
+    `None` — 24/7 — allows every instant.
     """
     allowed = _legal_local_hours(config if config is not None else get_config())
     if allowed is None:
@@ -614,26 +614,34 @@ def _decide_schedule(
         return _OUTCOME_HELD, REASON_NO_SLOT, None
     if slot > state.moment:
         return _OUTCOME_HELD, REASON_SLOT_NOT_DUE, None
-    # Since W21-B the released row carries *this* instant: `_hand_over` passes
-    # `slot` to `unpublish`, which stamps it as `scheduled_at`. So the minute an
-    # entry claims is the minute the plan reserved, and the legal-local-hours
-    # limit — whose whole job is to refuse a publication in an hour the channel
-    # may not post in — has to be answered about the instant being stamped, not
-    # about the tick that got there first. That is also exactly what the other
-    # consumer of a booked minute does: `schedule_ready_posts` gates
-    # `plan_slot_at` itself through this same `local_hours_allow` and refuses it
-    # under `GATE_SLOT_OUTSIDE_LOCAL_HOURS` rather than moving it. One instant,
-    # one predicate, two schedulers that cannot disagree.
+    # Two hours are named by one code below, and both of them are this entry's
+    # business since W21-B:
     #
-    # The verdict this replaces was a workaround for a transition that could only
-    # say `now`: an entry whose reserved minute fell in an illegal hour was held
-    # until a legal tick came and then queued at that tick's hour, which is a
-    # shift the plan never ordered and W20-C had to report as `shifted`. Such an
-    # entry is now refused by name instead, and stays refused until the plan
-    # reserves it somewhere the channel may post — the config drift that produces
-    # one (a cadence window narrowed after the snapshot was built) is exactly the
-    # case the registered gate exists to make visible rather than deliver.
+    # * the minute being stamped. `_hand_over` now passes `slot` to `unpublish`,
+    #   so `scheduled_at` reads the plan's reserved instant, and a legal hour is a
+    #   property of the instant the row will carry. Asking it is exactly what
+    #   `schedule_ready_posts` does with the same booking through the same
+    #   `local_hours_allow`, under the registered `GATE_SLOT_OUTSIDE_LOCAL_HOURS`.
+    # * the tick doing the handing over, which the base already gated and still
+    #   is: a release makes the post due on the next publish tick, so the hour
+    #   this loop runs in is the hour the farm actually posts in. Dropping the
+    #   check would have made the plan consumer the one scheduler that could
+    #   deliver at a local hour the operator closed.
+    #
+    # Together they are no more permissive than the base on either axis, which is
+    # the point: what changed is the instant written down, not which entries leave
+    # the queue. The verdict this replaces was a workaround for a transition that
+    # could only say `now` — an entry whose reserved minute fell in an illegal
+    # hour waited for a legal tick and was then queued at that tick's hour, a
+    # shift the plan never ordered and the only reading W20-C could give was
+    # `shifted`. Such an entry is now refused by name until the plan reserves it
+    # somewhere the channel may post; the planner asks this same predicate before
+    # booking a minute (`editorial_plan._next_free_slot`), so the entries that
+    # reach that hold are the config-drift ones — a cadence window narrowed after
+    # the snapshot was built.
     if not local_hours_allow(slot, channel.timezone, config=state.config):
+        return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
+    if not local_hours_allow(state.moment, channel.timezone, config=state.config):
         return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
 
     state.pending_channel[channel.id] = state.pending_channel.get(channel.id, 0) + 1
