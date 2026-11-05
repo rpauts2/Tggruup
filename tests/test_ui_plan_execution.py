@@ -156,10 +156,11 @@ def test_an_unregistered_job_and_an_unseen_job_keep_different_words(block):
 
 def test_a_missing_next_run_is_a_dash_not_a_date(block):
     guard = block[block.index("const nextRunCell") : block.index("const execCount")]
-    assert 'typeof v === "string"' in guard
+    assert 'typeof v !== "string"' in guard
     assert "dt(v)" in guard
     assert '"—"' in guard
-    assert "new Date(v)" not in guard, "an unparseable value must not reach Date"
+    assert "Date.parse(v)" in guard, "an unparseable value must not reach Date"
+    assert "new Date(v)" not in guard
     assert "|| 0" not in guard and "?? 0" not in guard
 
 
@@ -458,6 +459,24 @@ def test_the_three_job_states_render_three_different_words(tmp_path):
     assert "исполнено: 0" in html and "удержано: неизвестно" in html
     assert "slot_not_due: неизвестно" in html and "slot_not_due: 0" not in html
     assert "по плану: неизвестно" in html
+
+
+def test_a_run_scheduled_ahead_is_not_reported_as_a_run_that_just_happened(tmp_path):
+    """`dt()` answers "только что" for any future instant: the elapsed time is
+    negative, and every negative number is under a minute. A job that has not run
+    yet may not read as a job that just ran, and an unparseable moment stays "—"."""
+    payload = _execution(jobs=[
+        {"id": "editorial-plan-build", "registered": True,
+         "next_run_at": "2096-11-05T09:00:00+00:00"},
+        {"id": "editorial-plan-apply", "registered": True, "next_run_at": "не дата"},
+    ])
+    html = _render_cases(tmp_path, [{"name": "ahead", "payload": payload}])["ahead"]
+
+    assert "только что" not in html
+    labels = re.findall(r"· далее ([^<]+)", html)
+    assert len(labels) == 2, labels
+    assert labels[0] != "—" and ":" in labels[0], f"a booked run needs a moment: {labels[0]!r}"
+    assert labels[1] == "—", "an unparseable instant is an unread moment, not a broken one"
 
 
 def test_rendered_unread_answer_admits_it_measured_nothing(tmp_path):

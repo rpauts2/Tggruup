@@ -2013,7 +2013,20 @@
   // ran. None of them is a zero, and none of them may borrow another's words.
   const registeredCell = (v) => (v === true ? "зарегистрировано"
     : v === false ? "не зарегистрировано" : EXECUTION_UNKNOWN);
-  const nextRunCell = (v) => (typeof v === "string" && v ? dt(v) : "—");
+  // `dt()` answers "how long ago", and every future instant has a negative elapsed
+  // time — so it answers "только что" for a run planned for tonight as readily as
+  // for one that just happened. A job that has not run yet is a moment on the
+  // clock, not an elapsed time, so it gets a scheduled label; a null is still "—".
+  const nextRunCell = (v) => {
+    if (typeof v !== "string" || !v) return "—";
+    const at = Date.parse(v);
+    if (Number.isNaN(at)) return "—";
+    if (at <= Date.now()) return dt(v);
+    const when = new Date(at);
+    const sameDay = when.toDateString() === new Date().toDateString();
+    const date = when.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+    return sameDay ? `в ${clock(v)}` : `${date} ${clock(v)}`;
+  };
   const execCount = (v) => (typeof v === "number" && Number.isFinite(v) ? n(v) : EXECUTION_UNKNOWN);
   const execChip = (label, value) => `<span class="plan-chip">${esc(label)}: ${esc(value)}</span>`;
 
