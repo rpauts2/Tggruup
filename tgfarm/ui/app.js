@@ -1928,8 +1928,25 @@
       : "активный";
     const created = plan.created_at ? new Date(plan.created_at).toLocaleString() : "—";
     meta.textContent = `Статус: ${stateLabel}; горизонт ${plan.horizon_days ?? "—"} дн.; сформирован ${created}`;
+    // The server writes the denominator sentence (and the reason there is no
+    // denominator) — the panel repeats it instead of inventing its own.
+    if (summary.coverage_note) meta.textContent += `; ${summary.coverage_note}`;
 
     const diff = summary.diff || {};
+    // Coverage is a denominator, not a score. `measured: 0` means the plan could
+    // not be checked at all — a preview, no stored rows, or a failed read — and
+    // the server already says which in `coverage_note`. Rendering zero chips there
+    // would turn "nothing was measured" into "nothing was done", the inversion
+    // this panel has been corrected for twice already.
+    const cov = summary.coverage || null;
+    const coverageChips = !cov || !(Number(cov.measured || 0) > 0)
+      ? []
+      : [
+        ["Исполнено", cov.materialized ?? 0],
+        ["Не дошло", cov.abandoned ?? 0],
+        ["В горизонте", cov.not_yet ?? 0],
+        ["Без ответа", cov.unknown ?? 0],
+      ];
     const chipItems = [
       ["Всего тем", summary.total ?? (plan.entries || []).length],
       ["В работу", summary.produce ?? 0],
@@ -1938,21 +1955,36 @@
       ...(diff.added && diff.added.length ? [["Добавлено тем", diff.added.length]] : []),
       ...(diff.removed && diff.removed.length ? [["Снято тем", diff.removed.length]] : []),
       ...Object.entries(summary.by_platform || {}).map(([p, n]) => [p, n]),
+      ...coverageChips,
     ];
     chips.innerHTML = chipItems
       .map(([label, value]) => `<span class="plan-chip">${esc(String(label))}: ${esc(String(value))}</span>`)
       .join("");
 
     const entries = plan.entries || [];
+    // A plan decision has four honest endings. "без ответа" is not a failure: it
+    // is the server saying it could not tell (no post row, no stored plan, a read
+    // that errored), and it must never be folded into "не дошло".
+    const OUTCOME_LABELS = {
+      materialized: "исполнено",
+      abandoned: "не дошло",
+      not_yet: "в горизонте",
+      unknown: "без ответа",
+    };
     rows.innerHTML = entries.length
       ? `<ul class="plan-entries">${entries.map((e) => {
           const slot = e.slot_at ? new Date(e.slot_at).toLocaleString() : "по готовности";
           const reasons = (e.reasons || []).filter(Boolean);
           const channel = e.channel_title || (e.channel && e.channel.title) || e.channel_id || "—";
+          const state = e.outcome && e.outcome.state ? String(e.outcome.state) : "";
+          const outcome = state
+            ? `<span class="plan-chip">исход: ${esc(OUTCOME_LABELS[state] || state)}</span>`
+            : "";
           return `<li class="plan-entry${e.action === "hold" ? " plan-hold" : ""}">
             <div class="plan-entry-head">
               <span class="plan-chip">P${esc(String(e.priority ?? "-"))}</span>
               <span class="plan-chip">${esc(String(e.action || "—"))}</span>
+              ${outcome}
               <span>${esc(String(e.title || e.cluster_public_id || "—"))}</span>
             </div>
             <div class="plan-entry-reasons">${esc(String(e.platform || "—"))} · ${esc(String(channel))} · ${esc(String(e.format || "—"))} · слот ${esc(slot)}</div>
