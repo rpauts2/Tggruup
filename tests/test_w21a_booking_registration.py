@@ -224,6 +224,34 @@ def test_the_scheduled_pass_has_a_production_caller_now():
     assert "s4_generation.book_plan_tick" in PIPELINE_SOURCE
 
 
+def test_the_defect_s_grep_now_finds_a_caller_outside_s4():
+    """`grep -rn book_plan_slots tgfarm/` returned the definition and nothing else.
+
+    Restated as a test over the package's own files: at least one module outside
+    `s4_generation` has to *call* the pass or the tick that wraps it, otherwise a
+    self-running farm is back to booking nothing. Names are read off the AST, not
+    off the text, because a prose mention in a comment is exactly the nothing
+    this package was filed against — and test files are excluded, since a caller
+    only a test can reach is the defect rather than the fix.
+    """
+    referenced = []
+    for path in sorted((ROOT / "tgfarm").rglob("*.py")):
+        if "s4_generation" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {
+            node.attr if isinstance(node, ast.Attribute) else node.id
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Attribute, ast.Name))
+        }
+        if names & {"book_plan_slots", "book_plan_tick"}:
+            referenced.append(str(path.relative_to(ROOT)))
+    expected = str(Path("tgfarm") / "pipeline.py")
+    assert referenced == [expected], (
+        f"the only production caller outside s4 should be the scheduler, found {referenced}"
+    )
+
+
 # ------------------------------------------------------------------ no cycles
 def test_s4_generation_imports_the_pipeline_only_inside_a_function():
     """`pipeline` registers this job, so s4 may not import it at module level.
