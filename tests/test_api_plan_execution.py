@@ -38,7 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, update
 
-from tgfarm import pipeline, plan_execution
+from tgfarm import pipeline, plan_execution, s4_generation
 from tgfarm.core.apiauth import ensure_token
 from tgfarm.core.settings import reset_settings_cache
 from tgfarm.db.models import (
@@ -305,6 +305,7 @@ def test_the_five_contract_paths_are_all_present() -> None:
     assert [job["id"] for job in body["jobs"]] == [
         plan_execution.PLAN_BUILD_JOB_ID,
         plan_execution.PLAN_APPLY_JOB_ID,
+        s4_generation.PLAN_BOOKING_JOB_ID,
     ]
     for job in body["jobs"]:
         assert set(job) == set(CONTRACT["jobs"])
@@ -335,7 +336,7 @@ def test_the_switch_is_read_from_config_and_never_inferred_from_the_jobs(
     monkeypatch.setattr(pipeline, "_scheduler", _FakeScheduler({}, running=True))
     body = _execution(_client())
     assert body["enabled"] is True
-    assert [job["registered"] for job in body["jobs"]] == [False, False]
+    assert [job["registered"] for job in body["jobs"]] == [False, False, False]
 
 
 # -------------------------------------------------------------------- the jobs
@@ -363,7 +364,7 @@ def test_a_built_but_unstarted_scheduler_is_still_unknown(monkeypatch) -> None:
                                                running=False)
     )
     body = _execution(_client())
-    assert [job["registered"] for job in body["jobs"]] == [None, None]
+    assert [job["registered"] for job in body["jobs"]] == [None, None, None]
 
 
 def test_a_running_scheduler_answers_registration_truthfully(monkeypatch) -> None:
@@ -375,11 +376,18 @@ def test_a_running_scheduler_answers_registration_truthfully(monkeypatch) -> Non
         pipeline,
         "_scheduler",
         _FakeScheduler(
-            {plan_execution.PLAN_BUILD_JOB_ID: _FakeJob(datetime(2026, 1, 1, 12, tzinfo=moscow))},
+            {
+                plan_execution.PLAN_BUILD_JOB_ID: _FakeJob(
+                    datetime(2026, 1, 1, 12, tzinfo=moscow)
+                ),
+                s4_generation.PLAN_BOOKING_JOB_ID: _FakeJob(
+                    datetime(2026, 1, 1, 13, 30, tzinfo=moscow)
+                ),
+            },
             running=True,
         ),
     )
-    build, apply_ = _execution(_client())["jobs"]
+    build, apply_, booking = _execution(_client())["jobs"]
     assert build == {
         "id": plan_execution.PLAN_BUILD_JOB_ID,
         "registered": True,
@@ -389,6 +397,14 @@ def test_a_running_scheduler_answers_registration_truthfully(monkeypatch) -> Non
     }
     assert apply_["registered"] is False
     assert apply_["next_run_at"] is None
+    # The pass that writes `posts.plan_slot_at` is answered from the same registry
+    # as the other two: without it the plan keeps its minutes to itself, and a
+    # panel that cannot say so reads as an idle farm rather than a missing job.
+    assert booking == {
+        "id": s4_generation.PLAN_BOOKING_JOB_ID,
+        "registered": True,
+        "next_run_at": "2026-01-01T10:30:00+00:00",
+    }
 
 
 # ------------------------------------------------------------------ the last tick

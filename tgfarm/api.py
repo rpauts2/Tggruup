@@ -3090,7 +3090,7 @@ def _booking_unread(reason: str, detail: str | None, gate: dict[str, Any]) -> di
 
 def _plan_execution_state() -> dict[str, Any]:
     """Assemble the consumer's state from settings, this process and the journal."""
-    from tgfarm import plan_execution
+    from tgfarm import plan_execution, s4_generation
 
     settings = get_settings()
     enabled = bool(getattr(settings, "plan_execution_enabled", False))
@@ -3100,6 +3100,11 @@ def _plan_execution_state() -> dict[str, Any]:
         "jobs": [
             _plan_job_view(plan_execution.PLAN_BUILD_JOB_ID),
             _plan_job_view(plan_execution.PLAN_APPLY_JOB_ID),
+            # The pass that writes the plan's minute on the draft. Listed because
+            # it is registered behind the same switch: an operator who sees two
+            # live jobs and a plan full of `schedule` rows still cannot tell that
+            # nothing books them.
+            _plan_job_view(s4_generation.PLAN_BOOKING_JOB_ID),
         ],
         "last_apply": last_apply,
         "plan": _active_plan_headline(),

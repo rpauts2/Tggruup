@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tgfarm import plan_execution
+from tgfarm import plan_execution, s4_generation
 from tgfarm.core.apiauth import ensure_token
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -134,12 +134,19 @@ def test_the_live_payload_carries_every_top_level_contract_key() -> None:
     assert isinstance(payload["note"], str) and payload["note"], "the note is required"
 
 
-def test_the_jobs_are_the_two_the_pipeline_can_register() -> None:
-    """The panel lists consumer jobs by name; the names come from one place."""
+def test_the_jobs_are_the_three_the_pipeline_can_register() -> None:
+    """The panel lists consumer jobs by name; the names come from one place.
+
+    The third entry is `w21a`'s booking pass. It is listed here rather than in
+    that package's own file because the fact under test is the seam: an endpoint
+    that knows two of the three jobs a flag-on pipeline registers is an endpoint
+    the operator cannot trust to answer «почему план не бронируется».
+    """
     payload = _payload()
     assert [job["id"] for job in payload["jobs"]] == [
         plan_execution.PLAN_BUILD_JOB_ID,
         plan_execution.PLAN_APPLY_JOB_ID,
+        s4_generation.PLAN_BOOKING_JOB_ID,
     ], payload["jobs"]
     block = _ui_block()
     assert "execJobChips" in block and "job.registered" in block
