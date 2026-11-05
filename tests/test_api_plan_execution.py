@@ -100,12 +100,10 @@ def _counts() -> dict[str, int]:
 
 
 def _apply_rows() -> list[int]:
-    """Ids of the journal rows this stage owns, newest last.
+    """Ids of the journal rows this stage owns, oldest first.
 
-    `editorial_plan_apply` is written by `plan_execution` only, and the one test
-    file that drives it deletes those rows again in its own teardown, so the
-    "never ran" precondition below is a fact of the shared DB rather than a hope
-    about collection order.
+    Used to tell whether the shared DB is in the "never ran" state at all; the
+    never-ran pin itself does not depend on that answer.
     """
     with session_scope() as session:
         return list(
@@ -133,19 +131,27 @@ class _Owned:
         with session_scope() as session:
             if self.run_ids:
                 session.execute(delete(PipelineRun).where(PipelineRun.id.in_(self.run_ids)))
-            if self.plan_ids:
-                session.execute(
-                    delete(EditorialPlanEntry).where(
-                        EditorialPlanEntry.plan_id.in_(self.plan_ids)
-                    )
-                )
-                session.execute(delete(EditorialPlan).where(EditorialPlan.id.in_(self.plan_ids)))
+            #: `superseded_by_id` is a foreign key into `editorial_plans`, and the
+            #: row carrying it belongs to whoever planned before this test, so the
+            #: pointer has to go before the row it points at.
             if self.restored_plan_id is not None:
                 session.execute(
                     update(EditorialPlan)
                     .where(EditorialPlan.id == self.restored_plan_id)
                     .values(status="active", superseded_by_id=None)
                 )
+            if self.plan_ids:
+                session.execute(
+                    update(EditorialPlan)
+                    .where(EditorialPlan.superseded_by_id.in_(self.plan_ids))
+                    .values(superseded_by_id=None)
+                )
+                session.execute(
+                    delete(EditorialPlanEntry).where(
+                        EditorialPlanEntry.plan_id.in_(self.plan_ids)
+                    )
+                )
+                session.execute(delete(EditorialPlan).where(EditorialPlan.id.in_(self.plan_ids)))
             if self.post_ids:
                 session.execute(delete(Post).where(Post.public_id.in_(self.post_ids)))
             if self.channel_ids:
@@ -159,6 +165,29 @@ def owned() -> _Owned:
     rows = _Owned()
     yield rows
     rows.forget()
+
+
+@pytest.fixture()
+def _no_active_plan():
+    """Neutralise another file's active snapshots for one test, then put them back.
+
+    The same mechanism `tests/test_plan_execution_flag.py` uses: this file needs
+    the "no plan exists" state, which is what the live farm is in today, and the
+    shared session DB is not its own to clean. Deleting somebody else's row would
+    be worse than borrowing it, so the flip is undone on the way out.
+    """
+    with session_scope() as session:
+        ids = session.execute(
+            select(EditorialPlan.id).where(EditorialPlan.status == "active")
+        ).scalars().all()
+        for plan_id in ids:
+            session.get(EditorialPlan, plan_id).status = "superseded"
+    yield
+    with session_scope() as session:
+        for plan_id in ids:
+            row = session.get(EditorialPlan, plan_id)
+            if row is not None:
+                row.status = "active"
 
 
 @pytest.fixture(autouse=True)
@@ -363,19 +392,57 @@ def test_a_running_scheduler_answers_registration_truthfully(monkeypatch) -> Non
 
 
 # ------------------------------------------------------------------ the last tick
-def test_a_consumer_that_never_ran_reports_no_counts() -> None:
-    """No apply tick in the journal means unknown, and `None` means never measured.
+def test_a_journal_with_no_apply_tick_reads_as_never_ran(monkeypatch) -> None:
+    """No apply tick means unknown, and `None` means "never measured", not "nil".
 
-    A `0` here reads as "it ran and applied nothing", which is a different fact
-    and an unfair verdict on a consumer that has not been started.
+    Read against a stage name no writer has ever used, because that is the same
+    branch of the reader and it cannot depend on what another file left in the
+    shared session DB: a `0` here reads as "it ran and applied nothing", which is
+    a different fact and an unfair verdict on a consumer that has not run.
     """
-    assert _apply_rows() == [], (
-        "the shared DB already holds an editorial_plan_apply row: this pin needs a "
-        "journal the consumer has never written, so find the new writer first"
-    )
+    monkeypatch.setattr(plan_execution, "STAGE_APPLY", "w18b2_stage_nobody_writes")
     last = _execution(_client())["last_apply"]
     assert last == {"at": None, "plan_id": None, "applied": None, "held": None, "reasons": None}
     assert last["applied"] is None and last["held"] is None
+
+
+def test_the_real_journal_says_the_same_while_it_is_empty() -> None:
+    """The same nulls, read off the stage the consumer actually writes.
+
+    `editorial_plan_apply` is journalled only by `tgfarm/plan_execution.py`, so
+    for most of a suite run this journal genuinely is empty and the pin above is
+    checked against the real stage name too. Once some file has run an apply
+    tick ahead of this one, the state is not observable without editing rows this
+    file does not own, and the test says so instead of pretending.
+    """
+    rows = _apply_rows()
+    if rows:
+        pytest.skip(f"the shared journal already holds apply row(s) {rows}")
+    last = _execution(_client())["last_apply"]
+    assert last == {"at": None, "plan_id": None, "applied": None, "held": None, "reasons": None}
+    assert "нет ни одной записи" in _execution(_client())["note"]
+
+
+def test_the_never_ran_note_names_the_switch_first_in_both_switch_states(
+    monkeypatch,
+) -> None:
+    """The branch that shipped wrong, pinned from both sides.
+
+    The salvaged note claimed "тикеты не регистрировались" — registration is a
+    fact about a scheduler this process cannot see, and an empty journal does not
+    evidence it. And with the switch on and nothing run, the honest sentence is
+    that no tick has run yet, not that the jobs are missing.
+    """
+    monkeypatch.setattr(plan_execution, "STAGE_APPLY", "w18b2_stage_nobody_writes")
+    off = _execution(_client())["note"]
+    assert off.startswith("Потребитель плана выключен")
+    assert "нет ни одной записи" in off and "не регистрировались" not in off
+
+    monkeypatch.setenv("PLAN_EXECUTION_ENABLED", "true")
+    reset_settings_cache()
+    on = _execution(_client())["note"]
+    assert on.startswith("Потребитель плана включён, но")
+    assert "ни один тик ещё не отработал" in on and "не регистрировались" not in on
 
 
 def test_a_journalled_apply_tick_comes_back_with_its_histogram(owned) -> None:
@@ -511,20 +578,12 @@ def test_the_plan_block_matches_what_the_builder_reported(owned) -> None:
     assert summary["produce"] + summary["schedule"] + summary["hold"] == summary["total"]
 
 
-def test_no_active_plan_is_all_unknowns_not_an_empty_plan() -> None:
+def test_no_active_plan_is_all_unknowns_not_an_empty_plan(_no_active_plan) -> None:
     """A plan that does not exist is not a plan with zero entries.
 
     `/api/editorial/plan` deliberately falls back to an ephemeral preview; this
     reader must not, or it would show decisions the consumer never saw.
     """
-    with session_scope() as session:
-        active = session.scalar(
-            select(func.count()).select_from(EditorialPlan).where(EditorialPlan.status == "active")
-        )
-    assert int(active) == 0, (
-        "the shared DB already holds an active plan; this pin needs the no-plan state, "
-        "so find whoever started leaving one behind before changing it"
-    )
     body = _execution(_client())
     assert body["plan"] == {
         "id": None,
@@ -535,7 +594,8 @@ def test_no_active_plan_is_all_unknowns_not_an_empty_plan() -> None:
         "hold": None,
         "coverage": None,
     }
-    assert "ничего не применялось" in body["note"]
+    #: The switch clause still leads, whatever the plan block ended up as.
+    assert body["note"].startswith("Потребитель плана")
 
 
 # --------------------------------------------------------------------- read-only
