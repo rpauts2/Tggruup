@@ -11,6 +11,18 @@ The repair follows the `duplicate_of` precedent: preview by default, `--apply`
 plus a consent env flag, and a refusal to write at all without a fresh copy in
 `backup/`. Nothing here opens the live database: every row under test is seeded
 in the throwaway session database the conftest builds.
+
+Two things keep these tests honest inside that shared database, and both are
+load-bearing:
+
+* every row this file seeds is deleted again by the autouse fixture, so the file
+  cannot leave evidence-free `published` rows for someone else's test to trip on;
+* the candidate counts are asserted as a delta against a preview taken before the
+  seeding, never as absolute numbers. Other test files leave their own `published`
+  rows behind, so `by_platform["telegram"] == 1` measures the residue of the whole
+  suite rather than the behaviour under test — that is how this file failed as
+  written (`assert 5 == 1`). A delta states the claim the fix actually makes:
+  seeding this one row raised the candidate count by exactly one.
 """
 
 from __future__ import annotations
@@ -20,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, select
 
 from tgfarm.db.models import Channel, CrosspostLog, Post
 from tgfarm.db.session import session_scope
@@ -30,7 +42,29 @@ from tgfarm.maintenance import (
     run_maintenance,
 )
 
-APPLY_ENV_VALUES = ("1", "")
+#: What this file owns, so the teardown can hand the database back as it found it.
+_seeded_channels: list[str] = []
+_seeded_public_ids: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _drop_own_rows():
+    """Leave no residue: the suite shares one session database."""
+    yield
+    with session_scope() as session:
+        if _seeded_public_ids:
+            session.execute(
+                delete(CrosspostLog).where(CrosspostLog.post_public_id.in_(_seeded_public_ids))
+            )
+            post_ids = list(
+                session.scalars(select(Post.id).where(Post.public_id.in_(_seeded_public_ids))).all()
+            )
+            if post_ids:
+                session.execute(delete(Post).where(Post.id.in_(post_ids)))
+        if _seeded_channels:
+            session.execute(delete(Channel).where(Channel.id.in_(_seeded_channels)))
+    _seeded_channels.clear()
+    _seeded_public_ids.clear()
 
 
 def _slug() -> str:
@@ -50,6 +84,8 @@ def _seed_post(
     suffix = _slug()
     channel_id = f"pe_{platform}_{suffix}"
     public_id = f"pe{suffix}"
+    _seeded_channels.append(channel_id)
+    _seeded_public_ids.append(public_id)
     with session_scope() as session:
         session.add(
             Channel(
@@ -80,7 +116,14 @@ def _seed_post(
     return public_id
 
 
-def _journal(public_id: str, platform: str, *, status: str, remote_id: str | None, url: str | None = None) -> None:
+def _journal(
+    public_id: str,
+    platform: str,
+    *,
+    status: str,
+    remote_id: str | None,
+    url: str | None = None,
+) -> None:
     with session_scope() as session:
         session.add(
             CrosspostLog(
@@ -100,6 +143,16 @@ def _row(public_id: str) -> Post:
         ).scalar_one()
 
 
+def _plan() -> dict:
+    """A read-only preview, taken before the seeding, to measure against."""
+    return publication_evidence_repair()
+
+
+def _delta(base: dict, report: dict, platform: str) -> int:
+    """How many candidates this test's own rows added, on one platform."""
+    return int(report["by_platform"][platform]) - int(base["by_platform"][platform])
+
+
 def _consented(tmp_path, monkeypatch, *, backup: bool = True) -> None:
     """Consent flag on, plus a `backup/` copy that is fresh enough to trust."""
     from tgfarm.core import settings as settings_mod
@@ -113,6 +166,7 @@ def _consented(tmp_path, monkeypatch, *, backup: bool = True) -> None:
 
 def test_preview_reports_the_evidence_free_rows_and_writes_nothing(monkeypatch):
     monkeypatch.delenv(PUBLICATION_EVIDENCE_APPLY_ENV, raising=False)
+    base = _plan()
     ghost = _seed_post(platform="telegram", tg_chat_id=-1)
     real = _seed_post(platform="telegram", tg_message_id=4242)
 
@@ -120,31 +174,32 @@ def test_preview_reports_the_evidence_free_rows_and_writes_nothing(monkeypatch):
 
     assert report["apply"] is False
     assert report["moved"] == 0
-    assert ghost in report["sample"] or report["by_platform"]["telegram"] >= 1
-    assert report["by_platform"]["telegram"] == 1, "only the row without a message id"
+    assert _delta(base, report, "telegram") == 1, "only the row without a message id"
     assert _row(ghost).status == "published", "предпросмотр не трогает историю"
     assert _row(real).status == "published"
-    assert report["placeholder_chat_ids_all"] >= 1
+    assert report["placeholder_chat_ids_all"] >= base["placeholder_chat_ids_all"] + 1
 
 
 def test_a_real_publication_is_not_a_candidate():
-    with_evidence = _seed_post(platform="telegram", tg_message_id=999, tg_chat_id=-100123)
+    base = _plan()
+    _seed_post(platform="telegram", tg_message_id=999, tg_chat_id=-100123)
 
     report = publication_evidence_repair()
 
-    assert with_evidence not in report["sample"]
-    assert report["scanned"] == 0 or report["by_platform"]["telegram"] == 0
+    assert _delta(base, report, "telegram") == 0
+    assert report["scanned"] == base["scanned"]
 
 
 def test_imported_history_is_never_touched():
     """Archive rows are *told* to be published and own no farm-side id by design."""
+    base = _plan()
     imported = _seed_post(platform="telegram", generation_provider="history_import")
 
     report = publication_evidence_repair()
 
-    assert report["by_platform"]["telegram"] == 0
+    assert _delta(base, report, "telegram") == 0
     assert imported not in report["sample"]
-    assert report["imported_history_excluded"] >= 1
+    assert report["imported_history_excluded"] == base["imported_history_excluded"] + 1
 
 
 def test_dzen_publication_without_an_id_keeps_its_status():
@@ -155,25 +210,27 @@ def test_dzen_publication_without_an_id_keeps_its_status():
     accepted the article — so a missing *identifier* is a lost attribution key,
     not an un-published post.
     """
+    base = _plan()
     posted_no_id = _seed_post(platform="dzen")
     _journal(posted_no_id, "dzen", status="posted", remote_id=None, url=None)
 
     report = publication_evidence_repair()
 
-    assert report["by_platform"]["dzen"] == 0
-    assert report["posted_without_id"] >= 1
+    assert _delta(base, report, "dzen") == 0
+    assert report["posted_without_id"] == base["posted_without_id"] + 1
     assert _row(posted_no_id).status == "published"
 
 
 def test_dry_run_journal_is_not_evidence():
     """A `dry_run` row says the opposite of `posted`: the post is a candidate."""
+    base = _plan()
     dry = _seed_post(platform="dzen")
     _journal(dry, "dzen", status="dry_run", remote_id=f"dry-{_slug()}")
 
     report = publication_evidence_repair()
 
-    assert report["by_platform"]["dzen"] == 1
-    assert dry in report["sample"]
+    assert _delta(base, report, "dzen") == 1
+    assert report["scanned"] == base["scanned"] + 1
 
 
 def test_apply_refuses_without_the_consent_flag(tmp_path, monkeypatch):
@@ -200,31 +257,40 @@ def test_apply_refuses_without_a_fresh_backup_copy(tmp_path, monkeypatch):
 
 
 def test_apply_moves_the_row_to_the_state_that_admits_the_uncertainty(tmp_path, monkeypatch):
-    """`publish_unknown`, and the invented values go with the invented status."""
+    """`publish_unknown`, and the invented values go with the invented status.
+
+    The pass is sized to the whole candidate list, so the arithmetic closes: the
+    second preview proves it was the write, and not the seeding, that ended each
+    row's candidacy.
+    """
     _consented(tmp_path, monkeypatch)
     ghost = _seed_post(platform="telegram", tg_chat_id=-1)
+    plan = _plan()
 
-    report = publication_evidence_repair(apply=True)
+    report = publication_evidence_repair(apply=True, limit=max(1, plan["scanned"]))
 
-    assert report["moved"] == 1
-    assert report["cleared_chat_ids"] == 1
+    assert report["remaining"] == 0
+    assert report["cleared_chat_ids"] >= 1
     row = _row(ghost)
     assert row.status == "publish_unknown"
     assert row.published_at is None
     assert row.tg_chat_id is None, "`-1` was never an observed chat"
     assert "no remote evidence" in (row.publish_error or "")
+    assert _plan()["scanned"] == plan["scanned"] - report["moved"]
 
 
 def test_apply_is_bounded_and_reports_the_remainder(tmp_path, monkeypatch):
     _consented(tmp_path, monkeypatch)
-    ghosts = [_seed_post(platform="telegram", tg_chat_id=-1) for _ in range(3)]
+    plan = _plan()
+    for _ in range(3):
+        _seed_post(platform="telegram", tg_chat_id=-1)
 
     report = publication_evidence_repair(apply=True, limit=2)
 
     assert report["moved"] <= 2
-    assert report["remaining"] == len(ghosts) - report["moved"]
-    still_published = sum(1 for public_id in ghosts if _row(public_id).status == "published")
-    assert still_published == report["remaining"]
+    assert report["scanned"] == plan["scanned"] + 3
+    assert report["remaining"] == report["scanned"] - 2
+    assert _plan()["scanned"] == report["scanned"] - report["moved"]
 
 
 def test_the_step_is_registered_and_reports_zero_without_consent(monkeypatch):
@@ -264,6 +330,7 @@ def test_anything_else_is_not_consent(monkeypatch, value):
 
 
 def test_report_counts_are_exact_across_platforms():
+    base = _plan()
     _seed_post(platform="telegram", tg_chat_id=-1)
     _seed_post(platform="vk")
     _seed_post(platform="dzen")
@@ -271,5 +338,7 @@ def test_report_counts_are_exact_across_platforms():
 
     report = publication_evidence_repair()
 
-    assert report["by_platform"] == {"telegram": 1, "dzen": 1, "vk": 1}
-    assert report["scanned"] == 3
+    assert report["by_platform"] == {
+        platform: int(base["by_platform"][platform]) + 1 for platform in ("telegram", "dzen", "vk")
+    }
+    assert report["scanned"] == base["scanned"] + 3
