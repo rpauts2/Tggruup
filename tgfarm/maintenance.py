@@ -1148,8 +1148,13 @@ def _rules_reader_available(platform: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _rules_watch_switch(platform: str) -> tuple[bool, str]:
+def rules_watch_switch(platform: str) -> tuple[bool, str]:
     """Is this destination one the farm actually routes material to?
+
+    Public because `tgfarm.cli._rules_status_report` asks the same question before
+    the operator does: the read command reports the states this step acts on, so it
+    must call this predicate rather than re-deriving it from `is_platform_enabled`
+    — two predicates is two answers to one question.
 
     Returns ``(watch, switch_name)``; an empty `switch_name` means the platform
     centre has no switch for it to name.
@@ -1240,7 +1245,7 @@ def watch_destination_rules(
     rules did we publish under, and when did they change".
 
     What it does: takes the destinations our own history already names, keeps the
-    ones on a platform the farm actually routes material to (`_rules_watch_switch`)
+    ones on a platform the farm actually routes material to (`rules_watch_switch`)
     and with an existing reader, re-reads each one with
     that reader (which records through `record_policy_snapshot`, so the collapse
     window and the change detection are the existing ones and are not
@@ -1259,7 +1264,7 @@ def watch_destination_rules(
       reported as the named state `disabled` and is neither read nor written: the
       decision to hand the farm a publishing destination stays the operator's. A
       draft-only destination (vc.ru) has no such switch to flip and no automatic
-      publisher, so `_rules_watch_switch` watches it on the strength of the code
+      publisher, so `rules_watch_switch` watches it on the strength of the code
       fact that its editor is filled, and its entry carries no switch claim;
     * invent a number. `oldest_checked_age_hours` is `None` when no destination was
       read, a platform entry carries counters only for the work it actually
@@ -1344,7 +1349,7 @@ def watch_destination_rules(
     # even when the table is empty — which is the live shape.
     for platform in RULES_WATCH_PLATFORMS:
         count = known_platforms.get(platform, 0)
-        watch, switch_name = _rules_watch_switch(platform)
+        watch, switch_name = rules_watch_switch(platform)
         if not watch:
             # The named state, and nothing else: no row, no count, no age.
             report["platforms"][platform] = {

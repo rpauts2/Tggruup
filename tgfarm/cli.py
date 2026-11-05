@@ -607,12 +607,12 @@ RULES_STATE_MEANINGS: dict[str, str] = {
         "правила не читаются и история не пополняется"
     ),
     "enabled_no_known_destination": (
-        "решения ещё нет: площадка включена и читатель правил есть, но история не "
-        "называет ни одного назначения, поэтому перечитывать нечего; первое "
-        "назначение появится из выбора цели или публикации"
+        "решения ещё нет: наблюдение за площадкой включено и читатель правил есть, "
+        "но история не называет ни одного назначения, поэтому перечитывать нечего; "
+        "первое назначение появится из выбора цели или публикации"
     ),
     "watched": (
-        "площадка включена, читатель правил есть, история называет назначения; "
+        "наблюдение включено, читатель правил есть, история называет назначения; "
         "показаны сохранённые снимки, этим прогоном ничего не перечитывалось"
     ),
     "no_rules_reader": (
@@ -710,14 +710,14 @@ def rules_status_report(
     What it can prove and what it can only name: `disabled`, `no_rules_reader` and
     `enabled_no_known_destination` are read off the switches and the table,
     `nothing_to_watch` is their summary, and `watched` is reported with the same
-    three conditions the maintenance step checks before it reads anything
-    (switch on, reader exists, history names destinations). It is never a claim
+    three conditions the maintenance step checks before it reads anything (the
+    watch predicate `maintenance.rules_watch_switch`, a reader that exists, history
+    that names destinations). It is never a claim
     that a re-read happened — no counters of a pass are printed here at all, and
     whether a Reddit reader can actually be asked (OAuth) is a question for the
     pass that would use it.
     """
-    from tgfarm.maintenance import RULES_WATCH_PLATFORMS
-    from tgfarm.platforms import is_platform_enabled
+    from tgfarm.maintenance import RULES_WATCH_PLATFORMS, rules_watch_switch
 
     current = _rules_status_utc(now) or datetime.now(UTC)
     rows, destinations_total = _rules_snapshot_destinations(history_limit=history_limit)
@@ -743,13 +743,17 @@ def rules_status_report(
     for name in sorted(universe):
         has_reader = name in watch_set
         known = by_platform.get(name, [])
-        enabled = bool(is_platform_enabled(name)) if has_reader else None
+        # The step's own predicate, called rather than re-derived: `is_platform_enabled`
+        # is False for a draft-only destination and has no `enabled.*` key for it, so
+        # reading the switch alone here printed vc_ru as `disabled` and named a switch
+        # the platform centre does not have.
+        watch, switch_name = rules_watch_switch(name) if has_reader else (False, "")
         if not has_reader:
             # The history names it and no reader exists: our gap, said as ours,
             # whatever the switch says — a switch for a destination we cannot read
             # is not the interesting fact.
             state = "no_rules_reader"
-        elif not enabled:
+        elif not watch:
             state = "disabled"
         elif not known:
             state = "enabled_no_known_destination"
@@ -763,11 +767,13 @@ def rules_status_report(
             "reason": RULES_STATE_MEANINGS[state],
             "known": [_rules_destination_view(row, current=current) for row in known],
         }
-        if has_reader:
+        if switch_name:
             # The asymmetry maintenance keeps: a disabled platform carries a
-            # switch and no counters, a readerless one carries neither.
-            entry["switch"] = f"enabled.{name}"
-            entry["enabled"] = bool(enabled)
+            # switch and no counters, a readerless one carries neither. A draft-only
+            # destination is watched on the strength of its editor and has no switch
+            # at all, so it carries neither key rather than a `None`.
+            entry["switch"] = switch_name
+            entry["enabled"] = bool(watch)
         entries.append(entry)
 
     blocked = [

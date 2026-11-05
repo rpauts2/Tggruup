@@ -52,12 +52,12 @@ DISABLED_REASON = (
     "правила не читаются и история не пополняется"
 )
 NO_TARGET_REASON = (
-    "решения ещё нет: площадка включена и читатель правил есть, но история не "
-    "называет ни одного назначения, поэтому перечитывать нечего; первое "
-    "назначение появится из выбора цели или публикации"
+    "решения ещё нет: наблюдение за площадкой включено и читатель правил есть, "
+    "но история не называет ни одного назначения, поэтому перечитывать нечего; "
+    "первое назначение появится из выбора цели или публикации"
 )
 WATCHED_REASON = (
-    "площадка включена, читатель правил есть, история называет назначения; "
+    "наблюдение включено, читатель правил есть, история называет назначения; "
     "показаны сохранённые снимки, этим прогоном ничего не перечитывалось"
 )
 NO_READER_REASON = (
@@ -76,19 +76,21 @@ MD_HEAD = [
 ]
 
 #: `vc_ru` has a rules reader now, so the read side no longer calls it
-#: `no_rules_reader`; it asks `tgfarm/platforms.is_platform_enabled` and nothing
-#: else (tgfarm/cli.py:746-753, printed with the switch name at :769-770), while
-#: `maintenance._rules_watch_switch` additionally watches a draft-only destination
-#: that has no `enabled.*` key at all. So this command still answers `disabled`
-#: here. The lines are pinned as cli's own read-side answer, not as maintenance's;
-#: aligning the two predicates is a change to cli.py, which is not this file's.
-VCRU_DISABLED_TEXT = [
-    "vc_ru: disabled (переключатель enabled.vc_ru)",
+#: `no_rules_reader`. It is also the one watch platform the platform centre has no
+#: `enabled.*` switch for — `capability_of("vc_ru")` is `draft_only`, which is
+#: precisely why `maintenance.rules_watch_switch` exists and why cli calls it
+#: instead of asking `is_platform_enabled`: the switch answers False for a
+#: destination whose rules the step can re-read, so the old read side printed
+#: `disabled` and named a switch that does not exist. The shape below is that
+#: predicate's answer for an empty history: a state, a reason, and no switch key.
+VCRU_SWITCHLESS_TEXT = [
+    "vc_ru: enabled_no_known_destination",
     f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
-    f"  причина: {DISABLED_REASON}",
+    f"  причина: {NO_TARGET_REASON}",
 ]
-VCRU_DISABLED_ROW = (
-    f"| vc_ru | disabled | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {DISABLED_REASON} |"
+VCRU_SWITCHLESS_ROW = (
+    f"| vc_ru | enabled_no_known_destination | {NO_SNAPSHOT} | {NO_SNAPSHOT} | "
+    f"{NO_SNAPSHOT} | {NO_TARGET_REASON} |"
 )
 
 
@@ -231,7 +233,7 @@ def test_no_stored_snapshot_prints_states_and_reasons_never_an_empty_table(probe
         "reddit: disabled (переключатель enabled.reddit)",
         f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
         f"  причина: {DISABLED_REASON}",
-        *VCRU_DISABLED_TEXT,
+        *VCRU_SWITCHLESS_TEXT,
     ]
     rendered = "\n".join(_text(report))
     assert "0 ч" not in rendered
@@ -251,7 +253,7 @@ def test_the_empty_history_still_renders_a_table_not_a_blank(probe):
         f"{DISABLED_REASON} |",
         f"| reddit | disabled | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {NO_SNAPSHOT} | "
         f"{DISABLED_REASON} |",
-        VCRU_DISABLED_ROW,
+        VCRU_SWITCHLESS_ROW,
     ]
 
 
@@ -285,7 +287,7 @@ def test_enabled_without_a_known_destination_is_its_own_line(probe):
         "reddit: enabled_no_known_destination (переключатель enabled.reddit)",
         f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
         f"  причина: {NO_TARGET_REASON}",
-        *VCRU_DISABLED_TEXT,
+        *VCRU_SWITCHLESS_TEXT,
     ]
 
 
@@ -337,9 +339,14 @@ def test_vc_ru_is_no_longer_reported_as_a_missing_reader(probe):
     so `no_rules_reader` and the «пробел в коде TgFarm» line must stop being
     produced for it — while a platform with no reader at all keeps both, which the
     test above pins with a synthetic id.
+
+    The switch list is left empty on purpose: that is the production shape of a
+    draft-only destination, which has no `enabled.*` key to flip. `enabled` here is
+    the fake for `is_platform_enabled`, and a report that needed it to call vc.ru
+    watched would be a report that still reads the switch.
     """
     row = _stored("vc_ru", "p78cli_topic", name="Финансы", target_type="topic")
-    report = probe(rows=[row], enabled=["vc_ru"])
+    report = probe(rows=[row], enabled=())
     entry = _entry(report, "vc_ru")
     rendered = "\n".join(_text(report))
 
@@ -349,6 +356,58 @@ def test_vc_ru_is_no_longer_reported_as_a_missing_reader(probe):
     assert entry["reason"] == WATCHED_REASON
     assert "vc_ru: no_rules_reader" not in rendered
     assert "no_rules_reader" not in rendered, "the reader gap is closed for every state here"
+
+
+def test_a_destination_without_a_switch_is_watched_without_naming_one(probe):
+    """One predicate, two answers: the watch is real, the switch is not.
+
+    The read command used to call `is_platform_enabled` and print
+    `disabled (переключатель enabled.vc_ru)` for a destination whose rules the
+    watching step re-reads on the strength of its editor. Both halves of that were
+    false, and the false switch name was the more expensive one: an operator told
+    to flip `enabled.vc_ru` looks for a key the platform centre does not have.
+    """
+    row = _stored("vc_ru", "p78cli_topic", name="Финансы", target_type="topic")
+    report = probe(rows=[row], enabled=())
+    entry = _entry(report, "vc_ru")
+
+    assert "switch" not in entry and "enabled" not in entry
+    assert "enabled.vc_ru" not in "\n".join(_text(report))
+    assert "enabled.vc_ru" not in "\n".join(_markdown(report))
+    # The same report still names the switch it really reads, so the absence above
+    # is the predicate's answer for this destination and not a field the report lost.
+    switched_off = _entry(report, "pikabu")
+    assert switched_off["state"] == "disabled"
+    assert switched_off["switch"] == "enabled.pikabu"
+    assert switched_off["enabled"] is False
+    assert report["blocked"] == []
+
+
+def test_the_read_side_calls_the_watch_step_predicate(monkeypatch):
+    """`disabled` must come from `rules_watch_switch`, not from a re-derived switch.
+
+    Called rather than imitated: the guard records which platform the read command
+    asked about and answers False for all of them, so a `disabled` state that still
+    appears proves the predicate is on the path. Re-reading `is_platform_enabled`
+    here would silently re-open the vc.ru contradiction P80 closed.
+    """
+    asked: list[str] = []
+
+    def _predicate(platform: str) -> tuple[bool, str]:
+        asked.append(platform)
+        return False, f"enabled.{platform}"
+
+    monkeypatch.setattr(platforms, "is_platform_enabled", lambda name: False)
+    monkeypatch.setattr(maintenance, "rules_watch_switch", _predicate)
+    monkeypatch.setattr(cli, "_rules_snapshot_destinations", lambda *, history_limit: ([], 0))
+
+    report = cli.rules_status_report(now=NOW)
+
+    assert sorted(asked) == sorted(WATCH)
+    assert [item["state"] for item in report["platforms"]] == ["disabled"] * len(WATCH)
+    assert [item["switch"] for item in report["platforms"]] == [
+        f"enabled.{name}" for name in sorted(WATCH)
+    ]
 
 
 def test_nothing_to_watch_is_the_summary_when_no_destination_is_stored(probe):
@@ -420,14 +479,14 @@ def test_a_mixed_report_keeps_every_state_on_its_own_line(probe):
         ),
         "  назначений с сохранённым снимком правил: 1",
         f"  причина: {WATCHED_REASON}",
-        *VCRU_DISABLED_TEXT,
+        *VCRU_SWITCHLESS_TEXT,
         f"пробел в коде TgFarm: {READERLESS}:no_rules_reader",
     ]
     assert [item["state"] for item in report["platforms"]] == [
         "no_rules_reader",
         "disabled",
         "watched",
-        "disabled",
+        "enabled_no_known_destination",
     ]
     assert [item["platform"] for item in report["platforms"]] == [
         READERLESS,

@@ -51,7 +51,7 @@ REDDIT_CHANGED_RULE = {"short_name": "Rule 1", "description": "Only Python relea
 COMMUNITY_URL = "https://pikabu.ru/community/"
 #: The watched platforms that answer to an operator switch. `vc_ru` is not one of
 #: them: it has no `enabled.*` key at all, and the step watches it because the farm
-#: fills its editor (`maintenance._rules_watch_switch`), which is pinned in
+#: fills its editor (`maintenance.rules_watch_switch`), which is pinned in
 #: `tests/test_maintenance_vc_rules_watch.py`.
 SWITCHED_WATCH_PLATFORMS = tuple(
     name for name in RULES_WATCH_PLATFORMS if capability_of(name) != "draft_only"
