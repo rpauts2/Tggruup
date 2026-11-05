@@ -30,7 +30,6 @@ These tests pin the six things the fix has to keep true:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -241,7 +240,9 @@ def test_a_channel_row_missing_from_the_table_reports_unknown_not_telegram():
     """
     channel = _channel(platform=_platform())
     public_id = _unknown(channel, created_h=-42000)
-    path = os.environ["DATABASE_URL"].replace("sqlite:///", "")
+    # The engine is the truth about where `session_scope()` wrote; a leaked
+    # `DATABASE_URL` from another module must not send this read to a fresh file.
+    path = get_engine().url.database
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("DELETE FROM channels WHERE id = ?", (channel,))

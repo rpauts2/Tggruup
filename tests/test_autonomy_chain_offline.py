@@ -34,6 +34,7 @@ Markers: `w17chain`. No P-numbers in this file, its ids, or its markers.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import socket
 import uuid
@@ -183,8 +184,14 @@ class OutboundRecorder:
 
     LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
 
+    #: Transports the app cannot even import (`pyproject.toml` has httpx, not
+    #: these two). Patched when present, named in `missing` when absent.
+    OPTIONAL_TRANSPORTS = ("requests", "aiohttp")
+
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.guarded: list[str] = []
+        self.missing: list[str] = []
         self._undo: list[tuple[object, str, object]] = []
 
     def _hit(self, transport: str, target: object) -> None:
@@ -194,12 +201,13 @@ class OutboundRecorder:
 
     def _patch(self, owner: object, name: str, value: object) -> None:
         self._undo.append((owner, name, getattr(owner, name)))
+        self.guarded.append(
+            f"{getattr(owner, '__module__', '?')}.{getattr(owner, '__name__', '?')}.{name}"
+        )
         setattr(owner, name, value)
 
     def install(self) -> None:
-        import aiohttp
         import httpx
-        import requests
 
         recorder = self
 
@@ -215,11 +223,21 @@ class OutboundRecorder:
         async def httpx_atransport(transport_self, request):
             recorder._hit("httpx.atransport", getattr(request, "url", request))
 
-        def requests_send(session_self, request, *args, **kwargs):
-            recorder._hit("requests", getattr(request, "url", request))
+        self._patch(httpx.Client, "send", httpx_send)
+        self._patch(httpx.AsyncClient, "send", httpx_asend)
+        self._patch(httpx.HTTPTransport, "handle_request", httpx_transport)
+        self._patch(httpx.AsyncHTTPTransport, "handle_async_request", httpx_atransport)
 
-        async def aiohttp_request(session_self, method, url, *args, **kwargs):
-            recorder._hit("aiohttp", f"{method} {url}")
+        for module_name, owner_name, method in (
+            ("requests", "Session", "send"),
+            ("aiohttp", "ClientSession", "_request"),
+        ):
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError:
+                self.missing.append(module_name)
+                continue
+            self._patch(getattr(module, owner_name), method, self._handler(module_name))
 
         real_connect = socket.socket.connect
 
@@ -229,13 +247,23 @@ class OutboundRecorder:
                 recorder._hit("socket", host)
             return real_connect(sock_self, address)
 
-        self._patch(httpx.Client, "send", httpx_send)
-        self._patch(httpx.AsyncClient, "send", httpx_asend)
-        self._patch(httpx.HTTPTransport, "handle_request", httpx_transport)
-        self._patch(httpx.AsyncHTTPTransport, "handle_async_request", httpx_atransport)
-        self._patch(requests.Session, "send", requests_send)
-        self._patch(aiohttp.ClientSession, "_request", aiohttp_request)
+        # Last and unconditional: whatever an absent package would have hidden,
+        # a real socket to a non-local host still trips.
         self._patch(socket.socket, "connect", guarded_connect)
+
+    def _handler(self, transport: str):
+        """One wrapper per transport, keeping the same signatures the patches replace."""
+        if transport == "requests":
+
+            def send(session_self, request, *args, **kwargs):
+                self._hit("requests", getattr(request, "url", request))
+
+            return send
+
+        async def request(session_self, method, url, *args, **kwargs):
+            self._hit("aiohttp", f"{method} {url}")
+
+        return request
 
     def uninstall(self) -> None:
         while self._undo:
@@ -574,12 +602,12 @@ def chain(tmp_path_factory):
     from tgfarm.db.vector import get_index
 
     recorder = OutboundRecorder()
-    recorder.install()
-    _reset_runtime_caches()
-    get_index().clear()
-    ensure_bootstrapped()
 
     try:
+        recorder.install()
+        _reset_runtime_caches()
+        get_index().clear()
+        ensure_bootstrapped()
         run = asyncio.run(_build_chain(recorder))
     except BaseException:
         recorder.uninstall()
@@ -799,6 +827,13 @@ def test_w17chain_zero_outbound_calls_during_the_full_chain(chain):
     assert chain["recorder"].calls == chain["calls_during_chain"], (
         "a test after the build appended to the recorder before the invariant check"
     )
+    guarded = " ".join(chain["recorder"].guarded)
+    assert "httpx" in guarded and "socket" in guarded, guarded
+    for name in chain["recorder"].OPTIONAL_TRANSPORTS:
+        if name in chain["recorder"].missing:
+            assert name not in guarded, f"{name} reported absent yet patched"
+        else:
+            assert name in guarded, f"{name} is installed here and the guard must say so"
 
 
 # --------------------------------------------------- links NOT drivable offline
