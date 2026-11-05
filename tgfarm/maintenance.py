@@ -287,6 +287,140 @@ def _fresh_backup_copy(max_age_hours: float | None = None) -> dict:
     }
 
 
+#: Identifiers one grouped journal read may ask for. The same reason as
+#: `s8_analytics.formats._IN_CHUNK`: an unbounded `IN (...)` over the whole
+#: candidate list is a query the database should not have to plan.
+_JOURNAL_READ_CHUNK = 500
+
+
+def _journal_recorded_identifiers(session, platform: str, public_ids) -> dict[str, list[object]]:
+    """What the journal recorded as this platform's identifier, per post.
+
+    The sweep judges history and holds no adapter result, and `posts` has no
+    remote-identifier column for anything but Telegram: the per-attempt
+    `crosspost_logs` entry is the only persisted form of the owner's second fact.
+
+    Two things this deliberately does *not* do:
+
+    * decide which value is proof. They are collected verbatim — `None`, the empty
+      string and a placeholder included — deduplicated only so one value is not
+      asked twice, and handed to :func:`tgfarm.s7_publish.has_publication_evidence`,
+      which owns the placeholder vocabulary;
+    * decide which journal row may carry one. The journal's own vocabulary
+      (:mod:`tgfarm.crosspost_journal`) already classifies `dry_run` and
+      `retry_authorized` as the statuses the pair re-opens from — a dry run "was
+      never sent anywhere", and an authorized retry is the operator saying the
+      destination does not hold it — so an identifier recorded on such a row is
+      excluded here *by that class*, not by a spelling of it. The live base is why
+      the exclusion exists: two `crosspost_logs` rows carry a hash-shaped
+      `remote_id` on a `dry_run` entry, written before the publishers settled on
+      the placeholder shape the owner recognises, and treating one as proof would
+      spare a phantom publication.
+    """
+    from sqlalchemy import select
+
+    from tgfarm.crosspost_journal import JournalStatusClass, journal_status_class
+    from tgfarm.db.models import CrosspostLog
+
+    ordered = sorted({str(value) for value in public_ids})
+    grouped: dict[str, dict[object, None]] = {}
+    for start in range(0, len(ordered), _JOURNAL_READ_CHUNK):
+        chunk = ordered[start : start + _JOURNAL_READ_CHUNK]
+        for public_id, recorded, status in session.execute(
+            select(
+                CrosspostLog.post_public_id,
+                CrosspostLog.remote_id,
+                CrosspostLog.status,
+            )
+            .where(
+                CrosspostLog.platform == platform,
+                CrosspostLog.post_public_id.in_(chunk),
+            )
+            .order_by(CrosspostLog.id)
+        ).all():
+            if journal_status_class(status) is JournalStatusClass.REOPEN:
+                continue
+            grouped.setdefault(str(public_id), {})[recorded] = None
+    return {public_id: list(values) for public_id, values in grouped.items()}
+
+
+def _row_has_publication_evidence(
+    session,
+    *,
+    platform: str,
+    rule: str | None,
+    post_id: int,
+    public_id: str,
+    message_id: object,
+    identifiers: list[object] | None,
+) -> bool:
+    """May this row be called published? Asked of the owner, not re-derived here.
+
+    :func:`tgfarm.s7_publish.has_publication_evidence` is the predicate the
+    publisher applies before it writes `published` in the first place, so the
+    sweep that cleans up after that write has to ask it rather than keep a second
+    copy: two copies drifted apart once the placeholder identifiers arrived, and a
+    copy that is one fact narrower than the owner un-publishes real work.
+
+    The one per-platform question — *which* fact is this platform's own proof — is
+    answered with `s8_analytics.formats.EVIDENCE_RULES`, the same table the formats
+    report and the coverage audit read: a Telegram message id is not evidence that
+    a Dzen article exists, so the column is only offered to the owner on the
+    platform whose rule names it.
+    """
+    from tgfarm.s7_publish import has_publication_evidence
+    from tgfarm.s8_analytics.formats import RULE_MESSAGE_ID
+
+    accepted_message_id = message_id if rule == RULE_MESSAGE_ID else None
+    for remote_id in identifiers or (None,):
+        if has_publication_evidence(
+            session,
+            public_id=public_id,
+            platform=platform,
+            post_id=post_id,
+            message_id=accepted_message_id,
+            remote_id=remote_id,
+        ):
+            return True
+    return False
+
+
+def _posted_without_reference(session, platform: str, not_imported) -> int:
+    """Published rows on a journal-ruled platform whose journal entry points at nothing.
+
+    Reporting, not deciding: these rows keep their status, and the number is the
+    operator's evidence that a lost identifier is an attribution problem rather
+    than an unpublished post. Both halves are `s8_analytics.coverage`'s own SQL
+    builders — the proof condition and the attribution condition — so this file
+    spells neither the journal status nor the emptiness of an identifier.
+
+    Counted per *post*, the way the coverage audit counts it: one published row
+    with two `posted` entries, one of them carrying an id, is an attributed
+    publication, not a row in both buckets.
+    """
+    from sqlalchemy import func, not_, select
+
+    from tgfarm.db.models import Channel as ChannelRow
+    from tgfarm.db.models import Post as PostRow
+    from tgfarm.s8_analytics.coverage import _attributed_condition, _proof_condition
+
+    return int(
+        session.execute(
+            select(func.count(PostRow.id))
+            .select_from(PostRow)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
+            .where(
+                PostRow.status == "published",
+                not_imported,
+                func.lower(ChannelRow.platform) == platform,
+                _proof_condition(platform),
+                not_(_attributed_condition(platform)),
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
 def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dict:
     """Report posts that claim `published` while carrying no remote evidence.
 
@@ -297,16 +431,38 @@ def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dic
     never happened still counted as evidence. The live database (2026-11-05) holds
     15 telegram rows of exactly that shape.
 
-    Evidence, per platform:
+    Which rows those are is not this function's decision. It asks
+    :func:`tgfarm.s7_publish.has_publication_evidence` — the predicate the
+    publisher applies *before* it ever writes `published` — of every row on every
+    platform that has a proof rule, and repairs exactly the rows the owner answers
+    `False` for. Enumerating the platforms is `s8_analytics.formats.EVIDENCE_RULES`'
+    job, the same table the formats report and the coverage audit read, so a
+    platform the farm has no proof rule for is not swept at all and a rule added
+    there reaches this sweep without a second list to update.
 
-    * telegram — `posts.tg_message_id`: the Bot API returns it on every accepted
-      message, so `NULL` means the farm has nothing to point at;
-    * dzen / vk — a `crosspost_logs` row for that post and platform with
-      `status = "posted"`. The publisher journals that status only when the remote
-      side accepted the article, so a row without `remote_id`/`url` is still
-      evidence: 29 of the 37 dzen publications are in that shape, and treating a
-      missing *id* as a missing *publication* would un-publish real work. Those
-      rows are reported (`posted_without_id`) and left alone.
+    Two consequences of asking the owner instead of paraphrasing it, both measured
+    on the live base (2026-11-05, read-only) before and after the delegation:
+
+    * a journal-ruled row whose journal carries a real platform identifier on an
+      entry the journal does not disclaim, but no accepted entry, is *evidence* to
+      the owner and was a repair candidate here. Live count of that cell: 0 of the
+      461 dzen/vk `published` rows — the 133 `failed` vk entries and 106 `skipped`
+      dzen entries of published posts all carry an empty identifier, so the farm
+      has not yet written the shape. It is writable today: `log_result` persists
+      whatever the adapter parsed alongside whatever status it settled on;
+    * a Telegram row with no message id but an accepted journal entry is likewise
+      evidence to the owner and was a candidate here. Live count: 0, because the
+      live `crosspost_logs` names only dzen/max/vk/x — Telegram has never been a
+      crosspost destination.
+
+    The repair set on live data is therefore the same 15 telegram rows as before;
+    what changed is that no future shape of those two cells can be rewritten by
+    this step, because this step no longer owns a fact to get wrong. The one cell
+    that must *not* be spared is closed too: 6 live journal rows carry a
+    hash-shaped identifier on a `dry_run` entry (2 dzen, 2 max, 2 x), written
+    before the publishers settled on the placeholder the owner recognises, and
+    those rows are excluded from the identifier read by the journal's own
+    never-sent class rather than by a spelling of it.
 
     With `apply` the rows move to `publish_unknown`, the one state in the existing
     vocabulary that admits the uncertainty ("the remote side may have it — verify
@@ -316,12 +472,12 @@ def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dic
     per pass), previews by default, refuses to write without the consent flag *and*
     a fresh copy in `backup/`, and never touches imported history.
     """
-    from sqlalchemy import func, not_, or_, select
+    from sqlalchemy import func, or_, select
 
     from tgfarm.db.models import Channel as ChannelRow
-    from tgfarm.db.models import CrosspostLog
     from tgfarm.db.models import OperatorLog
     from tgfarm.db.models import Post as PostRow
+    from tgfarm.s8_analytics.formats import EVIDENCE_RULES, RULE_JOURNAL
     from tgfarm.tg_sync import UNKNOWN_CHAT_PLACEHOLDERS
 
     report: dict[str, object] = {
@@ -363,55 +519,44 @@ def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dic
         )
 
         candidates: list[tuple[int, str, str, str]] = []
-        for platform in ("telegram", "dzen", "vk"):
-            base = (
-                select(PostRow.id, PostRow.public_id)
+        # Iterated in the owner's own order, so `by_platform` keeps the key order
+        # the report has always had without this file naming the platforms again.
+        for platform, rule in EVIDENCE_RULES.items():
+            rows = session.execute(
+                select(PostRow.id, PostRow.public_id, PostRow.tg_message_id)
                 .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
                 .where(
                     PostRow.status == "published",
                     not_imported,
                     func.lower(ChannelRow.platform) == platform,
                 )
+            ).all()
+            recorded = _journal_recorded_identifiers(
+                session, platform, [str(row[1]) for row in rows]
             )
-            if platform == "telegram":
-                rows = session.execute(base.where(PostRow.tg_message_id.is_(None))).all()
-            else:
-                journaled = (
-                    select(CrosspostLog.id)
-                    .where(
-                        CrosspostLog.post_public_id == PostRow.public_id,
-                        CrosspostLog.platform == platform,
-                        CrosspostLog.status == "posted",
-                    )
-                    .exists()
+            unevidenced = [
+                row
+                for row in rows
+                if not _row_has_publication_evidence(
+                    session,
+                    platform=platform,
+                    rule=rule,
+                    post_id=int(row[0]),
+                    public_id=str(row[1]),
+                    message_id=row[2],
+                    identifiers=recorded.get(str(row[1])),
                 )
-                rows = session.execute(base.where(not_(journaled))).all()
-                # The deliberate exclusion: a `posted` row with neither an id nor a
-                # URL is a real publication whose identifier the parser never found.
-                posted_without_ref = (
-                    select(func.count(func.distinct(PostRow.id)))
-                    .select_from(PostRow)
-                    .join(ChannelRow, ChannelRow.id == PostRow.channel_id)
-                    .join(
-                        CrosspostLog,
-                        (CrosspostLog.post_public_id == PostRow.public_id)
-                        & (CrosspostLog.platform == platform),
-                    )
-                    .where(
-                        PostRow.status == "published",
-                        not_imported,
-                        func.lower(ChannelRow.platform) == platform,
-                        CrosspostLog.status == "posted",
-                        or_(CrosspostLog.remote_id.is_(None), CrosspostLog.remote_id == ""),
-                        or_(CrosspostLog.url.is_(None), CrosspostLog.url == ""),
-                    )
-                )
-                report["posted_without_id"] += int(
-                    session.execute(posted_without_ref).scalar_one() or 0
-                )
-            report["by_platform"][platform] = len(rows)
-            for row_id, public_id in rows:
+            ]
+            report["by_platform"][platform] = len(unevidenced)
+            for row_id, public_id, _ in unevidenced:
                 candidates.append((int(row_id), str(public_id), platform, ""))
+            # The deliberate exclusion, counted for the operator rather than
+            # applied to the row: a real publication whose identifier the parser
+            # never found keeps its status.
+            if rule == RULE_JOURNAL:
+                report["posted_without_id"] += _posted_without_reference(
+                    session, platform, not_imported
+                )
 
     report["remaining"] = max(0, len(candidates) - max(1, int(limit)))
     chosen = candidates[: max(1, int(limit))]
@@ -435,9 +580,10 @@ def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dic
         return report
 
     reason = (
-        "history: marked published with no remote evidence of any kind "
-        "(no telegram message id / no `posted` journal row); verify the "
-        "destination before trusting or retrying it"
+        "history: marked published with no remote evidence of any kind — the "
+        "publisher's own predicate (`s7_publish.has_publication_evidence`) found "
+        "no message id, no platform identifier in the journal and no accepted "
+        "journal entry; verify the destination before trusting or retrying it"
     )
     moved = 0
     cleared = 0
