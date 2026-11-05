@@ -312,8 +312,9 @@ def _journal_recorded_identifiers(session, platform: str, public_ids) -> dict[st
       never sent anywhere", and an authorized retry is the operator saying the
       destination does not hold it — so an identifier recorded on such a row is
       excluded here *by that class*, not by a spelling of it. The live base is why
-      the exclusion exists: two `crosspost_logs` rows carry a hash-shaped
-      `remote_id` on a `dry_run` entry, written before the publishers settled on
+      the exclusion exists: 6 `crosspost_logs` rows carry a hash-shaped `remote_id`
+      on a `dry_run` entry (2 dzen, 2 max, 2 x — only the dzen pair is on a platform
+      this sweep asks about), written by `s9_growth` before the publishers settled on
       the placeholder shape the owner recognises, and treating one as proof would
       spare a phantom publication.
     """
@@ -348,7 +349,7 @@ def _row_has_publication_evidence(
     session,
     *,
     platform: str,
-    rule: str | None,
+    rule: str,
     post_id: int,
     public_id: str,
     message_id: object,
@@ -367,6 +368,14 @@ def _row_has_publication_evidence(
     report and the coverage audit read: a Telegram message id is not evidence that
     a Dzen article exists, so the column is only offered to the owner on the
     platform whose rule names it.
+
+    Which platforms are asked at all is decided one level up, by iterating that
+    table — hence `rule` here is required rather than looked up. A destination the
+    farm journals but has no proof rule for (`max`, `x` in the live base) is never
+    offered to this function, so no row of it can be swept: an absent rule means
+    "this sweep cannot disprove the publication", not "it is unpublished", and
+    answering that question by re-deriving a platform list here is exactly the
+    copy that drifted.
     """
     from tgfarm.s7_publish import has_publication_evidence
     from tgfarm.s8_analytics.formats import RULE_MESSAGE_ID
@@ -446,19 +455,22 @@ def publication_evidence_repair(*, apply: bool = False, limit: int = 200) -> dic
     * a journal-ruled row whose journal carries a real platform identifier on an
       entry the journal does not disclaim, but no accepted entry, is *evidence* to
       the owner and was a repair candidate here. Live count of that cell: 0 of the
-      461 dzen/vk `published` rows — the 133 `failed` vk entries and 106 `skipped`
-      dzen entries of published posts all carry an empty identifier, so the farm
-      has not yet written the shape. It is writable today: `log_result` persists
-      whatever the adapter parsed alongside whatever status it settled on;
+      462 dzen/vk `published` rows. Their journal entries are 37 `posted` plus 24
+      placeholder-only `dry_run` on dzen, and 405 `posted` plus 133 identifier-less
+      `failed` on vk: nowhere does a non-accepted entry carry an identifier the
+      adapters did not invent, so the farm has not yet written the shape. It is
+      writable today: `log_result` persists whatever the adapter parsed alongside
+      whatever status it settled on;
     * a Telegram row with no message id but an accepted journal entry is likewise
       evidence to the owner and was a candidate here. Live count: 0, because the
       live `crosspost_logs` names only dzen/max/vk/x — Telegram has never been a
       crosspost destination.
 
-    The repair set on live data is therefore the same 15 telegram rows as before;
-    what changed is that no future shape of those two cells can be rewritten by
-    this step, because this step no longer owns a fact to get wrong. The one cell
-    that must *not* be spared is closed too: 6 live journal rows carry a
+    The repair set on live data is therefore the same 37 rows as before — 15
+    telegram, 22 dzen, 0 vk, of 477 `published` rows, with no imported-history row
+    among them; what changed is that no future shape of those two cells can be
+    rewritten by this step, because this step no longer owns a fact to get wrong. The
+    one cell that must *not* be spared is closed too: 6 live journal rows carry a
     hash-shaped identifier on a `dry_run` entry (2 dzen, 2 max, 2 x), written
     before the publishers settled on the placeholder the owner recognises, and
     those rows are excluded from the identifier read by the journal's own
@@ -839,11 +851,13 @@ def requeue_failed_publishes(
     public_ids = [row["public_id"] for row in scanned]
     journal: set[tuple[str, str]] = set()
     with session_scope() as session:
+        from tgfarm.crosspost_journal import JOURNAL_STATUS_POSTED
+
         accepted = (
             session.execute(
                 select(CrosspostLog.post_public_id, func.lower(CrosspostLog.platform))
                 .where(
-                    CrosspostLog.status == "posted",
+                    CrosspostLog.status == JOURNAL_STATUS_POSTED,
                     CrosspostLog.post_public_id.in_(public_ids),
                 )
                 .distinct()
