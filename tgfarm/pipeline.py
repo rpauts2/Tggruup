@@ -179,6 +179,23 @@ def _stage_meta(meta: dict | None, timer: StageTimer) -> dict:
     return out
 
 
+async def _journal(*args: object, **kwargs: object) -> None:
+    """Append a journal row that has to survive the unwinding it is describing.
+
+    Only the cancellation handlers use this, because only they run while the task
+    is still being cancelled: the watchdog can call `cancel()` on the same task
+    again while it unwinds, and a plain `await to_thread(...)` in the handler would
+    then be interrupted before the row landed — losing precisely the trace these
+    handlers exist to write. `shield` lets the executor finish the insert while we
+    get out, and swallowing the second `CancelledError` is safe because every
+    caller re-raises immediately after.
+    """
+    try:
+        await asyncio.shield(to_thread(_record, *args, **kwargs))
+    except asyncio.CancelledError:
+        pass
+
+
 async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = None) -> object:
     """Run one stage, record its outcome, and never let it kill the cycle.
 
@@ -187,6 +204,10 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
     numbers from the timers the stage opens inside itself, including the ones that
     exit on a worker thread. `duration_ms` has always been this outer timer's own
     wall time, so it already covers work the stage does outside its sub-timers.
+
+    Isolation means a failed stage does not stop the other stages; it does not
+    mean the cycle is unkillable. A cancellation is journalled on the way out and
+    then passed back up.
     """
     timer = StageTimer(name)
     try:
@@ -205,6 +226,31 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
             timer.reported_in, timer.reported_out, timer.duration_ms, None, _stage_meta(meta, timer),
         )
         return value
+    except asyncio.CancelledError:
+        # Cancellation is a stage outcome like any other, and until now it was the
+        # only one that reached no journal at all: `CancelledError` is a
+        # `BaseException`, so the clause below never saw it. Live evidence
+        # (2026-11-05) was a run journalling nothing for `s5_quality` while the log
+        # said the stage had failed. What the timer measured before the cut is all
+        # this stage will ever report, so it is written first — and the cancellation
+        # is then re-raised, because a stage that swallowed it makes the farm
+        # impossible to stop.
+        message = f"cancelled after {timer.duration_ms}ms"
+        log.warning("stage %s cancelled: %s", name, message)
+        result.stages[name] = {
+            "ok": False,
+            "cancelled": True,
+            "error": message,
+            "duration_ms": timer.duration_ms,
+            "items_in": timer.reported_in,
+            "items_out": timer.reported_out,
+        }
+        result.errors.append(f"{name}: {message}")
+        await _journal(
+            result.run_id, name, "cancelled",
+            timer.reported_in, timer.reported_out, timer.duration_ms, message, _stage_meta(meta, timer),
+        )
+        raise
     except Exception as exc:  # noqa: BLE001 - stage isolation is the point
         message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=600)
         log.error("stage %s failed: %s", name, message)
@@ -1542,7 +1588,13 @@ async def _guarded_cycle(
     collect: bool = True,
     max_clusters: int = MAX_CLUSTERS_PER_CYCLE,
 ) -> CycleResult | None:
-    """Run one full cycle, skipping overlap and bounding its runtime."""
+    """Run one full cycle, skipping overlap and bounding its runtime.
+
+    Every way this task can end is journalled, and cancelled is one of them: the
+    job must not die on the scheduler, but a cycle that was cut short still has to
+    leave a `cycle/cancelled` row that is distinguishable from a timeout or an
+    error after the fact.
+    """
     global _cycle_finished_at, _cycle_state, _active_cycle_task
 
     current_task = asyncio.current_task()
@@ -1573,6 +1625,24 @@ async def _guarded_cycle(
                 error=f"cycle exceeded {timeout}s",
             )
             return None
+        except asyncio.CancelledError:
+            # `cycle/timeout` says the overran, `cycle/error` says the crashed, and
+            # a cycle the watchdog cut short in its sleep said neither: on
+            # 2026-11-05 the journal held no `cycle` row at all while the log said
+            # `cancelling stale task`, so the farm's commonest ending read as an
+            # idle system. `cancelled` is a distinct outcome, not a synonym for
+            # either — the work was stopped, not refused — and it is re-raised so
+            # the cancellation keeps travelling to whoever asked for it.
+            _cycle_state = "cancelled"
+            _cycle_finished_at = datetime.now(UTC)
+            log.error("cycle cancelled while its %ss limit was in force", timeout)
+            await _journal(
+                f"guard-{uuid.uuid4().hex[:8]}",
+                "cycle",
+                "cancelled",
+                error=f"cancelled while the {timeout}s cycle limit was in force",
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - scheduler jobs must not die
             _cycle_state = "failed"
             _cycle_finished_at = datetime.now(UTC)
@@ -1590,6 +1660,29 @@ async def _guarded_cycle(
             _active_cycle_task = None
 
 
+#: The four numbers a publish tick is expected to report, in the order the
+#: decision has always carried them.
+PUBLISH_DECISION_FIELDS = ("due", "published", "failed", "scheduled")
+
+
+def _reported_count(payload: dict, field: str) -> int | None:
+    """One publish counter as measured, or None when the tick never reported it.
+
+    `int(payload.get("due") or 0)` could not tell "the queue held nothing" from
+    "the stage did not say", and printed an invented zero for the second — the
+    same collapse the journal already refuses for `items_in` / `items_out`. The
+    decision block therefore carries the same three-state contract as those
+    columns: `None` for unreported, plus `counters` and `unmeasured` beside it.
+    """
+    value = payload.get(field)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _publish_decision(value: object) -> dict:
     """Reduce one `s7_publish` payload to the reason a tick published what it did.
 
@@ -1598,6 +1691,9 @@ def _publish_decision(value: object) -> dict:
     behind a disabled platform, waiting for a human approval, or blocked on an
     offline model. The reason is what an operator needs, so it is recorded next
     to the counters instead of being inferred from them.
+
+    A counter the tick never reported is `None`, not `0`: "0 due" is a claim
+    about the queue, and a tick that said nothing is not entitled to make it.
     """
     if value is None:
         return {"reason": "stage_error", "measured": False}
@@ -1607,9 +1703,10 @@ def _publish_decision(value: object) -> dict:
         for reason, count in (payload.get("gates") or {}).items()
         if int(count)
     }
-    published = int(payload.get("published") or 0)
-    failed = int(payload.get("failed") or 0)
-    due = int(payload.get("due") or 0)
+    counts = {name: _reported_count(payload, name) for name in PUBLISH_DECISION_FIELDS}
+    due = counts["due"]
+    published = counts["published"]
+    failed = counts["failed"]
     if published:
         reason = "published"
     elif due and failed:
@@ -1623,13 +1720,15 @@ def _publish_decision(value: object) -> dict:
         reason = "attempted_not_sent"
     else:
         reason = "nothing_due"
-    decision = {
-        "reason": reason,
-        "due": due,
-        "published": published,
-        "failed": failed,
-        "scheduled": int(payload.get("scheduled") or 0),
-    }
+    unmeasured = [name for name, count in counts.items() if count is None]
+    decision = {"reason": reason, **counts}
+    decision["counters"] = (
+        "not_reported" if len(unmeasured) == len(PUBLISH_DECISION_FIELDS)
+        else "partial" if unmeasured
+        else "measured"
+    )
+    if unmeasured:
+        decision["unmeasured"] = unmeasured
     if gates:
         decision["gates"] = gates
     return decision
@@ -1813,7 +1912,7 @@ async def _watchdog() -> None:
         # unwind and release its active-task slot first; the next watchdog tick
         # can safely schedule catch-up if no newer cycle has started.
         return
-    elif health["state"] in ("failed", "timeout", "partial"):
+    elif health["state"] in ("failed", "timeout", "cancelled", "partial"):
         log.warning("watchdog: last cycle ended as %s; considering catch-up", health["state"])
     elif health["state"] == "ok":
         if _watchdog_recovery_attempts or _watchdog_last_recovery_at is not None:
@@ -2047,30 +2146,64 @@ TELEGRAM_METRICS_SKIP_REASONS = {
     ),
 }
 
+#: How often the farm re-reads which Telegram chat each persona actually is.
+#: `tg_sync.sync_channels` is the only writer of `channels.tg_chat_id`, and that
+#: column is the only handle `collect_post_stats` can ask Telegram with, so the
+#: two run on one cadence by construction: a chat id older than the read that
+#: depends on it starves that read, and the collector would measure nothing while
+#: its own job kept firing on time.
+CHANNEL_SYNC_INTERVAL_H = TELEGRAM_METRICS_INTERVAL_H
 
-#: Skip codes already announced by this process. A missing session is a static
-#: condition: the tick runs every six hours, so re-warning on every one of them
-#: is the same noise repeated slowly. It is said once, then quietly, until the
-#: operator logs in or the process restarts.
-_TELEGRAM_METRICS_SKIP_ANNOUNCED: set[str] = set()
+#: Machine-readable codes for a channel sync that never reached the network, in
+#: the same three names the collector uses: the gate is the same gate.
+CHANNEL_SYNC_SKIP_OFF = TELEGRAM_METRICS_SKIP_OFF
+CHANNEL_SYNC_SKIP_NO_SESSION = TELEGRAM_METRICS_SKIP_NO_SESSION
+CHANNEL_SYNC_SKIP_REASONS = TELEGRAM_METRICS_SKIP_REASONS
+
+
+#: Log labels under which a job remembers the skip reasons it has already said.
+TELEGRAM_METRICS_SKIP_LABEL = "telegram metrics tick"
+CHANNEL_SYNC_SKIP_LABEL = "telegram channel sync tick"
+
+#: Skip codes already announced by this process, per job label. A missing session
+#: is a static condition: these ticks run every six hours, so re-warning on every
+#: one of them is the same noise repeated slowly. It is said once, then quietly,
+#: until the operator logs in or the process restarts. Keyed by job so one job's
+#: silence cannot hush another job saying the same code.
+_SKIP_ANNOUNCED: dict[str, set[str]] = {}
+
+
+def _note_skip(label: str, reasons: dict[str, str], code: str, *, announce: bool) -> None:
+    """Report a tick that never reached the network: once loudly, then quietly."""
+    reason = reasons.get(code, code)
+    announced = _SKIP_ANNOUNCED.setdefault(label, set())
+    if announce and code not in announced:
+        announced.add(code)
+        log.warning("%s skipped: %s", label, reason)
+    else:
+        log.debug("%s skipped: %s", label, reason)
 
 
 def _note_telegram_metrics_skip(code: str, *, announce: bool) -> None:
-    """Report a tick that never reached the network: once loudly, then quietly."""
-    reason = TELEGRAM_METRICS_SKIP_REASONS.get(code, code)
-    if not announce:
-        log.debug("telegram metrics tick skipped: %s", reason)
-        return
-    if code in _TELEGRAM_METRICS_SKIP_ANNOUNCED:
-        log.debug("telegram metrics tick skipped again: %s", reason)
-        return
-    _TELEGRAM_METRICS_SKIP_ANNOUNCED.add(code)
-    log.warning("telegram metrics tick skipped: %s", reason)
+    """Report a metrics tick that never reached the network."""
+    _note_skip(
+        TELEGRAM_METRICS_SKIP_LABEL, TELEGRAM_METRICS_SKIP_REASONS, code, announce=announce
+    )
+
+
+def _note_channel_sync_skip(code: str, *, announce: bool) -> None:
+    """Report a channel sync that never reached the network."""
+    _note_skip(CHANNEL_SYNC_SKIP_LABEL, CHANNEL_SYNC_SKIP_REASONS, code, announce=announce)
 
 
 def _reset_telegram_metrics_skip_state() -> None:
     """Test hook: forget which skips this process already announced."""
-    _TELEGRAM_METRICS_SKIP_ANNOUNCED.clear()
+    _SKIP_ANNOUNCED.pop(TELEGRAM_METRICS_SKIP_LABEL, None)
+
+
+def _reset_channel_sync_skip_state() -> None:
+    """Test hook: forget which channel-sync skips this process already announced."""
+    _SKIP_ANNOUNCED.pop(CHANNEL_SYNC_SKIP_LABEL, None)
 
 
 async def _telegram_metrics_tick() -> dict:
@@ -2139,6 +2272,72 @@ async def _telegram_metrics_tick() -> dict:
         log.warning("telegram metrics tick failed: %s", message)
         await to_thread(_record, run_id, "telegram_post_metrics", "error", error=message)
         return {"posts": 0, "errors": 1, "error": message}
+
+
+async def _channel_sync_tick() -> dict:
+    """Keep `channels.tg_chat_id` true on the scheduler's clock, not by hand.
+
+    `sync_channels` was only ever reachable from the CLI, the desktop menu and
+    `/api/telegram/sync` — three human gestures. The collector that consumes what
+    it writes already runs on a schedule; a collector that cannot
+    resolve a chat id measures nothing, so that schedule was only half a schedule
+    until its input got one too.
+
+    The gate is the collector's own: `tguser.list_chats` needs an authorised
+    *user* session, and `is_authorized()` answers that from the local session
+    file without a network round trip. No session is a state an operator can fix,
+    so it is named and returned, not raised and not reported as a measured zero.
+
+    Nothing here publishes or edits anything: `sync_channels` reads Telegram and
+    writes only our own `channels` rows.
+    """
+    settings = get_settings()
+    if not settings.online:
+        # Off mode is a choice the whole farm obeys, not a fault to complain about.
+        _note_channel_sync_skip(CHANNEL_SYNC_SKIP_OFF, announce=False)
+        return {"matched": 0, "skipped": CHANNEL_SYNC_SKIP_OFF}
+
+    from tgfarm import tguser
+
+    if not tguser.is_authorized():
+        _note_channel_sync_skip(CHANNEL_SYNC_SKIP_NO_SESSION, announce=True)
+        return {
+            "matched": 0,
+            "skipped": CHANNEL_SYNC_SKIP_NO_SESSION,
+            "reason": CHANNEL_SYNC_SKIP_REASONS[CHANNEL_SYNC_SKIP_NO_SESSION],
+        }
+
+    run_id = f"tg-sync-{uuid.uuid4().hex[:8]}"
+    try:
+        from tgfarm import tg_sync
+
+        report = await tg_sync.sync_channels()
+        matched = int(report.get("matched", 0) or 0)
+        configured = report.get("configured")
+        await to_thread(
+            _record,
+            run_id,
+            "telegram_channel_sync",
+            "ok" if report.get("ok", True) else "partial",
+            items_in=None if configured is None else int(configured),
+            items_out=matched,
+            # Counts only: `missing_in_telegram` and `unconfigured_channels` carry
+            # titles that came back from Telegram, and a journal is not somewhere
+            # for foreign text to be stored as if it were ours.
+            meta={
+                "matched": matched,
+                "configured": configured,
+                "telegram_chats": report.get("telegram_chats"),
+                "missing_in_telegram": len(report.get("missing_in_telegram") or []),
+                "bot_not_admin": len(report.get("bot_not_admin") or []),
+            },
+        )
+        return report
+    except Exception as exc:  # noqa: BLE001 - a stale chat id must not stop the farm
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+        log.warning("telegram channel sync failed: %s", message)
+        await to_thread(_record, run_id, "telegram_channel_sync", "error", error=message)
+        return {"matched": 0, "errors": 1, "error": message}
 
 
 async def _metrics_learning_tick() -> dict:
@@ -2384,6 +2583,24 @@ def _build_scheduler():
         run_date=datetime.now(UTC),
         id="startup-telegram-post-metrics",
         name="initial telegram post statistics",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _channel_sync_tick,
+        IntervalTrigger(hours=CHANNEL_SYNC_INTERVAL_H),
+        id="telegram-channel-sync",
+        name="telegram channel chat ids",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _channel_sync_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-telegram-channel-sync",
+        name="initial telegram channel chat ids",
         max_instances=1,
         misfire_grace_time=3600,
     )

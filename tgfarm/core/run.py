@@ -128,7 +128,7 @@ class StageTimer:
                 self.duration_ms,
                 _fmt_count(self.reported_in),
                 _fmt_count(self.reported_out),
-                exc,
+                describe_exception(exc_type, exc),
             )
 
     # ---------------------------------------------------------------- handoff
@@ -237,6 +237,25 @@ def _as_count(value: object) -> int | None:
 def _fmt_count(value: int | None) -> str:
     """Log rendering: an unmeasured counter is `?`, a measured zero is `0`."""
     return "?" if value is None else str(int(value))
+
+
+def describe_exception(
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+) -> str:
+    """`Type: message` — and always at least the type.
+
+    Rendering an exception as its own `str` loses the name for the exceptions
+    that carry no message, and the farm's dominant failure is exactly one of
+    them: `str(asyncio.CancelledError())` is `''`, so the live log read as
+    `stage s5_quality failed after 1234ms with 0 -> ? measured: ` and stopped.
+    The type is known whenever `__exit__` is, so the line can never end bare.
+    """
+    name = str(getattr(exc_type, "__name__", "") or "") if exc_type is not None else ""
+    if not name:
+        name = type(exc).__name__ if exc is not None else "BaseException"
+    message = str(exc).strip() if exc is not None else ""
+    return f"{name}: {message}" if message else name
 
 
 def _stage_family(stage: str) -> str:

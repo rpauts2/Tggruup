@@ -287,6 +287,94 @@ def test_publish_decision_survives_a_missing_gates_block():
     assert _publish_decision({})["reason"] == "nothing_due"
 
 
+# ------------------------------------------------------- reported vs invented
+def test_an_unreported_counter_stays_unreported_instead_of_becoming_a_zero():
+    """`int(payload.get("due") or 0)` printed a zero the tick never counted.
+
+    "0 due" is a claim about the queue. A tick that said nothing is not entitled
+    to make it, so the field travels as `None` with the journal's existing
+    three-state marker beside it, exactly as `items_in` / `items_out` already do.
+    """
+    from tgfarm.pipeline import _publish_decision
+
+    decision = _publish_decision({"published": 0})
+
+    assert decision["published"] == 0, "an actual zero stays an actual zero"
+    assert decision["due"] is None
+    assert decision["failed"] is None
+    assert decision["scheduled"] is None
+    assert decision["counters"] == "partial"
+    assert decision["unmeasured"] == ["due", "failed", "scheduled"]
+
+
+def test_a_fully_reported_tick_is_marked_measured_even_when_it_was_empty():
+    from tgfarm.pipeline import _publish_decision
+
+    decision = _publish_decision(
+        {"due": 0, "published": 0, "failed": 0, "scheduled": 0, "gates": {}}
+    )
+
+    assert decision["counters"] == "measured"
+    assert "unmeasured" not in decision
+    assert decision["reason"] == "nothing_due", (
+        "a quiet queue is an observation; only the invented zero was the lie"
+    )
+
+
+def test_a_silent_tick_reports_nothing_rather_than_four_nothings():
+    from tgfarm.pipeline import PUBLISH_DECISION_FIELDS, _publish_decision
+
+    decision = _publish_decision({})
+
+    assert decision["counters"] == "not_reported"
+    assert all(decision[name] is None for name in PUBLISH_DECISION_FIELDS)
+    assert decision["unmeasured"] == list(PUBLISH_DECISION_FIELDS)
+
+
+def test_an_unusable_counter_is_read_as_unreported_not_as_zero():
+    """Coercion must not turn junk into a measurement, and must not raise."""
+    from tgfarm.pipeline import _publish_decision
+
+    assert _publish_decision({"due": "three"})["due"] is None
+    assert _publish_decision({"due": True})["due"] is None, "a flag is not a count"
+    assert _publish_decision({"due": "4"})["due"] == 4, "a numeric string was counted"
+
+
+def test_the_unreported_shape_reaches_the_wire_as_null_not_as_zero():
+    """The panel distinguishes "0 шт" from "нет отчёта" by type, so `None` has to
+    survive the JSON hop as `null` — a `0` in its place is the same lie one layer
+    further out, and `items()` ends up rendering it as a count."""
+    import json
+
+    from tgfarm.pipeline import _publish_decision
+
+    wire = json.dumps(_publish_decision({"published": 0}))
+
+    assert '"due": null' in wire
+    assert '"due": 0' not in wire
+    assert '"counters": "partial"' in wire
+
+
+def test_a_tick_that_never_reported_its_numbers_is_journalled_as_unmeasured(monkeypatch):
+    """The defect end-to-end: a stage that ran but said nothing about the queue."""
+    from tgfarm import s7_publish
+    from tgfarm.pipeline import _publish_tick
+
+    async def _silent() -> dict:
+        return {"gates": {}}
+
+    monkeypatch.setattr(s7_publish, "run", _silent)
+
+    asyncio.run(_publish_tick())
+
+    decision = _latest_publish_tick()["decision"]
+    assert decision["reason"] == "nothing_due"
+    assert decision["counters"] == "not_reported", (
+        "журнал не вправе показывать ноль там, где этап ничего не сообщил"
+    )
+    assert "unmeasured" in decision
+
+
 # ---------------------------------------------------------------- integration
 def _latest_publish_tick() -> dict:
     from tgfarm.db.models import PipelineRun
