@@ -43,6 +43,12 @@
   const fmt = new Intl.NumberFormat("ru-RU");
   const n = (v) => fmt.format(Math.round(Number(v) || 0));
   const pct = (v) => `${((Number(v) || 0) * 100).toFixed(1)}%`;
+  // Journal counters arrive as `int | null` (`tgfarm/api.py::_stage_counters`):
+  // `null` is "nobody measured this", `0` is "measured: nothing happened".
+  // `n()` ends in `|| 0`, so it must never be handed a null — that would put the
+  // fabricated zero back, which is the one thing the journal was fixed to remove.
+  const items = (v, state) => (typeof v === "number" ? `${n(v)} шт`
+    : `— (${state === "legacy" ? "до контракта" : "нет отчёта"})`);
 
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -734,7 +740,7 @@
     $("#pipeline-visual").innerHTML = order.map((key) => {
       const s = map[key];
       const cls = !s ? "" : s.status === "ok" ? "stage-ok" : "stage-err";
-      const detail = s ? (s.status === "ok" ? `${s.out} шт · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
+      const detail = s ? (s.status === "ok" ? `${items(s.out, s.counters_state)} · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
       return `<div class="stage ${cls}"><span class="stage-dot"></span>
                 <span><b>${names[key]}</b><br>${detail}</span></div>`;
     }).join("");
@@ -2911,7 +2917,7 @@
       <div class="item" style="cursor:default">
         <div class="item-main">
           <div class="item-title mono">${esc(runId)} · ${dt(stages[0]?.at)}</div>
-          <div class="item-meta">${stages.map((s) => `${esc(s.stage.replace(/^s\d_/, ""))}:${s.out}`).join("  ")}</div>
+          <div class="item-meta">${stages.map((s) => `${esc(s.stage.replace(/^s\d_/, ""))}:${typeof s.out === "number" ? n(s.out) : "—"}`).join("  ")}</div>
         </div>
         <div class="item-side">
           <span class="tag ${stages.some((s) => s.status === "error") ? "tag-warn" : "tag-ok"}">

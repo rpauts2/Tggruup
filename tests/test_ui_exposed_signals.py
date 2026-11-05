@@ -376,3 +376,30 @@ def test_absent_measurements_share_one_dedicated_style(client):
     assert "border-style: dashed" in css
     assert ".trend-shape" in css
     assert ".policy-history-row.is-changed" in css
+
+
+# ----------------------------------------------------------- journal counters
+def test_the_counter_helper_distinguishes_unknown_from_measured_nothing(client):
+    """`/api/runs` serves `int | null`; the panel must not fold them together.
+
+    `n()` ends in `|| 0`, so handing it a null would print "0 шт" for a stage
+    nobody measured — the fabricated zero the writer contract exists to remove,
+    re-invented at the render layer. The guard has to be a type test.
+    """
+    script = _script(client)
+    body = _chunk(script, "const items = (v, state)", "const esc =")
+    assert 'typeof v === "number"' in body
+    assert "нет отчёта" in body
+    assert "до контракта" in body
+    assert "Number(v) || 0" not in body
+
+
+def test_no_run_view_prints_a_raw_counter(client):
+    """Both readers of `in`/`out` branch first; neither interpolates the value."""
+    script = _script(client)
+    assert "${s.out}" not in script
+    assert "${s.in}" not in script
+    detail = _chunk(script, "const detail = s ?", "return `<div class=\"stage")
+    assert "items(s.out, s.counters_state)" in detail
+    runs_line = _chunk(script, '<div class="item-meta">${stages.map', "</div>")
+    assert 'typeof s.out === "number"' in runs_line
