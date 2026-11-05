@@ -19,12 +19,12 @@ from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from tgfarm.config import Persona
 from tgfarm.core.errors import ProviderUnavailable
 from tgfarm.core.logging import get_logger
-from tgfarm.core.run import StageTimer, to_thread
+from tgfarm.core.run import StageTimer, ensure_utc, to_thread
 from tgfarm.core.schemas import Claim, DraftPost, ItemScored
 from tgfarm.core.schemas import Cluster as ClusterSchema
 from tgfarm.core.settings import get_settings
@@ -992,6 +992,203 @@ def persist_draft(
     return public_id
 
 
+# ------------------------------------------------- the plan's booking on the row
+#: Open orders carried per call. One plan snapshot holds at most 40 entries
+#: (`editorial_plan.MAX_ENTRIES`), so this is the whole ledger, not a slice.
+MAX_BOOKINGS_PER_RUN = 40
+
+#: The named outcomes of one booking attempt. A booking that did not happen has
+#: to say why, the same rule `plan_execution`'s reason codes and
+#: `s7_publish.empty_gate_report` follow: a bare zero cannot tell a healthy
+#: queue from a stall.
+PLAN_BOOKING_BOOKED = "booked"
+PLAN_BOOKING_DISABLED = "execution_disabled"
+PLAN_BOOKING_NO_PLAN = "no_active_plan"
+PLAN_BOOKING_NO_ENTRY = "no_schedule_entry"
+PLAN_BOOKING_UNREADABLE_SLOT = "schedule_entry_slot_unreadable"
+PLAN_BOOKING_NO_DRAFT = "no_unbooked_draft"
+PLAN_BOOKING_CLAIM_LOST = "claim_lost"
+PLAN_BOOKING_STATES = (
+    PLAN_BOOKING_BOOKED,
+    PLAN_BOOKING_DISABLED,
+    PLAN_BOOKING_NO_PLAN,
+    PLAN_BOOKING_NO_ENTRY,
+    PLAN_BOOKING_UNREADABLE_SLOT,
+    PLAN_BOOKING_NO_DRAFT,
+    PLAN_BOOKING_CLAIM_LOST,
+)
+
+
+def _plan_moment(value: Any) -> datetime | None:
+    """The plan's `slot_at` as an aware UTC instant, or None when it is not one.
+
+    `editorial_plan._entry_dict` hands out ISO strings, so this is the reading
+    the plan's own writer produced — no second calendar is introduced here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    try:
+        return ensure_utc(datetime.fromisoformat(str(value)))
+    except ValueError:
+        return None
+
+
+def apply_plan_booking(cluster_public_id: str) -> dict[str, Any]:
+    """Carry the ACTIVE plan's `schedule` booking onto the gated draft it ordered.
+
+    Why this writer exists, against the measured base: `plan_execution.apply_plan`
+    judges a `schedule` entry and hands the row over with `s7_publish.unpublish`,
+    which stamps `scheduled_at = now` — the instant the plan reserved never
+    reaches the row, so `schedule_ready_posts`, which since `0d8fd6f` obeys
+    `posts.plan_slot_at`, is never given one to obey. And `persist_draft` can only
+    book what the entry says at insert time, which for a `produce` entry is
+    nothing: `editorial_plan` gives produce no slot at all. Measured at `d848eee`
+    the only writer that ever put a booked instant on a draft was the panel's
+    rewrite endpoint in `tgfarm/api.py` — HTTP plus a human — which is exactly the
+    hole this closes.
+
+    Narrow on purpose. It books *when*, never *what*: the format stays whatever
+    the evidence-gated planner chose, because a plan entry is not a measurement
+    and a topic with no measured posts may not have its shape rewritten after the
+    fact (§6). It writes `plan_slot_at` only where that column is still NULL, so
+    the "written once" contract the column's own comment states holds, and it
+    leaves `plan_entry_id` alone — the produce entry stays the answer to "which
+    entry ordered this post", while the entry that reserved the instant is
+    auditable through the slot equality itself. The row is claimed with one
+    conditional UPDATE, the same discipline `unpublish` uses, so a concurrent
+    worker that already moved the post is reported and not overwritten.
+    """
+    from tgfarm.editorial_plan import get_active_plan
+
+    decision: dict[str, Any] = {
+        "cluster_public_id": cluster_public_id,
+        "state": PLAN_BOOKING_BOOKED,
+        "post_public_id": None,
+        "plan_public_id": None,
+        "action": None,
+        "slot_at": None,
+        "channel_id": None,
+        "format": None,
+        "reasons": [],
+    }
+    if not bool(getattr(get_settings(), "plan_execution_enabled", False)):
+        # Off the executor's switch there is no consumer allowed to move rows,
+        # and a booking nobody may honour is a claim, not a decision.
+        decision["state"] = PLAN_BOOKING_DISABLED
+        return decision
+
+    plan = get_active_plan()
+    if plan is None:
+        decision["state"] = PLAN_BOOKING_NO_PLAN
+        return decision
+    decision["plan_public_id"] = plan.get("public_id")
+
+    entry: dict[str, Any] | None = None
+    for candidate in plan.get("entries") or []:
+        if str(candidate.get("cluster_public_id") or "") != cluster_public_id:
+            continue
+        if decision["action"] is None:
+            # The first entry for the topic names what the plan decided at all,
+            # so a `produce`-only plan reports `no_schedule_entry` with the action
+            # it really read instead of a bare "nothing found".
+            decision["action"] = str(candidate.get("action") or "")
+        if str(candidate.get("action") or "") == "schedule":
+            entry = candidate
+            decision["action"] = "schedule"
+            break
+    if entry is None:
+        decision["state"] = PLAN_BOOKING_NO_ENTRY
+        return decision
+
+    decision["channel_id"] = entry.get("channel_id")
+    decision["format"] = entry.get("format")
+    decision["reasons"] = [str(part) for part in (entry.get("reasons") or [])]
+    slot = _plan_moment(entry.get("slot_at"))
+    if slot is None:
+        decision["state"] = PLAN_BOOKING_UNREADABLE_SLOT
+        return decision
+    decision["slot_at"] = slot.isoformat()
+
+    with session_scope() as session:
+        target = session.execute(
+            select(PostRow.public_id)
+            .where(
+                PostRow.cluster_public_id == cluster_public_id,
+                PostRow.status == "gated",
+                PostRow.scheduled_at.is_(None),
+                PostRow.plan_slot_at.is_(None),
+            )
+            .order_by(PostRow.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if target is None:
+            decision["state"] = PLAN_BOOKING_NO_DRAFT
+            return decision
+        decision["post_public_id"] = target
+        claimed = session.execute(
+            update(PostRow)
+            .where(
+                PostRow.public_id == target,
+                PostRow.status == "gated",
+                PostRow.scheduled_at.is_(None),
+                PostRow.plan_slot_at.is_(None),
+            )
+            .values(plan_slot_at=slot)
+        )
+        if not claimed.rowcount:
+            decision["state"] = PLAN_BOOKING_CLAIM_LOST
+            return decision
+
+    log.info(
+        "s4: plan %s booked %s for %s at %s (%s)",
+        decision["plan_public_id"],
+        target,
+        cluster_public_id,
+        decision["slot_at"],
+        "; ".join(str(part) for part in decision["reasons"])[:160],
+    )
+    return decision
+
+
+def book_plan_slots(*, limit: int = MAX_BOOKINGS_PER_RUN) -> dict[str, Any]:
+    """Walk every open editorial order and write its booked slot on the draft.
+
+    This is the self-running offline entry the autonomy chain and `tgfarm demo`
+    drive: no HTTP session, no panel click, no human, and nothing that can leave
+    the process — it reads `editorial_plans` and writes one column of `posts`.
+    Together with `editorial.open_order_cluster_ids`, which is what makes the
+    plan see these topics at all, it turns the plan's `schedule` verdict into a
+    `posts.plan_slot_at` the scheduler then obeys, which is the step that was
+    missing between "the plan said when" and "the queue moved at that instant".
+    """
+    from tgfarm.editorial import open_order_cluster_ids
+
+    with StageTimer("s4_plan_booking") as timer:
+        cluster_ids = open_order_cluster_ids(limit)
+        decisions = [apply_plan_booking(public_id) for public_id in cluster_ids]
+        states: dict[str, int] = {}
+        for decision in decisions:
+            states[str(decision["state"])] = states.get(str(decision["state"]), 0) + 1
+        booked = [decision for decision in decisions if decision["state"] == PLAN_BOOKING_BOOKED]
+        timer.items_in = len(cluster_ids)
+        timer.items_out = len(booked)
+    result = {
+        "considered": len(cluster_ids),
+        "booked": len(booked),
+        "states": states,
+        "decisions": decisions,
+    }
+    log.info(
+        "s4: plan bookings written for %d of %d open orders (%s)",
+        len(booked),
+        len(cluster_ids),
+        states or "no open order to carry",
+    )
+    return result
+
+
 DUP_THRESHOLD = DEFAULT_DUPLICATE_SIMILARITY
 
 
@@ -1570,12 +1767,23 @@ async def run(cluster_public_id: str) -> list[str]:
     cannot reach stops the run rather than moving it elsewhere, and the topic stays
     unconsumed so a rebuilt plan can still serve it. With no booking — the flag
     off, no plan, no entry for this cluster — every step below is the base path.
+
+    A topic the plan already ordered and whose draft still waits for a booked
+    slot is refused before anything is read: the editorial queue shows such an
+    open order again (that is what lets the plan schedule it), and drafting it a
+    second time would spend generation budget twice on one story and give the
+    topic two rows competing for one slot.
     """
+    from tgfarm.editorial import awaiting_booking
     from tgfarm.plan_execution import generation_brief
     from tgfarm.s2_trends import mark_consumed
     from tgfarm.s3_router import plan_cluster
     from tgfarm.s8_analytics.formats import planner_history
     from tgfarm.s11_video import fetch_video_for
+
+    if awaiting_booking(cluster_public_id):
+        log.info("s4: %s is an open plan order — the slot is what it waits for", cluster_public_id)
+        return []
 
     with session_scope() as session:
         cluster = session.execute(
@@ -1786,4 +1994,12 @@ async def run(cluster_public_id: str) -> list[str]:
     return created
 
 
-__all__ = ["generate", "normalise", "persist_draft", "run", "verify"]
+__all__ = [
+    "apply_plan_booking",
+    "book_plan_slots",
+    "generate",
+    "normalise",
+    "persist_draft",
+    "run",
+    "verify",
+]

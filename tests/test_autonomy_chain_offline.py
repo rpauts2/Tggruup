@@ -479,6 +479,67 @@ def _persisted_plan(public_id: str | None) -> dict:
         }
 
 
+def _plan_provenance_rows() -> list[dict]:
+    """Every post's plan columns as they stand right now, read before the booking.
+
+    The booking link's honest claim is narrow: it fills `plan_slot_at` and touches
+    nothing else. Proving that needs the row as it was *before* the writer ran —
+    reading both sides after it would compare a value with itself.
+    """
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        rows = session.execute(select(Post).order_by(Post.id)).scalars().all()
+        return [
+            {
+                "public_id": post.public_id,
+                "status": post.status,
+                "plan_entry_id": post.plan_entry_id,
+                "plan_slot_at": post.plan_slot_at,
+                "post_format": post.post_format,
+                "format_reason": post.format_reason,
+            }
+            for post in rows
+        ]
+
+
+def _booked_slot_rows() -> list[dict]:
+    """Every post the plan gave an instant to, with the instant it got shipped at.
+
+    Read live (not from `_chain_snapshot`) because the harness backdates scheduled
+    posts right after this, and the whole point of the link is the equality of
+    `posts.plan_slot_at` and `posts.scheduled_at`: a row read after
+    `_backdate_scheduled` can no longer prove the scheduler obeyed the booking.
+    """
+    from sqlalchemy import select
+
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(Post)
+            .where(Post.plan_slot_at.is_not(None))
+            .order_by(Post.id)
+        ).scalars().all()
+        return [
+            {
+                "public_id": post.public_id,
+                "cluster_public_id": post.cluster_public_id,
+                "status": post.status,
+                "plan_entry_id": post.plan_entry_id,
+                "plan_slot_at": post.plan_slot_at,
+                "scheduled_at": post.scheduled_at,
+                "post_format": post.post_format,
+                "format_reason": post.format_reason,
+            }
+            for post in rows
+        ]
+
+
 def _chain_snapshot() -> dict:
     """Everything the per-link tests assert on, captured at build time.
 
@@ -516,6 +577,14 @@ def _chain_snapshot() -> dict:
                     "scheduled_at": p.scheduled_at,
                     "published_at": p.published_at,
                     "tg_message_id": p.tg_message_id,
+                    # The plan's own two columns. Without them this snapshot could
+                    # only ever say "a post got a slot", never "it got the slot the
+                    # plan reserved", which is the difference the booking link below
+                    # is asserted on.
+                    "plan_entry_id": p.plan_entry_id,
+                    "plan_slot_at": p.plan_slot_at,
+                    "post_format": p.post_format,
+                    "format_reason": p.format_reason,
                 }
                 for p in posts
             ],
@@ -651,11 +720,25 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
 
     await plan_look(datetime.now(UTC).replace(microsecond=0))
 
+    # --- the plan's reserved instant written on the row it reserved it for.
+    # `apply_plan` deliberately holds a future slot (`slot_not_due`) and hands a
+    # due one to `s7_publish.unpublish`, which stamps `scheduled_at = now`; neither
+    # path ever puts the plan's own instant on `posts.plan_slot_at`, which is the
+    # column `schedule_ready_posts` has obeyed since `0d8fd6f`. The offline entry
+    # that closes the gap is `s4_generation.book_plan_slots` — no HTTP, no human,
+    # one column of `posts` — and it is driven through the production stage
+    # wrapper so the walk leaves a journal row like every other link.
+    provenance_before = await to_thread(_plan_provenance_rows)
+    booking = await stage("s4_plan_booking", lambda: to_thread(s4_generation.book_plan_slots))
+
     passed_ids = await to_thread(pipeline._passed_post_ids)
     if passed_ids:
         await stage("s6_visual", lambda: s6_visual.run(passed_ids))
 
     await stage("s7_publish", s7_publish.run)
+    # Captured before the backdating below: this is the chain's proof that the
+    # scheduler shipped the post at the instant the plan booked, not at its own.
+    booked_rows = await to_thread(_booked_slot_rows)
     # Fresh slots are in the future; backdate them so one run reaches the
     # publish decision without waiting on a clock (the shipped demo's trick).
     await to_thread(_backdate_scheduled)
@@ -682,6 +765,9 @@ async def _build_chain(recorder: OutboundRecorder) -> dict:
         "ready_clusters": len(clusters),
         "passed_ids": list(passed_ids),
         "plan_moments": list(plan_moments),
+        "booking": dict(booking or {}),
+        "provenance_before": list(provenance_before),
+        "booked_rows": list(booked_rows),
         "portfolio": portfolio_report,
         "snapshot": snapshot,
         "terminal": terminal,
@@ -1187,26 +1273,143 @@ async def test_w17chain_evidence_backed_lesson_is_unreachable_offline(chain):
     assert lessons and all(int(lesson["sample_size"]) > 0 for lesson in lessons)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the plan's schedule decision cannot be booked by a self-running chain, offline or "
-        "online: tgfarm.s4_generation.run is the only offline writer of a gated draft and it "
-        "calls tgfarm.s2_trends.mark_consumed, while tgfarm.editorial.queue lists only "
-        "clusters with status='ready' AND consumed_at IS NULL — so a cluster the farm just "
-        "drafted is never in the plan again, and tgfarm.editorial_plan can only answer "
-        "'produce'. The one writer that puts a draft back to 'gated' while its cluster stays "
-        "unconsumed is the panel's rewrite endpoint in tgfarm/api.py, which needs an HTTP "
-        "session and a human; an offline entry point for a bookable schedule decision does "
-        "not exist at this commit"
-    ),
-)
-def test_w17chain_plan_schedule_booking_is_unreachable_without_an_operator(chain):
-    from tgfarm import plan_execution
+def test_w17chain_plan_schedule_booking_reaches_the_row_offline(chain):
+    """The plan's `schedule` verdict becomes the instant the post really ships at.
 
-    booked = [
-        row for row in _journal_by_stage(plan_execution.STAGE_APPLY) if int(row["items_out"] or 0)
+    This link used to be an `xfail(strict=True)`, naming `tgfarm.api.py`'s rewrite
+    endpoint as the only writer that could put a bookable draft back on the queue:
+    HTTP plus a human, so no self-running walk could reach a booked slot. Both
+    halves of that are closed now, and this test is the proof rather than a
+    description of it — the walk that produces the booking is the chain's own
+    `_build_chain`, with no request, no operator and no stubbed stage:
+
+    * `tgfarm.editorial.queue` re-lists a topic whose draft the plan itself
+      ordered and nobody answered yet, so the plan's second look can say
+      `schedule` about a draft that already exists;
+    * `tgfarm.s4_generation.book_plan_slots` writes that entry's instant onto
+      `posts.plan_slot_at`;
+    * `tgfarm.s7_publish.schedule_ready_posts` obeys the booking instead of
+      choosing its own slot, which is what makes `scheduled_at == plan_slot_at`.
+
+    Asserted on the equality, on the plan's own reason text and on the zero
+    outbound calls — not on a counter the harness hands itself.
+    """
+    from tgfarm import s4_generation
+    from tgfarm.core.run import ensure_utc
+
+    booking = chain["booking"]
+    assert booking.get("considered", 0) >= 1, (
+        "the chain had no open editorial order to book: the plan's own draft never "
+        "came back through tgfarm.editorial.queue, so tgfarm.editorial_plan could "
+        "only ever answer 'produce'"
+    )
+    assert booking.get("booked", 0) >= 1, (
+        f"no open order reached a booked slot: states={booking.get('states')}"
+    )
+    booked = [d for d in booking["decisions"] if d["state"] == s4_generation.PLAN_BOOKING_BOOKED]
+
+    for decision in booked:
+        assert decision["action"] == "schedule", (
+            f"a booking claims a slot the plan never reserved as `schedule`: {decision}"
+        )
+        assert decision["plan_public_id"], f"booked without naming the plan: {decision}"
+        assert decision["slot_at"], f"`schedule` entry with no instant to carry: {decision}"
+        assert decision["channel_id"] is not None, f"booked for no channel: {decision}"
+        # A decision the farm cannot argue with: the plan has to say why this
+        # slot, not only that it picked one. `editorial_plan._reasons` writes the
+        # free-slot line for a `schedule` entry; an entry that only states facts
+        # (heat, sources, age) is not a justification for a time.
+        slot_reason = [part for part in decision["reasons"] if "слот" in part]
+        assert slot_reason, (
+            f"the plan booked {decision['slot_at']} and gave no reason naming the slot: "
+            f"{decision['reasons']}"
+        )
+
+    # The booked instant must be the one the persisted plan holds, read from
+    # `editorial_plan_entries` and not from the writer's own dict.
+    plan_ids = {str(d["plan_public_id"]) for d in booked}
+    entries: dict[tuple[str, str], dict] = {}
+    for plan_id in plan_ids:
+        for entry in _persisted_plan(plan_id).get("entries") or []:
+            entries[(plan_id, str(entry["cluster_public_id"]))] = entry
+    for decision in booked:
+        entry = entries.get((str(decision["plan_public_id"]), str(decision["cluster_public_id"])))
+        assert entry is not None, (
+            f"the booking names plan {decision['plan_public_id']} / "
+            f"{decision['cluster_public_id']}, which has no such entry in the DB"
+        )
+        assert entry["action"] == "schedule", (
+            f"the persisted entry says {entry['action']!r} while the writer booked a slot"
+        )
+        assert entry["slot_at"] is not None, "the persisted `schedule` entry carries no slot"
+        booked_moment = ensure_utc(datetime.fromisoformat(str(decision["slot_at"])))
+        assert ensure_utc(entry["slot_at"]) == booked_moment, (
+            f"the writer booked {decision['slot_at']} from an entry holding {entry['slot_at']}"
+        )
+
+    # The scheduler obeyed: a post whose `scheduled_at` IS the plan's instant.
+    shipped = [
+        row
+        for row in chain["booked_rows"]
+        if row["scheduled_at"] is not None
+        and row["plan_slot_at"] is not None
+        and ensure_utc(row["scheduled_at"]) == ensure_utc(row["plan_slot_at"])
     ]
-    assert booked, (
-        "the chain's plan booked no slot: no plan entry reached Post.scheduled_at"
+    unread = [
+        (row["public_id"], row["status"], row["plan_slot_at"], row["scheduled_at"])
+        for row in chain["booked_rows"][:6]
+    ]
+    assert shipped, (
+        "nothing shipped at the instant the plan booked: tgfarm.s7_publish."
+        "schedule_ready_posts chose its own slot, so the booking is a note nobody "
+        f"reads. Booked rows (post, status, plan slot, scheduled at): {unread}"
+    )
+    for row in shipped:
+        assert row["status"] == "scheduled", (
+            f"a post shipped at its booked instant reads {row['status']}"
+        )
+        assert row["cluster_public_id"], f"booked post {row['public_id']} has no topic"
+
+    # §6, measured on the writer itself: a booking says WHEN, never WHAT. Each
+    # booked row is compared with the same row as the chain read it *before* the
+    # booking ran, so a format or provenance rewrite cannot hide behind "the
+    # values still look plausible" — only `plan_slot_at` may differ.
+    before = {row["public_id"]: row for row in chain["provenance_before"]}
+    for row in chain["booked_rows"]:
+        origin = before.get(row["public_id"])
+        assert origin is not None, f"booked post {row['public_id']} predates the booking step"
+        assert origin["plan_slot_at"] is None, (
+            f"post {row['public_id']} already carried a booked slot before the "
+            "booking ran, so this chain booked nothing"
+        )
+        assert row["post_format"] == origin["post_format"], (
+            f"the booking changed post {row['public_id']}'s format "
+            f"({origin['post_format']!r} -> {row['post_format']!r})"
+        )
+        assert row["format_reason"] == origin["format_reason"], (
+            f"the booking rewrote post {row['public_id']}'s format reason"
+        )
+        assert row["plan_entry_id"] == origin["plan_entry_id"], (
+            f"the booking repointed post {row['public_id']} away from the entry that "
+            "ordered the draft"
+        )
+
+    assert any(
+        int(row["items_out"] or 0) for row in _journal_by_stage("s4_plan_booking")
+    ), "the booking stage journalled no items_out while it wrote slots"
+
+    # Same invariant as every other link, restated here because this is the one
+    # that got a new writer: booking a slot is a DB write, not a delivery.
+    assert chain["counts"]["post_stats"] == chain["baseline"]["post_stats"], (
+        "post_stats grew while the plan booked slots"
+    )
+    assert chain["calls_during_chain"] == [], (
+        f"the booking link attempted {len(chain['calls_during_chain'])} outbound calls: "
+        f"{chain['calls_during_chain'][:5]}"
+    )
+    # The guard covers this entry too: `book_plan_slots` reads a plan row and
+    # writes a post column, and nothing else — so an outbound call here would be
+    # a transport the harness already fails the chain over.
+    assert chain["recorder"].calls == chain["calls_during_chain"], (
+        "a call was attempted after the chain's own walk"
     )
