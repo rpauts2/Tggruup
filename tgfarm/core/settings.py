@@ -287,26 +287,11 @@ class Settings(BaseSettings):
     discord_webhook_url: str = Field(default="", alias="DISCORD_WEBHOOK_URL")
     # YouTube Data API OAuth. The refresh token is the durable user grant;
     # access tokens are refreshed before an upload and never shown in the UI.
-    youtube_client_id: str = Field(default="", alias="YOUTUBE_CLIENT_ID")
-    youtube_client_secret: str = Field(default="", alias="YOUTUBE_CLIENT_SECRET")
+    # The rest of the YouTube fields live with the upload block further down:
+    # a second declaration of the same name silently overrides the first, so
+    # these two are the only ones left here.
     youtube_access_token: str = Field(default="", alias="YOUTUBE_ACCESS_TOKEN")
-    youtube_refresh_token: str = Field(default="", alias="YOUTUBE_REFRESH_TOKEN")
     youtube_token_expires_at: str = Field(default="", alias="YOUTUBE_TOKEN_EXPIRES_AT")
-    youtube_channel_id: str = Field(default="", alias="YOUTUBE_CHANNEL_ID")
-    youtube_channel_title: str = Field(default="", alias="YOUTUBE_CHANNEL_TITLE")
-    youtube_privacy_status: Literal["private", "unlisted", "public"] = Field(
-        default="private", alias="YOUTUBE_PRIVACY_STATUS"
-    )
-    youtube_category_id: str = Field(default="25", alias="YOUTUBE_CATEGORY_ID")
-    # TikTok Content Posting API. Direct posts are explicit operator actions, not background jobs.
-    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
-    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
-    tiktok_access_token: str = Field(default="", alias="TIKTOK_ACCESS_TOKEN")
-    tiktok_refresh_token: str = Field(default="", alias="TIKTOK_REFRESH_TOKEN")
-    tiktok_token_expires_at: int = Field(default=0, alias="TIKTOK_TOKEN_EXPIRES_AT")
-    tiktok_refresh_token_expires_at: int = Field(default=0, alias="TIKTOK_REFRESH_TOKEN_EXPIRES_AT")
-    tiktok_open_id: str = Field(default="", alias="TIKTOK_OPEN_ID")
-    tiktok_username: str = Field(default="", alias="TIKTOK_USERNAME")
     # Dzen has no public publishing API. Publishing goes through its web editor
     # in a dedicated browser profile, logged in by the operator once.
     dzen_profile_dir: str = Field(default="", alias="DZEN_PROFILE_DIR")
