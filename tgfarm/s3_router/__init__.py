@@ -418,6 +418,10 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
     `requires_manual_action` set, because the last step belongs to a human.
     """
     rng = rng or random.Random(uuid.uuid4().hex)
+    # Local import: the operator ceiling lives in `distribution`, which keeps its
+    # own heavy imports lazy, so s3 must not import it at module level.
+    from tgfarm.distribution import clamp_channel_daily_cap
+
     get_settings()
     config = get_config()
     # A report from a previous route of the same cluster must not be mistaken
@@ -497,7 +501,7 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
                 continue
 
             load = channel_load(persona.id)
-            if load["posts_today"] >= persona.posts_per_day:
+            if load["posts_today"] >= clamp_channel_daily_cap(max(1, int(persona.posts_per_day))):
                 log.debug("%s already at daily quota", persona.id)
                 continue
             if load["covered_topics"] and label and any(
@@ -540,7 +544,7 @@ async def plan_cluster(cluster_public_id: str, *, rng: random.Random | None = No
         # than asking the model whether a general-interest channel wants it.
         for persona in catch_all_personas:
             load = channel_load(persona.id)
-            if load["posts_today"] >= persona.posts_per_day:
+            if load["posts_today"] >= clamp_channel_daily_cap(max(1, int(persona.posts_per_day))):
                 log.debug("%s already at daily quota", persona.id)
                 continue
             if load["covered_topics"] and label and any(

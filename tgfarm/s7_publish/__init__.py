@@ -205,6 +205,10 @@ def schedule_ready_posts(
     the operator can only tell that apart from a stall when the zero arrives with
     its reason.
     """
+    # Local import: `distribution` pulls in `platforms`/`s9_growth` lazily for its
+    # own sake, so a module-level import here would close that cycle on s7.
+    from tgfarm.distribution import clamp_channel_daily_cap
+
     config = get_config()
     settings = get_settings()
     now = datetime.now(UTC)
@@ -267,10 +271,10 @@ def schedule_ready_posts(
                         session, platform, now
                     )
                 today_count = platform_daily_counts[platform]
-                daily_cap = PRIMARY_PLATFORM_DAILY_CAPS[platform]
+                daily_cap = clamp_channel_daily_cap(PRIMARY_PLATFORM_DAILY_CAPS[platform])
             else:
                 today_count = _posts_today(session, post.channel_id, now)
-                daily_cap = max(1, int(persona.posts_per_day))
+                daily_cap = clamp_channel_daily_cap(max(1, int(persona.posts_per_day)))
             if today_count >= daily_cap:
                 _blocked(GATE_DAILY_CAP)
                 continue
