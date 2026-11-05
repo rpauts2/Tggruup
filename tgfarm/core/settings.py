@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     opencode_zen_model: str = Field(
         default="claude-sonnet-4-6", alias="OPENCODE_ZEN_MODEL"
     )
+    # Spend cap, read by `llm.opencode.OpenCodeZen` when it picks the model for
+    # a call: with it on, the provider resolves to a `-free` catalogue model and
+    # refuses any paid one, so a stray OPENCODE_ZEN_MODEL cannot spend money.
+    # The key is still required — Zen answers 403 for `-free` models without
+    # authentication from outside OpenCode.
     opencode_zen_free_only: bool = Field(
         default=False, alias="OPENCODE_ZEN_FREE_ONLY"
     )
@@ -250,6 +255,8 @@ class Settings(BaseSettings):
     video_enabled: bool = Field(default=False, alias="VIDEO_ENABLED")
     video_max_mb: int = Field(default=45, alias="VIDEO_MAX_MB")
     video_max_duration_s: int = Field(default=180, alias="VIDEO_MAX_DURATION_S")
+    # Where S11 downloads footage before rendering. Read only through
+    # `video_root()` below, which S11 calls per download and per render.
     video_download_dir: str = Field(default="", alias="VIDEO_DOWNLOAD_DIR")
     # Off by default: it disables the licensing gate in S11. Documented as the
     # legal risk it is; see the module docstring for what it stops checking.
@@ -294,6 +301,9 @@ class Settings(BaseSettings):
     youtube_token_expires_at: str = Field(default="", alias="YOUTUBE_TOKEN_EXPIRES_AT")
     # Dzen has no public publishing API. Publishing goes through its web editor
     # in a dedicated browser profile, logged in by the operator once.
+    # The Playwright home directory is resolved by `dzen_profile_path()` below,
+    # which the publisher, the Studio stats collector, the panel and the
+    # diagnostics each call — the field name is not read anywhere else.
     dzen_profile_dir: str = Field(default="", alias="DZEN_PROFILE_DIR")
     dzen_browser: str = Field(default="chrome", alias="DZEN_BROWSER")
     dzen_headless: bool = Field(default=False, alias="DZEN_HEADLESS")
@@ -349,7 +359,8 @@ class Settings(BaseSettings):
     dzen_stats_enabled: bool = Field(default=True, alias="DZEN_STATS_ENABLED")
     dzen_stats_interval_min: int = Field(default=30, alias="DZEN_STATS_INTERVAL_MIN")
     dzen_stats_timeout_s: int = Field(default=60, alias="DZEN_STATS_TIMEOUT_S")
-    x_bearer_token: str = Field(default="", alias="X_BEARER_TOKEN")
+    # X publishes with the OAuth access token below, refreshed from the refresh
+    # token; there is no separate app bearer token, so no X_BEARER_TOKEN knob.
     x_user_id: str = Field(default="", alias="X_USER_ID")
     x_oauth_client_id: str = Field(default="", alias="X_OAUTH_CLIENT_ID")
     x_oauth_client_secret: str = Field(default="", alias="X_OAUTH_CLIENT_SECRET")
@@ -487,7 +498,12 @@ class Settings(BaseSettings):
 
     # --- pipeline -----------------------------------------------------------
     heat_threshold: float = Field(default=0.68, alias="HEAT_THRESHOLD")
-    cluster_similarity: float = Field(default=0.82, alias="CLUSTER_SIMILARITY")
+    # The S4 near-duplicate cut, read on every draft check by
+    # `s4_generation.memory.duplicate_threshold()`. No `CLUSTER_SIMILARITY`
+    # knob: the S2 clusterer scores IDF-weighted lexical overlap, because
+    # cosine for genuinely related headlines lands at 0.22-0.36 while random
+    # pairs average 0.36 — see the measurement in tgfarm/s2_trends/__init__.py,
+    # so there is no cluster threshold this knob could move.
     duplicate_similarity: float = Field(default=0.88, alias="DUPLICATE_SIMILARITY")
     # Rewriting stored `duplicate_of` links touches tens of thousands of history
     # rows, so it stays off until the operator turns it on deliberately, with a
@@ -590,10 +606,6 @@ class Settings(BaseSettings):
     @property
     def provider_chain(self) -> list[str]:
         return [p.strip().lower() for p in self.llm_providers.split(",") if p.strip()]
-
-    @property
-    def zen_configured(self) -> bool:
-        return bool(self.opencode_zen_token) or self.opencode_zen_free_only
 
     @property
     def images_configured(self) -> bool:

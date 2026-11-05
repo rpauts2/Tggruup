@@ -890,3 +890,44 @@ def test_pikabu_with_verified_browser_profile_enters_automatic_queue(tmp_path, m
     platforms.set_platform_enabled("pikabu", True)
     assert platforms.is_platform_enabled("pikabu") is True
     assert "pikabu" in platforms.enabled_crosspost_platforms()
+
+
+def test_x_requirements_name_only_credentials_the_code_reads():
+    """The panel must not advertise a credential no adapter consumes.
+
+    The X card used to say "X_BEARER_TOKEN и X_USER_ID", but X posts with the
+    OAuth user token (`get_valid_x_access_token`) and nothing in the package
+    ever read `X_BEARER_TOKEN`. An operator who configured the named key got a
+    card that still said "not ready" for reasons the text never mentioned.
+    """
+    import re
+    from pathlib import Path
+
+    from tgfarm.core.settings import Settings
+    from tgfarm import platforms
+    from tgfarm.platforms import CATALOG
+
+    entry = next(item for item in CATALOG if item["id"] == "x")
+    named = set(re.findall(r"\bX_[A-Z0-9_]+\b", entry["requirements"]))
+
+    assert named, "the X card must name what it actually needs"
+    assert "X_BEARER_TOKEN" not in named
+    assert "X_BEARER_TOKEN" not in {
+        field["key"] for field in platforms._AUTH_FIELDS["x"]
+    }, "the form still offers the key the requirement text named"
+
+    aliases = {(item.alias or name) for name, item in Settings.model_fields.items()}
+    unknown = sorted(named - aliases)
+    assert not unknown, f"the X card names settings that do not exist: {unknown}"
+
+    # Every named key has to be read by the X code path, not just declared.
+    readers = " ".join(
+        (Path(platforms.__file__).resolve().parent / rel).read_text(encoding="utf-8")
+        for rel in ("x_oauth.py", "s9_growth/adapters.py", "platforms.py", "api.py")
+    )
+    by_alias = {(item.alias or name): name for name, item in Settings.model_fields.items()}
+    unread = sorted(key for key in named if f".{by_alias[key]}" not in readers)
+    assert not unread, f"the X card names credentials nothing reads: {unread}"
+
+    # And the credential the OAuth flow really starts from is on the card.
+    assert "X_OAUTH_CLIENT_ID" in named

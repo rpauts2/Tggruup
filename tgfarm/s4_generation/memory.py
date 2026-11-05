@@ -10,6 +10,7 @@ post: only the current source block can ground new facts.
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections import Counter
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from typing import Iterable
 from sqlalchemy import func, or_, select, text
 
 from tgfarm.core.logging import get_logger
+from tgfarm.core.settings import get_settings
 from tgfarm.core.text import content_tokens, normalize
 from tgfarm.db.models import Channel, Post
 from tgfarm.db.session import get_engine, session_scope
@@ -414,6 +416,31 @@ def search_archive(
     }
 
 
+#: The cut the code used before `DUPLICATE_SIMILARITY` was wired at all, and the
+#: field's declared default in `Settings` — so an untouched install, and every
+#: test that never mentions the knob, keeps exactly the behaviour of 4c3e57d.
+DEFAULT_DUPLICATE_SIMILARITY = 0.88
+
+
+def duplicate_threshold() -> float:
+    """Live near-duplicate cut, read from Settings on every call.
+
+    Both duplicate checks in S4 (the in-cycle vector window and the full-archive
+    lookup) take their threshold here, so the operator's dial moves the next
+    draft rather than the next process start. A missing, non-numeric or
+    out-of-range value means "the default": a cut above 1 flags nothing, so every
+    near-duplicate ships, and a cut at or below 0 flags everything, so the channel
+    silently stops publishing. Neither is what a dial is for.
+    """
+    try:
+        value = float(get_settings().duplicate_similarity)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return DEFAULT_DUPLICATE_SIMILARITY
+    if not math.isfinite(value) or not 0.0 < value <= 1.0:
+        return DEFAULT_DUPLICATE_SIMILARITY
+    return value
+
+
 def _cosine(a, b) -> float:
     import numpy as np
 
@@ -430,9 +457,15 @@ def find_near_duplicate(
     channel_id: str,
     vector=None,
     *,
-    threshold: float = 0.88,
+    threshold: float | None = None,
 ) -> dict | None:
-    """Search the full published archive and return a close prior post if found."""
+    """Search the full published archive and return a close prior post if found.
+
+    `threshold` is the cosine cut; `None` (every automatic call) reads
+    `DUPLICATE_SIMILARITY` live, so the knob moves the gate without a restart.
+    """
+    if threshold is None:
+        threshold = duplicate_threshold()
     query = (draft_text or "").strip()
     if not query:
         return None

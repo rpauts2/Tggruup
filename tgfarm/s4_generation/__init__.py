@@ -39,6 +39,7 @@ from tgfarm.llm import policy
 from tgfarm.llm.client import LLMResponse, compose_offline_post, get_llm
 from tgfarm.llm.embedding import get_embedder
 from tgfarm.s3_router import ChannelPlan
+from tgfarm.s4_generation.memory import DEFAULT_DUPLICATE_SIMILARITY, duplicate_threshold
 
 log = get_logger(__name__)
 
@@ -976,7 +977,7 @@ def persist_draft(
     return public_id
 
 
-DUP_THRESHOLD = 0.88
+DUP_THRESHOLD = DEFAULT_DUPLICATE_SIMILARITY
 
 
 def _cosine(a, b) -> float:
@@ -986,8 +987,17 @@ def _cosine(a, b) -> float:
     return float(a @ b) / denom if denom else 0.0
 
 
-def _too_similar_vec(vec, pool: list[dict], channel_id: str, threshold: float = DUP_THRESHOLD) -> bool:
-    """True when the draft embedding is a near-duplicate of the channel's recent output."""
+def _too_similar_vec(
+    vec, pool: list[dict], channel_id: str, threshold: float | None = None
+) -> bool:
+    """True when the draft embedding is a near-duplicate of the channel's recent output.
+
+    `threshold=None` — the only way the pipeline calls this — reads
+    `DUPLICATE_SIMILARITY` live on every draft, instead of the module constant
+    this used to default to.
+    """
+    if threshold is None:
+        threshold = duplicate_threshold()
     for other in pool:
         if other.get("channel_id") != channel_id:
             continue

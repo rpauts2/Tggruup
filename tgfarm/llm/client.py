@@ -440,7 +440,12 @@ class LLMClient:
                 from tgfarm.llm.opencode import OpenCodeZen
 
                 self._providers.append(
-                    OpenCodeZen(settings.opencode_zen_token, settings.opencode_zen_model, timeout)
+                    OpenCodeZen(
+                        settings.opencode_zen_token,
+                        settings.opencode_zen_model,
+                        timeout,
+                        free_only=settings.opencode_zen_free_only,
+                    )
                 )
             elif name == "compatible2":
                 # Second echelon: an independent gateway. Skipped without a

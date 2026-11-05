@@ -20,6 +20,7 @@ import time
 from tgfarm.core.errors import ProviderRateLimited, ProviderUnavailable
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
+from tgfarm.core.settings import get_settings
 from tgfarm.llm.client import _Provider, record_stat
 from tgfarm.llm.extract import extract_json
 
@@ -60,13 +61,32 @@ def is_paid(model: str) -> bool:
     return "-free" not in (model or "").lower()
 
 
+def free_only_setting(fallback: bool = False) -> bool:
+    """`OPENCODE_ZEN_FREE_ONLY`, read when a request is built rather than at import.
+
+    The panel rewrites `.env` and resets the settings cache, but the built LLM
+    chain is not rebuilt, so a value frozen in `__init__` would only take effect
+    on a restart — a knob that is alive for a new process and dead for the one
+    the operator is looking at. `fallback` is the value the provider was built
+    with, used when the settings object cannot answer (a partially stubbed
+    `get_settings` in a test), so a stub never silently disables the spend cap.
+    """
+    try:
+        return bool(get_settings().opencode_zen_free_only)
+    except (AttributeError, TypeError, ValueError):
+        return bool(fallback)
+
+
 class OpenCodeZen(_Provider):
     name = "opencode-zen"
 
-    def __init__(self, token: str, model: str, timeout: float) -> None:
+    def __init__(self, token: str, model: str, timeout: float, free_only: bool = False) -> None:
         self._token = token.strip()
         self._model = model or DEFAULT_MODEL
         self._timeout = timeout
+        # The value the chain was built with. The live setting wins on every
+        # call; this is the fallback when settings cannot be read.
+        self._free_only = bool(free_only)
         self._down = 0.0
         self._resolved_model = ""
 
@@ -80,6 +100,10 @@ class OpenCodeZen(_Provider):
     async def resolve_model(self, want_free_only: bool = False) -> str:
         """Pick a concrete model id, preferring the configured one."""
         if self._resolved_model and not want_free_only:
+            return self._resolved_model
+        # A resolved free model stays cached too: re-listing the catalogue on
+        # every completion to prove the same fact would cost a request per call.
+        if self._resolved_model and not is_paid(self._resolved_model):
             return self._resolved_model
         candidates = await self.list_models(self._token)
         if not candidates:
@@ -124,7 +148,13 @@ class OpenCodeZen(_Provider):
     ) -> str:
         import httpx
 
-        model = model or await self.resolve_model()
+        free_only = free_only_setting(self._free_only)
+        model = model or await self.resolve_model(free_only)
+        if free_only and is_paid(model):
+            # A spend cap that silently falls back to the paid configured model
+            # is not a cap: the catalogue could not name a `-free` model, so name
+            # it down and let the chain move on instead of charging for it.
+            raise ProviderUnavailable(f"zen free-only mode refuses paid model {model}")
         family = api_family(model)
         await RATE.llm.take()
 

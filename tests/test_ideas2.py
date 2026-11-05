@@ -282,7 +282,7 @@ def test_transport_failure_backs_off_exponentially(db, monkeypatch):
         lambda: SimpleNamespace(
             vk_access_token="tok", vk_group_id="-1",
             max_access_token="", max_channel_id="",
-            x_bearer_token="", x_user_id="",
+            x_access_token="", x_user_id="",
         ),
     )
     monkeypatch.setattr("tgfarm.s9_growth.adapters.VkAdapter.publish", fail_publish)

@@ -72,7 +72,6 @@ def test_a_local_env_file_cannot_move_a_pinned_tunable(tmp_path: Path):
         "AI_POLICY": "always",
         "AI_DAILY_BUDGET": "999999",
         "QUEUE_BACKLOG_ALERT_THRESHOLD": "1",
-        "CLUSTER_SIMILARITY": "0.5",
         "DUPLICATE_SIMILARITY": "0.5",
         "SOURCE_MAX_AGE_HOURS": "1",
         "DZEN_MIN_GAP_S": "1",

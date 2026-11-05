@@ -79,7 +79,12 @@ CATALOG: tuple[dict[str, Any], ...] = (
         "category": "Мировые", "market": "Международная", "priority": "core",
         "mode": "built_in", "roles": ["crosspost"],
         "description": "Короткая версия поста для ленты X.",
-        "requirements": "X_BEARER_TOKEN и X_USER_ID; доступ зависит от разрешений API.",
+        "requirements": (
+            "X_OAUTH_CLIENT_ID и X_OAUTH_CLIENT_SECRET (OAuth 2.0 приложение Web App "
+            "с tweet.write и offline.access), затем подключение аккаунта через «Войти через OAuth»; "
+            "X_USER_ID сохраняется автоматически. Пост пишется user-токеном OAuth, "
+            "приложение отдельно не настраивается."
+        ),
         "docs_url": "https://developer.x.com/en/docs/x-api",
     },
     {
