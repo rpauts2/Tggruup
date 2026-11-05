@@ -400,7 +400,9 @@ def test_a_booked_format_reaches_the_generation_call_and_the_written_post(
         LENGTH_BUDGET["article"][0],
         LENGTH_BUDGET["article"][1],
     ), "забронированный формат обязан нести и бюджет длины S10"
-    assert "редакционного плана" in str(call["reason"])
+    assert s4_generation.BOOKED_FORMAT_MARK in str(call["reason"]), (
+        "причина обязана называть владельца выбора формата"
+    )
 
     values = _post_row(created[0])
     assert values["post_format"] == "article"

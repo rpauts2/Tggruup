@@ -1506,7 +1506,7 @@ def format_plan_for(
 
 #: Names the editorial plan as the owner of a format choice, in `format_reason`,
 #: so an operator reading a post can tell a booked shape from a measured one.
-BOOKED_FORMAT_MARK = "формат из редакционного плана"
+BOOKED_FORMAT_MARK = "формат из редакторского плана"
 
 
 def apply_booked_format(format_plan: Any, booked: str | None) -> Any:
