@@ -2672,6 +2672,422 @@ def _plan_execution_note(
     )
 
 
+#: ---------------------------------------------------------------------------
+#: Booking fidelity: the slot the plan reserved, against the slot the farm used.
+#:
+#: The subtraction is the whole feature, and both terms are already stored.
+#: `posts.plan_slot_at` is written once when the draft is inserted
+#: (`s4_generation.persist_draft`) and never touched again; `posts.scheduled_at`
+#: is rewritten by every requeue, retry and unpublish; `posts.published_at` is
+#: what the platform was actually handed. W19-C put the booking on the card and
+#: the queue has always shown the slot, so the operator was given both numbers and
+#: left to do the arithmetic — which is why nothing here answers «совпало ли».
+#:
+#: Six keys, because the states are not points on a scale and three of them are
+#: different silences: a post that carries no booking is not a post that matched
+#: its booking, a booking refused by the scheduler is not a booking still waiting
+#: for one, and a row whose stamp cannot be read is not either of those. An
+#: unreadable *read* is a seventh case and holds no counts at all.
+BOOKING_NO_BOOKING = "no_booking"
+BOOKING_HONOURED = "honoured"
+BOOKING_SHIFTED = "shifted"
+BOOKING_REFUSED = "refused"
+BOOKING_AWAITING = "awaiting_slot"
+#: A booked row whose column holds no moment. Counting it as `awaiting_slot`
+#: would promise a slot this row may never be given.
+BOOKING_UNREAD_ROW = "unread_row"
+BOOKING_STATES = (
+    BOOKING_NO_BOOKING,
+    BOOKING_HONOURED,
+    BOOKING_SHIFTED,
+    BOOKING_REFUSED,
+    BOOKING_AWAITING,
+    BOOKING_UNREAD_ROW,
+)
+#: Booked rows one read classifies. A plan snapshot holds at most
+#: `plan_execution.MAX_ENTRIES_PER_RUN` (40) entries and each books at most one
+#: post, so today this window is the entire live booking set — and when it stops
+#: being one, every count it produced says so in `basis` rather than as a total.
+BOOKING_SCAN_LIMIT = 400
+#: Rows the payload is allowed to name. A state with thirty posts behind it
+#: travels as a count plus a dozen ids, not thirty lines of markup.
+BOOKING_SAMPLE_ROWS = 12
+
+
+def _booking_moment(value: Any) -> datetime | None:
+    """One post stamp as an aware UTC datetime, or `None` when it is not one.
+
+    SQLite hands `DateTime(timezone=True)` back naive-UTC, which is what `_utc`
+    repairs, and a row written outside the model can hold something no column can
+    turn into a moment. `None` is that case, and the caller reports it as an
+    unread row instead of guessing an instant for it (P34).
+    """
+    return _utc(value) if isinstance(value, datetime) else None
+
+
+def _booking_shift(later: datetime | None, booked: datetime | None) -> dict[str, Any]:
+    """Signed `later - booked` in exact seconds and in minutes.
+
+    Compared at second precision, the precision `_iso_stamp` serves: a booking and
+    a slot differing by under a second are the same moment. A shift of 30 seconds
+    arrives as `shift_seconds: 30` *and* `shift_minutes: 0.5` — rounding it to
+    `0 minutes` alone would print "nothing moved" about a slot that did move.
+    """
+    if later is None or booked is None:
+        return {"shift_seconds": None, "shift_minutes": None}
+    seconds = int((later.replace(microsecond=0) - booked.replace(microsecond=0)).total_seconds())
+    return {"shift_seconds": seconds, "shift_minutes": round(seconds / 60, 2)}
+
+
+def _booking_refusal_ledger(decision: Any, gate_code: str) -> dict[str, Any]:
+    """Refusals the newest publish tick journalled under `gate_code`, or `None`.
+
+    `pipeline.last_publish_decision()` is the same ledger `/api/status` and
+    `/api/backlog` read, and it is the only place a scheduler refusal is written
+    down: `schedule_ready_posts` counts the refusal into the tick's gate report
+    and changes no column on the post, so no per-post record of it exists. Two
+    answers must not collapse into each other. That helper drops a gate whose
+    count is zero before it journals, so a tick that ran and named this gate
+    nothing gives a measured `0`, while no tick at all gives `None` — "nothing has
+    been measured yet", which is not a zero and not a refusal either.
+    """
+    if not isinstance(decision, dict):
+        return {"count": None, "tick_reason": None}
+    gates = decision.get("gates")
+    counted = gates.get(gate_code) if isinstance(gates, dict) else None
+    return {
+        "count": 0 if counted is None else _measured_int(counted),
+        "tick_reason": str(decision.get("reason")) if decision.get("reason") else None,
+    }
+
+
+def _booking_row_view(
+    row: Any,
+    *,
+    gate: dict[str, Any],
+    gated_status: str,
+    hours_judge: Callable[..., bool],
+    config: Any,
+) -> dict[str, Any]:
+    """One booked post, classified from its own columns plus the publish ledger.
+
+    The instant the plan reserved and the instant the queue used are the only
+    inputs; `status` and the ledger are consulted for the one state the columns
+    cannot settle alone. The comment below is the whole reasoning, because this is
+    where a reader is most tempted to invent.
+    """
+    booked = _booking_moment(row.plan_slot_at)
+    slotted = _booking_moment(row.scheduled_at)
+    sent = _booking_moment(row.published_at)
+    # The platform comes from the channel join. A post whose channel row is gone
+    # has no platform this reader may name — `_backlog` refuses to guess `telegram`
+    # for the same reason, and here the guess would decide whether a booking is
+    # refusable at all, so an unknown platform is never claimed to be refused.
+    platform = str(row.platform).lower() if row.platform else None
+    slot_shift = _booking_shift(slotted, booked)
+    sent_shift = _booking_shift(sent, booked)
+    seconds = slot_shift["shift_seconds"]
+    view: dict[str, Any] = {
+        "post_id": str(row.public_id),
+        "status": str(row.status or ""),
+        "platform": platform,
+        "timezone": str(row.timezone) if row.timezone else None,
+        "plan_slot_at": _iso_stamp(booked),
+        "scheduled_at": _iso_stamp(slotted),
+        "published_at": _iso_stamp(sent),
+        "state": BOOKING_UNREAD_ROW,
+        "direction": None if seconds is None or seconds == 0 else "later" if seconds > 0 else "earlier",
+        "refusal_gate_code": None,
+        "refusal_basis": None,
+        **slot_shift,
+        "published_shift_seconds": sent_shift["shift_seconds"],
+        "published_shift_minutes": sent_shift["shift_minutes"],
+    }
+    if booked is None:
+        return view
+    if slotted is None:
+        # A booking with no queue slot has two honest readings, and the journal is
+        # what separates them: `schedule_ready_posts` refuses an illegal booking
+        # and leaves the row `gated` with `scheduled_at` NULL (pinned by
+        # `tests/test_w19d_booked_slot.py`), and it leaves a *legal* booking
+        # unscheduled whenever the tick has not reached it, an earlier gate held it
+        # or `approval_required` stopped the whole pass. So `refused` is claimed
+        # only when both halves agree: the scheduler's own rule — read through
+        # `plan_execution.local_hours_allow`, the very callable `s7_publish`
+        # imports rather than a copy of it — says the instant is illegal, and the
+        # newest publish tick journalled at least one refusal under
+        # `slot_outside_local_hours`. The ledger count belongs to the tick and
+        # names no post id, which is why `refusal_basis` travels with the state and
+        # the panel repeats the limit instead of hiding it. Dzen is excluded on
+        # purpose: that branch publishes at `now` whatever the plan booked, so
+        # judging an instant the scheduler never writes would invent a refusal.
+        if (
+            str(row.status or "") == gated_status
+            and platform is not None
+            and platform != "dzen"
+            and gate.get("count") is not None
+            and gate["count"] > 0
+            and not hours_judge(booked, view["timezone"], config=config)
+        ):
+            view["state"] = BOOKING_REFUSED
+            view["refusal_gate_code"] = gate["code"]
+            view["refusal_basis"] = "rule_and_publish_tick_ledger"
+        else:
+            view["state"] = BOOKING_AWAITING
+        return view
+    view["state"] = BOOKING_HONOURED if seconds == 0 else BOOKING_SHIFTED
+    return view
+
+
+def _booking_note(
+    *,
+    readable: bool,
+    reason: str | None,
+    counts: dict[str, int | None],
+    booked: int | None,
+    unbooked: int | None,
+    scanned: int | None,
+    truncated: bool | None,
+    gate: dict[str, Any],
+) -> str:
+    """One sentence saying what this read measured and what it refuses to claim."""
+    if not readable:
+        if reason == "plan_columns_missing":
+            return (
+                "Колонки брони ещё не созданы в читаемом хранилище: их добавляет "
+                "bootstrap при первом запуске новой сборки, и до этого момента "
+                "сравнивать нечего. Это не «брони нет», не «совпало» и не «ноль "
+                "post'ов» — измерение невозможно."
+            )
+        if reason == "post_table_unread":
+            return (
+                "Таблица постов не прочитана (запрос вернул ошибку), поэтому ни одно "
+                "состояние брони не измерено. Нули ниже не напечатаны именно потому, "
+                "что их не было."
+            )
+        return (
+            "Читатель броней не смог ничего прочитать: состояние расписания плана "
+            "неизвестно, и это не «совпало» и не «отказано»."
+        )
+    if booked == 0:
+        return (
+            f"Брони плана нет ни у одного поста (постов без брони: {unbooked}), поэтому "
+            "сказать, совпало ли расписание плана с фактом, по этой базе нельзя: это не "
+            "«совпало» и не «отказано», это отсутствие измерения."
+        )
+    head = (
+        f"Прочитано {scanned} броней из {booked}"
+        + (f"; окно {BOOKING_SCAN_LIMIT} строк, остальные не классифицированы" if truncated else "")
+        + ". "
+    )
+    listed = ", ".join(
+        f"{code}={counts.get(code)}" for code in BOOKING_STATES if counts.get(code) is not None
+    )
+    ledger = gate.get("count")
+    if ledger is None:
+        tail = (
+            f"Журнал publish-тика пуст: ни один тик отказа по гейту {gate['code']} ещё не "
+            "записывал, поэтому «отказано» здесь не утверждается."
+        )
+    elif ledger == 0:
+        tail = (
+            f"Последний publish-тик записан, и отказов по гейту {gate['code']} в нём нет "
+            "(измеренный ноль, а не отсутствие графы)."
+        )
+    else:
+        tail = (
+            f"Последний publish-тик записал {ledger} отказов по гейту {gate['code']}; "
+            "счётчик принадлежит тику, а не отдельному посту."
+        )
+    return head + f"Состояния: {listed}. " + tail
+
+
+def _booking_fidelity() -> dict[str, Any]:
+    """Did the farm publish the post where the plan booked it? Read-only.
+
+    Builds nothing, schedules nothing, publishes nothing and writes no row: it is
+    a subtraction over `posts`, plus the one ledger that could name a refusal.
+    Everything a read could not measure travels as `None`, never as `0` (P34) —
+    which is not a stylistic choice here: the live store today has no booking
+    column at all, and a card of zeros there would claim the plan books nothing
+    and that every booking matched.
+
+    No wall clock enters the payload. The judgement is a function of two stored
+    instants, and a stamp printed per call would make two reads of an unchanged
+    table differ — the property `tests/test_api_plan_execution.py` already pins
+    for its own reader and that this one keeps on purpose.
+    """
+    try:
+        from tgfarm import s7_publish
+        from tgfarm.plan_execution import local_hours_allow
+    except Exception as exc:  # noqa: BLE001 - the gate vocabulary lives in two modules
+        log.warning("booking fidelity: gate vocabulary unread (%s)", type(exc).__name__)
+        return _booking_unread("reader_unavailable", None, {"code": None})
+    gate = {
+        "code": s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS,
+        "attribution": "tick",
+        **_booking_refusal_ledger(
+            pipeline.last_publish_decision(), s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS
+        ),
+    }
+    try:
+        # Read inside the guard: the legal local hours come from the same cadence the
+        # scheduler judges with, and a config this process cannot parse is a read
+        # that did not happen — not a booking that matched nothing.
+        config = get_config()
+        with session_scope() as session:
+            booked_total = int(
+                session.execute(
+                    select(func.count()).select_from(Post).where(Post.plan_slot_at.is_not(None))
+                ).scalar_one()
+            )
+            unbooked_total = int(
+                session.execute(
+                    select(func.count()).select_from(Post).where(Post.plan_slot_at.is_(None))
+                ).scalar_one()
+            )
+            rows = (
+                session.execute(
+                    select(
+                        Post.public_id,
+                        Post.status,
+                        Post.plan_slot_at,
+                        Post.scheduled_at,
+                        Post.published_at,
+                        Channel.platform,
+                        Channel.timezone,
+                    )
+                    .outerjoin(Channel, Channel.id == Post.channel_id)
+                    .where(Post.plan_slot_at.is_not(None))
+                    .order_by(Post.created_at.desc())
+                    .limit(BOOKING_SCAN_LIMIT)
+                )
+                .all()
+            )
+    except SQLAlchemyError as exc:
+        detail = redact_sensitive_text(exc, limit=180)
+        reason = "plan_columns_missing" if "no such column" in str(exc) else "post_table_unread"
+        log.warning("booking fidelity: %s (%s)", reason, detail)
+        return _booking_unread(reason, detail, gate)
+    except Exception as exc:  # noqa: BLE001 - a card must not fail the plan view
+        log.warning("booking fidelity: reader failed (%s)", type(exc).__name__)
+        return _booking_unread("reader_unavailable", type(exc).__name__, gate)
+
+    counts: dict[str, int] = {code: 0 for code in BOOKING_STATES}
+    samples: list[dict[str, Any]] = []
+    later = earlier = 0
+    largest = 0.0
+    for row in rows:
+        view = _booking_row_view(
+            row,
+            gate=gate,
+            gated_status=s7_publish.STATUS_GATED,
+            hours_judge=local_hours_allow,
+            config=config,
+        )
+        counts[view["state"]] += 1
+        if view["state"] == BOOKING_SHIFTED:
+            later += 1 if (view["shift_seconds"] or 0) > 0 else 0
+            earlier += 1 if (view["shift_seconds"] or 0) < 0 else 0
+            largest = max(largest, abs(float(view["shift_minutes"] or 0.0)))
+        if len(samples) < BOOKING_SAMPLE_ROWS:
+            samples.append(view)
+
+    # The scan above filters `plan_slot_at IS NOT NULL`, so an unbooked row can never
+    # reach the classifier and the loop's zero for this code is not a measurement of
+    # it. The whole-table count is: `no_booking` is the number of posts the plan never
+    # reserved, and leaving it at the loop's 0 would print "0 posts without a booking"
+    # about a store full of them — the exact inversion P34 forbids.
+    counts[BOOKING_NO_BOOKING] = unbooked_total
+
+    complete = booked_total == len(rows)
+    states = {
+        code: {
+            "count": counts[code],
+            # `no_booking` is a whole-table SQL count and is always complete; the
+            # rest describe the scanned window, which is the whole population only
+            # while the limit was not reached.
+            "basis": "population" if code == BOOKING_NO_BOOKING or complete else "sample",
+            "single_row": counts[code] == 1,
+        }
+        for code in BOOKING_STATES
+    }
+    truncated = booked_total > len(rows)
+    return {
+        "readable": True,
+        "reason": None,
+        "reason_detail": None,
+        "precision": "second",
+        "gate": gate,
+        "population": {
+            "posts": booked_total + unbooked_total,
+            "booked": booked_total,
+            "unbooked": unbooked_total,
+            "scanned": len(rows),
+            "truncated": truncated,
+            "limit": BOOKING_SCAN_LIMIT,
+        },
+        "states": states,
+        "shift": {
+            "later": later,
+            "earlier": earlier,
+            # Measured nothing beats a printed 0: with no shifted row there is no
+            # largest displacement to report.
+            "largest_abs_minutes": None if counts[BOOKING_SHIFTED] == 0 else largest,
+        },
+        "samples": samples,
+        "note": _booking_note(
+            readable=True,
+            reason=None,
+            counts=counts,
+            booked=booked_total,
+            unbooked=unbooked_total,
+            scanned=len(rows),
+            truncated=truncated,
+            gate=gate,
+        ),
+    }
+
+
+def _booking_unread(reason: str, detail: str | None, gate: dict[str, Any]) -> dict[str, Any]:
+    """The whole read unavailable, stated as one fact and not as six zeros.
+
+    `reason` is the payload's own vocabulary and it is deliberately not a boolean:
+    `plan_columns_missing` says the store has nothing to compare yet,
+    `post_table_unread` says a query failed, `reader_unavailable` says this process
+    could not even assemble the read. Three different sentences for three different
+    failures, none of which is «брони нет» (P34).
+    """
+    return {
+        "readable": False,
+        "reason": reason,
+        "reason_detail": detail,
+        "precision": "second",
+        "gate": {**gate, "count": None, "attribution": "tick"},
+        "population": {
+            "posts": None,
+            "booked": None,
+            "unbooked": None,
+            "scanned": None,
+            "truncated": None,
+            "limit": BOOKING_SCAN_LIMIT,
+        },
+        "states": {code: {"count": None, "basis": None, "single_row": None} for code in BOOKING_STATES},
+        "shift": {"later": None, "earlier": None, "largest_abs_minutes": None},
+        "samples": None,
+        "note": _booking_note(
+            readable=False,
+            reason=reason,
+            counts={},
+            booked=None,
+            unbooked=None,
+            scanned=None,
+            truncated=None,
+            gate=gate,
+        ),
+    }
+
+
 def _plan_execution_state() -> dict[str, Any]:
     """Assemble the consumer's state from settings, this process and the journal."""
     from tgfarm import plan_execution
@@ -3160,15 +3576,37 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     async def editorial_plan_execution() -> dict:
         """Read-only: is the plan's consumer on, did it run, and what did it apply?
 
-        Answers the four questions the plan endpoints cannot: the configured
+        Answers the five questions the plan endpoints cannot: the configured
         switch, whether this process can see the two jobs behind it, the newest
-        apply tick the executor journalled, and the active plan it would act on.
-        Builds nothing, refreshes nothing, applies nothing and writes no row.
-        `null` means this process cannot know; a `False` or a `0` here is only
-        ever something that was actually measured.
+        apply tick the executor journalled, the active plan it would act on, and —
+        since W20-C, in `booking` — whether the slot a plan entry reserved is the
+        slot the queue used. Builds nothing, refreshes nothing, applies nothing and
+        writes no row. `null` means this process cannot know; a `False` or a `0`
+        here is only ever something that was actually measured.
         """
 
         return await io(_plan_execution_state)
+
+    @app.get("/api/editorial/plan/booking")
+    async def editorial_plan_booking() -> dict:
+        """Read-only: did the farm use the slot the plan booked, or a different one?
+
+        `posts.plan_slot_at` is the reservation the plan wrote once and never
+        touched, `posts.scheduled_at` the slot the queue ended up using (requeues,
+        retries and unpublish all rewrite it) and `posts.published_at` the fact the
+        platform took; this read subtracts them and adds the single ledger that can
+        name a refusal, `slot_outside_local_hours`. It builds nothing, schedules
+        nothing, publishes nothing and writes no row, and every number it could not
+        measure arrives as `null` rather than as the `0` a card would print.
+
+        It is its own endpoint rather than a section of `/api/editorial/plan/execution`
+        because that payload's key set is a pinned contract, and because a transport
+        failure of the two reads is a different fact from the store having no
+        booking column yet — folded into one response the panel could not tell them
+        apart, which is exactly the collapse this project refuses.
+        """
+
+        return await io(_booking_fidelity)
 
     @app.put("/api/runtime/mode")
     async def set_runtime_mode(request: RuntimeModeRequest) -> dict:
