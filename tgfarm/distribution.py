@@ -22,10 +22,13 @@ from tgfarm.core.text import content_tokens, normalize, token_jaccard
 from tgfarm.crosspost_journal import (
     JOURNAL_STATUS_DRY_RUN,
     JOURNAL_STATUS_FAILED,
+    JOURNAL_STATUS_PERMANENT,
     JOURNAL_STATUS_POSTED,
     JOURNAL_STATUS_PUBLISHING,
     JOURNAL_STATUS_RETRY_AUTHORIZED,
+    JOURNAL_STATUS_SCHEDULED,
     JOURNAL_STATUS_SKIPPED,
+    JOURNAL_STATUS_UNKNOWN,
     JOURNAL_UNKNOWN_STATUS_REASON,
     JournalStatusClass,
     journal_row_decision,
@@ -70,34 +73,44 @@ from tgfarm.db.session import session_scope
 # `tests/test_distribution_journal_vocabulary.py`, with the resulting caps and
 # allowances written as literals derived by hand.
 #
-# `scheduled` and `permanent` are still spelled out inside the sets below: the
-# leaf module lists both in `JOURNAL_SUPPRESSED_STATUSES` but declares no
-# `JOURNAL_STATUS_*` constant for either (unlike every other member of these
-# sets), and this block does not own that file. They are deliberately *not*
-# re-declared here as `JOURNAL_STATUS_SCHEDULED` / `JOURNAL_STATUS_PERMANENT`:
-# two public names for one token is the exact failure this module is supposed to
-# remove. Until the leaf declares them, these two literals are the only place
-# the budget vocabulary has to be re-typed, and
-# `tests/test_distribution_journal_vocabulary.py` pins that they are the only
-# two.
+# `scheduled`, `permanent` and `unknown` are the last three journal tokens the
+# leaf module used to list in `JOURNAL_SUPPRESSED_STATUSES` without declaring a
+# `JOURNAL_STATUS_*` constant for them, which is why they were spelled out in the
+# sets below. They are named now (`P79`), so these three sets hold no spelled-out
+# journal status at all and one grep on the owner finds every reader of the
+# vocabulary. They are still *not* re-declared here: a second public name for one
+# token is the exact failure this module is supposed to remove, and
+# `tests/test_journal_status_constants_owner.py` fails if a bare journal token
+# reappears in a status-vocabulary set in this module or anywhere else in
+# `tgfarm/` outside the owner and the gaps that file registers by name.
 # ---------------------------------------------------------------------------
 
 #: A row that records a real request against the destination's API, answered or
 #: not. A refusal (`permanent`) is still an attempt — it is evidence about the
 #: platform's tolerance of this content, which is exactly what the ratio measures.
 JOURNAL_ATTEMPT_STATUSES = frozenset(
-    {JOURNAL_STATUS_POSTED, "scheduled", JOURNAL_STATUS_FAILED, "permanent"}
+    {
+        JOURNAL_STATUS_POSTED,
+        JOURNAL_STATUS_SCHEDULED,
+        JOURNAL_STATUS_FAILED,
+        JOURNAL_STATUS_PERMANENT,
+    }
 )
 #: A row that says the destination has the material or will publish it. This is
 #: the *success* of an attempt, not the absence of a failure: `skipped`, `dry_run`
 #: and `retry_authorized` are all "not sent yet", and `unknown` is unmeasured.
-JOURNAL_DELIVERED_STATUSES = frozenset({JOURNAL_STATUS_POSTED, "scheduled"})
+JOURNAL_DELIVERED_STATUSES = frozenset({JOURNAL_STATUS_POSTED, JOURNAL_STATUS_SCHEDULED})
 #: A row whose pair may not be sent again today. Narrower than SUPPRESSED, the
 #: set its parent question uses, on purpose: a destination that refused this
 #: content (`permanent`) frees its slot, while a claim in flight (`publishing`)
 #: and an unanswered request (`unknown`) spend one.
 JOURNAL_SLOT_OCCUPYING_STATUSES = frozenset(
-    {JOURNAL_STATUS_POSTED, "scheduled", JOURNAL_STATUS_PUBLISHING, "unknown"}
+    {
+        JOURNAL_STATUS_POSTED,
+        JOURNAL_STATUS_SCHEDULED,
+        JOURNAL_STATUS_PUBLISHING,
+        JOURNAL_STATUS_UNKNOWN,
+    }
 )
 
 # These are conservative starting budgets, not claims about provider hard caps.
