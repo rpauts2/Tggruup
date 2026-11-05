@@ -747,7 +747,8 @@ def test_the_measured_zero_and_the_silence_are_still_different_rows(tmp_path):
     assert "ключа о брони не прислано" not in empty
     for name in ("nokey", "network", "http"):
         assert "ждут слота плана: 0" not in rendered[name]["html"], f"{name} printed a zero nobody measured"
-    assert "Очередь не прочитана" in rendered["nokey"]["html"] or "очередь не прочитана" in rendered["nokey"]["html"]
+    assert ("Очередь не прочитана" in rendered["nokey"]["html"]
+            or "очередь не прочитана" in rendered["nokey"]["html"])
     assert "Ключ queue не пришёл" in rendered["nokey"]["html"]
     assert "ответ не пришёл" in rendered["network"]["html"]
     assert "Это не «ждущих нет»" in rendered["network"]["html"]
