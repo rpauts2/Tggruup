@@ -227,7 +227,7 @@ def test_a_label_row_without_a_public_id_is_not_renamed_into_an_answer() -> None
 #: Every one of them must reach the payload through the owner, and the list has to
 #: name every one of them: a service that answers from its own dict is the drift
 #: this wave was ordered to close.
-PROVENANCE_SERVICES = ("api.py",)
+PROVENANCE_SERVICES = ("api.py", "distribution.py")
 
 
 def _provenance_dicts(root: Path) -> list[str]:
