@@ -166,15 +166,31 @@
   // while a collector that exists and still comes back empty is waiting for
   // something only the operator can hand over (a VK user token, an authorised
   // Telegram session — see `BLOCKED_REASONS`, `SCHEDULED_COLLECTORS` and
-  // `SESSION_GATED_COLLECTORS` in coverage.py). The kind is derivable from the
-  // structured half of the row, so it is stated as its own chip; the reason
-  // string stays the server's own prose and carries the specific credential.
+  // `SESSION_GATED_COLLECTORS` in coverage.py). Since P52 the server states the
+  // kind itself as `row.collector_state` — derived from the job specs registered
+  // in `pipeline.collector_job_specs`, so "scheduled, therefore covered" cannot
+  // be claimed anywhere — and a scheduled-but-gated platform gets its own chip
+  // naming that the operator's configuration stops the tick. The reason string
+  // stays the server's own prose and carries the specific flag or credential.
   // Kept above `COVERAGE_STATUS` because the test that pins the four statuses
   // reads the table between those two declarations and expects four entries.
   const COVERAGE_GAP = {
     ours: { cls: "tag-none", label: "сборщика нет — это наш пробел" },
     operator: { cls: "tag-warn", label: "нужно только от оператора" },
+    // A registered job whose snapshots do not land in post_stats (telegraph):
+    // the schedule runs and the learning table stays empty — a gap only we close.
+    ours_table: { cls: "tag-none", label: "снимки не в post_stats — наш пробел" },
   };
+
+  // `collector_state` values come from `STATE_*` in s8_analytics/coverage.py.
+  // `scheduled_running` is not a kind of silence at all, so it gets no chip.
+  const COVERAGE_GAP_BY_STATE = {
+    absent: COVERAGE_GAP.ours,
+    scheduled_other_table: COVERAGE_GAP.ours_table,
+    scheduled_gated: COVERAGE_GAP.operator,
+    scheduled_running: null,
+  };
+
 
   // The four statuses come from tgfarm/s8_analytics/coverage.py (STATUS_*). Each
   // gets its own colour and its own wording: "nobody measures this platform" and
@@ -242,11 +258,19 @@
           + " из " + n(row.crosspost_posted)
           + " · снимок имеют " + n(row.measured_posts) + " из " + n(row.published)
           + " · id для запроса: " + items(row.askable_posts);
-        // Whose gap it is, from `collector` alone — see `COVERAGE_GAP`.
-        const gap = row.collector
-          ? (row.status === "blocked" ? COVERAGE_GAP.operator : null)
-          : (Number(row.published || 0) > 0 || Number(row.crosspost_posted || 0) > 0
-            ? COVERAGE_GAP.ours : null);
+        // Whose gap it is: from the structured `collector_state` the server derives
+        // from the registered job specs, falling back to `collector` alone —
+        // see `COVERAGE_GAP` and `COVERAGE_GAP_BY_STATE`.
+        const hasMatter = Number(row.published || 0) > 0 || Number(row.crosspost_posted || 0) > 0;
+        const byState = hasMatter && row.collector_state in COVERAGE_GAP_BY_STATE
+          ? COVERAGE_GAP_BY_STATE[row.collector_state]
+          : undefined;
+        const gap = byState !== undefined
+          ? byState
+          : (row.collector
+            ? (row.status === "blocked" ? COVERAGE_GAP.operator : null)
+            : (hasMatter ? COVERAGE_GAP.ours : null));
+
         return '<div class="item"><div class="item-main"><div class="item-title">'
           + esc(row.platform) + "</div>"
           + '<div class="item-meta">опубликовано ' + Number(row.published || 0)

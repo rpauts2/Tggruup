@@ -140,17 +140,21 @@ def test_measured_partial_and_blocked_are_three_different_answers():
 
 
 def test_a_partially_measured_platform_without_a_collector_names_the_collector():
-    """Live Telegraph: some posts measured, and nobody at all reads the rest.
+    """Live Telegraph: some posts measured, and the rest stays out of `post_stats`.
 
     A bare "8 публикаций без снимка" reads like a schedule that has not run yet.
     The reason has to say the remaining rows are unreachable, not merely overdue.
+    Since P52 `telegraph-metrics` is a registered job (pipeline.py), so the audit
+    names its collector and says its snapshots land in another table - the old
+    "no collector at all" sentence had become a lie.
     """
     _seed_platform("telegraph", published=4, measured=1, with_remote=0)
     row = _row(measurement_coverage(), "telegraph")
-    assert row["collector"] is None
+    assert row["collector"] == "tgfarm.s9_growth.telegraph_metrics"
+    assert row["collector_state"] == "scheduled_other_table"
     assert row["status"] == STATUS_PARTIAL
     assert "измерено 1 из 4" in row["reason"]
-    assert "сборщика метрик в s8 нет" in row["reason"]
+    assert "пишутся в `telegraph_metric_snapshots`" in row["reason"]
 
 
 def test_telegram_is_measured_by_a_schedule_that_needs_a_session():

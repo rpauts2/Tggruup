@@ -16,10 +16,12 @@ import asyncio
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
@@ -2420,7 +2422,281 @@ async def _startup_backup_check() -> dict | None:
         return None
 
 
+# ------------------------------------------------- scheduled collector registry
+#: A registered job is not yet a job that can do anything: `_metrics_learning_tick`
+#: no-ops unless `settings.online` (pipeline.py:2361 in this file), its Дзен/VK
+#: collectors are further gated inside `s8_analytics.run()`
+#: (s8_analytics/__init__.py:438 and :453), and the Telegram collector additionally
+#: needs an authorised user session (pipeline.py:2242). The specs below carry those
+#: gates next to the registration so `s8_analytics.coverage` can tell "scheduled and
+#: able to run" from "scheduled but stopped by a named flag" from "never scheduled"
+#: without re-copying prose - the hand-copied dicts are exactly what drifted twice.
+@dataclass(frozen=True)
+class CollectorGate:
+    """One configuration fact that can stop an already-registered collector tick.
+
+    `ready` reads process configuration only (the cached `get_settings()`, or the
+    existence of the Telegram session file - never its contents), so the coverage
+    audit can answer "why did this write nothing?" without opening a credential and
+    without any network call. `description` is the operator-facing sentence: it
+    names the tunable, because "scheduled but stopped" must say which flag stops it.
+    """
+
+    code: str
+    flag: str
+    description: str
+    kind: str  # "mode" | "config" | "credential" | "session"
+    ready: Callable[[], bool]
+
+
+def _telegram_session_present() -> bool:
+    """Session-file existence, contents never opened.
+
+    Mirrors the first clause of `tguser.is_authorized()` (tguser/__init__.py:134,
+    name from :47) - the tick itself re-checks properly at run time; this variant
+    is the one the coverage audit may call without touching a credential.
+    """
+    from tgfarm import tguser
+
+    return (get_settings().data_root() / "telegram" / tguser.SESSION_NAME).exists()
+
+
+GATE_MODE_ONLINE = CollectorGate(
+    code="mode_off",
+    flag="TGFARM_MODE",
+    description="ферма в режиме off (`TGFARM_MODE`): тик не выходит в сеть и ничего не читает",
+    kind="mode",
+    ready=lambda: get_settings().online,
+)
+GATE_MODE_LIVE = CollectorGate(
+    code="mode_not_live",
+    flag="TGFARM_MODE=live",
+    description="счётчики читаются только в режиме live (`TGFARM_MODE`)",
+    kind="mode",
+    ready=lambda: get_settings().live,
+)
+GATE_DZEN_STATS = CollectorGate(
+    code="dzen_stats_disabled",
+    flag="DZEN_STATS_ENABLED",
+    description="сбор Дзена выключен флагом `DZEN_STATS_ENABLED`",
+    kind="config",
+    ready=lambda: bool(get_settings().dzen_stats_enabled),
+)
+GATE_VK_TOKEN = CollectorGate(
+    code="vk_user_token_missing",
+    flag="VK_USER_TOKEN",
+    description="нужен VK_USER_TOKEN: wall.getById читается только пользовательским "
+    "токеном, групповой отвечает ошибкой 27",
+    kind="credential",
+    ready=lambda: bool(str(get_settings().vk_user_token or "").strip()),
+)
+GATE_TELEGRAPH_TOKEN = CollectorGate(
+    code="telegraph_token_missing",
+    flag="TELEGRAPH_ACCESS_TOKEN",
+    description="нужен TELEGRAPH_ACCESS_TOKEN: без него тик отвечает "
+    "`Telegraph token not configured` и ничего не пишет",
+    kind="credential",
+    ready=lambda: bool(str(get_settings().telegraph_access_token or "").strip()),
+)
+GATE_TELEGRAM_SESSION = CollectorGate(
+    code="no_session",
+    flag="сессия пользователя Telegram",
+    description="нужна авторизованная пользовательская сессия Telegram: без неё "
+    "задача честно отвечает `no_session` и ничего не записывает "
+    "(выполните `tgfarm telegram login`)",
+    kind="session",
+    ready=_telegram_session_present,
+)
+
+
+@dataclass(frozen=True)
+class CollectorTarget:
+    """One platform's reader inside a registered collector job.
+
+    `module` is the farm-owned module whose function reads the platform (the value
+    `coverage.COLLECTORS` shows), `entry` the dotted call the schedule actually
+    makes - the same text `s8_analytics.freshness` quotes - and `gates` the
+    per-platform flags that stop this reader while the job itself still fires.
+    """
+
+    platform: str
+    module: str
+    entry: str
+    gates: tuple[CollectorGate, ...] = ()
+
+
+@dataclass(frozen=True)
+class CollectorJobSpec:
+    """One metrics-collector job pair exactly as the scheduler registers it.
+
+    The spec is not a description of a job, it *is* the job: `_build_scheduler`
+    adds these through `_register_collector_jobs`, and `s8_analytics.coverage`
+    imports `collector_job_specs()` to answer "is this platform scheduled, under
+    which job id, gated by what". A collector cannot become "scheduled" in the
+    report before it is scheduled in code, because the report has no other way to
+    learn about it - that duplication was the drift behind P52.
+    """
+
+    job_id: str
+    startup_job_id: str
+    name: str
+    startup_name: str
+    interval_hours: int
+    tick: Callable[[], Any]
+    targets: tuple[CollectorTarget, ...]
+    job_gates: tuple[CollectorGate, ...] = ()
+    #: False when the tick's snapshots land in a table of their own - telegraph
+    #: writes `telegraph_metric_snapshots` (s9_growth/telegraph_metrics.py:235),
+    #: never `post_stats`, the only table S8 formats and S12 lessons read. The
+    #: flag records which sentence about the platform is true.
+    feeds_post_stats: bool = True
+    snapshot_table: str = "post_stats"
+    #: platform -> manual entry point an operator can press instead
+    #: (wording only; the schedule text stays derived).
+    manual: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        return tuple(target.platform for target in self.targets)
+
+    def target(self, platform: str) -> CollectorTarget:
+        return next(item for item in self.targets if item.platform == platform)
+
+    def gates_for(self, platform: str) -> tuple[CollectorGate, ...]:
+        """Every flag that stands between this job and a written row."""
+        return self.job_gates + self.target(platform).gates
+
+
+def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
+    """The metrics collectors living on the scheduler's clock, as registered.
+
+    Traced on 2026-11-05 from `0e70eff`, and pinned by `tests/test_collector_registry.py`:
+
+    * `metrics-and-learning` (hourly) runs `s8_analytics.run()`,
+      which calls `dzen_web.collect_and_record` when `settings.live` and
+      `settings.dzen_stats_enabled` (s8_analytics/__init__.py:438) and
+      `vk_stats.collect_and_record` when `settings.live` (:453); the tick itself
+      no-ops unless `settings.online` (pipeline.py:2361).
+    * `telegram-post-metrics` (every `TELEGRAM_METRICS_INTERVAL_H` hours)
+      runs `tg_sync.collect_post_stats` when `settings.online`
+      (:2235) and an authorised Telegram user session exists (:2242).
+    * `telegraph-metrics` (every 6 hours) runs
+      `refresh_telegraph_metrics` when `settings.online` (:2104) and
+      `telegraph_access_token` is set (:2106) - into its own table, not
+      `post_stats`.
+
+
+    Every job also gets a one-shot `startup-*` twin so a fresh boot does not wait
+    out the interval - both twins are registered from the same spec.
+    """
+    return (
+        CollectorJobSpec(
+            job_id="metrics-and-learning",
+            startup_job_id="startup-metrics-and-learning",
+            name="metrics collection and learning",
+            startup_name="initial metrics collection and learning",
+            interval_hours=1,
+            tick=_metrics_learning_tick,
+            job_gates=(GATE_MODE_ONLINE,),
+            targets=(
+                CollectorTarget(
+                    "dzen",
+                    "tgfarm.s8_analytics.dzen_web",
+                    "dzen_web.collect_and_record",
+                    (GATE_MODE_LIVE, GATE_DZEN_STATS),
+                ),
+                CollectorTarget(
+                    "vk",
+                    "tgfarm.s8_analytics.vk_stats",
+                    "vk_stats.collect_and_record",
+                    (GATE_MODE_LIVE, GATE_VK_TOKEN),
+                ),
+            ),
+            # s8_analytics/__init__.py:436 - the CLI can force a Dzen read in any mode.
+            manual={"dzen": "`tgfarm dzen-stats`"},
+        ),
+        CollectorJobSpec(
+            job_id="telegram-post-metrics",
+            startup_job_id="startup-telegram-post-metrics",
+            name="telegram post statistics",
+            startup_name="initial telegram post statistics",
+            interval_hours=TELEGRAM_METRICS_INTERVAL_H,
+            tick=_telegram_metrics_tick,
+            job_gates=(GATE_MODE_ONLINE, GATE_TELEGRAM_SESSION),
+            targets=(
+                CollectorTarget(
+                    "telegram", "tgfarm.tg_sync", "tg_sync.collect_post_stats"
+                ),
+            ),
+            manual={"telegram": "`tgfarm telegram stats` и POST /api/telegram/stats"},
+        ),
+        CollectorJobSpec(
+            job_id="telegraph-metrics",
+            startup_job_id="startup-telegraph-metrics",
+            name="Telegraph page-view analytics",
+            startup_name="initial Telegraph page-view analytics",
+            interval_hours=6,
+            tick=_telegraph_metrics_tick,
+            job_gates=(GATE_MODE_ONLINE, GATE_TELEGRAPH_TOKEN),
+            targets=(
+                CollectorTarget(
+                    "telegraph",
+                    "tgfarm.s9_growth.telegraph_metrics",
+                    "telegraph_metrics.refresh_telegraph_metrics",
+                ),
+            ),
+            feeds_post_stats=False,
+            snapshot_table="telegraph_metric_snapshots",
+        ),
+    )
+
+
+def metrics_collector_jobs() -> dict[str, tuple[CollectorJobSpec, ...]]:
+    """platform -> the collector specs whose ticks measure it.
+
+    A grouping of `collector_job_specs()`, not a second list to maintain - this is
+    the function `s8_analytics.coverage` calls.
+    """
+    grouped: dict[str, list[CollectorJobSpec]] = {}
+    for spec in collector_job_specs():
+        for platform in spec.platforms:
+            grouped.setdefault(platform, []).append(spec)
+    return {platform: tuple(specs) for platform, specs in grouped.items()}
+
+
+def _register_collector_jobs(scheduler) -> None:
+    """Add each spec's recurring tick and its startup twin, nothing else.
+
+    Registration reads the same list the coverage audit reads: a job that is in
+    the registry is on the scheduler, and a job on the scheduler is in the
+    report. Trigger ids, names and intervals are exactly the ones the
+    hand-written `_build_scheduler` used before P52.
+    """
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    for spec in collector_job_specs():
+        scheduler.add_job(
+            spec.tick,
+            IntervalTrigger(hours=spec.interval_hours),
+            id=spec.job_id,
+            name=spec.name,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        scheduler.add_job(
+            spec.tick,
+            "date",
+            run_date=datetime.now(UTC),
+            id=spec.startup_job_id,
+            name=spec.startup_name,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+
+
 # ------------------------------------------------------------------- scheduler
+
 def _build_scheduler():
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.interval import IntervalTrigger
@@ -2550,42 +2826,11 @@ def _build_scheduler():
         max_instances=1,
         misfire_grace_time=3600,
     )
-    scheduler.add_job(
-        _telegraph_metrics_tick,
-        IntervalTrigger(hours=6),
-        id="telegraph-metrics",
-        name="Telegraph page-view analytics",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
-    scheduler.add_job(
-        _telegraph_metrics_tick,
-        "date",
-        run_date=datetime.now(UTC),
-        id="startup-telegraph-metrics",
-        name="initial Telegraph page-view analytics",
-        max_instances=1,
-        misfire_grace_time=3600,
-    )
-    scheduler.add_job(
-        _telegram_metrics_tick,
-        IntervalTrigger(hours=TELEGRAM_METRICS_INTERVAL_H),
-        id="telegram-post-metrics",
-        name="telegram post statistics",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
-    scheduler.add_job(
-        _telegram_metrics_tick,
-        "date",
-        run_date=datetime.now(UTC),
-        id="startup-telegram-post-metrics",
-        name="initial telegram post statistics",
-        max_instances=1,
-        misfire_grace_time=3600,
-    )
+    # Telegraph, Telegram and the Dzen/VK learning pair are registered from one
+    # list - `collector_job_specs` - so the coverage audit reads the same facts
+    # the scheduler does; a collector job added anywhere else is the drift the
+    # registry guard test fails on.
+    _register_collector_jobs(scheduler)
     scheduler.add_job(
         _channel_sync_tick,
         IntervalTrigger(hours=CHANNEL_SYNC_INTERVAL_H),
@@ -2604,25 +2849,8 @@ def _build_scheduler():
         max_instances=1,
         misfire_grace_time=3600,
     )
-    scheduler.add_job(
-        _metrics_learning_tick,
-        IntervalTrigger(hours=1),
-        id="metrics-and-learning",
-        name="metrics collection and learning",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
-    scheduler.add_job(
-        _metrics_learning_tick,
-        "date",
-        run_date=datetime.now(UTC),
-        id="startup-metrics-and-learning",
-        name="initial metrics collection and learning",
-        max_instances=1,
-        misfire_grace_time=3600,
-    )
     return scheduler
+
 
 
 _scheduler = None
