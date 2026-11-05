@@ -1745,6 +1745,106 @@
     });
   }
 
+  // «Ближайшие публикации» renders the newest 40 posts, newest first. On the live
+  // base (2026-11-05, read-only connection) all 51 rows in `publish_unknown` were
+  // created 2026-10-29 and ranked 7794…9368 newest-first out of 21124 posts, so
+  // not one of them could ever appear in the list above — while the queue card
+  // printed their count. The count was the proof and the names were missing.
+  // `/api/backlog` now sends the ten oldest with the aggregate that says how many
+  // exist in total, and this block shows both: a truncated list presented as the
+  // whole set is the failure this wording exists to prevent.
+  // Nothing here decides a publication outcome. Both buttons call
+  // `window.tgfarmReconcile` — the very function the post drawer uses, with its
+  // `confirm()` gate — which POSTs to `/api/posts/{public_id}/reconcile` (§80:
+  // an existing route behind an existing consent, never a new write path).
+  function renderUnresolvedWorklist(payload, failure) {
+    const root = $("#overview-unresolved");
+    if (!root) return;
+    // Three silences, three wordings, and none of them may print a zero: the
+    // network died, the queue read failed server-side, the worklist itself never
+    // arrived. `total: 0` below is the fourth case — a measured nothing.
+    if (failure) {
+      const message = String(failure.message || failure || "");
+      const httpError = /\s->\s\d/.test(message);
+      root.innerHTML = '<div class="alert alert-err">'
+        + (httpError
+          ? "<b>Список неподтверждённых публикаций не прочитан:</b> "
+          : "<b>Сеть не отвечает:</b> список неподтверждённых публикаций не получен — ")
+        + esc(message) + "</div>";
+      return;
+    }
+    const data = payload || {};
+    if (data.error) {
+      root.innerHTML = '<div class="alert alert-err"><b>Чтение очереди не удалось:</b> '
+        + esc(data.error) + "</div>"
+        + '<div class="empty">Список не прочитан — это не «неподтверждённых нет».</div>';
+      return;
+    }
+    const block = data.unresolved;
+    if (!block) {
+      root.innerHTML = '<div class="empty">Список неподтверждённых публикаций не пришёл '
+        + "в ответе — он не прочитан, а не пуст.</div>";
+      return;
+    }
+    const items = Array.isArray(block.items) ? block.items : [];
+    const total = typeof block.total === "number" ? block.total : null;
+    const shown = typeof block.shown === "number" ? block.shown : items.length;
+    const limit = typeof block.limit === "number" ? block.limit : null;
+    let denominator;
+    if (total === null) {
+      denominator = "сколько их всего — не прочитано";
+    } else if (total === 0) {
+      denominator = "неподтверждённых публикаций нет";
+    } else if (shown >= total) {
+      denominator = `показаны все ${n(total)} — ждать сверки больше некому`;
+    } else {
+      denominator = `показаны ${n(shown)} из ${n(total)} самых старых`
+        + (limit === null ? "" : ` · карточка называет не больше ${n(limit)} строк за раз`);
+    }
+    const head = '<div class="unresolved-head"><div class="item-title">'
+      + "Не подтверждено, ушло ли</div>"
+      + '<div class="item-meta">' + esc(denominator)
+      + " · полный список и причина каждой строки — на вкладке «Сверка»</div></div>";
+    if (!items.length) {
+      // An empty list is three different sentences depending on what the
+      // denominator says, and only one of them is «всё чисто».
+      const note = total === null
+        ? "ни списка, ни знаменателя: чтение очереди не завершилось"
+        : (total === 0
+          ? "ни одной публикации в этом состоянии нет — это измерено, а не отсутствие ответа"
+          : `строк в списке нет, а ждут сверки ${n(total)} — знаменатель выше честнее списка`);
+      root.innerHTML = head + '<div class="empty">' + esc(note) + "</div>";
+      return;
+    }
+    root.innerHTML = head + items.map((row) => {
+      const platform = row.platform || "unknown";
+      const channel = row.channel_title || row.channel_id || "канал не найден";
+      const age = typeof row.age_hours === "number"
+        ? `ждёт сверки ${hrs(row.age_hours)}`
+        : "ждёт сверки: возраст не прочитан";
+      const attempts = typeof row.attempts === "number"
+        ? ` · попыток ${n(row.attempts)}`
+        : " · попыток: нет отчёта";
+      return '<div class="item is-unresolved"><div class="item-main">'
+        + '<div class="item-title">' + esc(row.hook || "без заголовка") + "</div>"
+        + '<div class="item-meta">' + esc(channel) + " · "
+        + esc(PLATFORM_RU[platform] || platform) + " · " + esc(age) + esc(attempts)
+        + " · " + esc(dt(row.created_at)) + "</div>"
+        + '<div class="item-meta is-unresolved-id">' + esc(row.public_id) + "</div>"
+        + (row.error
+          ? '<div class="item-meta is-unresolved-error">' + esc(row.error) + "</div>"
+          : "")
+        + '</div><div class="item-side unresolved-actions">'
+        + '<button class="btn btn-primary btn-sm" type="button"'
+        + ' data-unresolved-action="confirm_published"'
+        + ' data-unresolved-id="' + esc(row.public_id) + '">Да, пост уже есть</button>'
+        + '<button class="btn btn-ghost btn-sm" type="button"'
+        + ' data-unresolved-action="retry_after_check"'
+        + ' data-unresolved-id="' + esc(row.public_id) + '">Проверил: поста нет</button>'
+        + "</div></div>";
+    }).join("");
+  }
+
   const NICHE_COLOR = {
     tech: "#5b8cff", software: "#9b5cf6", business: "#34d399", crypto: "#f5a524",
     science: "#38bdf8", health: "#10b981", local: "#f97316", general: "#ffcc00",
@@ -4522,6 +4622,11 @@
       // backlog on screen would report a queue that has since moved.
       renderBacklog("backlog" in data ? data.backlog : null,
         "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
+      // The worklist rides on the very same snapshot as the count above it, so the
+      // two can never disagree, and it re-renders on the pass where the read died
+      // too — an old list of rows that have since been reconciled would be a lie.
+      renderUnresolvedWorklist("backlog" in data ? data.backlog : null,
+        "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
       if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
       if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
 
@@ -5226,6 +5331,18 @@
       if (!button) return;
       event.preventDefault();
       runReviewAction(button.dataset.reviewId, button.dataset.reviewAction);
+    });
+  }
+  // The overview's unresolved worklist offers the drawer's action, not a new one:
+  // `tgfarmReconcile` is the only path from here to `/api/posts/{id}/reconcile`, and
+  // it asks the operator to confirm before anything is written (§80).
+  const unresolvedList = $("#overview-unresolved");
+  if (unresolvedList) {
+    unresolvedList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-unresolved-action]");
+      if (!button) return;
+      event.preventDefault();
+      window.tgfarmReconcile(button.dataset.unresolvedId, button.dataset.unresolvedAction);
     });
   }
   const trendsList = $("#trends-list");
