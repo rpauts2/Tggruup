@@ -450,6 +450,9 @@ def assess_policy(
     "reason": str, "blockers": [...], "age_hours": float | None}``.
     ``unknown`` and ``stale`` forbid automatic publishing; a stale policy must
     be re-validated by re-running the live selector for the same destination.
+    ``unknown`` also covers a policy that claims available rules while storing no
+    rule text at all (blocker ``rules_evidence_missing``): absence is never a pass,
+    and an unmeasured age is reported as ``None``, not as a fresh ``0``.
     """
     base: dict[str, Any] = {
         "status": "unknown",
