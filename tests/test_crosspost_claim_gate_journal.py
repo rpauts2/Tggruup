@@ -480,14 +480,17 @@ def _module_status_token_containers(module) -> list[frozenset[str]]:
     return found
 
 
-#: The two status literals the planner still owns that are *not* the re-offer
-#: decision: the daily-sent budget counter and the near-duplicate source-text
-#: filter. Both are a declared follow-up (they disagree with the re-offer
-#: vocabulary on purpose); re-writing either as a re-offer gate must fail here.
-PLANNER_NON_REOFFER_LITERALS = {
-    frozenset({"posted", "scheduled", "publishing", "unknown"}),
-    frozenset({"posted", "scheduled"}),
-}
+#: The planner owns no inline status literal at all since P76 named its budget
+#: sets at module scope (`JOURNAL_ATTEMPT_STATUSES`, `JOURNAL_DELIVERED_STATUSES`,
+#: `JOURNAL_SLOT_OCCUPYING_STATUSES` in `tgfarm/distribution.py`). This used to
+#: allow the two literals those sets replaced, and it was written as an allowlist
+#: of *where a literal is spelled*, which is why it went stale the moment the
+#: spelling moved: the numbers never changed, only their location.
+#: What still catches a divergence is the module-wide scan below — a copy of a
+#: declared re-offer set fails it wherever it is written — and the cap arithmetic
+#: pinned status-by-status in `tests/test_distribution_journal_vocabulary.py`,
+#: which is the check that actually notices a budget moving.
+PLANNER_NON_REOFFER_LITERALS: set[frozenset[str]] = set()
 
 
 def test_no_consumer_owns_a_second_literal_status_set() -> None:
