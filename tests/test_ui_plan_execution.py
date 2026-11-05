@@ -137,6 +137,13 @@ def test_flag_off_states_the_consequence_and_names_the_flag(block):
         assert instruction not in block
 
 
+def test_the_block_reads_the_flag_and_never_sets_it(block):
+    """The panel reports a configured setting; a control here would be a second,
+    unauthenticated way to start applying a plan."""
+    for control in ("<button", "onclick", "addEventListener", "type=", "<input", "POST"):
+        assert control not in block, f"{control} turns a report into a control"
+
+
 # ----------------------------------------------------------------- the jobs
 def test_an_unregistered_job_and_an_unseen_job_keep_different_words(block):
     assert 'const EXECUTION_UNKNOWN = "неизвестно";' in block
@@ -187,6 +194,17 @@ def test_applied_and_held_are_rendered_only_behind_a_type_guard(block):
     assert '"неизвестно"' in count or "EXECUTION_UNKNOWN" in count
     for coerced in ("|| 0", "?? 0", "Number(la.applied", "Number(la.held"):
         assert coerced not in block, f"{coerced} re-fabricates the zero the API refuses to send"
+
+
+def test_the_block_never_hands_a_nullable_field_to_the_number_formatter(block):
+    """`n()` ends in `|| 0`, and the helpers say so: a null handed to it prints a
+    measured nothing. One call site in this block may reach it, behind a guard."""
+    assert len(re.findall(r"(?<![A-Za-z0-9_$.])n\(", block)) == 1, (
+        "execCount is the only place in this block allowed to format a number"
+    )
+    count = block[block.index("const execCount") : block.index("const execChip")]
+    assert "n(v)" in count
+    assert 'typeof v === "number"' in count and "Number.isFinite(v)" in count
 
 
 def test_reasons_absent_and_reasons_empty_keep_different_words(block):
@@ -419,6 +437,29 @@ def test_rendered_blind_scheduler_and_absent_plan_are_not_renamed(tmp_path):
     assert "всего тем" not in html, "no plan in the answer means no plan sub-block"
 
 
+def test_the_three_job_states_render_three_different_words(tmp_path):
+    payload = _execution(
+        jobs=[
+            {"id": "editorial-plan-build", "registered": True,
+             "next_run_at": "2026-11-05T09:00:00+00:00"},
+            {"id": "editorial-plan-apply", "registered": False, "next_run_at": None},
+            {"id": "editorial-plan-other", "registered": None, "next_run_at": None},
+        ],
+        last_apply={"at": "2026-11-05T08:15:00+00:00", "plan_id": None,
+                    "applied": 0, "held": None, "reasons": {"slot_not_due": None}},
+    )
+    html = _render_cases(tmp_path, [{"name": "three", "payload": payload}])["three"]
+
+    assert "editorial-plan-build: зарегистрировано" in html
+    assert "editorial-plan-apply: не зарегистрировано" in html
+    assert "editorial-plan-other: неизвестно" in html
+    assert "editorial-plan-apply · далее —" in html
+    # A measured nothing and an unread number survive in the same render.
+    assert "исполнено: 0" in html and "удержано: неизвестно" in html
+    assert "slot_not_due: неизвестно" in html and "slot_not_due: 0" not in html
+    assert "по плану: неизвестно" in html
+
+
 def test_rendered_unread_answer_admits_it_measured_nothing(tmp_path):
     partial = _execution()
     del partial["last_apply"]
@@ -427,10 +468,17 @@ def test_rendered_unread_answer_admits_it_measured_nothing(tmp_path):
         {"name": "http", "payload": None, "failure": "/api/editorial/plan/execution -> 404"},
         {"name": "empty", "payload": {}},
         {"name": "partial", "payload": partial},
+        {"name": "nullflag", "payload": _execution(enabled=None)},
     ])
 
     assert "Failed to fetch" in rendered["network"]
-    assert "выключен" not in rendered["network"] and "включён" not in rendered["network"]
+    # An unread answer may not claim a consumer state. The disclaimer legitimately
+    # *quotes* «выключен» to say which claim it refuses to make, so the check is on
+    # the state markup the block emits, not on the word as a substring.
+    for name in ("network", "http"):
+        assert 'class="tag tag-ok"' not in rendered[name], f"{name} claimed `включён`"
+        assert 'class="tag tag-warn"' not in rendered[name], f"{name} claimed `выключен`"
+        assert "потребитель плана: неизвестно" in rendered[name]
     assert "404" in rendered["http"]
     assert "Это не «выключен» и не «ничего не исполнено»" in rendered["http"]
     for name, html in rendered.items():
@@ -441,6 +489,12 @@ def test_rendered_unread_answer_admits_it_measured_nothing(tmp_path):
     assert "editorial-plan-apply: зарегистрировано" in rendered["partial"]
     # A payload without `enabled` is not a payload saying the flag is off.
     assert 'class="tag tag-none">неизвестно' in rendered["empty"]
+    # A null `enabled` is the same silence, not a verdict of `выключен`.
+    assert 'class="tag tag-none">неизвестно' in rendered["nullflag"]
+    assert 'class="tag tag-warn"' not in rendered["nullflag"]
+    assert "Флаг выключен" not in rendered["nullflag"]
+    # ... while the parts the server did answer stay readable.
+    assert "исполнено: 3" in rendered["nullflag"]
 
 
 def test_a_hostile_note_and_a_hostile_reason_key_stay_text(tmp_path):
