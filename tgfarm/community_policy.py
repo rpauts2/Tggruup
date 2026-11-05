@@ -138,13 +138,38 @@ def _as_flag(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().casefold() in _TRUTHY_FLAGS
 
 
+def _verdict_status(value: Any) -> str:
+    """Clamp a stored/returned verdict to the closed vocabulary.
+
+    An invented status would otherwise be printed by the panel as if it were a
+    real gate outcome; anything unknown is reported as ``unknown``.
+    """
+    status = _inert_text(value, 16).strip().lower()
+    return status if status in VERDICT_STATUSES else "unknown"
+
+
+def inert_external_text(value: Any, limit: int = RULES_EXCERPT_LIMIT) -> str:
+    """Public form of :func:`_inert_text` for selectors that keep raw page text.
+
+    A candidate dict produced by a selector travels on its own (panel JSON, the
+    editorial ``target_context`` handed to the model); page content must be inert
+    there as well as inside the contract.
+    """
+    return _inert_text(value, limit)
+
+
 def _lines(value: Any, *, limit: int = RULES_LINE_LIMIT) -> tuple[str, ...]:
+    """Normalise one untrusted field into bounded inert lines.
+
+    A multi-line rule block stays *split*: flattening 3000 characters into one
+    line would throw away every requirement after the length cap, while splitting
+    keeps the visible evidence and still bounds it per line and in total.
+    """
     if value is None:
         return ()
     if isinstance(value, str):
-        text = _inert_text(value, limit)
-        return (text,) if text else ()
-    if isinstance(value, Mapping):
+        raw = (part for part in re.split(r"[\n\r\u2028\u2029]+", value) if part.strip())
+    elif isinstance(value, Mapping):
         raw = (f"{k}: {v}" for k, v in value.items() if str(v).strip())
     else:
         raw = (str(item) for item in value)
@@ -565,11 +590,7 @@ def record_policy_snapshot(
                 .order_by(CommunityPolicySnapshot.id.desc())
                 .limit(1)
             ).first()
-            status = str(verdict.get("status") or "unknown")
-            # The verdict vocabulary is closed: a page cannot invent a status that
-            # the UI would print as if it were a real gate outcome.
-            if status not in VERDICT_STATUSES:
-                status = "unknown"
+            status = _verdict_status(verdict.get("status"))
             changed = last is None or last.rules_hash != policy.rules_hash
             if last is not None and not changed and last.verdict_status == status:
                 recorded_at = last.recorded_at
@@ -665,7 +686,7 @@ def policy_history(
                     # A row written before the contract bounded its text still has
                     # to leave this function inert, bounded and credential-free.
                     "rules_excerpt": _inert_text(row.rules_excerpt, RULES_EXCERPT_LIMIT),
-                    "verdict_status": _inert_text(row.verdict_status, 16) or "unknown",
+                    "verdict_status": _verdict_status(row.verdict_status),
                     "confidence": float(row.confidence or 0.0),
                     "requirements": [
                         _inert_text(line, RULES_LINE_LIMIT)

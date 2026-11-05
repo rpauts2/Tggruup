@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from tgfarm.community_policy import inert_external_text
 from tgfarm.core.text import content_tokens, normalize
 
 PIKABU_DIRECTORY = "https://pikabu.ru/communities/all"
@@ -17,6 +18,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; TgFarmEditorial/1.0)"
 MIN_SCORE = 28
 MAX_PIKABU = 24
 MAX_VC = 10
+
+#: How much rule text one candidate keeps for the panel and the editorial context.
+#: It is page content, so it is stored only in the inert form (see CommunityPolicy).
+RULES_PAGE_LIMIT = 2200
 
 
 class _Reader(HTMLParser):
@@ -307,9 +312,9 @@ async def revalidate_pikabu_target(
         "name": str(target.get("name") or target.get("title") or expected_slug),
         "slug": expected_slug,
         "url": target_url,
-        "description": (page_description or str(target.get("description") or ""))[:900],
-        "rules": community_rules[:2200],
-        "global_rules": global_rules[:2200],
+        "description": inert_external_text(page_description or target.get("description") or "", 900),
+        "rules": inert_external_text(community_rules, RULES_PAGE_LIMIT),
+        "global_rules": inert_external_text(global_rules, RULES_PAGE_LIMIT),
         # The Code and the community rules are judged as one policy: with the
         # Code unread there is no claim that the destination's rules are known.
         "rules_available": bool(community_rules and global_rules),
@@ -400,8 +405,8 @@ async def _pikabu(post: dict[str, Any]) -> dict[str, Any]:
             "slug": slug,
             "title": page["title"] or label,
             "url": url,
-            "description": description[:900],
-            "rules": rule_text[:2200],
+            "description": inert_external_text(description, 900),
+            "rules": inert_external_text(rule_text, RULES_PAGE_LIMIT),
             "rules_available": bool(rule_text),
             "tags": visible_tags,
             "suggested_tags": suggested_tags,
@@ -573,8 +578,8 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
             "slug": path.lstrip("/"),
             "title": page["title"] or label,
             "url": url,
-            "description": description[:1000],
-            "rules": topic_rules[:2200],
+            "description": inert_external_text(description, 1000),
+            "rules": inert_external_text(topic_rules, RULES_PAGE_LIMIT),
             "topic_rules_available": bool(topic_rules),
             "global_rules_available": bool(rules_text),
             "score": max(0, min(100, round(score * .82 + initial * .18))),
