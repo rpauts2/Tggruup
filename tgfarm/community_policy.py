@@ -607,10 +607,13 @@ def record_policy_snapshot(
                             "status": status,
                         }
             row = CommunityPolicySnapshot(
-                platform=_inert_text(policy.platform, 32) or "unknown",
-                target_type=_inert_text(policy.target_type, 32) or "community",
-                target_id=_inert_text(policy.target_id, TARGET_ID_LIMIT) or "—",
-                target_name=_inert_text(policy.name, TARGET_NAME_LIMIT)[:200] or "—",
+                # Identity fields are stored as the contract holds them: an empty
+                # name stays empty (the panel then falls back to the id) instead of
+                # being replaced by an invented value.
+                platform=_inert_text(policy.platform, 32),
+                target_type=_inert_text(policy.target_type, 32),
+                target_id=_inert_text(policy.target_id, TARGET_ID_LIMIT),
+                target_name=_inert_text(policy.name, TARGET_NAME_LIMIT),
                 rules_source=_inert_text(policy.rules_source, URL_LIMIT)[:500],
                 rules_hash=_inert_text(policy.rules_hash, 64),
                 rules_available=_as_flag(policy.rules_available),
