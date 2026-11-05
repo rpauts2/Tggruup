@@ -1988,6 +1988,100 @@ def _reconcile_publish_outcome(public_id: str, action: str) -> dict:
         return {"ok": True, "status": row.status, "detail": detail}
 
 
+def _freshness_summary_of(detail: dict) -> dict:
+    """Count an already-built freshness report; read no database at all.
+
+    ``/api/metrics/freshness`` used to call ``metrics_freshness()`` and
+    ``freshness_summary()`` per request, and ``freshness_summary`` builds the whole
+    detail again inside itself: four sessions where two answer the same question.
+    Only the counting is repeated here, over the detail that was already read, and
+    the two vocabularies are the ones ``freshness.py`` exports rather than a third
+    list of literals — so what cannot drift is the meaning of a status, and what
+    can is only the arithmetic over rows that carry it.
+    ``tests/test_metrics_freshness_panel.py`` pins this derivation field by field
+    against ``freshness.freshness_summary``, which is the guard that makes keeping
+    it honest. The clean home for this function is ``freshness.py`` as
+    ``summarize_report(detail)``; that file is owned by another agent right now, so
+    the follow-up is filed in the report instead of done here.
+
+    Absent keys stay ``None``: a collector row the server never filled in has no
+    row count, and defaulting it to ``0`` would state a measurement that did not
+    happen (P34) in the one panel an operator uses to decide what to fix.
+    """
+    from tgfarm.s8_analytics.freshness import COLLECTOR_STATUSES, STATUSES
+
+    platforms = detail.get("platforms") or {}
+    collectors = detail.get("collectors") or []
+    outside = detail.get("tables_without_collector") or []
+
+    platform_counts = {status: 0 for status in STATUSES}
+    for row in platforms.values():
+        status = row.get("status")
+        if status in platform_counts:
+            platform_counts[status] += 1
+
+    freshest: dict | None = None
+    for row in platforms.values():
+        stamp = row.get("last_snapshot_at")
+        age = row.get("age_hours")
+        if stamp is None or age is None:
+            continue
+        if freshest is None or age < freshest["age_hours"]:
+            freshest = {
+                "platform": row.get("id"),
+                "name": row.get("name"),
+                "status": status,
+                "collected_at": stamp,
+                "age_hours": age,
+            }
+
+    collector_counts = {status: 0 for status in COLLECTOR_STATUSES}
+    silent: list[dict] = []
+    for collector in collectors:
+        data_status = collector.get("data_status")
+        if data_status in collector_counts:
+            collector_counts[data_status] += 1
+        if not collector.get("scheduled_but_silent"):
+            continue
+        silent.append(
+            {
+                "id": collector.get("id"),
+                "platform": collector.get("platform"),
+                "job_id": collector.get("job_id"),
+                "snapshot_table": collector.get("snapshot_table"),
+                "data_status": data_status,
+                "rows": collector.get("rows"),
+                "last_collected_at": collector.get("last_collected_at"),
+                "age_hours": collector.get("age_hours"),
+                "runs_recorded": collector.get("runs_recorded"),
+                "claim": collector.get("reason"),
+            }
+        )
+
+    return {
+        "generated_at": detail.get("generated_at"),
+        "stale_after_hours": detail.get("stale_after_hours"),
+        "platforms_total": len(platforms),
+        "ok": platform_counts["ok"],
+        "stale": platform_counts["stale"],
+        "never": platform_counts["never"],
+        "blocked": platform_counts["blocked"],
+        "snapshots_total": detail.get("snapshots_total"),
+        "freshest": freshest,
+        "collectors": collectors,
+        "collectors_total": len(collectors),
+        "collectors_ok": collector_counts["ok"],
+        "collectors_stale": collector_counts["stale"],
+        "collectors_no_report": collector_counts["no_report"],
+        "collectors_missing_table": collector_counts["missing_table"],
+        "collectors_unreadable": collector_counts["unreadable"],
+        "silent_collectors": silent,
+        "tables_without_collector": outside,
+        "collectors_error": detail.get("collectors_error"),
+        "error": detail.get("error"),
+    }
+
+
 def _config_payload() -> dict:
     cfg = get_config()
     return {
@@ -5158,12 +5252,34 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
     @app.get("/api/metrics/freshness")
     async def metrics_freshness_api() -> dict:
-        """Which platforms actually have measured data, and when it was taken."""
-        from tgfarm.s8_analytics.freshness import freshness_summary, metrics_freshness
+        """Which platforms actually have measured data, and when it was taken.
+
+        One report per request. This used to call ``metrics_freshness()`` and
+        ``freshness_summary()``, and the summary builds the same detail again
+        inside itself, so every dashboard refresh read the same tables twice
+        (four sessions instead of two). The summary is now counted from the detail
+        by ``_freshness_summary_of``, which reads nothing.
+
+        ``collectors`` and ``tables_without_collector`` are additionally exposed
+        once at the top level: ``tgfarm/ui/app.js`` renders the per-job answer
+        («задача стоит в расписании, но нового снимка не оставляла») beside the
+        platform numbers, and a scheduled job is never evidence of fresh data.
+        """
+        from tgfarm.s8_analytics.freshness import metrics_freshness
 
         detail = await io(metrics_freshness)
-        summary = await io(freshness_summary)
-        return {"summary": summary, "platforms": detail.get("platforms") or {}}
+        summary = _freshness_summary_of(detail)
+        return {
+            "generated_at": detail.get("generated_at"),
+            "stale_after_hours": detail.get("stale_after_hours"),
+            "snapshots_total": detail.get("snapshots_total"),
+            "platforms": detail.get("platforms") or {},
+            "collectors": detail.get("collectors") or [],
+            "tables_without_collector": detail.get("tables_without_collector") or [],
+            "collectors_error": detail.get("collectors_error"),
+            "error": detail.get("error"),
+            "summary": summary,
+        }
 
     @app.get("/api/metrics/coverage")
     async def metrics_coverage_api() -> dict:

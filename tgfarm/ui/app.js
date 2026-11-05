@@ -136,6 +136,97 @@
       </div>`).join("");
   }
 
+  /* ------------------------------------------------- freshness: collector half
+     The platform rows above answer «есть ли у площадки числа». They cannot
+     answer the question an operator actually has to be told about: a job that
+     stands in the schedule every N hours and still leaves no dated snapshot.
+     `collector_freshness` in `tgfarm/s8_analytics/freshness.py` returns those
+     three claims apart — schedule (`job_id`, `interval_hours`, `scheduled`),
+     data (`rows`, `last_collected_at`, `age_hours`, `data_status`), attempt
+     (`runs_recorded`, `last_run_at`, `last_run_status`) — and this card keeps
+     them on three separate lines, because "scheduled" is not evidence of
+     "fresh" and must not be readable as it.
+
+     P34 governs every cell here. `rows: 0` is a measurement that happened and
+     found an empty table; `rows: null` is no measurement at all. The same pair
+     exists for `runs_recorded`, where `null` means the journal names no stage
+     (or could not be read) and `0` means it was read and holds nothing. Only a
+     value that came from the payload is printed as a number; everything else
+     prints the file's own no-report literal through `hrs`/`NO_REPORT`.
+  */
+  const NO_REPORT = "нет отчёта";
+  const cell = (v) => (typeof v === "number" ? n(v) : NO_REPORT);
+  const rowsCell = (v) => (typeof v === "number" ? `${n(v)} снимков` : NO_REPORT);
+  const hasRows = (v) => typeof v === "number" && v > 0;
+  const runsCell = (v) => (typeof v === "number"
+    ? (v === 0 ? "ни одной записи о запуске" : `${n(v)} записей о запуске`)
+    : NO_REPORT);
+  const stampCell = (v) => (v ? dt(v) : NO_REPORT);
+  const everyCell = (v) => (typeof v === "number" ? `каждые ${n(v)} ч` : `период ${NO_REPORT}`);
+  const thresholdCell = (v) => (typeof v === "number" ? `порог ${n(v)} ч` : `порог ${NO_REPORT}`);
+
+  // `data_status` values come from `COLLECTOR_*` in s8_analytics/freshness.py.
+  // An unrecognised status keeps the server's own word on a colourless chip:
+  // inventing a colour for a state we never agreed on would be a diagnosis.
+  const COLLECTOR_CHIP = {
+    ok: { cls: "tag-ok", label: "снимки свежие" },
+    stale: { cls: "tag-warn", label: "снимки устарели" },
+    no_report: { cls: "tag-none", label: NO_REPORT },
+    missing_table: { cls: "tag-err", label: "таблицы нет в базе" },
+    unreadable: { cls: "tag-err", label: "таблицу не прочитать" },
+  };
+
+  // The state this whole card exists to make visible, and the reason it needs a
+  // chip of its own colour: it is neither `ok` (the numbers are not there) nor an
+  // error (nothing failed — the tick simply produced nothing), and a reader who
+  // sees only one of those two words will send the operator after the wrong thing.
+  const COLLECTOR_SILENT_CHIP = { cls: "tag-silent", label: "по расписанию, данных нет" };
+
+  function freshnessCollectorItem(row, threshold) {
+    const data = row || {};
+    const known = COLLECTOR_CHIP[data.data_status];
+    const chip = known || { cls: "tag-none", label: String(data.data_status || NO_REPORT) };
+    const silent = data.scheduled_but_silent ? COLLECTOR_SILENT_CHIP : null;
+    const title = esc(data.job_id || data.table || data.id || `сборщик ${NO_REPORT}`);
+    const platform = data.platform ? " · " + esc(data.platform) : "";
+    return '<div class="item freshness-collector' + (silent ? " is-silent" : "") + '">'
+      + '<div class="item-main"><div class="item-title">' + title + platform + "</div>"
+      + '<div class="item-meta">читает ' + esc(data.snapshot_table || NO_REPORT)
+      + " · " + rowsCell(data.rows)
+      + " · последний снимок " + hrs(data.age_hours)
+      + " (" + thresholdCell(threshold) + ")</div>"
+      + '<div class="item-meta">' + esc(data.scheduled ? "задача в расписании" : "задачи в расписании нет")
+      + " · " + everyCell(data.interval_hours)
+      + " · журнал запусков: " + runsCell(data.runs_recorded)
+      + " · последний запуск " + stampCell(data.last_run_at)
+      + (data.last_run_status ? " · " + esc(data.last_run_status) : "") + "</div>"
+      + (data.reason ? '<div class="item-meta freshness-claim">' + esc(data.reason) + "</div>" : "")
+      + '</div><div class="item-side"><span class="tag ' + chip.cls + '">' + esc(chip.label)
+      + "</span>"
+      + (silent ? '<span class="tag ' + silent.cls + '">' + esc(silent.label) + "</span>" : "")
+      + "</div></div>";
+  }
+
+  // Absent key, failed collector read, and an honestly empty list are three
+  // different states and print three different sentences: an older server (or a
+  // read that died) must never look like "the registry has no collectors".
+  function freshnessListBlock(root, items, threshold, heading, emptyNote) {
+    if (!root) return;
+    if (!Array.isArray(items)) {
+      root.innerHTML = '<div class="list-label">' + esc(heading) + "</div>"
+        + '<div class="empty">Сервер не вернул этот список: ' + esc(NO_REPORT) +
+        " — это не пустой список, это отсутствие отчёта.</div>";
+      return;
+    }
+    if (!items.length) {
+      root.innerHTML = '<div class="list-label">' + esc(heading) + "</div>"
+        + '<div class="empty">' + esc(emptyNote) + "</div>";
+      return;
+    }
+    root.innerHTML = '<div class="list-label">' + esc(heading) + "</div>"
+      + items.map((row) => freshnessCollectorItem(row, threshold)).join("");
+  }
+
   function renderMetricsFreshness(payload) {
     const root = $("#metrics-freshness");
     if (!root) return;
@@ -143,26 +234,53 @@
     const summary = (payload && payload.summary) || {};
     const meta = $("#metrics-freshness-meta");
     if (meta) {
-      meta.textContent = `${summary.ok || 0} свежих · ${summary.stale || 0} устаревших · ${summary.never || 0} без данных · ${summary.blocked || 0} заблокировано`;
+      // `cell` rather than `summary.ok || 0`: an older server that answers without
+      // these counters has not measured four states, it has not answered.
+      meta.textContent = `${cell(summary.ok)} свежих · ${cell(summary.stale)} устаревших · `
+        + `${cell(summary.never)} без данных · ${cell(summary.blocked)} заблокировано`;
     }
     const order = { ok: 0, stale: 1, never: 2, blocked: 3 };
+    const labels = { ok: "свежие", stale: "устарели", never: "нет данных", blocked: "сбор заблокирован" };
     const rows = Object.values(platforms)
-      .filter((row) => row && (Number(row.snapshots || 0) > 0 || row.status === "blocked"))
+      .filter((row) => row && (hasRows(row.snapshots) || row.status === "blocked"))
       .sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || String(a.id).localeCompare(String(b.id)));
     if (!rows.length) {
       root.innerHTML = '<div class="empty">Метрик пока нет: ни один сборщик не записал снимок.</div>';
-      return;
-    }
-    const labels = { ok: "свежие", stale: "устарели", never: "нет данных", blocked: "сбор заблокирован" };
-    root.innerHTML = rows
-      .map((row) => {
-        const age = row.age_hours === null || row.age_hours === undefined ? "—" : `${Math.round(Number(row.age_hours))} ч`;
-        return '<div class="item"><div class="item-main"><strong>' + esc(row.name || row.id) + "</strong>"
+    } else {
+      root.innerHTML = rows
+        .map((row) => '<div class="item"><div class="item-main"><strong>' + esc(row.name || row.id) + "</strong>"
           + '<span class="tag">' + esc(labels[row.status] || row.status) + "</span></div>"
-          + '<div class="item-meta">снимков ' + Number(row.snapshots || 0) + " · последний " + age
-          + (row.reason ? " · " + esc(row.reason) : "") + "</div></div>";
-      })
-      .join("");
+          + '<div class="item-meta">снимков ' + cell(row.snapshots) + " · последний " + hrs(row.age_hours)
+          + (row.reason ? " · " + esc(row.reason) : "") + "</div></div>")
+        .join("");
+    }
+    // The collector and unregistered-table blocks are rendered even when the
+    // platform rows are empty: an empty platform list with a silent collector is
+    // exactly the case the platform rows alone cannot tell apart.
+    const threshold = payload && payload.stale_after_hours !== undefined
+      ? payload.stale_after_hours
+      : summary.stale_after_hours;
+    freshnessListBlock(
+      $("#metrics-freshness-collectors"),
+      payload ? payload.collectors : undefined,
+      threshold,
+      "Сборщики: читает ли задача, стоящая в расписании, новые строки",
+      "Зарегистрированных сборщиков нет — расписание не наполняет ни одну таблицу.",
+    );
+    freshnessListBlock(
+      $("#metrics-freshness-tables"),
+      payload ? payload.tables_without_collector : undefined,
+      threshold,
+      "Таблицы со снимками, за которыми не стоит ни одна задача",
+      "Отдельных таблиц без сборщика нет.",
+    );
+    const collectorsError = (payload && payload.collectors_error) || summary.collectors_error;
+    const tablesRoot = $("#metrics-freshness-tables");
+    if (collectorsError && tablesRoot) {
+      tablesRoot.insertAdjacentHTML("afterbegin",
+        '<div class="alert alert-err"><b>Чтение сборщиков не удалось:</b> '
+        + esc(collectorsError) + "</div>");
+    }
   }
 
   // `blocked` and `unmeasured` each cover two opposite silences, and the panel has

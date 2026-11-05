@@ -116,6 +116,14 @@
       <div id="metrics-freshness" class="list">
         <div class="empty">Читаю снимки метрик…</div>
       </div>
+      <!-- Standing in the schedule is not evidence of fresh data, so the per-job
+           answer is printed next to the platform numbers, never merged into them. -->
+      <div id="metrics-freshness-collectors" class="list freshness-sublist">
+        <div class="empty">Читаю, что каждый сборщик оставил в своей таблице…</div>
+      </div>
+      <div id="metrics-freshness-tables" class="list freshness-sublist">
+        <div class="empty">Читаю таблицы снимков без зарегистрированной задачи…</div>
+      </div>
     </article>
 
     <article class="card">
