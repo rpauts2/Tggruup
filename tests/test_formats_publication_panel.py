@@ -263,6 +263,11 @@ def test_no_fabricated_zero_in_the_publication_path(publication_block):
     assert 'typeof v === "boolean"' in code
     assert "NO_REPORT" in code
     assert "items(" in code
+    # A default object is the same defect in a cleaner costume: `if (!pub) pub =
+    # {published: 0, reliable: true}` fabricates the whole measurement, so no
+    # numeric or boolean literal may be assigned to a payload key in this block.
+    for fabricated in (": 0", ": 0,", ": true", ": false", "= 0"):
+        assert fabricated not in code, f"подставное значение в пути publication: {fabricated}"
 
 
 def test_external_strings_cannot_reach_the_dom_unescaped(publication_block, formats_card):
@@ -564,6 +569,39 @@ def test_rendered_card_partially_evidenced_and_zero_evidenced(tmp_path):
     # rule, and that is not the same claim as «nothing is proven».
     assert "для этих площадок нет правила" in rows
     assert "сервер не вернул блок publication" not in rows, "здесь блок пришёл"
+
+
+def test_rendered_card_never_makes_an_absent_block_look_measured(tmp_path):
+    """The one mutation this card must not survive: `pub = {…: 0}` when nothing came.
+
+    A fallback object would print «подтверждено правилом 0 шт» with a green
+    `публикации подтверждены` chip and the server's rule strings — a readiness claim
+    about evidence the backend never reported, and the exact reading P34 exists to
+    prevent. Every assertion here is about the absence, so each of them dies on that
+    fallback independently.
+    """
+    full = _full_payload()
+    no_block = {key: value for key, value in full.items() if key != "publication"}
+    no_block["measurement"] = {
+        fmt: {key: value for key, value in entry.items() if key != "publication"}
+        for fmt, entry in full["measurement"].items()
+    }
+    nodes = _render_cases(tmp_path, [{"name": "absent", "payload": no_block}])
+    panel = nodes["absent"]["#metrics-formats-publication"]["innerHTML"]
+    rows = nodes["absent"]["#metrics-formats"]["innerHTML"]
+
+    assert "это не «ноль подтверждённых», это нет отчёта" in panel
+    assert "подтверждено правилом 0" not in panel
+    assert "публикаций всего 0" not in panel
+    assert "avg_engagement 0" not in panel
+    assert "знаменатель подтверждённой средней 0" not in panel
+    assert "tag-ok" not in panel, "зелёный чип там, где ничего не измерялось"
+    assert "publish_unknown" not in panel, "счёт не приходит, когда блок не пришёл"
+    assert "posts.tg_message_id" not in panel, "правила не печатаются из головы"
+    assert "подтверждённость: нет отчёта" in panel
+    assert "по отчёту целиком: опубликовано 427 шт" in panel, "легасивные числа на месте"
+    assert rows.count("сервер не вернул блок publication") == 4
+    assert "подтверждено правилом 0" not in rows
 
 
 def test_rendered_card_without_the_block_says_it_was_not_returned(tmp_path):
