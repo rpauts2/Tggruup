@@ -1681,6 +1681,44 @@
   };
   const PLATFORM_RU = { telegram: "Telegram", dzen: "Дзен", vk: "VK", max: "MAX", x: "X", youtube: "YouTube", tiktok: "TikTok", vk_clips: "VK Клипы" };
 
+  // ── Провенанс поста: из какого решения плана этот пост ────────────────────
+  // The question is one sentence — «этот пост из какого решения плана, и на какой
+  // слот он был забронирован?» — and since W19-B the post row itself answers it:
+  // `posts.plan_entry_id` names the `editorial_plan_entries` row that ordered the
+  // post, and `posts.plan_slot_at` is the booking that entry made, which survives
+  // every later overwrite of `scheduled_at` by a requeue, a retry or an unpublish.
+  // `_post_view` serves both, plus `plan_public_id`: the snapshot that owns the
+  // entry, resolved by the server or not at all.
+  //
+  // Four answers, four wordings, because three of them are different silences:
+  // a planned post whose plan is still readable; a post produced while no plan was
+  // in play (`plan_entry_id: null`, the state every row on the live base is in
+  // today); a post that names an entry that is gone (the reference is a measured
+  // fact, the answer is unread); and this block's own state for a read that did
+  // not send the fields at all. None of them is a zero, and a null slot is not a
+  // date — so the slot goes through `nextRunCell`, the helper the plan-execution
+  // block wrote to keep a booked moment away from `dt()`, which answers «только
+  // что» for every future instant because its elapsed time is negative.
+  const PROVENANCE_UNKNOWN = "неизвестно";
+  const PROVENANCE_FIELDS = ["plan_entry_id", "plan_slot_at", "plan_public_id"];
+  const hasProvenanceFields = (p) => !!p && typeof p === "object"
+    && PROVENANCE_FIELDS.every((key) => key in p);
+  const planSlotText = (v) => (typeof v === "string" && v
+    ? `слот ${nextRunCell(v)}` : "слот не записан");
+
+  function postProvenance(p) {
+    if (!hasProvenanceFields(p)) return `провенанс: ${esc(PROVENANCE_UNKNOWN)}`;
+    if (p.plan_entry_id === null) return "создан без плана";
+    const entry = `запись плана ${esc(String(p.plan_entry_id))}`;
+    const slot = esc(planSlotText(p.plan_slot_at));
+    if (typeof p.plan_public_id !== "string" || !p.plan_public_id) {
+      return `${entry} не читается · ${slot}`;
+    }
+    return `по плану ${esc(p.plan_public_id)} · ${entry} · ${slot}`;
+  }
+
+  const postProvenanceChip = (p) => `<span class="plan-chip">${postProvenance(p)}</span>`;
+
   function postCard(p) {
     const cover = p.cover
       ? `<img src="/api/media/${encodeURIComponent(p.cover.id)}" alt="" loading="lazy">`
@@ -1702,6 +1740,7 @@
             ${p.platform === "dzen" ? `<span class="tag">Дзен</span>` : ""}
 <span class="tag">${n(p.chars)} симв.</span>
             ${reason}
+            ${postProvenanceChip(p)}
             <span class="pcard-score">${p.impressions ? `показы ${n(p.impressions)} · открытия ${n(p.opens)}` : `ER ${pct(p.er)}`}</span>
           </div>
         </div>
@@ -1724,6 +1763,7 @@
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : p.status === "failed" ? "исправьте причину и повторите вручную" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
+          ${postProvenanceChip(p)}
         </div>
         <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || FORMAT_RU[p.post_format] || p.post_format)}</span></div>
       </div>`).join("");
@@ -2170,7 +2210,7 @@
           ? `<div class="distribution-picks"><strong>В очереди: ${n(queued.length)}+</strong>${queued.slice(0, 3).map((post) => `
               <div class="distribution-pick">
                 <strong>${esc(post.title || post.post_public_id)}</strong>
-                <span>${esc(post.channel || "")} · ${esc(post.status || "")}${post.scheduled_at ? " · " + esc(dt(post.scheduled_at)) : ""}</span>
+                <span>${esc(post.channel || "")} · ${esc(post.status || "")}${post.scheduled_at ? " · " + esc(nextRunCell(post.scheduled_at)) : ""}</span>
               </div>`).join("")}</div>`
           : `<div class="distribution-no-pick">В очереди пока нет готового материала.</div>`;
         const progress = cap ? Math.min(100, sent / cap * 100) : 0;

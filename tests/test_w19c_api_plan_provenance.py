@@ -31,7 +31,7 @@ the ids named by that test.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -352,7 +352,7 @@ def test_a_naive_booked_slot_is_served_in_one_clock(client, owned):
     assert re.search(r"[+-]\d{2}:\d{2}$", served), f"offset-less stamp: {served!r}"
     parsed = datetime.fromisoformat(served)
     assert parsed.tzinfo is not None
-    assert parsed.astimezone(timezone.utc) == naive_booked.replace(tzinfo=UTC)
+    assert parsed.astimezone(UTC) == naive_booked.replace(tzinfo=UTC)
     assert parsed > datetime.now(UTC), "a booking in the past is not a booking"
 
 
