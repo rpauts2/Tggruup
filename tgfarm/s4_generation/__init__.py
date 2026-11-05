@@ -1046,6 +1046,83 @@ def _no_lesson_preference(
     }
 
 
+#: Lesson evidence states that name no live measurement — the same set S8
+#: publishes as `EVIDENCE_UNTRUSTED`, spelled here to keep S4's imports lazy.
+_UNTRUSTED_LESSON_EVIDENCE = frozenset({"stale", "never", "blocked"})
+
+
+def _int_or_none(value: Any) -> int | None:
+    """An honest integer count from a lesson value; anything else says nothing."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        size = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
+
+
+def _lesson_evidence_view(value: dict[str, Any], measured: int, engagement: float) -> dict[str, Any]:
+    """How much of a durable lesson is still *live* measurement.
+
+    A lesson is meant to outlive the S8 window — that is the whole point of P32 —
+    but the snapshots behind it are not meant to outlive their own collector. S12
+    records, per format, how many measurements were inside
+    ``FORMAT_EVIDENCE_STALE_AFTER_DAYS`` when the lesson was written and what they
+    averaged, so the planner can act on those instead of on a blend:
+
+    * nothing declared (a lesson written before this existed) — the lesson keeps
+      its old numbers; refusing it on a marker it never got would silently change
+      plans the operator did not ask to change, and the next learning cycle
+      rewrites the row with the marker anyway;
+    * `stale`/`never`/`blocked` — no live measurement at all, so no preference;
+    * `mixed` — only the live count and the live average are handed on, so a dead
+      snapshot can neither inflate the sample nor drag the engagement;
+    * `ok` — live and total counts are the same numbers.
+    """
+    status = str(value.get("evidence_status") or "").strip().lower()
+    fresh = _int_or_none(value.get("fresh_measured"))
+    stale = _int_or_none(value.get("stale_measured"))
+    view: dict[str, Any] = {
+        "status": status,
+        "measured": measured,
+        "engagement": engagement,
+        "refuse": "",
+        "extra": {},
+    }
+    if not status:
+        return view
+    view["extra"] = {
+        "evidence_status": status,
+        "fresh_measured": fresh if fresh is not None else measured,
+        "stale_measured": stale if stale is not None else 0,
+    }
+    if status in _UNTRUSTED_LESSON_EVIDENCE:
+        view["measured"] = 0
+        view["engagement"] = 0.0
+        view["refuse"] = (
+            f"живых измерений нет: все снимки этого урока старше порога "
+            f"{_int_or_none(value.get('evidence_stale_after_days')) or 0} дн(а) — "
+            "урок наблюдение, решает окно S8"
+        )
+        return view
+    if fresh is not None:
+        view["measured"] = min(measured, fresh)
+    if status == "mixed":
+        try:
+            fresh_average = float(value.get("fresh_avg_engagement"))
+        except (TypeError, ValueError):
+            fresh_average = float("nan")
+        if fresh_average == fresh_average and fresh_average >= 0:
+            view["engagement"] = fresh_average
+        if view["measured"] < 1:
+            view["refuse"] = (
+                f"из {measured} измерений живых {view['measured']}: мёртвые снимки "
+                "не могут разбавлять выборку — решает окно S8"
+            )
+    return view
+
+
 def durable_format_preference(
     channel_id: str,
     platform_id: str,
@@ -1065,11 +1142,18 @@ def durable_format_preference(
     * only `below_sample`/`not_measured` lessons — `best_format_lesson` already
       refuses them via `reliable_only`, and an unmeasured format is a blind spot,
       not a verdict, so it cannot steer generation either;
+    * a lesson whose own measurement is dead (every snapshot behind it older than
+      ``FORMAT_EVIDENCE_STALE_AFTER_DAYS``) is answered `stale_evidence`: it was
+      measured, just not while anyone was collecting, so it does not get to steer
+      and the live window does instead;
     * a trustworthy lesson naming a format this material cannot carry (outside the
       length budgets, `video` without licensed footage, or a sample under the
       planner's own threshold) is marked `unusable`;
     * otherwise `state="trusted"` with `history` = that one format's row, so the
-      lesson — not an average of lesson and window — decides.
+      lesson — not an average of lesson and window — decides. For a mixed lesson
+      (part of its snapshots live, part dead) that row carries the *live* count
+      and the *live* average, declares both, and the dead half is named in the
+      detail instead of being averaged into the number or the confidence.
 
     Every non-`trusted` answer leaves the live S8 window in charge, which is the
     strategy that ran before this existed.
@@ -1129,7 +1213,23 @@ def durable_format_preference(
         engagement = float(value.get("avg_engagement") or 0.0)
     except (TypeError, ValueError):
         engagement = float("nan")
+    evidence = _lesson_evidence_view(value, measured, engagement)
+    live_measured = int(evidence["measured"])
+    live_engagement = float(evidence["engagement"])
 
+    if evidence["refuse"]:
+        # Measured, but not while anyone was collecting: the lesson stays an
+        # observation and the live window (or the rules) decides, exactly as it
+        # did before this lesson was trusted.
+        return _no_lesson_preference(
+            "stale_evidence",
+            f"урок S12 «{fmt}»: {evidence['refuse']}",
+            platform=platform,
+            sample_size=measured,
+            format=fmt,
+            live_sample_size=live_measured,
+            evidence_status=str(evidence["status"]),
+        )
     if fmt not in LENGTH_BUDGET:
         return _no_lesson_preference(
             "unusable",
@@ -1142,34 +1242,41 @@ def durable_format_preference(
             "урок S12 просит видео, а лицензированного ролика нет",
             platform=platform, sample_size=measured, format=fmt,
         )
-    if measured < MIN_HISTORY_SAMPLE:
+    if live_measured < MIN_HISTORY_SAMPLE:
         return _no_lesson_preference(
             "unusable",
-            f"урок S12 «{fmt}» опирается на {measured} измерений — план требует "
+            f"урок S12 «{fmt}» опирается на {live_measured} измерений — план требует "
             f"{MIN_HISTORY_SAMPLE}, решает окно S8",
             platform=platform, sample_size=measured, format=fmt,
         )
-    if engagement != engagement or engagement < 0:
+    if live_engagement != live_engagement or live_engagement < 0:
         return _no_lesson_preference(
             "unusable",
             f"урок S12 «{fmt}» не несёт проверяемой вовлечённости — решает окно S8",
             platform=platform, sample_size=measured, format=fmt,
         )
 
+    live_tail = (
+        f", живых {live_measured} из {measured}"
+        if evidence["status"] and live_measured != measured
+        else ""
+    )
     return {
         "state": "trusted",
         "platform": platform,
         "format": fmt,
-        "sample_size": measured,
+        "sample_size": live_measured,
         "detail": (
-            f"«{fmt}» по {platform}: измерено {measured} из {published}, avg {engagement:.2f}"
+            f"«{fmt}» по {platform}: измерено {live_measured} из {published}, "
+            f"avg {live_engagement:.2f}{live_tail}"
         ),
         "history": {
             fmt: {
-                "measured": measured,
+                "measured": live_measured,
                 "published": published,
-                "avg_engagement": engagement,
+                "avg_engagement": live_engagement,
                 "reliable": True,
+                **evidence["extra"],
             }
         },
     }
@@ -1244,9 +1351,17 @@ def format_plan_for(
         tail = f"{tail} — {detail}"
 
     measured = sum(int(row.get("measured") or 0) for row in chosen["history"].values())
+    # How the evidence the planner was handed declared itself: a row of live
+    # measurements and a row of dead ones both arrive with a number, and the
+    # operator deciding whether to trust the flag needs to see which it was.
+    live = sum(1 for row in chosen["history"].values() if row.get("evidence_status") == "ok")
+    dead = sum(
+        1 for row in chosen["history"].values()
+        if str(row.get("evidence_status") or "") in _UNTRUSTED_LESSON_EVIDENCE
+    )
     log.info(
         "s4 format plan %s/%s: %s source=%s preference=%s lesson_state=%s "
-        "confidence=%.2f measured=%d platform=%s",
+        "confidence=%.2f measured=%d live_rows=%d dead_rows=%d platform=%s",
         plan.channel_id,
         getattr(plan, "cluster_public_id", ""),
         chosen["format"],
@@ -1255,6 +1370,8 @@ def format_plan_for(
         str(preference.get("state") or ""),
         float(chosen["confidence"]),
         measured,
+        live,
+        dead,
         platform_id,
     )
     format_plan = as_format_plan(chosen)

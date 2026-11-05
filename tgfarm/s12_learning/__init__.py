@@ -28,7 +28,7 @@ from tgfarm.s8_analytics import (
     slot_performance,
 )
 from tgfarm.s8_analytics.formats import MIN_SAMPLE as FORMAT_MIN_SAMPLE
-from tgfarm.s8_analytics.formats import format_performance
+from tgfarm.s8_analytics.formats import evidence_status_for, format_performance
 
 log = get_logger(__name__)
 
@@ -253,6 +253,15 @@ def learn_format_lessons(
       `_shrink_quality` prior the angles and slots use, so a lucky two-post
       streak cannot outweigh a format measured across dozens.
 
+    A measurement that is no longer live is *stored and marked*, not dropped: the
+    row says `fresh_measured`/`stale_measured`/`evidence_status` and its note
+    states plainly that the plan does not build on it. Deleting it would make the
+    blind spot disappear from the very memory whose job is to record blind spots,
+    while `s4_generation.durable_format_preference` refuses every status in
+    `s8_analytics.formats.EVIDENCE_UNTRUSTED` — so a stale lesson can inform a
+    reader but cannot steer a generation, and the choice falls back to the live
+    window or the rules instead of a fabricated priority.
+
     Returns the run summary (rows written, per-format state, the not-measured
     list) so a caller can report what it refused to learn.
     """
@@ -278,6 +287,12 @@ def learn_format_lessons(
     report = format_performance(window, platform=platform_key, now=now)
     min_sample = max(1, int(report.get("min_sample") or FORMAT_MIN_SAMPLE))
     formats = report.get("formats") or {}
+    # Same posts, second question: `formats` answers «was it measured», this
+    # answers «is that measurement still live». Both are stored, because a lesson
+    # is read long after the window it came from is gone, and a reader then has no
+    # way to tell 3 live snapshots from 3 snapshots nobody refreshed in a month.
+    measurement = report.get("measurement") or {}
+    stale_after_days = int(report.get("stale_after_days") or 0)
     measured_total = sum(int(item.get("measured") or 0) for item in formats.values())
     engagement_total = sum(
         float(item.get("avg_engagement") or 0.0) * int(item.get("measured") or 0)
@@ -296,12 +311,20 @@ def learn_format_lessons(
         published = int(item.get("published") or 0)
         average = float(item.get("avg_engagement") or 0.0)
         reliable = bool(item.get("reliable"))
+        evidence = measurement.get(fmt) or {}
+        fresh = int(evidence.get("fresh") or 0)
+        stale = int(evidence.get("stale") or 0)
+        evidence_status = str(evidence.get("evidence_status") or "") or evidence_status_for(
+            fresh, stale
+        )
+        fresh_average = float(evidence.get("fresh_avg_engagement") or 0.0)
         if measured <= 0:
             # Activity, not evidence: named as a blind spot in this run's summary,
             # never stored as a row a later reader could mistake for a verdict.
             states[fmt] = {
                 "state": "not_measured", "measured": 0, "published": published,
                 "sample_size": 0, "confidence": 0.0, "reliable": False,
+                "fresh_measured": 0, "stale_measured": 0, "evidence_status": "never",
             }
             not_measured.append(fmt)
             continue
@@ -324,16 +347,38 @@ def learn_format_lessons(
             "reliable": reliable,
             "state": state,
             "window_days": window,
+            # How much of `measured` was live when this lesson was written. The
+            # counts and `state` above keep meaning exactly what they meant (a
+            # lesson is a record of the window, not a planner decision), so this
+            # is where `s4_generation.durable_format_preference` reads whether the
+            # lesson is allowed to steer.
+            "fresh_measured": fresh,
+            "stale_measured": stale,
+            "fresh_avg_engagement": round(fresh_average, 4),
+            "evidence_status": evidence_status,
+            "evidence_stale_after_days": stale_after_days,
         }
+        evidence_tail = (
+            ""
+            if evidence_status == "ok"
+            else f"; живых измерений {fresh} из {measured}, состояние {evidence_status}"
+        )
         if state == "reliable":
             reason = (
                 f"формат {fmt} на {platform_key}: измерено {measured} из {published}, "
                 f"вовлечённость {average:.2f} против {baseline:.2f} по площадке; надёжно"
+                f"{evidence_tail}"
             )
         else:
             reason = (
                 f"формат {fmt} на {platform_key}: измерено {measured} из {published} "
-                f"(порог {min_sample}) — наблюдение, не вывод"
+                f"(порог {min_sample}) — наблюдение, не вывод{evidence_tail}"
+            )
+        if evidence_status == "stale":
+            reason = (
+                f"формат {fmt} на {platform_key}: {measured} измерений, но все снимки "
+                f"старше {stale_after_days} дн(а) — не живое доказательство, "
+                "план на этом уроке не строится"
             )
         _upsert(
             channel, "format", f"{platform_key}/{fmt}", value,
@@ -342,6 +387,8 @@ def learn_format_lessons(
         states[fmt] = {
             "state": state, "measured": measured, "published": published,
             "sample_size": measured, "confidence": confidence, "reliable": reliable,
+            "fresh_measured": fresh, "stale_measured": stale,
+            "evidence_status": evidence_status,
         }
         written += 1
 
@@ -354,6 +401,10 @@ def learn_format_lessons(
         "min_sample": min_sample,
         "measured_total": measured_total,
         "published_total": int(report.get("published_total") or 0),
+        "fresh_measured_total": int(report.get("fresh_measured_total") or 0),
+        "stale_measured_total": int(report.get("stale_measured_total") or 0),
+        "evidence_status": str(report.get("evidence_status") or ""),
+        "stale_after_days": stale_after_days,
         "baseline_engagement": round(baseline, 4),
         "formats": states,
         "not_measured": sorted(not_measured),

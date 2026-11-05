@@ -360,23 +360,53 @@ def _as_engagement(row: Mapping[str, Any]) -> float | None:
     return engagement
 
 
+#: Evidence states that name no live measurement — the `s8_analytics.formats`
+#: vocabulary, not a parallel one. A row declaring one of these was measured, but
+#: not recently enough to decide anything.
+UNTRUSTED_EVIDENCE: frozenset[str] = frozenset({"stale", "never", "blocked"})
+
+
+def _row_evidence_status(row: Mapping[str, Any]) -> str:
+    """Declared state of a row's measurement; "" when the row says nothing.
+
+    A row that does not declare a state is treated as it always was: the caller
+    vouches for it. That keeps old callers and an already-filtered window
+    byte-identical, and it is why `planner_history` declares the state explicitly.
+    """
+    status = str(row.get("evidence_status") or "").strip().lower()
+    if status:
+        return status
+    return "stale" if row.get("stale") is True else ""
+
+
+def _row_evidence_is_dead(row: Mapping[str, Any]) -> bool:
+    """True when a row says its own measurement is no longer live evidence."""
+    return _row_evidence_status(row) in UNTRUSTED_EVIDENCE
+
+
 def _history_winner(
     history: Mapping[str, Mapping[str, Any]] | None,
     *,
     allow_video: bool,
-) -> dict[str, Any] | None:
-    """Best-performing format with enough evidence behind it, else `None`.
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Best-performing format with enough live evidence, plus what staleness vetoed.
 
     A row is usable only when it names a format this module can size, carries at
-    least `MIN_HISTORY_SAMPLE` posts and a real non-negative average engagement.
-    `video` is skipped unless licensed footage exists: a format the farm cannot
-    produce is not a format it may choose. Ties break on the larger sample, then
-    on the documented format order, so one history always yields one winner.
+    least `MIN_HISTORY_SAMPLE` *live-measured* posts and a real non-negative
+    average engagement, and does not declare its own measurement dead. `video` is
+    skipped unless licensed footage exists: a format the farm cannot produce is
+    not a format it may choose. Ties break on the larger sample, then on the
+    documented format order, so one history always yields one winner.
+
+    The second value names the formats that had a real sample and were vetoed for
+    staleness alone — the difference between «мало данных» and «данные есть, но
+    они мертвы», which the reason string has to tell apart.
     """
     if not history:
-        return None
+        return None, []
     order = list(LENGTH_BUDGET)
     rows: list[tuple[float, int, str]] = []
+    vetoed: list[str] = []
     for raw_format, row in history.items():
         fmt = str(raw_format or "").strip().lower()
         if fmt not in LENGTH_BUDGET or not isinstance(row, Mapping):
@@ -384,14 +414,21 @@ def _history_winner(
         if fmt == "video" and not allow_video:
             continue
         size = _as_sample_size(row)
+        if _row_evidence_is_dead(row):
+            # Judged on the whole measured sample, not the live half: a feed that
+            # already zeroed its own `measured` must still be reported as
+            # «measured, but dead» and not as «never measured».
+            if size + (_as_count(row, "stale_measured") or 0) >= MIN_HISTORY_SAMPLE:
+                vetoed.append(fmt)
+            continue
         engagement = _as_engagement(row)
         if engagement is None or size < MIN_HISTORY_SAMPLE:
             continue
         rows.append((engagement, size, fmt))
     if not rows:
-        return None
+        return None, vetoed
     engagement, size, fmt = max(rows, key=lambda row_: (row_[0], row_[1], -order.index(row_[2])))
-    return {"format": fmt, "n": size, "avg_engagement": round(engagement, 4)}
+    return {"format": fmt, "n": size, "avg_engagement": round(engagement, 4)}, vetoed
 
 
 def _history_overview(
@@ -400,19 +437,30 @@ def _history_overview(
     """Echo of the parsed history, so a panel can show what the decision saw.
 
     `measured` and `published` stay separate: a panel that shows only one number
-    cannot tell a well-measured format from a rarely-measured one.
+    cannot tell a well-measured format from a rarely-measured one. A row that
+    declares how live its measurement is gets that named in the echo too, so
+    «measured 9, all of it dead» never reads as «measured 9». Rows that declare
+    nothing keep the four keys they have always had.
     """
     overview: dict[str, dict[str, float | int | None]] = {}
     for raw_format, row in (history or {}).items():
         if not isinstance(row, Mapping):
             continue
         fmt = str(raw_format or "").strip().lower()
-        overview[fmt] = {
+        entry: dict[str, float | int | None] = {
             "n": _as_sample_size(row),
             "measured": _as_count(row, "measured"),
             "published": _as_count(row, "published"),
             "avg_engagement": _as_engagement(row),
         }
+        status = _row_evidence_status(row)
+        if status:
+            entry["evidence_status"] = status
+        for key in ("fresh_measured", "stale_measured"):
+            declared = _as_count(row, key)
+            if declared is not None:
+                entry[key] = declared
+        overview[fmt] = entry
     return overview
 
 
@@ -474,6 +522,12 @@ def plan_with_history(
       `n` is still read as the sample size for callers without a measured count,
       and `published` is never preferred over it. Below the threshold the base
       choice stands and the reason says «мало данных»;
+    * a row that declares its measurement dead (`evidence_status` in
+      `UNTRUSTED_EVIDENCE`, or `stale: True`) is refused even with a big sample:
+      measured weeks ago is not evidence about now. The plan then keeps the
+      rules-only format and the reason names the staleness — the same fallback the
+      planner uses when history cannot be read at all, never a fabricated
+      priority. A row saying nothing is the caller's responsibility, as before;
     * a destination whose capability is not `publish` keeps the same length
       window and is flagged `manual=True`, because a human finishes delivery;
     * nothing is invented: no history means the base plan plus an honest reason,
@@ -503,13 +557,18 @@ def plan_with_history(
     else:
         plan = fit_persona(plan_format([], persona, has_video=has_video), persona)
 
-    winner = _history_winner(history, allow_video=has_video)
+    winner, stale_vetoed = _history_winner(history, allow_video=has_video)
     if winner is None:
-        tail = (
-            f"мало данных: ни у одного формата нет {MIN_HISTORY_SAMPLE}+ публикаций"
-            if history
-            else "мало данных: истории по форматам нет"
-        )
+        if stale_vetoed:
+            names = ", ".join(sorted(set(stale_vetoed)))
+            tail = (
+                f"мало данных: у {names} есть выборка, но снимки метрик старше порога — "
+                "не живое доказательство"
+            )
+        elif history:
+            tail = f"мало данных: ни у одного формата нет {MIN_HISTORY_SAMPLE}+ публикаций"
+        else:
+            tail = "мало данных: истории по форматам нет"
         plan.reason = f"{plan.reason}; {tail}".strip("; ")
     else:
         label = FORMAT_LABEL.get(winner["format"], winner["format"]).lower()
@@ -599,6 +658,7 @@ __all__ = [
     "FORMAT_LABEL",
     "LENGTH_BUDGET",
     "MIN_HISTORY_SAMPLE",
+    "UNTRUSTED_EVIDENCE",
     "Format",
     "FormatPlan",
     "as_format_plan",

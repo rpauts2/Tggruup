@@ -327,6 +327,19 @@ class Settings(BaseSettings):
     format_performance_window_days: int = Field(
         default=60, ge=1, le=365, alias="FORMAT_PERFORMANCE_WINDOW_DAYS"
     )
+    # The window above filters by *post* time, so it answers «which posts are in
+    # scope» and never «is their measurement still live». A snapshot older than
+    # this is history: `s8_analytics.formats` still reports it, `planner_history`
+    # and the durable S12 lesson refuse to let it move a format choice, and the
+    # plan falls back to the rules instead of a fabricated priority. 7 days, not
+    # `freshness`' 24 hours: engagement settles over a week, while a collector
+    # that has not written anything for a week is not measuring this farm
+    # (measured live: newest `post_stats.collected_at` was 2026-10-29). Only the
+    # evidence path reads it, and that path is behind FORMAT_PERFORMANCE_PLANNER,
+    # so the default cannot move today's behaviour while the planner is off.
+    format_evidence_stale_after_days: int = Field(
+        default=7, ge=1, le=365, alias="FORMAT_EVIDENCE_STALE_AFTER_DAYS"
+    )
     # When Dzen shows the "I'm not a robot" box, the headed window stays open
     # and the farm waits this long for the operator to click it.
     dzen_captcha_wait_s: int = Field(default=180, alias="DZEN_CAPTCHA_WAIT_S")
