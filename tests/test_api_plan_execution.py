@@ -31,6 +31,7 @@ flipped `PLAN_EXECUTION_ENABLED`.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -102,8 +103,9 @@ def _counts() -> dict[str, int]:
 def _apply_rows() -> list[int]:
     """Ids of the journal rows this stage owns, oldest first.
 
-    Used to tell whether the shared DB is in the "never ran" state at all; the
-    never-ran pin itself does not depend on that answer.
+    Read from whichever store the endpoint is answering from, because a delta
+    against the shared session DB is a statement about test ordering, not about
+    the journal.
     """
     with session_scope() as session:
         return list(
@@ -204,6 +206,41 @@ def _pinned_switch(monkeypatch):
     yield
     monkeypatch.undo()
     reset_settings_cache()
+
+
+@pytest.fixture()
+def _empty_journal_store(tmp_path_factory):
+    """One throwaway store whose apply stage has genuinely never ticked.
+
+    `tests/conftest.py` hands the whole suite a single session DB, so the state
+    "no apply row exists" was only observable in whichever ordering ran this file
+    before anything that ticks — and every other ordering had to say so and stop.
+    Repointing `DATABASE_URL` and disposing the engine is the mechanism
+    `tests/test_autonomy_chain_offline.py` already uses, so the empty journal here
+    is a property of the store, not a lucky schedule.
+    """
+    root = tmp_path_factory.mktemp("w18b2_journal")
+    db_path = root / "empty_journal.db"
+    watched_env = ("DATABASE_URL", "TGFARM_MEDIA_DIR")
+    saved = {name: os.environ.get(name) for name in watched_env}
+    os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    os.environ["TGFARM_MEDIA_DIR"] = str(root / "media")
+    from tgfarm.db import session as session_mod
+    from tgfarm.db.bootstrap import ensure_bootstrapped
+
+    try:
+        session_mod.dispose_engine()
+        reset_settings_cache()
+        ensure_bootstrapped()
+        yield db_path
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        session_mod.dispose_engine()
+        reset_settings_cache()
 
 
 class _FakeJob:
@@ -422,18 +459,16 @@ def test_a_journal_with_no_apply_tick_reads_as_never_ran(monkeypatch) -> None:
     assert last["applied"] is None and last["held"] is None
 
 
-def test_the_real_journal_says_the_same_while_it_is_empty() -> None:
+def test_the_real_journal_says_the_same_while_it_is_empty(_empty_journal_store) -> None:
     """The same nulls, read off the stage the consumer actually writes.
 
-    `editorial_plan_apply` is journalled only by `tgfarm/plan_execution.py`, so
-    for most of a suite run this journal genuinely is empty and the pin above is
-    checked against the real stage name too. Once some file has run an apply
-    tick ahead of this one, the state is not observable without editing rows this
-    file does not own, and the test says so instead of pretending.
+    `editorial_plan_apply` is journalled only by `tgfarm/plan_execution.py`, and
+    any file that ticks it puts a real row in the shared session DB — so this pin
+    runs against a store where the stage has not ticked, which is the state the
+    reader is being asked about. The assertion holds in every ordering now, and
+    the journal emptiness is checked rather than assumed.
     """
-    rows = _apply_rows()
-    if rows:
-        pytest.skip(f"the shared journal already holds apply row(s) {rows}")
+    assert _apply_rows() == []
     last = _execution(_client())["last_apply"]
     assert last == {"at": None, "plan_id": None, "applied": None, "held": None, "reasons": None}
     assert "нет ни одной записи" in _execution(_client())["note"]
