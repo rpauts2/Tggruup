@@ -14,11 +14,18 @@ consent-gated repairs at the bottom of this file
 (`publication_evidence_repair`, `requeue_failed_publishes`), which *rewrite*
 publication states without deleting anything — and only behind an `*_APPLY`
 environment flag, an explicit `--apply` and a fresh copy in `backup/`.
+
+The stage also performs one read-only task that writes nothing to a destination:
+`watch_destination_rules` re-reads the publication rules of the community
+destinations our own history already names, so "what rules were we publishing
+under, and when did they change" keeps accumulating between operator clicks.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -826,6 +833,468 @@ def requeue_failed_publishes(
     return report
 
 
+# ------------------------------------------------------------------ rules watch
+#: Destinations one pass may re-read. Each costs the platform one or two public
+#: GETs — the same requests an operator click already makes — so the cap is small
+#: and the remainder is always reported. `REQUEUE_BUDGET_MAX` is 200 because that
+#: pass only writes rows; this one asks a destination for data.
+RULES_WATCH_BUDGET_MAX = 10
+
+#: Wall-clock stop for one pass. A maintenance step must never become the reason
+#: a cycle dies, so the deadline is checked *before* starting a read: a read
+#: already in flight is left to its own client timeout.
+RULES_WATCH_BUDGET_SECONDS = 45.0
+
+#: How long a report field may stay in a log line or an API response.
+RULES_WATCH_REASON_LIMIT = 160
+
+
+def _run_existing_reader(fn, /, *args: Any, **kwargs: Any) -> Any:
+    """Call an existing async rules reader from this synchronous stage.
+
+    `run_maintenance` is reached through `pipeline._maintenance_stage`, which runs
+    it in a worker thread, so `asyncio.run` is the right bridge there. The
+    nested-loop branch is for the caller that is *not* the cycle (a CLI, a test,
+    a future scheduler hook): `asyncio.run` would raise inside a running loop, and
+    borrowing somebody else's loop would let a maintenance read outlive the stage
+    that asked for it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(fn(*args, **kwargs))
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(fn(*args, **kwargs))).result()
+
+
+async def _read_reddit_rules(row: dict[str, Any]) -> dict[str, Any]:
+    """Re-read one subreddit's rules with the preflight's own reader."""
+    from tgfarm.community_policy import assess_policy, policy_from_reddit, record_policy_snapshot
+    from tgfarm.s9_growth import reddit_scout
+
+    subreddit = str(row["target_id"] or "")
+    current = await reddit_scout.inspect_community(subreddit)
+    policy = policy_from_reddit(current, subreddit=subreddit)
+    verdict = assess_policy(policy)
+    record_policy_snapshot(policy, verdict)
+    return {
+        "status": verdict.get("status"),
+        "allow_publish": bool(verdict.get("allow_publish")),
+        "rules_hash": str(policy.rules_hash or ""),
+    }
+
+
+async def _read_pikabu_rules(row: dict[str, Any]) -> dict[str, Any]:
+    """Re-read one Pikabu community (and the Code) with the publisher's own reader.
+
+    The post argument is empty on purpose: `revalidate_pikabu_target` judges a
+    *material* against the rules, and this step is not judging material — it is
+    recording which rules the destination currently publishes under. The stored
+    columns (`rules_hash`, `requirements`, `rules_available`, the verdict) come
+    from the rule text alone, so an empty post cannot distort the row; the post
+    only ever reaches `risks`/`blockers`, which this step discards.
+    """
+    from tgfarm import community_targets
+
+    slug = str(row["target_id"] or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", slug):
+        raise ValueError("stored Pikabu destination is not a canonical community slug")
+    result = await community_targets.revalidate_pikabu_target(
+        {"title": "", "body": "", "url": "", "hashtags": [], "sources": [], "media": []},
+        {
+            "url": f"https://pikabu.ru/community/{slug}",
+            "slug": slug,
+            "name": str(row.get("target_name") or slug),
+            "score": 0,
+        },
+    )
+    assessment = result.get("policy_assessment") or {}
+    policy = result.get("community_policy") or {}
+    return {
+        "status": assessment.get("status"),
+        "allow_publish": bool(assessment.get("allow_publish")),
+        "rules_hash": str(policy.get("rules_hash") or ""),
+    }
+
+
+#: The platforms this step can re-read, and the coroutine that does it. Both
+#: readers already exist for the publish path and open no page this code does not
+#: already open: `inspect_community` is the Reddit preflight read,
+#: `revalidate_pikabu_target` is the Pikabu "one moment before the click" read.
+#:
+#: `vc.ru` is deliberately absent: `community_targets` only reads a vc.ru topic
+#: inside the whole directory selector (`_vc`), which needs a post to match
+#: against, so a destination-only re-read has no reader there yet. A history row
+#: on a platform outside this map is reported by name (`no_rules_reader`) and left
+#: alone rather than approximated by a new scraper.
+_RULES_READER_FOR = {
+    "pikabu": _read_pikabu_rules,
+    "reddit": _read_reddit_rules,
+}
+
+#: The watch set, kept as one tuple so a test or a follow-up reader can name it.
+RULES_WATCH_PLATFORMS = tuple(sorted(_RULES_READER_FOR))
+
+
+def _rules_reader_available(platform: str) -> tuple[bool, str]:
+    """Can this platform's reader even be asked, without touching a destination?
+
+    A Reddit read needs OAuth. Asking for a token that is not configured would
+    spend an authorization attempt per destination per cycle, so the step names
+    the condition instead. Pikabu's reader is two anonymous public pages, so it
+    has nothing to pre-check.
+    """
+    if platform != "reddit":
+        return True, ""
+    from tgfarm.s9_growth import reddit_scout
+
+    adapter = reddit_scout.ADAPTERS.get("reddit")
+    if adapter is None:
+        return False, "reddit_adapter_missing"
+    if not bool(adapter.configured()):
+        return False, "reddit_oauth_not_configured"
+    return True, ""
+
+
+def _watched_rule_destinations() -> list[dict[str, Any]]:
+    """Newest stored rules row per destination, oldest check first.
+
+    Everything in the list is a number or a string this function actually read
+    out of `community_policy_snapshots`; destination-authored fields go through
+    :func:`tgfarm.community_policy.inert_external_text` on the way out, the same
+    way :func:`tgfarm.community_policy.policy_history` does.
+    """
+    from sqlalchemy import func
+
+    from tgfarm.community_policy import inert_external_text
+    from tgfarm.db.models import CommunityPolicySnapshot as Snapshot
+
+    with session_scope() as session:
+        newest = (
+            select(
+                Snapshot.platform,
+                Snapshot.target_id,
+                func.max(Snapshot.id).label("newest_id"),
+            )
+            .group_by(Snapshot.platform, Snapshot.target_id)
+            .subquery()
+        )
+        rows = session.execute(
+            select(Snapshot)
+            .join(newest, Snapshot.id == newest.c.newest_id)
+            .order_by(Snapshot.checked_at.asc(), Snapshot.id.asc())
+        ).scalars().all()
+        return [
+            {
+                "id": int(row.id),
+                "platform": inert_external_text(row.platform, 32),
+                "target_type": inert_external_text(row.target_type, 32),
+                "target_id": inert_external_text(row.target_id, 200),
+                "target_name": inert_external_text(row.target_name, 160),
+                "rules_hash": inert_external_text(row.rules_hash, 64),
+                "checked_at": _as_utc(row.checked_at),
+            }
+            for row in rows
+        ]
+
+
+def watch_destination_rules(
+    *,
+    limit: int = RULES_WATCH_BUDGET_MAX,
+    budget_seconds: float = RULES_WATCH_BUDGET_SECONDS,
+    only_target_ids: tuple[str, ...] | list[str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Re-read the rules of destinations we would publish to, into our own history.
+
+    Why this exists: `community_policy_snapshots` had **0 rows in the live
+    database** on 2026-11-05, not because the contract is broken — the verdict,
+    the `rules_hash` change detection, the `policy_history` endpoint and the
+    «История правил» card are all wired — but because every writer of a snapshot
+    sits behind a per-platform automation switch and both community platforms are
+    off in this deployment (`reddit: false`, no `pikabu` key at all). `ebdc279`
+    made the panel's own rules check write history, but that is still one human
+    click, so nothing accumulated *continuously*: the farm could not answer "what
+    rules did we publish under, and when did they change".
+
+    What it does: takes the destinations our own history already names, keeps the
+    ones on an enabled platform with an existing reader, re-reads each one with
+    that reader (which records through `record_policy_snapshot`, so the collapse
+    window and the change detection are the existing ones and are not
+    reimplemented here) and reports what it measured.
+
+    What it does not do:
+
+    * publish, comment, schedule or send anything, anywhere — the only external
+      calls are the two read paths above, and each is the same read the publish
+      preflight already performs;
+    * need §80 consent. Recording our own audit row is not a history rewrite of a
+      publication and not an external action, so there is no `*_APPLY` flag here;
+      the asymmetry with `_duplicate_repair` and `_publication_evidence_repair`
+      is deliberate and the write target is the reason for it;
+    * flip `enabled.reddit` / `enabled.pikabu`. A switched-off destination is
+      reported as the named state `disabled` and is neither read nor written: the
+      decision to hand the farm a publishing destination stays the operator's;
+    * invent a number. `oldest_checked_age_hours` is `None` when no destination was
+      read, a platform entry carries counters only for the work it actually
+      measured, and a disabled platform carries a state and no counts at all
+      (P34: absence is «нет отчёта», never `0`).
+
+    Every platform in `RULES_WATCH_PLATFORMS` gets exactly one named state —
+    `disabled`, `reddit_oauth_not_configured` (a reader that cannot be asked yet),
+    `enabled_no_known_destination`, `watched` — and a destination on a platform
+    outside that set is `no_rules_reader`. Nothing is left unexplained and nothing
+    is guessed at.
+
+    Bounded like the other steps: at most `limit` (clamped by
+    `RULES_WATCH_BUDGET_MAX`) destinations per pass, most overdue first, and the
+    pass stops starting new reads once `budget_seconds` have gone; what is left is
+    counted in `remaining`, never dropped silently.
+
+    `only_target_ids` narrows the watch list to named destinations — the same
+    filter `policy_history` and `latest_policy` already answer to.
+    """
+    from tgfarm.community_policy import latest_policy
+    from tgfarm.platforms import is_platform_enabled
+
+    current = _as_utc(now) or datetime.now(UTC)
+    started = datetime.now(UTC)
+    budget = max(1, min(int(limit), RULES_WATCH_BUDGET_MAX))
+    deadline_seconds = max(1.0, float(budget_seconds))
+
+    report: dict[str, Any] = {
+        "limit": budget,
+        "requested_limit": int(limit),
+        "budget_seconds": deadline_seconds,
+        "state": "nothing_to_watch",
+        "detail": "nothing configured to watch",
+        "platforms": {},
+        "destinations": 0,
+        "considered": 0,
+        "checked": 0,
+        "recorded": 0,
+        "collapsed": 0,
+        "changed": 0,
+        "failed": 0,
+        "skipped_by_deadline": 0,
+        "remaining": 0,
+        "oldest_checked_age_hours": None,
+        "stopped_by": None,
+        "blocked": [],
+        "failures": [],
+        "sample": [],
+    }
+
+    destinations = _watched_rule_destinations()
+    wanted = {str(value) for value in (only_target_ids or ()) if str(value)}
+    if wanted:
+        # "re-read this one destination" is the operator-sized version of this
+        # step, and it is also what keeps a test able to state exact counts on a
+        # database the whole suite shares.
+        destinations = [item for item in destinations if str(item["target_id"]) in wanted]
+    known_platforms: dict[str, int] = {}
+    for item in destinations:
+        name = str(item["platform"])
+        known_platforms[name] = known_platforms.get(name, 0) + 1
+
+    eligible: list[dict[str, Any]] = []
+    # Phase 1: answer for every platform this step could watch, whether or not
+    # the history names a destination for it. A switch is a fact about the
+    # deployment, and the operator reading the card is entitled to the answer
+    # even when the table is empty — which is the live shape.
+    for platform in RULES_WATCH_PLATFORMS:
+        count = known_platforms.get(platform, 0)
+        if not bool(is_platform_enabled(platform)):
+            # The named state, and nothing else: no row, no count, no age.
+            report["platforms"][platform] = {
+                "state": "disabled",
+                "switch": f"enabled.{platform}",
+                "reason": (
+                    "the platform is switched off in the platform centre, so this "
+                    "step neither reads its rules nor writes history for it"
+                ),
+            }
+            continue
+        available, why = _rules_reader_available(platform)
+        if not available:
+            report["platforms"][platform] = {
+                "state": why,
+                "destinations": int(count),
+                "reason": "the rules reader for this platform cannot be asked yet",
+            }
+            continue
+        if not count:
+            # On, readable, and the history names nothing: the step says so and
+            # does not go looking for a destination to invent one from.
+            report["platforms"][platform] = {
+                "state": "enabled_no_known_destination",
+                "destinations": 0,
+                "reason": (
+                    "the rules history holds no destination for this platform, so "
+                    "there is nothing configured to watch; the first row comes from "
+                    "a selection or a publication, which is what names the destination"
+                ),
+            }
+            continue
+        report["platforms"][platform] = {
+            "state": "watched",
+            "destinations": int(count),
+            # These four count the work *this pass* measures, so a zero here is a
+            # measured zero, never an unread destination reported as one.
+            "checked": 0,
+            "recorded": 0,
+            "changed": 0,
+            "failed": 0,
+        }
+        eligible.extend(item for item in destinations if str(item["platform"]) == platform)
+
+    # Phase 2: name whatever else the history turned up that has no reader.
+    for platform, count in sorted(known_platforms.items()):
+        if platform in RULES_WATCH_PLATFORMS:
+            continue
+        report["platforms"][platform] = {
+            "state": "no_rules_reader",
+            "destinations": int(count),
+            "reason": (
+                "the history names this platform, but no rules reader for it "
+                "exists in the codebase, so nothing is re-read"
+            ),
+        }
+
+    # A platform that is switched on, has destinations and still cannot be read
+    # is a reason the operator has to be able to read. `disabled` and
+    # `enabled_no_known_destination` are not: one is a decision, the other is the
+    # bootstrap state the detail line already names.
+    blocked = [
+        f"{name}:{entry['state']}"
+        for name, entry in sorted(report["platforms"].items())
+        if entry["state"] not in {"disabled", "watched", "enabled_no_known_destination"}
+    ]
+
+    # `destinations` came back oldest-check-first; the per-platform loop above
+    # would have grouped it by platform, so restore the staleness ordering.
+    eligible.sort(key=lambda item: (item["checked_at"] or current, int(item["id"])))
+    report["destinations"] = len(eligible)
+    if eligible:
+        oldest = eligible[0]["checked_at"]
+        report["oldest_checked_age_hours"] = (
+            round(max(0.0, (current - oldest).total_seconds() / 3600.0), 2)
+            if oldest is not None
+            else None
+        )
+
+    chosen = eligible[:budget]
+    report["remaining"] = max(0, len(eligible) - len(chosen))
+    if blocked:
+        report["blocked"] = blocked
+    if not chosen:
+        detail = "nothing configured to watch"
+        if blocked:
+            detail += f" ({', '.join(blocked)})"
+        report["detail"] = detail
+        log.info("maintenance: rules watch — %s", detail)
+        return report
+
+    for row in chosen:
+        platform = str(row["platform"])
+        if (datetime.now(UTC) - started).total_seconds() > deadline_seconds:
+            report["stopped_by"] = "deadline"
+            report["skipped_by_deadline"] = int(report["skipped_by_deadline"]) + 1
+            report["remaining"] = int(report["remaining"]) + 1
+            continue
+        report["considered"] = int(report["considered"]) + 1
+        entry = report["platforms"].get(platform)
+        try:
+            read = _run_existing_reader(_RULES_READER_FOR[platform], row)
+        except Exception as exc:  # noqa: BLE001 - one unreadable destination must not kill the stage
+            report["failed"] = int(report["failed"]) + 1
+            if entry is not None:
+                entry["failed"] = int(entry.get("failed", 0)) + 1
+            reason = redact_sensitive_text(
+                f"{type(exc).__name__}: {exc}", limit=RULES_WATCH_REASON_LIMIT
+            )
+            report["failures"].append(
+                {
+                    "platform": platform,
+                    "target_id": str(row["target_id"])[:200],
+                    "reason": reason,
+                }
+            )
+            log.warning(
+                "maintenance: rules watch could not re-read %s/%s: %s",
+                platform,
+                str(row["target_id"])[:60],
+                reason,
+            )
+            continue
+
+        # Observe the table instead of trusting the reader's return value: whether
+        # a row appeared, and which hash it carries, are facts about storage.
+        after = latest_policy(platform, str(row["target_id"])) or {}
+        new_hash = str(after.get("rules_hash") or "")
+        recorded = bool(after) and int(after.get("id") or 0) != int(row["id"])
+        changed = bool(recorded) and new_hash != str(row["rules_hash"] or "")
+        report["checked"] = int(report["checked"]) + 1
+        report["recorded"] = int(report["recorded"]) + (1 if recorded else 0)
+        report["collapsed"] = int(report["collapsed"]) + (0 if recorded else 1)
+        report["changed"] = int(report["changed"]) + (1 if changed else 0)
+        if entry is not None:
+            entry["checked"] = int(entry.get("checked", 0)) + 1
+            entry["recorded"] = int(entry.get("recorded", 0)) + (1 if recorded else 0)
+            entry["changed"] = int(entry.get("changed", 0)) + (1 if changed else 0)
+        report["sample"].append(
+            {
+                "platform": platform,
+                "target_id": str(row["target_id"])[:200],
+                "previous_hash": str(row["rules_hash"] or ""),
+                "rules_hash": new_hash,
+                "changed": changed,
+                "recorded": recorded,
+                "verdict_status": str(read.get("status") or "unknown")[:16],
+                "allow_publish": bool(read.get("allow_publish")),
+            }
+        )
+
+    report["state"] = "watched"
+    report["detail"] = (
+        f"{report['checked']} destination rules re-read, "
+        f"{report['recorded']} history row(s) written, "
+        f"{report['changed']} with changed rules, {report['failed']} unreadable"
+    )
+    if report["remaining"]:
+        report["state"] = "partial"
+        report["detail"] += f"; {report['remaining']} left for the next pass"
+    if report["stopped_by"] == "deadline":
+        report["state"] = "partial"
+        report["detail"] += "; stopped on the time budget, not on the work list"
+
+    log.info(
+        "maintenance: rules watch checked %d, recorded %d, changed %d, failed %d, "
+        "%d watched destination(s), %d left for the next pass (%s)",
+        report["checked"],
+        report["recorded"],
+        report["changed"],
+        report["failed"],
+        report["destinations"],
+        report["remaining"],
+        report["stopped_by"] or "budget",
+    )
+    return report
+
+
+def _rules_watch() -> int:
+    """The maintenance hook: history rows this pass added.
+
+    No consent flag gates it, unlike the two repairs above: it writes our own
+    audit table and never a destination. Failures are counted inside the report,
+    so a single unreadable community cannot make the stage report `-1`.
+    """
+    report = watch_destination_rules()
+    return int(report.get("recorded") or 0)
+
+
 def _close_stale_ai_reservations() -> int:
     """Close AI budget reservations whose process died mid-call.
 
@@ -849,6 +1318,11 @@ def run_maintenance() -> dict[str, int | bool]:
     That judgement is an operator action (`tgfarm requeue-failed`, the panel, the
     API), not something a scheduled stage should be able to do because an
     environment variable happened to be set.
+
+    `rules_watch` is in the list for the opposite reason: it writes nothing to a
+    destination and rewrites nothing, it only re-reads public rules and appends to
+    our own audit table, so the cycle can keep the rules history accumulating
+    without an operator click.
     """
     out: dict[str, int | bool] = {}
     for name, fn in (
@@ -861,6 +1335,7 @@ def run_maintenance() -> dict[str, int | bool]:
         ("duplicate_repair", _duplicate_repair),
         ("publication_evidence_repair", _publication_evidence_repair),
         ("stale_ai_reservations", _close_stale_ai_reservations),
+        ("rules_watch", _rules_watch),
     ):
         try:
             out[name] = fn()
@@ -887,4 +1362,5 @@ __all__ = [
     "requeue_eligibility",
     "requeue_failed_publishes",
     "run_maintenance",
+    "watch_destination_rules",
 ]
