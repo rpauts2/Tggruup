@@ -2551,6 +2551,17 @@ class CollectorJobSpec:
     #: flag records which sentence about the platform is true.
     feeds_post_stats: bool = True
     snapshot_table: str = "post_stats"
+    #: The `pipeline_runs.stage` values this job's tick appends once it gets far
+    #: enough to record an attempt (`_record` inside `_metrics_learning_tick`,
+    #: `_telegram_metrics_tick` and `_telegraph_metrics_tick`). A destination table
+    #: that has no new row has two entirely different causes - the tick never
+    #: reached the recording point (off mode, no session, no token), or it ran and
+    #: read nothing - and only the journal can tell them apart. The names live with
+    #: the registration for the same reason the job ids do: `s8_analytics.freshness`
+    #: must not hand-copy them and drift. An empty tuple means the job keeps no
+    #: journal row at all, which the report reads as "unknowable", never as
+    #: "zero runs".
+    run_stages: tuple[str, ...] = ()
     #: platform -> manual entry point an operator can press instead
     #: (wording only; the schedule text stays derived).
     manual: dict[str, str] = field(default_factory=dict)
@@ -2614,6 +2625,7 @@ def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
             ),
             # s8_analytics/__init__.py:436 - the CLI can force a Dzen read in any mode.
             manual={"dzen": "`tgfarm dzen-stats`"},
+            run_stages=("s8_analytics",),
         ),
         CollectorJobSpec(
             job_id="telegram-post-metrics",
@@ -2629,6 +2641,7 @@ def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
                 ),
             ),
             manual={"telegram": "`tgfarm telegram stats` и POST /api/telegram/stats"},
+            run_stages=("telegram_post_metrics",),
         ),
         CollectorJobSpec(
             job_id="telegraph-metrics",
@@ -2647,6 +2660,7 @@ def collector_job_specs() -> tuple[CollectorJobSpec, ...]:
             ),
             feeds_post_stats=False,
             snapshot_table="telegraph_metric_snapshots",
+            run_stages=("telegraph_metrics",),
         ),
     )
 
