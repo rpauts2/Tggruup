@@ -27,6 +27,19 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.schemas import CrosspostPayload, CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
+from tgfarm.crosspost_journal import (
+    JOURNAL_REFUSAL_UNCLASSIFIED_STATUS,
+    JOURNAL_REFUSAL_UNDECLARED_STATUS,
+    JOURNAL_STATUS_DRY_RUN,
+    JOURNAL_STATUS_FAILED,
+    JOURNAL_STATUS_PUBLISHING,
+    JOURNAL_STATUS_RETRY_AUTHORIZED,
+    JOURNAL_STATUS_SKIPPED,
+    JOURNAL_TIME_BOUNDED_STATUSES,
+    JournalStatusClass,
+    journal_claim_refusal,
+    journal_row_decision,
+)
 from tgfarm.s9_growth.instagram import InstagramAdapter
 from tgfarm.s9_growth.facebook import FacebookPageAdapter
 from tgfarm.s9_growth.pinterest import PinterestAdapter
@@ -1939,21 +1952,48 @@ def latest_crosspost(post_public_id: str, platform: str):
 
 
 def already_done(post_public_id: str, platform: str) -> bool:
-    """Whether another automatic attempt must wait for operator action or cooldown."""
+    """Whether another automatic attempt must wait for operator action or cooldown.
+
+    The status vocabulary is the shared one in `tgfarm/crosspost_journal.py`, the
+    same source the distribution planner reads. An unrecognised status is not
+    "not done": it may already be an accepted publication, so this gate fails
+    closed and says why, exactly like the planner does.
+    """
     row = latest_crosspost(post_public_id, platform)
-    if row is None:
+    status_class, journal_status = journal_row_decision(row)
+    if status_class is JournalStatusClass.NO_HISTORY:
         return False
-    if row.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
+    if status_class is JournalStatusClass.SUPPRESSED:
         return True
-    if row.status == "failed":
+    if status_class is JournalStatusClass.UNKNOWN:
+        log.warning(
+            journal_claim_refusal(
+                post_public_id, platform, journal_status, JOURNAL_REFUSAL_UNDECLARED_STATUS
+            )
+        )
+        return True
+    if status_class is JournalStatusClass.REOPEN:
+        if journal_status == JOURNAL_STATUS_DRY_RUN:
+            # Do not journal the same dry-run forever, but allow a later switch to live.
+            return not get_settings().live
+        if journal_status != JOURNAL_STATUS_RETRY_AUTHORIZED:
+            log.warning(
+                journal_claim_refusal(
+                    post_public_id, platform, journal_status, JOURNAL_REFUSAL_UNCLASSIFIED_STATUS
+                )
+            )
+            return True
+        # `retry_authorized`: the operator inspected the destination and authorized
+        # the retry, so automatic delivery may take it.
+        return False
+    # The only class left is TIME_BOUNDED; a future class lands on the fail-closed
+    # tail below rather than on an "allow" default.
+    if journal_status == JOURNAL_STATUS_FAILED:
         if crosspost_retry_delay_min(row.attempt) is None:
             return True
         retry_at = crosspost_retry_not_before(row)
         return retry_at is not None and datetime.now(UTC) < retry_at
-    if row.status == "dry_run":
-        # Do not journal the same dry-run forever, but allow a later switch to live.
-        return not get_settings().live
-    if row.status == "skipped":
+    if journal_status == JOURNAL_STATUS_SKIPPED:
         # Missing credentials wait until configuration changes. A readable but
         # unsuitable destination may carry an explicit editorial cooldown.
         adapter = ADAPTERS.get(platform)
@@ -1968,11 +2008,23 @@ def already_done(post_public_id: str, platform: str) -> bool:
             else retry_at.astimezone(UTC)
         )
         return datetime.now(UTC) < retry_at
-    return False
+    log.warning(
+        journal_claim_refusal(
+            post_public_id, platform, journal_status, JOURNAL_REFUSAL_UNCLASSIFIED_STATUS
+        )
+    )
+    return True
 
 
 def begin_crosspost(post_public_id: str, platform: str) -> int | None:
-    """Atomically claim a crosspost before network I/O across all farm processes."""
+    """Atomically claim a crosspost before network I/O across all farm processes.
+
+    `None` is the refusal channel this function already has (the S9 loop skips the
+    destination, the direct API endpoints turn it into a 409). It is the lock the
+    journal exists for, so it reads the newest row's status with the same shared
+    vocabulary and the same fail-closed default as `already_done` and the
+    distribution planner: a status nobody declared is never a claim.
+    """
     from sqlalchemy import select
     from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -1991,27 +2043,76 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
                 .limit(1)
                 .with_for_update()
             ).scalar_one_or_none()
-            if row and row.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
-                return None
-            if row and row.status == "failed":
-                if crosspost_retry_delay_min(row.attempt) is None:
-                    return None
-                retry_at = crosspost_retry_not_before(row)
-                if retry_at is not None and datetime.now(UTC) < retry_at:
-                    return None
-            if row and row.status == "skipped":
-                adapter = ADAPTERS.get(platform)
-                if adapter is None or not adapter.configured():
-                    return None
-                retry_at = row.retry_after_at
-                if retry_at is not None:
-                    retry_at = (
-                        retry_at.replace(tzinfo=UTC)
-                        if retry_at.tzinfo is None
-                        else retry_at.astimezone(UTC)
+            status_class, journal_status = journal_row_decision(row)
+            if status_class is JournalStatusClass.NO_HISTORY:
+                pass  # nothing journalled for this pair yet: the claim is open
+            elif status_class is JournalStatusClass.REOPEN:
+                # A `dry_run` row was never sent anywhere and a `retry_authorized`
+                # row is the operator's authorization to send again: both may take
+                # the claim. The LIVE/dry switch itself is the caller's settings
+                # gate and `already_done`'s decision, deliberately not re-litigated
+                # here, because this lock must keep the exact contract the direct
+                # publish endpoints already depend on.
+                if journal_status not in (JOURNAL_STATUS_DRY_RUN, JOURNAL_STATUS_RETRY_AUTHORIZED):
+                    log.warning(
+                        journal_claim_refusal(
+                            post_public_id,
+                            platform,
+                            journal_status,
+                            JOURNAL_REFUSAL_UNCLASSIFIED_STATUS,
+                        )
                     )
-                    if datetime.now(UTC) < retry_at:
+                    return None
+            elif status_class is JournalStatusClass.TIME_BOUNDED:
+                if journal_status == JOURNAL_STATUS_FAILED:
+                    if crosspost_retry_delay_min(row.attempt) is None:
                         return None
+                    retry_at = crosspost_retry_not_before(row)
+                    if retry_at is not None and datetime.now(UTC) < retry_at:
+                        return None
+                elif journal_status == JOURNAL_STATUS_SKIPPED:
+                    # `skipped`: the destination waits until the adapter is
+                    # configured and any editorial cooldown has passed.
+                    adapter = ADAPTERS.get(platform)
+                    if adapter is None or not adapter.configured():
+                        return None
+                    retry_at = row.retry_after_at
+                    if retry_at is not None:
+                        retry_at = (
+                            retry_at.replace(tzinfo=UTC)
+                            if retry_at.tzinfo is None
+                            else retry_at.astimezone(UTC)
+                        )
+                        if datetime.now(UTC) < retry_at:
+                            return None
+                else:
+                    log.warning(
+                        journal_claim_refusal(
+                            post_public_id,
+                            platform,
+                            journal_status,
+                            JOURNAL_REFUSAL_UNCLASSIFIED_STATUS,
+                        )
+                    )
+                    return None
+            else:
+                # SUPPRESSED, UNKNOWN, or a class this lock does not map: no claim
+                # for any of them. The two that mean "nobody can explain this row"
+                # also say so, because a silent refusal is how this defect hides.
+                if status_class is not JournalStatusClass.SUPPRESSED:
+                    log.warning(
+                        journal_claim_refusal(
+                            post_public_id,
+                            platform,
+                            journal_status,
+                            (
+                                JOURNAL_REFUSAL_UNDECLARED_STATUS
+                                if status_class is JournalStatusClass.UNKNOWN
+                                else JOURNAL_REFUSAL_UNCLASSIFIED_STATUS
+                            ),
+                        )
+                    )
+                return None
             attempt = (row.attempt + 1) if row else 1
             # Unique constraint is the actual cross-process mutex. The log row
             # and claim are committed together, so a crash cannot leave a
@@ -2022,7 +2123,7 @@ def begin_crosspost(post_public_id: str, platform: str) -> int | None:
                 CrosspostLog(
                     post_public_id=post_public_id,
                     platform=platform,
-                    status="publishing",
+                    status=JOURNAL_STATUS_PUBLISHING,
                     attempt=attempt,
                 )
             )
@@ -2066,7 +2167,11 @@ def log_result(post_public_id: str, result: CrosspostResult, attempt: int = 1) -
                 attempt=attempt,
                 retry_after_at=(
                     datetime.now(UTC) + timedelta(seconds=min(86_400, max(0, result.retry_after_seconds)))
-                    if result.status in {"failed", "skipped"} and result.retry_after_seconds is not None
+                    # A retry clock only means something for a status whose
+                    # re-offer the journal declares time-bounded; writing it on
+                    # another status would be a promise no reader intends to keep.
+                    if result.status in JOURNAL_TIME_BOUNDED_STATUSES
+                    and result.retry_after_seconds is not None
                     else None
                 ),
             )

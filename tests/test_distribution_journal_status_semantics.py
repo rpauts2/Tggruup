@@ -34,7 +34,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 
-from tgfarm import distribution, platforms
+from tgfarm import crosspost_journal, distribution, platforms
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Channel, CrosspostLog, Post
@@ -224,7 +224,7 @@ SUPPRESSED_CASES = [
 def test_indefinitely_suppressed_statuses_never_reopen(
     journal_env: _JournalHarness, status: str, rationale: str
 ) -> None:
-    assert status in distribution.JOURNAL_SUPPRESSED_STATUSES, rationale
+    assert status in crosspost_journal.JOURNAL_SUPPRESSED_STATUSES, rationale
     public_id = journal_env.journal(status)
     assert journal_env.reoffered(public_id) is False
 
@@ -347,12 +347,22 @@ def test_skipped_decision_flips_on_the_timestamp_with_the_adapter_untouched(
 
 
 def _compares_to_skipped(node: ast.If) -> bool:
-    """True when this `if` guard compares something against the "skipped" token."""
+    """True when this `if` guard tests the journal status for the "skipped" token.
+
+    Both spellings count: the bare token and the shared vocabulary constant
+    `JOURNAL_STATUS_SKIPPED`, whose value is that token and whose only
+    declaration site is `tgfarm/crosspost_journal.py`.
+    """
     for walked in ast.walk(node.test):
         if not isinstance(walked, ast.Compare):
             continue
         for operand in walked.comparators:
-            if isinstance(operand, ast.Constant) and operand.value == "skipped":
+            if isinstance(operand, ast.Constant) and (
+                operand.value == crosspost_journal.JOURNAL_STATUS_SKIPPED
+            ):
+                return True
+            name = getattr(operand, "id", None) or getattr(operand, "attr", None)
+            if name == "JOURNAL_STATUS_SKIPPED":
                 return True
     return False
 
@@ -440,7 +450,7 @@ def test_unrecognised_journal_status_fails_closed(journal_env: _JournalHarness, 
     public_id = journal_env.journal(status, retry_after_at=None)
     entry = journal_env.plan()["entry"]
     assert public_id not in {row["post_public_id"] for row in entry["selected"]}
-    assert entry["reason"] == distribution.JOURNAL_UNKNOWN_STATUS_REASON
+    assert entry["reason"] == crosspost_journal.JOURNAL_UNKNOWN_STATUS_REASON
 
 
 def test_unrecognised_status_says_so_instead_of_blaming_an_empty_queue(
@@ -452,7 +462,7 @@ def test_unrecognised_status_says_so_instead_of_blaming_an_empty_queue(
     entry = journal_env.plan()["entry"]
     assert entry["selected"] == []
     assert entry["eligible_count"] == 0
-    assert entry["reason"] == distribution.JOURNAL_UNKNOWN_STATUS_REASON
+    assert entry["reason"] == crosspost_journal.JOURNAL_UNKNOWN_STATUS_REASON
     assert "свежих материалов" not in entry["reason"]
     assert journal_env.reoffered(public_id, mode="live") is False
 
@@ -479,22 +489,22 @@ def test_planner_covers_every_status_a_writer_can_put_in_the_journal() -> None:
         typing.get_args(CrosspostResult.model_fields["status"].annotation)
     )
     planner_handled = (
-        distribution.JOURNAL_SUPPRESSED_STATUSES
-        | distribution.JOURNAL_TIME_BOUNDED_STATUSES
-        | distribution.JOURNAL_REOPEN_STATUSES
+        crosspost_journal.JOURNAL_SUPPRESSED_STATUSES
+        | crosspost_journal.JOURNAL_TIME_BOUNDED_STATUSES
+        | crosspost_journal.JOURNAL_REOPEN_STATUSES
     )
     assert produced_by_adapters | DIRECTLY_WRITTEN_STATUSES == planner_handled
     # The three groups must stay mutually exclusive: a status cannot be both
     # "suppressed forever" and "re-open" depending on which line runs first.
-    assert not distribution.JOURNAL_SUPPRESSED_STATUSES & distribution.JOURNAL_TIME_BOUNDED_STATUSES
-    assert not distribution.JOURNAL_SUPPRESSED_STATUSES & distribution.JOURNAL_REOPEN_STATUSES
-    assert not distribution.JOURNAL_TIME_BOUNDED_STATUSES & distribution.JOURNAL_REOPEN_STATUSES
+    assert not crosspost_journal.JOURNAL_SUPPRESSED_STATUSES & crosspost_journal.JOURNAL_TIME_BOUNDED_STATUSES
+    assert not crosspost_journal.JOURNAL_SUPPRESSED_STATUSES & crosspost_journal.JOURNAL_REOPEN_STATUSES
+    assert not crosspost_journal.JOURNAL_TIME_BOUNDED_STATUSES & crosspost_journal.JOURNAL_REOPEN_STATUSES
 
 
 def test_status_helper_normalises_case_and_blank(journal_env: _JournalHarness) -> None:
     """A row cannot sneak past the fail-closed default by casing or padding."""
-    assert distribution._journal_status_of(SimpleStatus("Posted ")) == "posted"  # noqa: SLF001
-    assert distribution._journal_status_of(SimpleStatus(None)) == ""  # noqa: SLF001
+    assert crosspost_journal.journal_status_of(SimpleStatus("Posted ")) == "posted"  # noqa: SLF001
+    assert crosspost_journal.journal_status_of(SimpleStatus(None)) == ""  # noqa: SLF001
     public_id = journal_env.journal("Posted")
     assert journal_env.reoffered(public_id) is False
 
