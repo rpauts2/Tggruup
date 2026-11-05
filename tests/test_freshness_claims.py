@@ -47,6 +47,11 @@ from tgfarm.s8_analytics import freshness
 #: The measured "today" of this work. Every age below is against it.
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 
+#: The exact honest wording, pinned as text rather than through the constant: a
+#: test that compares against `freshness.NO_REPORT_CLAIM` would follow it into any
+#: replacement, including a fabricated zero.
+NO_REPORT = "нет отчёта"
+
 #: Newest `post_stats` rows as measured in the live database on 2026-11-05.
 LIVE_NEWEST_DZEN = datetime(2026, 10, 29, 19, 16, 16, 515327, tzinfo=UTC)
 LIVE_NEWEST_TELEGRAM = datetime(2026, 10, 10, 12, 17, 22, 343469, tzinfo=UTC)
@@ -170,6 +175,7 @@ def test_no_registered_collector_is_ever_called_ok_on_an_empty_database(claims_d
     """
     report = freshness.collector_freshness(now=NOW)
 
+    assert freshness.NO_REPORT_CLAIM == NO_REPORT, "перефразировать честность нельзя"
     assert report["error"] is None
     assert report["collectors"], "реестр сборщиков обязан быть непустым"
     for row in report["collectors"]:
@@ -181,8 +187,9 @@ def test_no_registered_collector_is_ever_called_ok_on_an_empty_database(claims_d
         assert row["stale"] is False, row["id"]
         assert row["last_collected_at"] is None, row["id"]
         assert row["scheduled_but_silent"] is True, row["id"]
-        assert freshness.NO_REPORT_CLAIM in row["reason"], row["id"]
+        assert NO_REPORT in row["reason"], row["id"]
         assert "0 ч" not in row["reason"], row["id"]
+        assert "снимков 0" not in row["reason"], row["id"]
 
 
 def test_a_dated_row_is_the_only_way_a_collector_becomes_ok(claims_db):
@@ -267,7 +274,7 @@ def test_telegram_post_stats_collector_is_scheduled_and_has_never_recorded_a_run
     assert row["fresh"] is False
 
     claim = row["reason"]
-    assert freshness.NO_REPORT_CLAIM in claim
+    assert NO_REPORT in claim
     assert "ни одного снимка для платформы telegram" in claim
     assert "стоит в расписании каждые 6 ч" in claim
     assert "tg_sync.collect_post_stats" in claim
@@ -327,7 +334,7 @@ def test_a_recorded_run_over_an_empty_table_is_named_instead_of_blamed_on_data(c
     assert row["runs_recorded"] == 1
     assert row["last_run_status"] == "partial"
     assert row["last_run_at"] == (NOW - timedelta(hours=1)).isoformat()
-    assert freshness.NO_REPORT_CLAIM in row["reason"]
+    assert NO_REPORT in row["reason"]
     assert "последний запуск этапа `telegram_post_metrics`" in row["reason"]
     assert "датированных снимков нет" in row["reason"]
     assert "нет ни одной записи этапа" not in row["reason"]
@@ -374,7 +381,7 @@ def test_a_missing_destination_table_is_none_rows_not_zero_rows(claims_db):
     assert row["fresh"] is False
     assert row["scheduled"] is True
     assert row["scheduled_but_silent"] is True
-    assert freshness.NO_REPORT_CLAIM in row["reason"]
+    assert NO_REPORT in row["reason"]
     assert "таблицы `telegraph_metric_snapshots` в этой базе нет" in row["reason"]
 
 
@@ -396,7 +403,7 @@ def test_snapshot_table_without_any_registered_collector_is_still_reported(claim
     assert row["data_status"] == freshness.COLLECTOR_NO_REPORT
     assert row["fresh"] is False
     assert row["scheduled"] is False
-    assert freshness.NO_REPORT_CLAIM in row["reason"]
+    assert NO_REPORT in row["reason"]
     assert "ни одна зарегистрированная задача её не наполняет" in row["reason"]
 
     # A table is reported once: the registry's own destinations never reappear as
@@ -428,6 +435,69 @@ def test_collector_rows_are_the_registry_itself_not_a_copy_of_it(claims_db):
     assert len({row["id"] for row in rows}) == len(rows)
 
 
+def test_live_database_verdict_is_scheduled_and_a_week_cold(claims_db):
+    """The measured 2026-11-05 shape, replayed: scheduled, and 160.7 h / 623.7 h cold.
+
+    Live (read-only): 22 `post_stats` rows, newest 2026-10-29 19:16:16.515327; 7 of
+    them Telegram, newest 2026-10-10 12:17:22.343469; no `pipeline_runs` row for
+    stage `telegram_post_metrics` at all. `f235908` put that job on the schedule
+    only on 2026-11-05, so the collector is scheduled and has never produced a row
+    - and the report has to say the schedule and the coldness in one sentence,
+    with the verdict taken from the table.
+    """
+    _seed_snapshot(claims_db, "dzen", collected_at=LIVE_NEWEST_DZEN)
+    _seed_snapshot(claims_db, "telegram", collected_at=LIVE_NEWEST_TELEGRAM)
+
+    report = freshness.metrics_freshness(now=NOW)
+    rows = _by_platform(report)
+    telegram, dzen = rows["telegram"], rows["dzen"]
+
+    assert telegram["age_hours"] == pytest.approx(623.71, abs=0.01)
+    assert dzen["age_hours"] == pytest.approx(160.73, abs=0.01)
+    assert telegram["data_status"] == dzen["data_status"] == freshness.COLLECTOR_STALE
+    assert telegram["fresh"] is dzen["fresh"] is False
+    assert telegram["scheduled"] is True
+
+    claim = telegram["reason"]
+    assert "новый снимок не записан с" in claim
+    assert LIVE_NEWEST_TELEGRAM.isoformat() in claim
+    assert "задача `telegram-post-metrics`" in claim
+    assert "нет ни одной записи этапа `telegram_post_metrics`" in claim
+    # The platform half agrees with the collector half about the same row.
+    assert report["platforms"]["telegram"]["status"] == "stale"
+    assert report["platforms"]["telegram"]["age_hours"] == pytest.approx(623.71, abs=0.01)
+
+    summary = freshness.freshness_summary(now=NOW)
+    silent = {item["platform"]: item for item in summary["silent_collectors"]}
+    assert {"dzen", "telegram", "vk", "telegraph"} <= set(silent)
+    assert summary["collectors_stale"] == 2
+    assert summary["collectors_no_report"] == summary["collectors_total"] - 2
+
+
+def test_an_absent_journal_is_unknown_runs_not_zero_runs(claims_db):
+    """`runs_recorded` stays `None` when nothing can answer it.
+
+    Without `pipeline_runs` the report can neither claim a run nor claim its
+    absence, so the reason has to say the journal is unavailable instead of
+    repeating the "ни одной записи" sentence it only proves when the journal is
+    readable.
+    """
+    _drop(claims_db, "pipeline_runs")
+
+    report = freshness.collector_freshness(now=NOW)
+    telegram = _by_platform(report)["telegram"]
+
+    assert telegram["rows"] == 0
+    assert telegram["runs_recorded"] is None
+    assert telegram["last_run_at"] is None
+    assert telegram["data_status"] == freshness.COLLECTOR_NO_REPORT
+    assert "журнал `pipeline_runs` недоступен" in telegram["reason"]
+    assert "нет ни одной записи этапа" not in telegram["reason"]
+
+    # A read that cannot answer the attempt question still cannot make it fresh.
+    assert all(row["fresh"] is False for row in report["collectors"])
+
+
 def test_summary_counts_collectors_separately_from_platforms(claims_db):
     """The card gets its own collector tally and the list of silent schedules."""
     _seed_snapshot(claims_db, "dzen", collected_at=NOW - timedelta(hours=1))
@@ -453,5 +523,5 @@ def test_summary_counts_collectors_separately_from_platforms(claims_db):
     assert silent["telegram"]["snapshot_table"] == "post_stats"
     assert silent["telegram"]["rows"] == 0
     assert silent["telegram"]["age_hours"] is None
-    assert freshness.NO_REPORT_CLAIM in silent["telegram"]["claim"]
+    assert NO_REPORT in silent["telegram"]["claim"]
     assert "tables_without_collector" in summary

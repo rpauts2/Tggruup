@@ -417,6 +417,11 @@ def _attempt_clause(row: dict[str, Any], *, last_run: datetime | None, latest: d
             "почему именно молчит - неизвестно"
         )
     named = ", ".join(f"`{stage}`" for stage in stages)
+    if row["runs_recorded"] is None:
+        return (
+            f"{plain}, а журнал `pipeline_runs` недоступен: дошёл ли тик до записи - "
+            "неизвестно, и это не ноль"
+        )
     if row["runs_recorded"] == 0:
         return (
             f"{plain}, но в `pipeline_runs` нет ни одной записи этапа {named}: "
