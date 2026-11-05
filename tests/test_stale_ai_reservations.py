@@ -60,10 +60,18 @@ def test_closing_does_not_refund_the_charge():
 
 
 def test_closed_reservations_leave_the_pending_report():
+    """Two days, not one: the report windows from midnight, not from the clock.
+
+    `usage_report(days=1)` starts its window at `_start_of_day`, so a reservation
+    aged 90 minutes sits outside it during the first 90 minutes of every UTC day.
+    Read on a rolling window the row is always in view, and the test stops
+    depending on the hour it happens to run at — it failed at 00:10 and passed at
+    23:51 on identical code.
+    """
     _reservation(90)
-    before = usage_report(days=1)["totals"]
+    before = usage_report(days=2)["totals"]
     assert before["pending_reservations"] >= 1
     close_stale_reservations(30)
-    after = usage_report(days=1)["totals"]
+    after = usage_report(days=2)["totals"]
     assert after["pending_reservations"] < before["pending_reservations"]
     assert after["stale_reservations"] < before["stale_reservations"]
