@@ -2016,9 +2016,9 @@ def _freshness_summary_of(detail: dict) -> dict:
 
     platform_counts = {status: 0 for status in STATUSES}
     for row in platforms.values():
-        status = row.get("status")
-        if status in platform_counts:
-            platform_counts[status] += 1
+        row_status = row.get("status")
+        if row_status in platform_counts:
+            platform_counts[row_status] += 1
 
     freshest: dict | None = None
     for row in platforms.values():
@@ -2030,7 +2030,12 @@ def _freshness_summary_of(detail: dict) -> dict:
             freshest = {
                 "platform": row.get("id"),
                 "name": row.get("name"),
-                "status": status,
+                # The freshest row's own status, not a variable left over from the
+                # counting loop above: that leak used to stamp the newest snapshot
+                # with whatever status the last platform in the dict happened to
+                # have, which on the live database read «нет данных» for a row that
+                # was plainly `ok`.
+                "status": row.get("status"),
                 "collected_at": stamp,
                 "age_hours": age,
             }

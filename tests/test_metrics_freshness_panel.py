@@ -17,7 +17,11 @@ Three layers are pinned here.
   session count measured through a patched ``session_scope``, not assumed.
 * The summary the panel reads is derived from that same detail and is *equal* to
   ``freshness.freshness_summary`` on identical facts: the guard that makes the
-  derivation honest instead of a second, silently diverging implementation.
+  derivation honest instead of a second, silently diverging implementation. Both
+  counters are fed one report object — once the report read from the database, once
+  a synthetic payload carrying every status a live database may never show. This is
+  how the leaked loop variable that stamped the freshest snapshot with the *last*
+  platform's status was caught: over two separate database reads it hid as a race.
 * The card renders the block, and P34 holds inside it — a value the payload never
   carried prints «нет отчёта», ``rows: 0`` prints differently from ``rows: null``,
   nothing in the new path goes through ``Number(x || 0)``, and every string that
@@ -172,32 +176,29 @@ def test_freshness_endpoint_reads_the_database_once_not_twice(monkeypatch):
     )
 
 
-def test_freshness_summary_of_equals_the_module_that_owns_the_semantics():
+def test_freshness_summary_of_equals_the_module_that_owns_the_semantics(monkeypatch):
     """The api-side counting must be `freshness.freshness_summary` on the same facts.
 
-    One fixed ``now`` for both sides, so the comparison is exact rather than a race,
-    and the report is only compared when the two reads of the detail agree: if a
-    collector writes between them the facts changed underneath the test, and a
-    mismatch there would say nothing about either implementation. If either side
-    starts to mean something else by ``stale``, ``no_report`` or
+    The comparison is made race-free by construction rather than by hoping no
+    collector writes in between: the report is read from the database *once*, the
+    module's own `metrics_freshness` is then pinned to hand back that very object,
+    and `freshness_summary` counts it — so the module and `_freshness_summary_of`
+    are given the identical in-memory facts, not two snapshots of a moving table.
+    A previous version of this test read the database on both sides and lost to a
+    vk row whose status flipped under it mid-suite.
+
+    If either side starts to mean something else by ``stale``, ``no_report`` or
     ``scheduled_but_silent``, this fails by name instead of the panel quietly
     showing a number the CLI does not produce.
     """
-    from tgfarm.api import _freshness_summary_of
-    from tgfarm.s8_analytics.freshness import freshness_summary, metrics_freshness
+    from tgfarm import api
+    from tgfarm.s8_analytics import freshness
 
-    detail = reference = None
-    for _attempt in range(3):
-        before = metrics_freshness(now=NOW)
-        reference = freshness_summary(now=NOW)
-        after = metrics_freshness(now=NOW)
-        if before == after:
-            detail = before
-            break
-    if detail is None:
-        pytest.skip("между двумя чтениями в базу писали — сравнивать не с чем")
+    detail = freshness.metrics_freshness(now=NOW)
+    monkeypatch.setattr(freshness, "metrics_freshness", lambda now=None: detail)
+    reference = freshness.freshness_summary(now=NOW)
+    derived = api._freshness_summary_of(detail)
 
-    derived = _freshness_summary_of(detail)
     differing = {
         key: (derived[key], reference[key])
         for key in set(derived) | set(reference)
@@ -207,6 +208,107 @@ def test_freshness_summary_of_equals_the_module_that_owns_the_semantics():
     assert set(derived) == set(reference), "ни один ключ summary не потерян"
     assert derived["platforms_total"] == len(detail["platforms"])
     assert {"ok", "stale", "never", "blocked", "collectors", "silent_collectors"} <= set(derived)
+
+
+def _synthetic_report() -> dict:
+    """A report carrying every status the module can emit, plus unmeasured fields.
+
+    The live database only ever shows the statuses it happens to have, so a
+    comparison against it cannot tell that `unreadable` and `no_report` mean the
+    same thing to both counters. Here each collector status appears exactly once,
+    one silent collector has `rows: None` and `runs_recorded: None` — absent, not
+    zero — and no platform is missing from the vocabulary.
+    """
+    from tgfarm.s8_analytics.freshness import (
+        COLLECTOR_MISSING_TABLE,
+        COLLECTOR_NO_REPORT,
+        COLLECTOR_OK,
+        COLLECTOR_STALE,
+        COLLECTOR_UNREADABLE,
+        STATUS_BLOCKED,
+        STATUS_NEVER,
+        STATUS_OK,
+        STATUS_STALE,
+    )
+
+    platforms = {
+        "fresh": {"id": "fresh", "name": "Свежая", "status": STATUS_OK,
+                  "last_snapshot_at": "2026-11-05T11:00:00+00:00", "age_hours": 1.0},
+        "old": {"id": "old", "name": "Запоздалая", "status": STATUS_STALE,
+                "last_snapshot_at": "2026-11-03T12:00:00+00:00", "age_hours": 48.0},
+        "empty": {"id": "empty", "name": "Пустая", "status": STATUS_NEVER,
+                  "last_snapshot_at": None, "age_hours": None},
+        "shut": {"id": "shut", "name": "Заблокированная", "status": STATUS_BLOCKED,
+                 "last_snapshot_at": None, "age_hours": None},
+    }
+    collector_by_status = {
+        COLLECTOR_OK: ("job-ok", "snap_ok", 12, 0.5, 3),
+        COLLECTOR_STALE: ("job-stale", "snap_stale", 4, 90.0, 2),
+        COLLECTOR_NO_REPORT: ("job-silent", "snap_silent", None, None, None),
+        COLLECTOR_MISSING_TABLE: ("job-table-gone", "snap_gone", None, None, 0),
+        COLLECTOR_UNREADABLE: ("job-unreadable", "snap_locked", None, None, None),
+    }
+    collectors = []
+    for index, (data_status, (job_id, table, rows, age, runs)) in enumerate(
+        collector_by_status.items()
+    ):
+        collectors.append(
+            {
+                "id": f"collector-{index}",
+                "platform": f"platform-{index}",
+                "job_id": job_id,
+                "snapshot_table": table,
+                "scheduled": index != 1,
+                "interval_hours": 6.0 if index != 1 else None,
+                "data_status": data_status,
+                "rows": rows,
+                "last_collected_at": None if rows is None else "2026-11-05T10:00:00+00:00",
+                "age_hours": age,
+                "runs_recorded": runs,
+                "last_run_at": None if not runs else "2026-11-05T10:00:00+00:00",
+                "last_run_status": "ok" if runs else None,
+                "scheduled_but_silent": index in (2, 3, 4),
+                "reason": f"причина {index}",
+            }
+        )
+    return {
+        "generated_at": NOW.isoformat(),
+        "stale_after_hours": 24.0,
+        "snapshots_total": 20,
+        "platforms": platforms,
+        "collectors": collectors,
+        "tables_without_collector": [{"table": "stray_snapshots", "rows": 7}],
+        "collectors_error": None,
+        "error": None,
+    }
+
+
+def test_freshness_summary_of_agrees_on_statuses_the_database_may_never_show(monkeypatch):
+    """Whole-vocabulary parity: one synthetic report, both counters, no database.
+
+    The live database only shows the statuses it happens to have; a silent collector
+    whose `rows` and `runs_recorded` are absent must still count identically, because
+    turning «нет отчёта» into `0` is exactly the defect the card exists to expose.
+    """
+    from tgfarm import api
+    from tgfarm.s8_analytics import freshness
+
+    report = _synthetic_report()
+    monkeypatch.setattr(freshness, "metrics_freshness", lambda now=None: report)
+    reference = freshness.freshness_summary(now=NOW)
+    derived = api._freshness_summary_of(report)
+
+    assert derived == reference, "на всём словаре статусы считаются одинаково"
+    assert derived["collectors_no_report"] == 1
+    assert derived["collectors_missing_table"] == 1
+    assert derived["collectors_unreadable"] == 1
+    assert len(derived["silent_collectors"]) == 3, (
+        "три «по расписанию, данных нет» — и ни одной единицей больше"
+    )
+    silent = {row["id"]: row for row in derived["silent_collectors"]}
+    assert silent["collector-2"]["rows"] is None, "отсутствие снимка не должно стать нулём"
+    assert silent["collector-2"]["runs_recorded"] is None
+    assert silent["collector-3"]["runs_recorded"] == 0, "пустой журнал — это ноль, а не отсутствие"
 
 
 def test_endpoint_exposes_collectors_and_orphan_tables_at_the_top_level(client):
