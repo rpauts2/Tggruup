@@ -488,7 +488,7 @@ def _row_stale_bound(row: dict[str, Any]) -> tuple[float, str, str]:
     return (
         STALE_AFTER_HOURS,
         BOUND_FROM_UNREGISTERED_DEFAULT,
-        f"порог {STALE_AFTER_HOURS:g} ч по умолчанию: зарегистрированного интервала нет",
+        "по умолчанию: зарегистрированного интервала нет",
     )
 
 
@@ -579,7 +579,7 @@ def _threshold_claim(row: dict[str, Any]) -> str:
         return "порог не вычислен: у строки нет зарегистрированного интервала"
     if not derivation:
         return f"порог {bound:g} ч"
-    return f"порог {bound:g} ч ({derivation})"
+    return f"порог {bound:g} ч: {derivation}"
 
 
 def _collector_reason(

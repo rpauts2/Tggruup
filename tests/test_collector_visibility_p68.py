@@ -522,7 +522,7 @@ def test_the_reason_prints_the_bound_that_measured_the_row(db):
     row = {r["platform"]: r for r in freshness.collector_freshness(now=NOW)["collectors"]}["dzen"]
 
     assert row["stale_bound_derivation"] == "3 интервала(ов) по 1 ч"
-    assert "порог 3 ч (3 интервала(ов) по 1 ч)" in row["reason"]
+    assert "порог 3 ч: 3 интервала(ов) по 1 ч" in row["reason"]
     assert "порог 24 ч" not in row["reason"]
 
 
@@ -539,6 +539,7 @@ def test_an_orphan_table_calls_its_bound_a_default(db):
     assert row["data_status"] == freshness.COLLECTOR_STALE
     assert row["age_hours"] == pytest.approx(30.0, abs=0.01)
     assert "по умолчанию" in row["reason"]
+    assert "порог 24 ч: по умолчанию: зарегистрированного интервала нет" in row["reason"]
     assert "интервала(ов) по" not in row["reason"]
     assert "нет отчёта" not in row["reason"]
 
