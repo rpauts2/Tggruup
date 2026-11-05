@@ -2030,6 +2030,117 @@ async def _telegraph_metrics_tick() -> dict:
         return {"updated": 0, "skipped": 0, "errors": 1, "error": message}
 
 
+#: How often the farm asks Telegram for live post numbers on its own clock.
+#: A snapshot is keyed by calendar day, so four reads a day is the most the
+#: collector can turn into distinct information.
+TELEGRAM_METRICS_INTERVAL_H = 6
+
+#: Machine-readable codes for a telegram metrics tick that never reached the
+#: network. They are names, not excuses: each one is a state an operator can fix.
+TELEGRAM_METRICS_SKIP_OFF = "mode=off"
+TELEGRAM_METRICS_SKIP_NO_SESSION = "no_session"
+TELEGRAM_METRICS_SKIP_REASONS = {
+    TELEGRAM_METRICS_SKIP_OFF: "ферма в режиме off: планировщик ничего не читает",
+    TELEGRAM_METRICS_SKIP_NO_SESSION: (
+        "нет авторизованной пользовательской сессии Telegram — выполните "
+        "`tgfarm telegram login`"
+    ),
+}
+
+
+#: Skip codes already announced by this process. A missing session is a static
+#: condition: the tick runs every six hours, so re-warning on every one of them
+#: is the same noise repeated slowly. It is said once, then quietly, until the
+#: operator logs in or the process restarts.
+_TELEGRAM_METRICS_SKIP_ANNOUNCED: set[str] = set()
+
+
+def _note_telegram_metrics_skip(code: str, *, announce: bool) -> None:
+    """Report a tick that never reached the network: once loudly, then quietly."""
+    reason = TELEGRAM_METRICS_SKIP_REASONS.get(code, code)
+    if not announce:
+        log.debug("telegram metrics tick skipped: %s", reason)
+        return
+    if code in _TELEGRAM_METRICS_SKIP_ANNOUNCED:
+        log.debug("telegram metrics tick skipped again: %s", reason)
+        return
+    _TELEGRAM_METRICS_SKIP_ANNOUNCED.add(code)
+    log.warning("telegram metrics tick skipped: %s", reason)
+
+
+def _reset_telegram_metrics_skip_state() -> None:
+    """Test hook: forget which skips this process already announced."""
+    _TELEGRAM_METRICS_SKIP_ANNOUNCED.clear()
+
+
+async def _telegram_metrics_tick() -> dict:
+    """Measure Telegram posts on the scheduler's clock instead of a human's.
+
+    Live evidence (2026-11-05): `tg_sync.collect_post_stats` works — `860bbc6`
+    stopped it writing a `PostStat.day` column the schema never had — but nothing
+    scheduled it, so it ran only when somebody pressed a button. The learning loop
+    (S8 formats -> S12 lessons -> S4 planner) is starved by exactly that: a
+    read-only query of the live database on that day gave 455 published posts, 22
+    `post_stats` rows over 15 distinct posts, and for Telegram 15 published
+    against 7 measured — every one of those seven seeded by
+    `tools/seed_metrics.py`, never collected.
+
+    The collector needs an authorised *user* session: `fetch_post_stats` opens one
+    through `tguser.connect()`, which raises `ProviderUnavailable` when there is
+    none. `tguser.is_authorized()` answers the same question from the local session
+    file without a network round trip, and the API (`_tguser_ready`), the CLI and
+    `s1_sources` already gate on it, so this job reuses that check rather than
+    inventing one. Without a session the tick returns a named reason: no stack
+    trace, no fabricated zero presented as a measurement, no silent success.
+
+    Nothing here publishes or edits anything: Telethon is wrapped in
+    `ReadOnlyClient`, and the only write is our own `post_stats` snapshot.
+    """
+    settings = get_settings()
+    if not settings.online:
+        # Off mode is a choice the whole farm obeys, not a fault to complain about.
+        _note_telegram_metrics_skip(TELEGRAM_METRICS_SKIP_OFF, announce=False)
+        return {"posts": 0, "skipped": TELEGRAM_METRICS_SKIP_OFF}
+
+    from tgfarm import tguser
+
+    if not tguser.is_authorized():
+        _note_telegram_metrics_skip(TELEGRAM_METRICS_SKIP_NO_SESSION, announce=True)
+        return {
+            "posts": 0,
+            "skipped": TELEGRAM_METRICS_SKIP_NO_SESSION,
+            "reason": TELEGRAM_METRICS_SKIP_REASONS[TELEGRAM_METRICS_SKIP_NO_SESSION],
+        }
+
+    run_id = f"tg-metrics-{uuid.uuid4().hex[:8]}"
+    try:
+        from tgfarm import tg_sync
+
+        result = await tg_sync.collect_post_stats()
+        posts = int(result.get("posts", 0) or 0)
+        requested = result.get("requested")
+        await to_thread(
+            _record,
+            run_id,
+            "telegram_post_metrics",
+            "ok" if result.get("ok", True) else "partial",
+            items_in=None if requested is None else int(requested),
+            items_out=posts,
+            meta={
+                "posts": posts,
+                "visible": result.get("visible"),
+                "requested": requested,
+                "reason": result.get("reason"),
+            },
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001 - analytics must never break the cycle
+        message = redact_sensitive_text(f"{type(exc).__name__}: {exc}", limit=300)
+        log.warning("telegram metrics tick failed: %s", message)
+        await to_thread(_record, run_id, "telegram_post_metrics", "error", error=message)
+        return {"posts": 0, "errors": 1, "error": message}
+
+
 async def _metrics_learning_tick() -> dict:
     """Measure and learn on the scheduler's own clock, not at the tail of a cycle.
 
@@ -2255,6 +2366,24 @@ def _build_scheduler():
         run_date=datetime.now(UTC),
         id="startup-telegraph-metrics",
         name="initial Telegraph page-view analytics",
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _telegram_metrics_tick,
+        IntervalTrigger(hours=TELEGRAM_METRICS_INTERVAL_H),
+        id="telegram-post-metrics",
+        name="telegram post statistics",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _telegram_metrics_tick,
+        "date",
+        run_date=datetime.now(UTC),
+        id="startup-telegram-post-metrics",
+        name="initial telegram post statistics",
         max_instances=1,
         misfire_grace_time=3600,
     )

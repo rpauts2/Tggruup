@@ -129,6 +129,10 @@ def test_a_channel_without_a_chat_id_yields_nothing_to_fetch(monkeypatch):
     try:
         report = asyncio.run(tg_sync.collect_post_stats())
         assert report["posts"] == 0
-        assert not calls, "без tg_chat_id нечего и спрашивать у Telegram"
+        asked = [pair for call in calls for pair in call]
+        assert all(message_id != 123456 for _chat, message_id in asked), (
+            "без tg_chat_id ни на канале, ни на публикации спрашивать нечего"
+        )
+        assert report["reason"], "ноль обязан называть, почему собирать было нечего"
     finally:
         _drop(channel_id, post_id)

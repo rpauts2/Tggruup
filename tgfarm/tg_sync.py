@@ -193,7 +193,14 @@ async def _bot_id(token: str) -> int:
 
 
 async def collect_post_stats(limit: int = 500) -> dict:
-    """Pull live statistics for published posts and store them as a daily snapshot."""
+    """Pull live statistics for published posts and store them as a daily snapshot.
+
+    A post is only askable when the farm can name it on Telegram: a message id
+    *and* the chat it lives in. `sync_channels` fills the chat id on the channel,
+    the publisher fills it on the post, and either is enough — reading only the
+    channel used to make every post published before the first sync unmeasurable,
+    which is how the learning loop stayed hungry even after the collector worked.
+    """
     from tgfarm.tguser import fetch_post_stats
 
     with session_scope() as session:
@@ -209,13 +216,28 @@ async def collect_post_stats(limit: int = 500) -> dict:
         chat_of: dict[int, int] = {}
         for row in rows:
             channel = session.get(Channel, row.channel_id)
-            if channel is None or not channel.tg_chat_id:
+            chat_id = getattr(channel, "tg_chat_id", None) or row.tg_chat_id
+            if not chat_id:
                 continue
-            pairs.append((channel.tg_chat_id, row.tg_message_id))
-            chat_of[row.id] = channel.tg_chat_id
+            pairs.append((chat_id, row.tg_message_id))
+            chat_of[row.id] = chat_id
 
     if not pairs:
-        return {"ok": True, "posts": 0, "reason": "no posts with a telegram message id"}
+        if rows:
+            return {
+                "ok": True,
+                "posts": 0,
+                "askable": 0,
+                "published_with_message_id": len(rows),
+                "reason": "posts have a message id but no chat id: run `sync_channels`",
+            }
+        return {
+            "ok": True,
+            "posts": 0,
+            "askable": 0,
+            "published_with_message_id": 0,
+            "reason": "no posts with a telegram message id",
+        }
 
     stats = await fetch_post_stats(pairs)
     if not stats:

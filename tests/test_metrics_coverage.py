@@ -153,18 +153,23 @@ def test_a_partially_measured_platform_without_a_collector_names_the_collector()
     assert "сборщика метрик в s8 нет" in row["reason"]
 
 
-def test_telegram_is_measured_on_demand_rather_than_by_a_broken_reader():
-    """Telegram used to be reported as a collector that crashed before it wrote.
+def test_telegram_is_measured_by_a_schedule_that_needs_a_session():
+    """Telegram has been mis-reported twice, and both fixes are pinned here.
 
-    That was true until `860bbc6` stopped it writing a `PostStat.day` column the
-    schema never had. The reader works now; what it lacks is a schedule. Saying
-    the old sentence today would send an operator to fix a bug that is gone.
+    Until `860bbc6` the collector crashed writing a `PostStat.day` column the
+    schema never had. Then it worked but only ran when a human asked, which the
+    audit said out loud. `telegram-post-metrics` ended that sentence: the reader
+    is scheduled now, and what can still keep `post_stats` empty is an authorised
+    user session the operator has to provide. Repeating the old text would send an
+    operator to fix a schedule that already exists.
     """
     _seed_platform("telegram", published=4, measured=1, with_remote=0)
     row = _row(measurement_coverage(), "telegram")
     assert row["collector"] == "tgfarm.tg_sync"
     assert row["status"] == STATUS_PARTIAL
-    assert "не соберётся само" in row["reason"]
+    assert "не соберётся само" not in row["reason"]
+    assert "telegram-post-metrics" in row["reason"]
+    assert "tgfarm telegram login" in row["reason"]
     assert "PostStat.day" not in row["reason"]
     assert "сборщика метрик в s8 нет" not in row["reason"]
 

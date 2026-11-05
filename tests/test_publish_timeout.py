@@ -14,9 +14,30 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import delete, select
 
-from tgfarm.db.models import Channel, Post
+from tgfarm.db.models import Channel, Post, PostStat
 from tgfarm.db.session import session_scope
+
+
+@pytest.fixture(autouse=True)
+def _seeded_rows_do_not_survive_their_own_test():
+    """A published post in the session database is a global fact.
+
+    `_seed_post` leaves rows behind, and the telegram ones now carry a real
+    `tg_message_id`/`tg_chat_id` pair, which makes them visible to every later
+    whole-database scan (post metrics, coverage, format performance). The state of
+    this file has to stay inside this file.
+    """
+    yield
+    with session_scope() as session:
+        seeded = session.execute(
+            select(Post.id).where(Post.channel_id.like("deadline_%"))
+        ).scalars().all()
+        if seeded:
+            session.execute(delete(PostStat).where(PostStat.post_id.in_(seeded)))
+            session.execute(delete(Post).where(Post.id.in_(seeded)))
+        session.execute(delete(Channel).where(Channel.id.like("deadline_%")))
 
 
 def _seed_post(platform: str, body: str, *, minutes_ago: int = 1) -> tuple[int, str]:
