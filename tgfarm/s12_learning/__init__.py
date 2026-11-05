@@ -307,7 +307,10 @@ def learn_format_lessons(
       decide a Дзен post, and an unknown platform stops learning rather than
       pooling destinations into one number;
     * a published post with no stats is not evidence: it raises `published`, never
-      an average, and a format whose measured count is zero writes no lesson;
+      an average, and a format whose measured count is zero writes no lesson. S8
+      reports such a format with `avg_engagement: None`, and nothing here turns
+      that absence back into a number — a stored lesson is the record of a
+      measurement, so it only exists where there was one to record;
     * a measured post whose publication nothing can point at is not an outcome
       either: the reliability sample is the *evidenced* subset S8 already
       computes (`measurement[fmt]["publication"]["sample_size"]`), so phantoms
@@ -323,10 +326,12 @@ def learn_format_lessons(
       streak cannot outweigh a format measured across dozens.
 
     A measurement that is no longer live is *stored and marked*, not dropped: the
-    row says `fresh_measured`/`stale_measured`/`evidence_status` and its note
-    states plainly that the plan does not build on it. Deleting it would make the
-    blind spot disappear from the very memory whose job is to record blind spots,
-    while `s4_generation.durable_format_preference` refuses every status in
+    row says `fresh_measured`/`stale_measured`/`evidence_status`, keeps
+    `fresh_avg_engagement` as `None` where `fresh_measured` is zero (a lesson about
+    a format with no live snapshot must not claim a live average of nothing), and
+    its note states plainly that the plan does not build on it. Deleting it would
+    make the blind spot disappear from the very memory whose job is to record blind
+    spots, while `s4_generation.durable_format_preference` refuses every status in
     `s8_analytics.formats.EVIDENCE_UNTRUSTED` — so a stale lesson can inform a
     reader but cannot steer a generation, and the choice falls back to the live
     window or the rules instead of a fabricated priority. A publication that cannot
@@ -373,6 +378,12 @@ def learn_format_lessons(
     report_publication = report.get("publication") or {}
     stale_after_days = int(report.get("stale_after_days") or 0)
     measured_total = sum(int(item.get("measured") or 0) for item in formats.values())
+    # The platform baseline is the mean over measured posts and nothing else. A
+    # format S8 now reports without a rate also has no measurements, so it brings
+    # neither a sum nor a weight to this line: the absent rate is multiplied by its
+    # own zero count, the same product the fabricated `0.0` used to give. Taking
+    # that number out therefore cannot move the baseline by one unit, which is what
+    # `tests/test_unmeasured_format_rate.py` pins from the report side.
     engagement_total = sum(
         float(item.get("avg_engagement") or 0.0) * int(item.get("measured") or 0)
         for item in formats.values()
@@ -389,14 +400,18 @@ def learn_format_lessons(
             continue
         measured = int(item.get("measured") or 0)
         published = int(item.get("published") or 0)
-        average = float(item.get("avg_engagement") or 0.0)
         evidence = measurement.get(fmt) or {}
         fresh = int(evidence.get("fresh") or 0)
         stale = int(evidence.get("stale") or 0)
         evidence_status = str(evidence.get("evidence_status") or "") or evidence_status_for(
             fresh, stale
         )
-        fresh_average = float(evidence.get("fresh_avg_engagement") or 0.0)
+        # The live average may honestly be absent: S8 hands `None` when no snapshot
+        # is inside the staleness threshold, and `float(None or 0.0)` would write
+        # that absence back into the lesson as a measured zero — the one reading
+        # the P34 rule and `_rate` both rule out. A live average of a real `0.0`
+        # (snapshots taken, engagement nil) stays the number it is.
+        fresh_average = _rounded_or_none(evidence.get("fresh_avg_engagement"))
         # Third question of the same rows, answered by S8 and reused here verbatim:
         # which of these publications can anything point at. An absent block is a
         # report that declares nothing, and a declaring nothing is the old ladder —
@@ -430,6 +445,12 @@ def learn_format_lessons(
             not_measured.append(fmt)
             continue
 
+        # Read after the gate, not before it: past this line `measured` is at least
+        # one and S8 has divided a real sum by it, so the window average below is a
+        # number. Reading it beside the counts, before the gate, is the trap this
+        # block exists to close — `float(None or 0.0)` re-fabricates the zero of a
+        # format nobody measured, and the `not_measured` branch above stores no rate.
+        average = float(item.get("avg_engagement") or 0.0)
         observed = _relative_quality(average, baseline)
         quality = _shrink_quality(observed, 0.5, measured)
         state = _format_state(
@@ -464,7 +485,11 @@ def learn_format_lessons(
             # lesson is allowed to steer.
             "fresh_measured": fresh,
             "stale_measured": stale,
-            "fresh_avg_engagement": round(fresh_average, 4),
+            # `None` here means «not one live snapshot», the same word `_rate` uses
+            # upstream and the same one `evidenced_avg_engagement` below already
+            # carries — a lesson for a format with no live measurement must not
+            # claim a live average, and `0.0` is that claim.
+            "fresh_avg_engagement": fresh_average,
             "evidence_status": evidence_status,
             "evidence_stale_after_days": stale_after_days,
             # Publication evidence, the veto that decides `state` above. Nothing in
