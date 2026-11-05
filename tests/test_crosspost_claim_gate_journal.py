@@ -273,6 +273,29 @@ def test_a_fresh_pair_is_still_claimable(claim_gate: _ClaimGate) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2b. One normalisation: the lock reads a token the same way the queue does.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("spelling", ["retry_authorized", "RETRY_AUTHORIZED", " retry_authorized "])
+def test_the_claim_gate_reads_the_status_through_the_shared_normalisation(
+    claim_gate: _ClaimGate, spelling: str
+) -> None:
+    """A casing or padding difference must not turn an authorized retry into an
+    undeclared status in one reader while the other still recognises it.
+    """
+    public_id = claim_gate.journal(spelling)
+    assert claim_gate.claim(public_id) == 2
+
+
+@pytest.mark.parametrize("spelling", ["Publishing", " POSTED "])
+def test_a_padded_suppressed_status_still_refuses_the_claim(
+    claim_gate: _ClaimGate, spelling: str
+) -> None:
+    public_id = claim_gate.journal(spelling)
+    assert claim_gate.claim(public_id) is None
+
+
+# ---------------------------------------------------------------------------
 # 3. The two consumers cannot diverge.
 # ---------------------------------------------------------------------------
 
