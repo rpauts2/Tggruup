@@ -4,8 +4,33 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete, func, select
 
 from tgfarm import community_targets
+from tgfarm.db.models import CommunityPolicySnapshot as Snapshot
+from tgfarm.db.session import session_scope
+
+
+@pytest.fixture(autouse=True)
+def _drop_snapshots_this_file_creates():
+    """`recommend_community_target` records rules history; this file left it behind.
+
+    `gate_plan(..., record=True)` writes a `community_policy_snapshots` row for the
+    destination each selector test names (`pikabu/python`, `vc_ru/business`), and
+    the session database is shared. Until `vc_ru` had a rules reader an unwatched
+    leftover was only untidy; now the maintenance pass that some other file runs
+    *unscoped* treats a stored vc.ru topic as a destination to re-read, and a fake
+    page is not queued for it — so the suite would try the real network. Cleaned by
+    an id waterline rather than by name: every row above the line is one this file
+    just wrote, whatever slug its tests invent next.
+    """
+    with session_scope() as session:
+        waterline = int(
+            session.execute(select(func.max(Snapshot.id))).scalar_one() or 0
+        ) + 1
+    yield
+    with session_scope() as session:
+        session.execute(delete(Snapshot).where(Snapshot.id >= waterline))
 
 
 @pytest.fixture()

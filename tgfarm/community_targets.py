@@ -629,6 +629,123 @@ async def _vc(post: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: The one shape a stored vc.ru topic id is allowed to have: the canonical section
+#: path the selector wrote (`_vc` stores `path.lstrip("/")`, e.g. `finance`). The
+#: rules watch rebuilds the page URL from this and from nothing else, so a stored
+#: id can never turn into an arbitrary request (§45: the id is page-authored data).
+VC_TOPIC_SLUG_RE = re.compile(r"[a-z0-9_-]{2,32}")
+
+
+async def read_vc_topic_rules(destination: dict[str, Any]) -> dict[str, Any]:
+    """Re-read one vc.ru topic's rules and the site-wide rules; needs no post.
+
+    The destination-only twin of `read_topic` inside `_vc`. That one scores a
+    *material* against a live directory and cannot answer "which rules does this
+    topic publish under today", which is why the maintenance rules watch had no
+    vc.ru reader at all. Everything else is reused verbatim: the same `_fetch`,
+    the same `_rules` extractor, the same two pages the selector already opens
+    (`VC_RULES` and the topic page), the same `inert_external_text(...,
+    RULES_PAGE_LIMIT)` treatment and the same `policy_from_candidate("vc_ru", ...)`
+    contract — so the `rules_hash` this writes is directly comparable with the one
+    a selection wrote, and no new page or request shape is introduced.
+
+    What it deliberately does not do:
+
+    * fetch a URL the stored id *implies* rather than builds. A `target_id` that
+      is not a canonical section path raises before any request is made;
+    * retry, authorise, or knock twice (§47). One GET per page per destination: a
+      refusal, a CAPTCHA wall or a 403 stays a refusal and becomes an unreadable
+      destination, never a circumvented one;
+    * write a snapshot it cannot stand behind. When the topic rules cannot be
+      read this raises instead of recording an empty `rules_hash`, because the
+      change detection reads an empty hash as «the rules changed» — a statement
+      about the destination that was never measured;
+    * publish, comment or schedule anything. `auto_publish_supported` stays False:
+      on vc.ru a person presses the final button.
+
+    A rules page is untrusted data (§45). Its text is bounded, control-flattened
+    and credential-redacted on the way in, hashed, and quoted back only as data;
+    nothing read from it can change a flag, a verdict status or a URL.
+    """
+    from tgfarm.community_drafts import CommunityDraftError
+    from tgfarm.community_policy import assess_policy, policy_from_candidate, record_policy_snapshot
+
+    slug = str(destination.get("target_id") or destination.get("slug") or "").strip().lstrip("/")
+    if not VC_TOPIC_SLUG_RE.fullmatch(slug):
+        raise ValueError("stored vc.ru destination is not a canonical topic path")
+    topic_url = urljoin("https://vc.ru", f"/{slug}")
+
+    rules_result, topic_result = await asyncio.gather(
+        _fetch(VC_RULES), _fetch(topic_url), return_exceptions=True
+    )
+    if isinstance(topic_result, BaseException):
+        raise CommunityDraftError(
+            f"Правила темы vc.ru не перечитались ({type(topic_result).__name__}); снимок не записан."
+        )
+    topic_rules = _rules(
+        list(topic_result.get("chunks") or []),
+        str(topic_result.get("text") or ""),
+    )
+    if not topic_rules:
+        raise CommunityDraftError(
+            "Не удалось прочитать правила выбранной темы vc.ru; снимок не записан."
+        )
+    global_rules = (
+        ""
+        if isinstance(rules_result, BaseException)
+        else str(rules_result.get("text") or "").strip()
+    )
+
+    warnings: list[str] = []
+    blockers: list[str] = []
+    if isinstance(rules_result, BaseException):
+        blockers.append(
+            f"Общие правила vc.ru не перечитались ({type(rules_result).__name__})."
+        )
+    elif not global_rules:
+        blockers.append("Не удалось повторно прочитать общие правила vc.ru.")
+    # The rules-only half of `_vc_risks`: with no post there is no material to
+    # judge, only what the destination itself currently demands.
+    published_rules = normalize(global_rules or "") + " " + normalize(topic_rules)
+    if any(word in published_rules for word in ("коммерческ", "реклам", "ограничен")):
+        warnings.append(
+            "В текущих правилах есть отдельные ограничения для коммерческих/рекламных публикаций."
+        )
+
+    candidate = {
+        "target_type": "topic",
+        "name": str(destination.get("target_name") or destination.get("name") or slug),
+        "slug": slug,
+        "url": topic_url,
+        "description": inert_external_text(topic_result.get("description") or "", 1000),
+        "rules": inert_external_text(topic_rules, RULES_PAGE_LIMIT),
+        # Same meaning the selector gives these keys: the topic text is in hand,
+        # the site-wide page is a separate read that can have failed.
+        "topic_rules_available": True,
+        "global_rules_available": bool(global_rules),
+        "rules_available": bool(global_rules),
+        "rules_source": VC_RULES,
+        "auto_publish_supported": False,
+        "score": 0,
+        "matches": [],
+        "suggested_tags": [],
+        "editorial_brief": [],
+        "risks": warnings,
+        "blockers": list(dict.fromkeys(blockers)),
+    }
+    policy = policy_from_candidate("vc_ru", candidate, rules_source=VC_RULES)
+    assessment = assess_policy(policy)
+    snapshot = record_policy_snapshot(policy, assessment)
+    return {
+        "target": candidate,
+        "community_policy": policy.to_dict(),
+        "policy_assessment": assessment,
+        "snapshot": snapshot,
+        "warnings": warnings,
+        "blockers": list(dict.fromkeys(blockers)),
+    }
+
+
 async def recommend_community_target(platform_id: str, post_public_id: str) -> dict[str, Any]:
     from tgfarm.community_drafts import CommunityDraftError, _load_post
     from tgfarm.community_policy import gate_plan

@@ -1079,19 +1079,49 @@ async def _read_pikabu_rules(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-#: The platforms this step can re-read, and the coroutine that does it. Both
+async def _read_vc_rules(row: dict[str, Any]) -> dict[str, Any]:
+    """Re-read one vc.ru topic with the selector's own fetch and rule parser.
+
+    `tgfarm.community_targets.read_vc_topic_rules` is the destination-only half of
+    the vc.ru selector: the same `_fetch`, the same `_rules` extractor, the same
+    two public pages (`https://vc.ru/rules` and the topic page) and the same
+    `policy_from_candidate("vc_ru", ...)` contract, so the stored `rules_hash` is
+    comparable with the row a selection wrote minutes ago.
+
+    Nothing here needs a post, and nothing here can publish: vc.ru is a
+    draft-only destination (`platform_capability.DRAFT_ONLY`), a person presses the
+    final button, and the reader keeps `auto_publish_supported` False whatever the
+    page says. A topic whose rules cannot be read raises, so the destination is
+    counted `failed` and named in `failures` — no row with an invented or empty
+    hash is written (§47: a destination that refuses is reported, not worked
+    around; §45: the page text leaves only as inert data).
+    """
+    from tgfarm import community_targets
+
+    result = await community_targets.read_vc_topic_rules(row)
+    assessment = result.get("policy_assessment") or {}
+    policy = result.get("community_policy") or {}
+    return {
+        "status": assessment.get("status"),
+        "allow_publish": bool(assessment.get("allow_publish")),
+        "rules_hash": str(policy.get("rules_hash") or ""),
+    }
+
+
+#: The platforms this step can re-read, and the coroutine that does it. All three
 #: readers already exist for the publish path and open no page this code does not
 #: already open: `inspect_community` is the Reddit preflight read,
-#: `revalidate_pikabu_target` is the Pikabu "one moment before the click" read.
+#: `revalidate_pikabu_target` is the Pikabu "one moment before the click" read, and
+#: `read_vc_topic_rules` is the destination-only twin of the vc.ru selector's own
+#: topic read (`_vc`), which needed a post to score against and therefore could not
+#: be asked about a destination alone.
 #:
-#: `vc.ru` is deliberately absent: `community_targets` only reads a vc.ru topic
-#: inside the whole directory selector (`_vc`), which needs a post to match
-#: against, so a destination-only re-read has no reader there yet. A history row
-#: on a platform outside this map is reported by name (`no_rules_reader`) and left
-#: alone rather than approximated by a new scraper.
+#: A history row on a platform outside this map is still reported by name
+#: (`no_rules_reader`) and left alone rather than approximated by a new scraper.
 _RULES_READER_FOR = {
     "pikabu": _read_pikabu_rules,
     "reddit": _read_reddit_rules,
+    "vc_ru": _read_vc_rules,
 }
 
 #: The watch set, kept as one tuple so a test or a follow-up reader can name it.
@@ -1103,8 +1133,8 @@ def _rules_reader_available(platform: str) -> tuple[bool, str]:
 
     A Reddit read needs OAuth. Asking for a token that is not configured would
     spend an authorization attempt per destination per cycle, so the step names
-    the condition instead. Pikabu's reader is two anonymous public pages, so it
-    has nothing to pre-check.
+    the condition instead. Pikabu's and vc.ru's readers are two anonymous public
+    pages each, so they have nothing to pre-check.
     """
     if platform != "reddit":
         return True, ""
@@ -1116,6 +1146,35 @@ def _rules_reader_available(platform: str) -> tuple[bool, str]:
     if not bool(adapter.configured()):
         return False, "reddit_oauth_not_configured"
     return True, ""
+
+
+def _rules_watch_switch(platform: str) -> tuple[bool, str]:
+    """Is this destination one the farm actually routes material to?
+
+    Returns ``(watch, switch_name)``; an empty `switch_name` means the platform
+    centre has no switch for it to name.
+
+    `is_platform_enabled` is the operator's delivery switch and answers for every
+    built-in platform, so Pikabu and Reddit keep their existing behaviour here: off
+    is a decision, and the step reports the decision without reading or writing.
+    It cannot answer for a draft-only destination, though. Measured on this
+    deployment, `is_platform_enabled("vc_ru")` is False and `enabled.vc_ru` is not
+    a key of the platform centre at all (`_read_state()["enabled"]` lists only
+    `built_in` platforms, and vc.ru is `planned` because a person presses the final
+    button), so gating a vc.ru read on that switch would report a perfectly usable
+    reader as `disabled` and name a switch that does not exist.
+    `platform_capability.capability_of` is the code fact for "the farm fills this
+    editor", so such a destination is watched: the rules it publishes under are
+    exactly the question the operator keeps having to ask by hand.
+    """
+    from tgfarm.platform_capability import capability_of
+    from tgfarm.platforms import is_platform_enabled
+
+    if bool(is_platform_enabled(platform)):
+        return True, f"enabled.{platform}"
+    if capability_of(platform) == "draft_only":
+        return True, ""
+    return False, f"enabled.{platform}"
 
 
 def _watched_rule_destinations() -> list[dict[str, Any]]:
@@ -1170,7 +1229,8 @@ def watch_destination_rules(
     """Re-read the rules of destinations we would publish to, into our own history.
 
     Why this exists: `community_policy_snapshots` had **0 rows in the live
-    database** on 2026-11-05, not because the contract is broken — the verdict,
+    database** on 2026-11-05 (re-measured read-only for this block: 0 rows, no
+    platform named), not because the contract is broken — the verdict,
     the `rules_hash` change detection, the `policy_history` endpoint and the
     «История правил» card are all wired — but because every writer of a snapshot
     sits behind a per-platform automation switch and both community platforms are
@@ -1180,7 +1240,8 @@ def watch_destination_rules(
     rules did we publish under, and when did they change".
 
     What it does: takes the destinations our own history already names, keeps the
-    ones on an enabled platform with an existing reader, re-reads each one with
+    ones on a platform the farm actually routes material to (`_rules_watch_switch`)
+    and with an existing reader, re-reads each one with
     that reader (which records through `record_policy_snapshot`, so the collapse
     window and the change detection are the existing ones and are not
     reimplemented here) and reports what it measured.
@@ -1188,7 +1249,7 @@ def watch_destination_rules(
     What it does not do:
 
     * publish, comment, schedule or send anything, anywhere — the only external
-      calls are the two read paths above, and each is the same read the publish
+      calls are the three read paths above, and each is the same read the publish
       preflight already performs;
     * need §80 consent. Recording our own audit row is not a history rewrite of a
       publication and not an external action, so there is no `*_APPLY` flag here;
@@ -1196,7 +1257,10 @@ def watch_destination_rules(
       is deliberate and the write target is the reason for it;
     * flip `enabled.reddit` / `enabled.pikabu`. A switched-off destination is
       reported as the named state `disabled` and is neither read nor written: the
-      decision to hand the farm a publishing destination stays the operator's;
+      decision to hand the farm a publishing destination stays the operator's. A
+      draft-only destination (vc.ru) has no such switch to flip and no automatic
+      publisher, so `_rules_watch_switch` watches it on the strength of the code
+      fact that its editor is filled, and its entry carries no switch claim;
     * invent a number. `oldest_checked_age_hours` is `None` when no destination was
       read, a platform entry carries counters only for the work it actually
       measured, and a disabled platform carries a state and no counts at all
@@ -1206,24 +1270,27 @@ def watch_destination_rules(
     `disabled`, `reddit_oauth_not_configured` (a reader that cannot be asked yet),
     `enabled_no_known_destination`, `watched` — and a destination on a platform
     outside that set is `no_rules_reader`. Nothing is left unexplained and nothing
-    is guessed at.
+    is guessed at: a platform with a reader that cannot be reached is still
+    reported as «не читается» by name, never as «правил нет».
 
     Bounded like the other steps: at most `limit` (clamped by
     `RULES_WATCH_BUDGET_MAX`) destinations per pass, most overdue first, and the
     pass stops starting new reads once `budget_seconds` have gone; what is left is
-    counted in `remaining`, never dropped silently.
+    counted in `remaining`, never dropped silently. One read per destination per
+    pass: the vc.ru reader asks its two public pages once, with no retry, so a
+    destination that refuses stays refused and is counted `failed`.
 
     `only_target_ids` narrows the watch list to named destinations — the same
     filter `policy_history` and `latest_policy` already answer to.
 
     Two counters with different scopes, because conflating them is how a card
-    starts lying: `destinations` is what this step is *able* to watch (enabled
-    platform, reader available), while `platforms[x]["destinations"]` is what the
-    history names for that platform whatever its state. So a platform can hold one
-    known destination and still contribute nothing to the top-level count.
+    starts lying: `destinations` is what this step is *able* to watch (a platform
+    it routes material to, reader available), while `platforms[x]["destinations"]`
+    is what the history names for that platform whatever its state. So a platform
+    can hold one known destination and still contribute nothing to the top-level
+    count.
     """
     from tgfarm.community_policy import latest_policy
-    from tgfarm.platforms import is_platform_enabled
 
     current = _as_utc(now) or datetime.now(UTC)
     started = datetime.now(UTC)
@@ -1277,11 +1344,12 @@ def watch_destination_rules(
     # even when the table is empty — which is the live shape.
     for platform in RULES_WATCH_PLATFORMS:
         count = known_platforms.get(platform, 0)
-        if not bool(is_platform_enabled(platform)):
+        watch, switch_name = _rules_watch_switch(platform)
+        if not watch:
             # The named state, and nothing else: no row, no count, no age.
             report["platforms"][platform] = {
                 "state": "disabled",
-                "switch": f"enabled.{platform}",
+                "switch": switch_name,
                 "reason": (
                     "the platform is switched off in the platform centre, so this "
                     "step neither reads its rules nor writes history for it"

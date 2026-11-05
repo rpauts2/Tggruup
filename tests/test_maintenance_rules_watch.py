@@ -40,6 +40,7 @@ from tgfarm.maintenance import (
     run_maintenance,
     watch_destination_rules,
 )
+from tgfarm.platform_capability import capability_of
 from tgfarm.s9_growth import reddit_scout
 
 PREFIX = "p69watch"
@@ -48,6 +49,13 @@ PIKABU_OLD_RULE_TEXT = "Старые правила: только Python."
 REDDIT_RULE = {"short_name": "Rule 1", "description": "Stay on topic."}
 REDDIT_CHANGED_RULE = {"short_name": "Rule 1", "description": "Only Python releases."}
 COMMUNITY_URL = "https://pikabu.ru/community/"
+#: The watched platforms that answer to an operator switch. `vc_ru` is not one of
+#: them: it has no `enabled.*` key at all, and the step watches it because the farm
+#: fills its editor (`maintenance._rules_watch_switch`), which is pinned in
+#: `tests/test_maintenance_vc_rules_watch.py`.
+SWITCHED_WATCH_PLATFORMS = tuple(
+    name for name in RULES_WATCH_PLATFORMS if capability_of(name) != "draft_only"
+)
 
 
 # --------------------------------------------------------------------- fixtures
@@ -254,17 +262,22 @@ def test_nothing_configured_to_watch_names_the_state_and_invents_nothing(enable)
 
 
 def test_a_disabled_destination_gets_a_name_and_no_numbers(enable, fake_reddit, fake_pikabu):
-    """Off means off: no read attempted, no row written, no invented count."""
+    """Off means off: no read attempted, no row written, no invented count.
+
+    Scoped to the destination this test seeded: the shared history can name a vc.ru
+    topic written by another file, and `vc_ru` is watched whatever the switches say,
+    so an unscoped pass would ask that page. Nothing here must reach a page.
+    """
     subreddit = "p69watch_reddit_off"
     _seed_reddit(subreddit, [REDDIT_RULE], hours_ago=5)
     enable()  # both community platforms stay off, as in the live configuration
 
-    report = watch_destination_rules()
+    report = watch_destination_rules(only_target_ids=[subreddit])
 
     calls, _queue = fake_reddit
     pikabu_calls, _pqueue = fake_pikabu
     assert calls == [] and pikabu_calls == []
-    for platform_name in RULES_WATCH_PLATFORMS:
+    for platform_name in SWITCHED_WATCH_PLATFORMS:
         entry = report["platforms"][platform_name]
         assert entry["state"] == "disabled"
         assert entry["switch"] == f"enabled.{platform_name}"
@@ -345,7 +358,10 @@ def test_platform_without_a_reader_is_named_not_scratched(enable):
         )
     enable("p69noreader")
 
-    report = watch_destination_rules()
+    # Scoped, like the rest of this file: since `vc_ru` joined the watch set, an
+    # unscoped pass would also take whatever topic another test file left in the
+    # shared history — and ask a page no fake has queued for it.
+    report = watch_destination_rules(only_target_ids=[target_id])
 
     entry = report["platforms"]["p69noreader"]
     assert entry["state"] == "no_rules_reader"

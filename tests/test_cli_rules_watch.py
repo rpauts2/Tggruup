@@ -41,9 +41,10 @@ from tgfarm.s9_growth import reddit_scout
 PREFIX = "p78cli"
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 WATCH = tuple(sorted(RULES_WATCH_PLATFORMS))
-#: Named absent by maintenance's own comment: `community_targets` has no
-#: destination-only reader for vc.ru, so a history row there is `no_rules_reader`.
-READERLESS = "vc_ru"
+#: A platform id the code has no rules reader for at all. It used to be `vc_ru`,
+#: which `maintenance._RULES_READER_FOR` now covers; this synthetic id keeps the
+#: `no_rules_reader` path testable whatever the watch set grows next.
+READERLESS = "p78noreader"
 
 NO_SNAPSHOT = cli.NO_RULES_SNAPSHOT
 DISABLED_REASON = (
@@ -73,6 +74,22 @@ MD_HEAD = [
     "| Площадка | Состояние | Назначение | Хеш правил | Возраст снимка | Причина |",
     "|---|---|---|---|---|---|",
 ]
+
+#: `vc_ru` has a rules reader now, so the read side no longer calls it
+#: `no_rules_reader`; it asks `tgfarm/platforms.is_platform_enabled` and nothing
+#: else (tgfarm/cli.py:746-753, printed with the switch name at :769-770), while
+#: `maintenance._rules_watch_switch` additionally watches a draft-only destination
+#: that has no `enabled.*` key at all. So this command still answers `disabled`
+#: here. The lines are pinned as cli's own read-side answer, not as maintenance's;
+#: aligning the two predicates is a change to cli.py, which is not this file's.
+VCRU_DISABLED_TEXT = [
+    "vc_ru: disabled (переключатель enabled.vc_ru)",
+    f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
+    f"  причина: {DISABLED_REASON}",
+]
+VCRU_DISABLED_ROW = (
+    f"| vc_ru | disabled | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {DISABLED_REASON} |"
+)
 
 
 # --------------------------------------------------------------------- fixtures
@@ -139,6 +156,11 @@ def _stored(
 
 def _text(report: dict) -> list[str]:
     return cli.render_rules_status(report, fmt="text")
+
+
+def _entry(report: dict, platform: str) -> dict:
+    """One platform's entry, by name: the report now answers for three readers."""
+    return next(item for item in report["platforms"] if item["platform"] == platform)
 
 
 def _markdown(report: dict) -> list[str]:
@@ -209,10 +231,15 @@ def test_no_stored_snapshot_prints_states_and_reasons_never_an_empty_table(probe
         "reddit: disabled (переключатель enabled.reddit)",
         f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
         f"  причина: {DISABLED_REASON}",
+        *VCRU_DISABLED_TEXT,
     ]
     rendered = "\n".join(_text(report))
     assert "0 ч" not in rendered
     assert NO_SNAPSHOT in rendered
+    # The reader gap this command used to name for vc.ru is closed: no line here
+    # says `no_rules_reader`, because a reader for vc_ru exists now.
+    assert "no_rules_reader" not in rendered
+    assert "vc_ru" in WATCH
 
 
 def test_the_empty_history_still_renders_a_table_not_a_blank(probe):
@@ -224,6 +251,7 @@ def test_the_empty_history_still_renders_a_table_not_a_blank(probe):
         f"{DISABLED_REASON} |",
         f"| reddit | disabled | {NO_SNAPSHOT} | {NO_SNAPSHOT} | {NO_SNAPSHOT} | "
         f"{DISABLED_REASON} |",
+        VCRU_DISABLED_ROW,
     ]
 
 
@@ -257,19 +285,22 @@ def test_enabled_without_a_known_destination_is_its_own_line(probe):
         "reddit: enabled_no_known_destination (переключатель enabled.reddit)",
         f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
         f"  причина: {NO_TARGET_REASON}",
+        *VCRU_DISABLED_TEXT,
     ]
 
 
 def test_watched_shows_the_stored_hash_and_the_age_of_that_snapshot(probe):
     row = _stored("reddit", "python", name="r/python")
     report = probe(rows=[row], enabled=["reddit"])
-    entry = next(item for item in report["platforms"] if item["platform"] == "reddit")
+    entry = _entry(report, "reddit")
 
     assert entry["state"] == "watched"
     assert entry["destinations"] == 1
     assert entry["known"][0]["age_hours"] == 7.0
     assert entry["known"][0]["rules_hash"] == HASH
-    assert _text(report)[-4:] == [
+    lines = _text(report)
+    start = lines.index("reddit: watched (переключатель enabled.reddit)")
+    assert lines[start:start + 4] == [
         "reddit: watched (переключатель enabled.reddit)",
         (
             f"  r/python (python) | правила: {HASH} | возраст снимка: 7.0 ч | "
@@ -278,7 +309,7 @@ def test_watched_shows_the_stored_hash_and_the_age_of_that_snapshot(probe):
         "  назначений с сохранённым снимком правил: 1",
         f"  причина: {WATCHED_REASON}",
     ]
-    assert _markdown(report)[-1] == (
+    assert _markdown(report)[3] == (
         f"| reddit | watched | r/python (python) | {HASH} | 7.0 ч | {WATCHED_REASON} |"
     )
 
@@ -299,6 +330,27 @@ def test_no_rules_reader_reads_as_our_gap_not_the_platforms(probe):
     assert lines[-1] == f"пробел в коде TgFarm: {READERLESS}:no_rules_reader"
 
 
+def test_vc_ru_is_no_longer_reported_as_a_missing_reader(probe):
+    """The gap this block closes, seen from the read side.
+
+    A stored vc.ru destination now has a reader in `maintenance._RULES_READER_FOR`,
+    so `no_rules_reader` and the «пробел в коде TgFarm» line must stop being
+    produced for it — while a platform with no reader at all keeps both, which the
+    test above pins with a synthetic id.
+    """
+    row = _stored("vc_ru", "p78cli_topic", name="Финансы", target_type="topic")
+    report = probe(rows=[row], enabled=["vc_ru"])
+    entry = _entry(report, "vc_ru")
+    rendered = "\n".join(_text(report))
+
+    assert entry["rules_reader"] is True
+    assert entry["state"] == "watched"
+    assert entry["destinations"] == 1
+    assert entry["reason"] == WATCHED_REASON
+    assert "vc_ru: no_rules_reader" not in rendered
+    assert "no_rules_reader" not in rendered, "the reader gap is closed for every state here"
+
+
 def test_nothing_to_watch_is_the_summary_when_no_destination_is_stored(probe):
     assert probe(rows=(), enabled=list(WATCH))["state"] == "nothing_to_watch"
     assert probe(rows=(), enabled=[])["state"] == "nothing_to_watch"
@@ -311,7 +363,7 @@ def test_nothing_to_watch_is_the_summary_when_no_destination_is_stored(probe):
 def test_a_snapshot_without_a_timestamp_has_no_invented_age(probe):
     row = _stored("reddit", "python", name="r/python", checked_at=None)
     report = probe(rows=[row], enabled=["reddit"])
-    known = report["platforms"][-1]["known"][0]
+    known = _entry(report, "reddit")["known"][0]
 
     assert known["age_hours"] is None
     assert known["age_text"] == NO_SNAPSHOT
@@ -325,16 +377,16 @@ def test_a_snapshot_without_a_hash_says_so(probe):
     row = _stored("reddit", "python", name="r/python", rules_hash="")
     report = probe(rows=[row], enabled=["reddit"])
 
-    assert report["platforms"][-1]["known"][0]["rules_hash"] == ""
-    assert f"правила: {NO_SNAPSHOT}" in _text(report)[-3]
+    assert _entry(report, "reddit")["known"][0]["rules_hash"] == ""
+    assert any(f"правила: {NO_SNAPSHOT}" in line for line in _text(report)), _text(report)
 
 
 def test_a_destination_without_a_name_falls_back_to_its_id(probe):
     row = _stored("reddit", "python", name="")
     report = probe(rows=[row], enabled=["reddit"])
 
-    assert report["platforms"][-1]["known"][0]["label"] == "python"
-    assert "  python | правила:" in _text(report)[-3]
+    assert _entry(report, "reddit")["known"][0]["label"] == "python"
+    assert any("  python | правила:" in line for line in _text(report)), _text(report)
 
 
 # ------------------------------------------------------------------ mixed reports
@@ -351,6 +403,13 @@ def test_a_mixed_report_keeps_every_state_on_its_own_line(probe):
         *HEAD,
         _summary(2, 2),
         f"всего: watched — {WATCHED_REASON}",
+        f"{READERLESS}: no_rules_reader",
+        (
+            "  Тема (p78cli_topic) | правила: deadbeef | возраст снимка: 7.0 ч | "
+            "срез: 2026-11-05T05:00:00+00:00 | вердикт: ok"
+        ),
+        "  назначений с сохранённым снимком правил: 1",
+        f"  причина: {NO_READER_REASON}",
         "pikabu: disabled (переключатель enabled.pikabu)",
         f"  назначений с сохранённым снимком правил: {NO_SNAPSHOT}",
         f"  причина: {DISABLED_REASON}",
@@ -361,19 +420,20 @@ def test_a_mixed_report_keeps_every_state_on_its_own_line(probe):
         ),
         "  назначений с сохранённым снимком правил: 1",
         f"  причина: {WATCHED_REASON}",
-        f"{READERLESS}: no_rules_reader",
-        (
-            "  Тема (p78cli_topic) | правила: deadbeef | возраст снимка: 7.0 ч | "
-            "срез: 2026-11-05T05:00:00+00:00 | вердикт: ok"
-        ),
-        "  назначений с сохранённым снимком правил: 1",
-        f"  причина: {NO_READER_REASON}",
+        *VCRU_DISABLED_TEXT,
         f"пробел в коде TgFarm: {READERLESS}:no_rules_reader",
     ]
     assert [item["state"] for item in report["platforms"]] == [
+        "no_rules_reader",
         "disabled",
         "watched",
-        "no_rules_reader",
+        "disabled",
+    ]
+    assert [item["platform"] for item in report["platforms"]] == [
+        READERLESS,
+        "pikabu",
+        "reddit",
+        "vc_ru",
     ]
 
 
@@ -409,7 +469,7 @@ def test_the_target_filter_narrows_the_scope_and_says_so(probe):
 
     assert report["destinations_in_scope"] == 1
     assert report["destinations_scanned"] == 2, "the scan is bounded by the limit, not by the filter"
-    assert [row["target_id"] for row in report["platforms"][-1]["known"]] == ["python"]
+    assert [row["target_id"] for row in _entry(report, "reddit")["known"]] == ["python"]
     assert report["scope"] == {"platform": "", "target_id": "python"}
     assert "область запроса: platform=- target=python" in report["detail"]
     assert "в области запроса: 1" in _text(report)[1]
@@ -596,7 +656,15 @@ def test_state_names_are_still_the_ones_the_watching_step_uses():
     assert cli.RULES_STATE_MEANINGS["disabled"] != cli.RULES_STATE_MEANINGS[
         "enabled_no_known_destination"
     ]
-    assert WATCH == ("pikabu", "reddit"), "the watch set grew; the expected lines above must follow"
+    assert WATCH == ("pikabu", "reddit", "vc_ru"), (
+        "the watch set grew; the expected lines above must follow"
+    )
+    # `vc_ru` joined it because `maintenance._RULES_READER_FOR` now has a
+    # destination-only vc.ru reader, so a stored vc.ru destination is something the
+    # maintenance pass can re-read instead of a gap it can only name. The reader
+    # itself and its safety properties are pinned in
+    # `tests/test_maintenance_vc_rules_watch.py`.
+    assert "vc_ru" in maintenance._RULES_READER_FOR
 
 
 def test_report_carries_no_counters_it_did_not_measure(probe):
@@ -612,6 +680,7 @@ def test_watched_is_never_claimed_from_a_switch_alone(probe):
     report = probe(rows=(), enabled=list(WATCH))
 
     assert [item["state"] for item in report["platforms"]] == [
+        "enabled_no_known_destination",
         "enabled_no_known_destination",
         "enabled_no_known_destination",
     ]
