@@ -323,6 +323,21 @@ def test_the_parser_wires_the_verb_and_borrows_the_pass_limit():
     assert parser.parse_args(["plan-book", "--apply"]).apply is True
 
 
+def test_the_bound_follows_the_owner_when_the_owner_moves(monkeypatch):
+    """The pin the verb's own file was missing, found by mutating the verb.
+
+    `return int(MAX_BOOKINGS_PER_RUN)` and `return 40` agree at rest, so the
+    equality above cannot tell a read from a copy — and a copy is exactly the
+    second number this verb promises it did not introduce. Moving the owner's
+    number is the only way to see which one the verb is holding.
+    """
+    monkeypatch.setattr(s4_generation, "MAX_BOOKINGS_PER_RUN", 7)
+
+    assert cli.booking_pass_limit() == 7
+    assert cli.build_parser().parse_args(["plan-book"]).limit == 7
+    assert cli.preview_plan_booking()["limit"] == 7
+
+
 def test_the_new_verb_is_documented_where_the_cli_documents_itself():
     assert "plan-book" in cli.__doc__
 
