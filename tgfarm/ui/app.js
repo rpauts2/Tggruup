@@ -1954,6 +1954,12 @@
     // stored rows, not about the plan snapshot this call is building, and it keeps
     // its own request so a failed one cannot be reported as the other.
     loadBookingFidelity();
+    // And the third independent read: which topics the plan has already ordered a
+    // draft for but has not booked a slot to yet. `/api/editorial` answers it out of
+    // `editorial.queue`, so this is neither the consumer's state nor the snapshot's
+    // — it is the queue's own answer, and it keeps its own request so that a dead
+    // one cannot be reported as the other.
+    loadOpenOrderQueue();
     try {
       const [plan, history] = await Promise.all([
         api("/api/editorial/plan"),
@@ -2422,11 +2428,17 @@
         const channelList = (item.channels || []).map(esc).join(" · ");
         const topics = (item.topics || []).map(esc).join(", ");
         const queued = item.queue_preview || [];
+        // A row of the preview answers two questions, and the second one used to
+        // be missing entirely: «что это за пост» the card always said, «заказан ли
+        // он планом» it never did. `queueProvenanceText` answers the second one in
+        // four words, and `queueProvenanceLegend` says out loud when the platform's
+        // whole preview carries no provenance read at all.
         const queuedMarkup = queued.length
-          ? `<div class="distribution-picks"><strong>В очереди: ${n(queued.length)}+</strong>${queued.slice(0, 3).map((post) => `
+          ? `<div class="distribution-picks"><strong>В очереди: ${n(queued.length)}+</strong>${queueProvenanceLegend(item)}${queued.slice(0, 3).map((post) => `
               <div class="distribution-pick">
                 <strong>${esc(post.title || post.post_public_id)}</strong>
                 <span>${esc(post.channel || "")} · ${esc(post.status || "")}${post.scheduled_at ? " · " + esc(nextRunCell(post.scheduled_at)) : ""}</span>
+                <small>${queueProvenanceText(post, item)}</small>
               </div>`).join("")}</div>`
           : `<div class="distribution-no-pick">В очереди пока нет готового материала.</div>`;
         const progress = cap ? Math.min(100, sent / cap * 100) : 0;
@@ -2500,6 +2512,248 @@
       }).join("") || `<div class="distribution-empty">Нет включённых площадок с автоматической доставкой.</div>`;
     }
     state.distributionPlan = plan;
+  }
+
+  // ── Провенанс строки очереди: четыре состояния — четыре формулировки ──────
+  // Two payload families answer one operator question — «этот материал заказан
+  // планом, ждёт своего слота, или план тут ни при чём?» — and they answer it with
+  // different keys, so the panel needs one reading of both:
+  //
+  // * `queue_preview` rows of `/api/distribution/plan` carry `plan_entry_id`,
+  //   `plan_slot_at`, `plan_public_id`, and beside them the platform's own verdict
+  //   `queue_provenance`: `measured` when the booking columns were really read,
+  //   `plan_columns_missing` when the live store has none of them and nothing under
+  //   it was read at all;
+  // * `/api/editorial` answers the narrower question with `awaiting_booking` —
+  //   `tgfarm/editorial.py::awaiting_booking`, the open order the plan still owes
+  //   a slot to. The server has been producing that key since W20-B and the panel
+  //   read it nowhere: an operator could not tell a draft waiting for a booked
+  //   slot from a topic nobody has queued at all.
+  //
+  // Four states, four sentences, none of them a zero and none an absence:
+  //   «по плану»             — the row names the plan entry that ordered it;
+  //   «не по плану»          — the read happened and the entry reference is null;
+  //   «ждёт слота плана»     — the server's own open-order predicate answered yes;
+  //   «провенанс не прочитан» — the columns are missing, or the keys never came.
+  // The last line is the standing rule of this project: silence is not a verdict,
+  // so a row without the keys prints neither «не по плану» nor a count of nothing.
+  const QUEUE_PROVENANCE_UNREAD = "провенанс не прочитан";
+  const QUEUE_PROVENANCE_LABELS = {
+    planned: "по плану",
+    unplanned: "не по плану",
+    awaiting: "ждёт слота плана",
+    unread: QUEUE_PROVENANCE_UNREAD,
+  };
+  // The order this block prints its tally in, and the order the contract test
+  // walks to prove no two states share a sentence.
+  const QUEUE_PROVENANCE_ORDER = ["planned", "unplanned", "awaiting", "unread"];
+  const QUEUE_PROVENANCE_KEYS = ["plan_entry_id", "plan_slot_at", "plan_public_id"];
+  const QUEUE_PROVENANCE_MEASURED = "measured";
+  const QUEUE_PROVENANCE_NO_COLUMNS = "plan_columns_missing";
+  // A measured ratio keeps its two decimals; an unread one says it has no report
+  // instead of printing the `0` that `n()` would manufacture out of a null.
+  const queueNumberText = (value, caption) => (typeof value === "number" && Number.isFinite(value)
+    ? `${caption} — ${value.toFixed(2)}`
+    : `${caption} — нет отчёта`);
+
+  // One resolution, four answers. The carrier's verdict outranks the row: the
+  // platform saying «колонок нет» invalidates every field under it, and a row that
+  // did carry values read from a store without those columns would otherwise be
+  // printed as a measurement.
+  function queueProvenanceState(row, carrier) {
+    const src = row && typeof row === "object" ? row : {};
+    const owner = carrier && typeof carrier === "object" ? carrier : {};
+    const verdict = typeof owner.queue_provenance === "string" ? owner.queue_provenance : null;
+    if (verdict === QUEUE_PROVENANCE_NO_COLUMNS) {
+      return { state: "unread", reason: "хранилище ответило plan_columns_missing" };
+    }
+    // `true` is a measured verdict from the queue; `false` and an absent key are
+    // handled below, because neither of them names the plan entry of this row.
+    if (src.awaiting_booking === true) return { state: "awaiting", reason: "" };
+    if (!QUEUE_PROVENANCE_KEYS.every((key) => key in src)) {
+      return {
+        state: "unread",
+        reason: src.awaiting_booking === false
+          ? "ключей плана в строке нет · слота плана эта тема не ждёт"
+          : "ключей плана в строке нет",
+      };
+    }
+    if (verdict !== null && verdict !== QUEUE_PROVENANCE_MEASURED) {
+      // The code itself is data the store sent: it is returned, never formatted
+      // here, so the one place that prints it is the one place that escapes it.
+      return { state: "unread", reason: "код провенанса не описан", code: verdict };
+    }
+    if (src.plan_entry_id === null) return { state: "unplanned", reason: "" };
+    // A reference the panel can name is a reference the server read: an integer id
+    // or a non-empty public id. Anything else — NaN, an empty string, an object —
+    // is a field that arrived without an answer behind it.
+    const readable = (typeof src.plan_entry_id === "number" && Number.isFinite(src.plan_entry_id))
+      || (typeof src.plan_entry_id === "string" && src.plan_entry_id.trim() !== "");
+    return readable
+      ? { state: "planned", reason: "" }
+      : { state: "unread", reason: "ссылка на запись плана не читается" };
+  }
+
+  // What the server named beside the state. Every fragment leaves here already
+  // escaped, so the caller cannot interpolate a stored string raw; `nextRunCell`
+  // is the helper that keeps a slot booked for tonight from being read by `dt()`
+  // as a moment that has already passed.
+  function queueProvenanceDetail(src, state) {
+    if (state === "planned") {
+      const plan = typeof src.plan_public_id === "string" && src.plan_public_id
+        ? `план ${esc(src.plan_public_id)}`
+        : "план не назван";
+      const slot = typeof src.plan_slot_at === "string" && src.plan_slot_at
+        ? `слот ${esc(nextRunCell(src.plan_slot_at))}`
+        : "слот не записан";
+      return ` · ${plan} · запись ${esc(String(src.plan_entry_id))} · ${slot}`;
+    }
+    if (state === "unplanned") return " · запись плана прочитана: её нет";
+    if (state === "awaiting") return " · чернов уже написан, забронированного слота нет";
+    return "";
+  }
+
+  function queueProvenanceText(row, carrier) {
+    const src = row && typeof row === "object" ? row : {};
+    const resolved = queueProvenanceState(src, carrier);
+    const label = QUEUE_PROVENANCE_LABELS[resolved.state] || QUEUE_PROVENANCE_UNREAD;
+    // `reason` is a literal of this file and `code` is a string the store sent: the
+    // first is printed as it is, the second goes through `esc()` here and nowhere
+    // else, so no field of this block is ever escaped twice.
+    const reasonText = resolved.reason ? ` · ${esc(String(resolved.reason))}` : "";
+    const codeText = resolved.code ? ` · ${esc(String(resolved.code))}` : "";
+    // The unread label already names itself; prefixing it with «провенанс:» would
+    // print the word twice and hide the reason under the stutter.
+    const head = resolved.state === "unread"
+      ? esc(QUEUE_PROVENANCE_UNREAD)
+      : `провенанс: ${esc(label)}`;
+    return `${head}${queueProvenanceDetail(src, resolved.state)}${reasonText}${codeText}`;
+  }
+
+  function queueProvenanceChip(row, carrier) {
+    return `<span class="plan-chip">${queueProvenanceText(row, carrier)}</span>`;
+  }
+
+  // The platform-level sentence, printed once above the rows: a whole preview read
+  // without the booking columns is one fact about the store, not three identical
+  // row warnings the operator has to compare.
+  function queueProvenanceLegend(item) {
+    const owner = item && typeof item === "object" ? item : {};
+    if (!("queue_provenance" in owner)) {
+      return `<small>${esc(`провенанс очереди не прочитан — ключа queue_provenance в ответе нет`)}</small>`;
+    }
+    if (owner.queue_provenance === QUEUE_PROVENANCE_NO_COLUMNS) {
+      return `<small>${esc(`провенанс очереди не прочитан — `
+        + "хранилище ответило plan_columns_missing, поля брони не читались")}</small>`;
+    }
+    if (owner.queue_provenance !== QUEUE_PROVENANCE_MEASURED) {
+      return `<small>${esc("провенанс очереди не прочитан — незнакомый код: ")
+        + esc(String(owner.queue_provenance))}</small>`;
+    }
+    return "";
+  }
+
+  // ── Кто из черновиков ждёт слота плана ────────────────────────────────────
+  // `index.html` is outside this file's reach, so the card creates its own mount
+  // next to `#plan-entries` instead of writing into a container another render
+  // replaces (the booking card above uses the same move for the same reason).
+  const OPEN_ORDERS_ENDPOINT = "/api/editorial";
+  const OPEN_ORDERS_SHOWN = 8;
+  const OPEN_ORDERS_TRANSPORT = "очередь: ответ не пришёл";
+
+  function openOrdersMount() {
+    const existing = $("#plan-open-orders");
+    if (existing) return existing;
+    const anchor = $("#plan-entries");
+    if (!anchor || !anchor.parentNode) return null;
+    const node = document.createElement("div");
+    node.id = "plan-open-orders";
+    anchor.parentNode.insertBefore(node, anchor);
+    return node;
+  }
+
+  function openOrderRow(row, carrier) {
+    const src = row && typeof row === "object" ? row : {};
+    const title = typeof src.label === "string" && src.label
+      ? src.label
+      : (typeof src.cluster_public_id === "string" && src.cluster_public_id
+        ? src.cluster_public_id : "тема без подписи");
+    const measured = queueNumberText(src.heat, "тепло");
+    const score = queueNumberText(src.score, "приоритет");
+    const niche = typeof src.niche === "string" && src.niche ? src.niche : "ниша не задана";
+    return `<li class="plan-entry"><div class="plan-entry-head">`
+      + `<span>${esc(title)}</span>`
+      + queueProvenanceChip(src, carrier)
+      + `</div><div class="plan-entry-reasons">${esc(niche)} · ${esc(measured)} · ${esc(score)}`
+      + ` · ${esc(String(src.cluster_public_id || "публичный id темы не прислан"))}</div></li>`;
+  }
+
+  function renderOpenOrderQueue(payload, failure) {
+    const root = openOrdersMount();
+    if (!root) return;
+    if (!payload || typeof payload !== "object") {
+      // A request that never landed is not a store that answered "nothing waits".
+      // The whole sentence is escaped once, below, where it becomes markup.
+      const failureText = failure
+        ? (typeof failure === "string" ? failure : String(failure.message || failure))
+        : OPEN_ORDERS_TRANSPORT;
+      root.innerHTML = `<h3>Кто ждёт слота плана</h3>`
+        + `<div class="plan-chips"><span class="plan-chip">${esc(OPEN_ORDERS_TRANSPORT)}</span></div>`
+        + `<p class="plan-entry-reasons">${esc(`Запрос редакционной очереди не удался: ${failureText}. `
+          + "Это не «ждущих нет» и не «сервер ответил пусто» — ответа не было.")}</p>`;
+      return;
+    }
+    const head = `<h3>Кто ждёт слота плана</h3>`;
+    if (!Array.isArray(payload.queue)) {
+      root.innerHTML = head
+        + `<div class="plan-chips"><span class="plan-chip">${esc(`очередь: ${QUEUE_PROVENANCE_UNREAD}`)}</span></div>`
+        + `<p class="plan-entry-reasons">${esc("Ключ queue не пришёл в ответе — очередь не прочитана, "
+          + "а не пуста: ни одного состояния ниже печатать нечем.")}</p>`;
+      return;
+    }
+    const rows = payload.queue;
+    const waiting = rows.filter((row) => row && typeof row === "object" && row.awaiting_booking === true);
+    const answered = rows.filter((row) => row && typeof row === "object" && row.awaiting_booking === false);
+    const silent = rows.length - waiting.length - answered.length;
+    const tally = [
+      `прочитано тем: ${n(rows.length)}`,
+      // A measured zero is a measurement and prints as one. The third line is not a
+      // zero: it counts the rows whose `awaiting_booking` never arrived, and it is
+      // printed only when such rows really exist.
+      `ждут слота плана: ${n(waiting.length)}`,
+      `слота плана не ждут: ${n(answered.length)}`,
+    ];
+    if (silent) tally.push(`ключа о брони не прислано: ${n(silent)}`);
+    const intro = waiting.length
+      ? `План уже заказал эти темы, а слота им ещё не забронировали: S4 не тратит на них бюджет, `
+        + "и ждать им остаётся ровно до ближайшего пропуска исполнителя."
+      : `Ни одна прочитанная тема не ждёт слота плана — это ответ очереди, а не её отсутствие.`;
+    const listed = waiting.length ? waiting : rows;
+    const shown = listed.slice(0, OPEN_ORDERS_SHOWN);
+    const whichList = waiting.length
+      ? (listed.length > shown.length
+        ? `показаны ${n(shown.length)} из ${n(listed.length)} ждущих — карточка называет не больше ${n(OPEN_ORDERS_SHOWN)} строк за раз`
+        : `показаны все ${n(shown.length)} ждущих`)
+      : (rows.length > shown.length
+        ? `ждущих нет, показаны первые ${n(shown.length)} прочитанных тем из ${n(rows.length)}`
+        : `ждущих нет, показаны все ${n(rows.length)} прочитанных тем`);
+    root.innerHTML = head
+      + `<div class="plan-chips">${tally.map((line) => `<span class="plan-chip">${esc(line)}</span>`).join("")}</div>`
+      + `<p class="plan-entry-reasons">${esc(intro)}</p>`
+      + (shown.length
+        ? `<ul class="plan-entries">${shown.map((row) => openOrderRow(row, payload)).join("")}</ul>`
+          + `<p class="plan-entry-reasons">${esc(whichList)}</p>`
+        : `<p class="plan-entry-reasons">${esc("Очередь ответила списком без строк — ждущих слота тем нет.")}</p>`);
+  }
+
+  async function loadOpenOrderQueue() {
+    const root = openOrdersMount();
+    if (!root) return;
+    try {
+      renderOpenOrderQueue(await api(OPEN_ORDERS_ENDPOINT), null);
+    } catch (error) {
+      renderOpenOrderQueue(null, error);
+    }
   }
 
   window.tgfarmSetRuntimeMode = async (mode) => {
