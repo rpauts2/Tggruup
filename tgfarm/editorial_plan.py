@@ -146,7 +146,6 @@ def _next_free_slot(
     start = now + timedelta(minutes=SLOT_START_OFFSET_MINUTES)
     limit = now + timedelta(days=horizon_days)
     candidates = int(horizon_days * 24 * 60 / SLOT_STEP_MINUTES) + 2
-    timezone_name = getattr(channel, "timezone", None)
     candidate = start
     for _ in range(candidates):
         key = candidate.replace(second=0, microsecond=0)
@@ -154,7 +153,7 @@ def _next_free_slot(
         # legal free instant the answer is None, never the nearest illegal one.
         # Substituting an instant the channel cannot publish in would put the
         # refusal back where this change found it.
-        if key not in occupied and local_hours_allow(key, timezone_name, config=config):
+        if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
             return key
         candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
         if candidate > limit:
