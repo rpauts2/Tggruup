@@ -45,6 +45,13 @@ DUE_SLOT = MORNING_UTC - timedelta(minutes=1)
 #: planned slot is one of the reasons this module names.
 _NOT_SET = object()
 
+#: The instant W22-C gives `DUE_SLOT - 1min` on a São Paulo channel with the
+#: window above: the 90-minute grid walked from the refused minute (01:29 local)
+#: lands on 02:59, 04:29, 05:59, 07:29, 08:59 — all closed — and on 10:29 local,
+#: 13:29 UTC, the first the window admits. Written out as a literal because the
+#: test must state the number the planner owes, not recompute it.
+REBOUND_ILLEGAL_BOOKING = datetime(2026, 11, 5, 13, 29, tzinfo=UTC)
+
 
 def _uid() -> str:
     return uuid.uuid4().hex[:8]
@@ -522,30 +529,39 @@ def test_the_legal_local_hours_are_read_in_the_channels_zone(
     assert _status(outside_post)[0] == "gated", "нелегальный местный час не получает поста"
 
 
-def test_an_illegal_booked_minute_is_refused_at_every_tick(
+def test_an_illegal_booked_minute_is_held_while_the_tick_is_closed_and_rebound_when_it_opens(
     flag_on, rows, quiet_budget, monkeypatch
 ):
-    """The hours gate judges the instant the row will carry, not the tick.
+    """The hours gate judges the instant the row will carry — and since W22-C it
+    replaces that instant instead of parking the entry forever.
 
-    One entry, two ticks, and this is where W21-B changed the verdict, so the
-    change is stated rather than hidden: at 04:30 UTC São Paulo is 01:29, the
-    entry's reserved minute, so the entry is held; at 14:30 UTC the local hour is
-    11:30 — a legal tick — and the entry is *still* held, because the minute it
-    would stamp is still 01:29.
+    One entry, two ticks. At 04:30 UTC São Paulo is 01:30, so the *tick* is in an
+    hour this channel may not publish in and the entry is held whatever its
+    minute: that half of the old pin is still true, and it is the one W21-B grew,
+    because a release makes the post due on the next publish tick and the farm
+    would otherwise deliver at a closed hour.
 
-    At base the second tick released it, because `unpublish` stamped the tick's
-    own instant and that instant was the only one the hour gate could honestly be
-    asked about. Now the plan's minute reaches the row, so asking the row's hour
-    is what the gate is for — and it is the identical answer
-    `schedule_ready_posts` gives the very same booking under the registered gate
-    `GATE_SLOT_OUTSIDE_LOCAL_HOURS`, through the identical
-    `plan_execution.local_hours_allow`. A minute the cadence forbids is refused
-    by both consumers or by neither; the entry below is refused by both.
+    What W22-C superseded is the second half. The old test asserted that at 14:30
+    UTC — 11:30 local, an open tick — the entry whose reserved minute is 04:29 UTC
+    (01:29 local) was *still* held, under `REASON_LOCAL_HOURS`, with no slot on
+    the row and no end to that state. That pin was wrong twice over: it described
+    a refusal that never ends (`plan_slot_at` is written once and
+    `s4_generation.apply_plan_booking` only claims rows whose booking is still
+    NULL, so no later snapshot could reach the row), and it read the hours gate as
+    a verdict instead of as a gate that also owes an answer to "then when". Since
+    W22-C the minute the entry would stamp is corrected to the first instant this
+    channel may publish in at or after the refused one — the planner's own walk,
+    `editorial_plan.next_legal_slot_after`, floored at the refused minute rather
+    than at the clock — and the entry is released on the open tick.
 
-    What has *not* changed is the other half of the old test's point: nothing is
-    re-stamped by hand and the refused post stays `gated` with no slot. The
-    release on the right-hand side is the positive control — a legal booked
-    minute still goes through on the same tick, with that minute on the row.
+    The correction moves `scheduled_at`, the column the queue owns and that
+    requeue and retry already move. It does not move what the plan reserved: the
+    entry's own `slot_at` in the snapshot is asserted below to be the refused
+    minute after the release, which is the same rule registry P100 states for
+    `posts.plan_slot_at` and the reason the booking is still auditable. The
+    release on the right-hand side is the positive control — a legal booked minute
+    still goes through on the same tick, with that minute on the row, and it is
+    not counted as a correction.
     """
     monkeypatch.setattr(plan_execution, "get_config", lambda: _fake_config(LEGAL_WINDOW))
     channel_id = _channel(rows, timezone="America/Sao_Paulo")
@@ -556,20 +572,54 @@ def test_an_illegal_booked_minute_is_refused_at_every_tick(
     legal_post = _post(rows, channel_id, legal["cluster_public_id"])
     _plan(rows, [illegal, legal])
 
+    # --- the tick is closed: the refusal stands, and nothing is written.
     held = plan_execution.apply_plan(now=MORNING_UTC)
     assert _outcome(held, illegal["cluster_public_id"])["reason"] == (
         plan_execution.REASON_LOCAL_HOURS
     )
     assert _status(illegal_post)[0] == "gated"
+    assert _status(illegal_post)[1] is None
+    # A closed tick does not even get as far as a correction: `held` is the whole
+    # report, so the journal of this pass names no rebound.
+    assert held["applied"] == 0, held
 
+    # --- the tick opens: the entry is released at a minute the channel may post.
     moved = plan_execution.apply_plan(now=later)
-    assert _outcome(moved, illegal["cluster_public_id"])["reason"] == (
-        plan_execution.REASON_LOCAL_HOURS
-    ), "нелегальная забронированная минута не выезжает на легальном тике"
-    assert _status(illegal_post)[0] == "gated"
-    assert _status(illegal_post)[1] is None, "отказ не должен оставить слота"
+    entry = _outcome(moved, illegal["cluster_public_id"])
+    assert entry["outcome"] == "scheduled", entry
+    assert entry["reason"] == plan_execution.REASON_SLOT_REBOUND, (
+        f"open tick on a refused minute: {entry}"
+    )
+    status, slot, _ = _status(illegal_post)
+    assert status == "scheduled", status
+    assert _aware(slot) == REBOUND_ILLEGAL_BOOKING, (
+        f"01:29 local is closed and the walk owes the first open minute after it, "
+        f"got {_aware(slot)}"
+    )
+    assert _aware(slot) != illegal["slot_at"], "the refused minute was stamped anyway"
+    assert _aware(slot) > illegal["slot_at"], "a correction went backwards in time"
+    assert plan_execution.local_hours_allow(_aware(slot), "America/Sao_Paulo") is True, (
+        "the corrected instant is itself outside the window"
+    )
+    assert moved["reasons"].get(plan_execution.REASON_SLOT_REBOUND) == 1, moved["reasons"]
+    assert moved["reasons"].get(plan_execution.REASON_LOCAL_HOURS, 0) == 0, moved["reasons"]
 
+    # The plan is not what moved: the snapshot still reserves the refused minute.
+    with session_scope() as session:
+        reserved = session.execute(
+            select(EditorialPlanEntry.slot_at).where(
+                EditorialPlanEntry.cluster_public_id == illegal["cluster_public_id"]
+            )
+        ).scalar_one()
+    assert _aware(reserved) == illegal["slot_at"], (
+        f"the correction rewrote the plan's own reserved minute: {_aware(reserved)}"
+    )
+
+    # --- positive control: the legal entry is untouched by any of it.
     assert _outcome(moved, legal["cluster_public_id"])["outcome"] == "scheduled"
+    assert _outcome(moved, legal["cluster_public_id"])["reason"] == "", (
+        "a booked minute the window admits was reported as a correction"
+    )
     status, slot, _ = _status(legal_post)
     assert status == "scheduled"
     assert _aware(slot) == legal["slot_at"]
