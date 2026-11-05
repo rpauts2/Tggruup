@@ -110,10 +110,17 @@ def test_manual_retry_refuses_unknown_outcome(monkeypatch):
     result = _retry_failed_publish(public_id)
 
     assert result["ok"] is False
-    assert result["error"] == "not_failed"
+    # §80 asks for a refusal that names itself. Before the shared guard was
+    # extracted, `publish_unknown` was refused under the generic `not_failed`
+    # code, which is indistinguishable from "this row is scheduled" in the journal
+    # and in the panel toast — the one rule the operator most needs to see
+    # explained was the one the code refused to explain.
+    assert result["error"] == "publish_outcome_unknown"
+    assert "duplicate" in result["reason"].lower()
     with session_scope() as session:
         row = session.query(Post).filter_by(public_id=public_id).one()
         assert row.status == "publish_unknown"
+        assert row.attempts == 2
 
 
 def test_watchdog_alerts_on_terminal_primary_publish_failures():

@@ -8,8 +8,12 @@ wired into the cycle as the `maintenance` stage and deletes exactly two things:
 * clusters that never became ready within the TTL window;
 * raw items / run rows older than the retention window.
 
-Posts, media and crosspost logs are never touched here: they are the history
-the operator and the analytics depend on.
+Posts, media and crosspost logs are never deleted here: they are the history
+the operator and the analytics depend on. The one exception is the pair of
+consent-gated repairs at the bottom of this file
+(`publication_evidence_repair`, `requeue_failed_publishes`), which *rewrite*
+publication states without deleting anything — and only behind an `*_APPLY`
+environment flag, an explicit `--apply` and a fresh copy in `backup/`.
 """
 
 from __future__ import annotations
@@ -17,10 +21,12 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, select, text, update
 
 from tgfarm.core.logging import get_logger
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, RawItem
 from tgfarm.db.session import get_engine, session_scope
@@ -36,6 +42,13 @@ def _truthy_env(name: str) -> bool:
     than a tuned knob, so it stays an env read with an explicit vocabulary.
     """
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on", "apply"}
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes; ages must not depend on that quirk."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def expire_stale_clusters(hours: int | None = None) -> int:
@@ -471,6 +484,348 @@ def _publication_evidence_repair() -> int:
     return int(report.get("moved") or 0)
 
 
+# ------------------------------------------------------------------ requeue path
+#: §80 consent for the bulk requeue of terminal publish failures. Same shape as
+#: `PUBLICATION_EVIDENCE_APPLY_ENV`: read straight from the environment (not a
+#: `Settings` field — `core/settings.py` is another owner's contract, and this is
+#: an operator decision rather than a tuned knob) and documented in `.env.example`
+#: with the default off. Without it the sweep previews and writes nothing.
+PUBLISH_FAILURE_REQUEUE_APPLY_ENV = "PUBLISH_FAILURE_REQUEUE_APPLY"
+
+#: Rows one apply pass may move, whatever the caller asked for. The live queue
+#: carried 365 terminal failures after the 2026-10-29 Dzen DNS outage; an
+#: operator who means "start working through these" is one click away from
+#: handing the publisher 365 six-day-old drafts at once, so a pass is capped.
+REQUEUE_BUDGET_MAX = 200
+
+#: Named refusals, so a "no" always says which rule said it. `requeue_eligibility`
+#: is the only place that produces them; both operator paths ask the same question.
+REQUEUE_REFUSALS: dict[str, str] = {
+    "not_failed": "the row is not a terminal failure; only `failed` posts are requeued",
+    "publish_outcome_unknown": (
+        "§80: an unknown publication outcome is never requeued — the platform may "
+        "already hold the post, so a repeat is a blind duplicate. Resolve it on the "
+        "reconciliation board instead."
+    ),
+    "already_published": "the row carries a Telegram message id or a published_at stamp",
+    "journaled_posted": "the journal already records this post as accepted by that platform",
+    "outcome_uncertain": (
+        "the stored error is a driver death, which does not prove the material never "
+        "reached the platform; park it as publish_unknown instead"
+    ),
+    "platform_disabled": "the destination platform is switched off, so the row would "
+    "sit in the queue and never be picked up",
+}
+
+
+def requeue_eligibility(
+    *,
+    status: str | None,
+    publish_error: object = None,
+    tg_message_id: object = None,
+    published_at: object = None,
+    journaled_posted: bool = False,
+    platform: str = "",
+    enabled: bool = True,
+) -> tuple[bool, str]:
+    """May this row go back into the queue? One answer for both operator paths.
+
+    The panel's single-post `POST /api/posts/{id}/retry` and the bulk sweep below
+    ask this one question, so a guard written for one of them cannot be missing
+    from the other — which is exactly how a second, looser requeue path would be
+    born.
+
+    `status` is checked first and `publish_unknown` gets its own refusal code:
+    §80 forbids requeueing it, and a rule that shares the generic `not_failed`
+    label with every other state cannot be audited later. The remaining guards all
+    ask the same thing from a different angle — *is there any evidence the
+    platform received this?* — because `failed` is what our own classifier decided,
+    not what the remote side proved.
+    """
+    name = str(status or "")
+    if name == "publish_unknown":
+        return False, "publish_outcome_unknown"
+    if name != "failed":
+        return False, "not_failed"
+    if tg_message_id is not None or published_at is not None:
+        return False, "already_published"
+    if journaled_posted:
+        return False, "journaled_posted"
+    from tgfarm.s7_publish import _uncertain_driver_error
+
+    if _uncertain_driver_error(str(publish_error or "")):
+        return False, "outcome_uncertain"
+    if not enabled:
+        return False, "platform_disabled"
+    return True, ""
+
+
+def requeue_failed_publishes(
+    *,
+    apply: bool = False,
+    limit: int = 50,
+    platform: str | None = None,
+    reason: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Move terminal publish failures back into the queue — bounded, consented, journalled.
+
+    Why this exists: `tgfarm review` and the new `/api/backlog` card show the
+    operator that 365 `failed` posts carry 1890 retries between them, and the
+    rows written by `requeue_unsubmitted` literally end with "Requeue manually if
+    it is still relevant" — but the only manual path was one click per post on a
+    board that lists 25 of them per bucket. Showing the backlog without a way to
+    work through it leaves the operator with SQL.
+
+    The write follows the `duplicate_of` and `publication_evidence_repair`
+    vocabulary rather than inventing one: it previews by default, an apply pass is
+    bounded (`REQUEUE_BUDGET_MAX`), it refuses to write without
+    `PUBLISH_FAILURE_REQUEUE_APPLY` *and* a fresh copy in `backup/`, the operator
+    has to type the reason (the rows are stale by construction — that is what
+    `expired:` means — so "still relevant" is a human judgement and belongs in the
+    journal), and every moved row gets its own `OperatorLog` entry carrying the
+    redacted error it failed with.
+
+    What it will not do: touch `publish_unknown` (§80 — a repeat there is a blind
+    duplicate), requeue a row that carries any evidence of publication, requeue a
+    row whose stored error is a driver death, or requeue onto a platform the
+    operator has switched off. Those refusals are counted and named in the report,
+    never silently skipped.
+
+    Nothing here publishes anything: it sets `status = "scheduled"`, which is the
+    state the publisher already reads, with the same fields the single-post retry
+    resets. Whether the farm then sends is the publisher's existing policy.
+    """
+    from sqlalchemy import func
+
+    from tgfarm.db.models import Channel as ChannelRow
+    from tgfarm.db.models import OperatorLog
+    from tgfarm.db.models import Post as PostRow
+    from tgfarm.platforms import is_platform_enabled
+
+    current = _as_utc(now) or datetime.now(UTC)
+    budget = max(1, min(int(limit), REQUEUE_BUDGET_MAX))
+    target_platform = str(platform or "").strip().lower() or None
+    operator_reason = str(reason or "").strip()
+
+    report: dict[str, Any] = {
+        "apply": bool(apply),
+        "consent": _truthy_env(PUBLISH_FAILURE_REQUEUE_APPLY_ENV),
+        "limit": budget,
+        "requested_limit": int(limit),
+        "platform": target_platform,
+        "reason": operator_reason,
+        "scanned": 0,
+        "eligible": 0,
+        "parked_unknown": 0,
+        "parked_unknown_reason": REQUEUE_REFUSALS["publish_outcome_unknown"],
+        "by_platform": {},
+        "refusals": {},
+        "refused_rows": [],
+        "refused": None,
+        "sample": [],
+        "changed": 0,
+        "remaining": 0,
+    }
+
+    with session_scope() as session:
+        stmt = (
+            select(PostRow, ChannelRow.platform)
+            .join(ChannelRow, ChannelRow.id == PostRow.channel_id, isouter=True)
+            .where(PostRow.status == "failed")
+            # Freshest material first: a pass budget spent on the oldest rows
+            # requeues the content least likely to still be news, and the
+            # operator has to be able to stop after one pass and look at what
+            # came back. The reconciliation board sorts its `terminal` bucket the
+            # same way, so the two views agree about what a "next hundred" means.
+            .order_by(PostRow.created_at.desc(), PostRow.id.desc())
+        )
+        # Counted, never selected: the operator reading "365 failed, 51 unknown"
+        # needs this button to say out loud that the second number is not its
+        # business. A silent skip is how a §80 rule gets forgotten.
+        parked_stmt = select(func.count()).select_from(PostRow).join(
+            ChannelRow, ChannelRow.id == PostRow.channel_id, isouter=True
+        ).where(PostRow.status == "publish_unknown")
+        if target_platform:
+            stmt = stmt.where(func.lower(ChannelRow.platform) == target_platform)
+            parked_stmt = parked_stmt.where(func.lower(ChannelRow.platform) == target_platform)
+        scanned: list[dict[str, Any]] = []
+        for post, row_platform in session.execute(stmt).all():
+            # The publisher's own fallback, not the display one: `due_posts` treats
+            # a post whose channel row is gone as telegram, so a requeue that
+            # called it `unknown` and refused it would disagree with what happens
+            # to the same row one tick later. `/api/backlog` may report it as
+            # `unknown`, because that card only has to describe it.
+            name = str(row_platform or "").lower() or "telegram"
+            age = _as_utc(post.created_at)
+            scanned.append(
+                {
+                    "id": int(post.id),
+                    "public_id": str(post.public_id),
+                    "platform": name,
+                    "status": str(post.status or ""),
+                    "error": post.publish_error,
+                    "tg_message_id": post.tg_message_id,
+                    "published_at": post.published_at,
+                    "attempts": int(post.attempts or 0),
+                    # Content age, not "since it last failed": `requeue_unsubmitted`
+                    # closed these rows out for being older than `max_age_hours` of
+                    # *material*, so the number the operator needs in order to judge
+                    # relevance is the one that decision used.
+                    "age_hours": (
+                        round((current - age).total_seconds() / 3600, 1) if age else None
+                    ),
+                }
+            )
+        report["parked_unknown"] = int(session.execute(parked_stmt).scalar_one() or 0)
+
+    report["scanned"] = len(scanned)
+    if not scanned:
+        return report
+
+    public_ids = [row["public_id"] for row in scanned]
+    journal: set[tuple[str, str]] = set()
+    with session_scope() as session:
+        accepted = (
+            session.execute(
+                select(CrosspostLog.post_public_id, func.lower(CrosspostLog.platform))
+                .where(
+                    CrosspostLog.status == "posted",
+                    CrosspostLog.post_public_id.in_(public_ids),
+                )
+                .distinct()
+            )
+            .all()
+        )
+        journal = {(str(row[0]), str(row[1] or "")) for row in accepted}
+
+    enabled: dict[str, bool] = {}
+    for row in scanned:
+        name = str(row["platform"])
+        if name not in enabled:
+            enabled[name] = bool(is_platform_enabled(name))
+
+    chosen: list[dict[str, Any]] = []
+    for row in scanned:
+        name = str(row["platform"])
+        ok, refusal = requeue_eligibility(
+            status=row["status"],
+            publish_error=row["error"],
+            tg_message_id=row["tg_message_id"],
+            published_at=row["published_at"],
+            journaled_posted=(str(row["public_id"]), name) in journal,
+            platform=name,
+            enabled=enabled.get(name, False),
+        )
+        if not ok:
+            report["refusals"][refusal] = int(report["refusals"].get(refusal, 0)) + 1
+            if len(report["refused_rows"]) < 20:
+                report["refused_rows"].append(
+                    {
+                        "public_id": row["public_id"],
+                        "platform": name,
+                        "reason": refusal,
+                        "detail": REQUEUE_REFUSALS.get(refusal, refusal),
+                    }
+                )
+            continue
+        report["by_platform"][name] = int(report["by_platform"].get(name, 0)) + 1
+        chosen.append(row)
+
+    report["eligible"] = len(chosen)
+    report["remaining"] = max(0, len(chosen) - budget)
+    moving = chosen[:budget]
+    report["sample"] = [
+        {
+            "public_id": row["public_id"],
+            "platform": row["platform"],
+            "attempts": row["attempts"],
+            "age_hours": row["age_hours"],
+            "error": redact_sensitive_text(row["error"], limit=120),
+        }
+        for row in moving[:20]
+    ]
+
+    if not apply:
+        return report
+    if not report["consent"]:
+        report["refused"] = (
+            f"{PUBLISH_FAILURE_REQUEUE_APPLY_ENV} is not set: "
+            "terminal failures are not requeued without it"
+        )
+        log.warning("maintenance: failed requeue refused — %s", report["refused"])
+        return report
+    if not operator_reason:
+        report["refused"] = (
+            "no reason given: these rows were closed out as stale, so putting them "
+            "back in the queue is a claim that the content is still relevant, and "
+            "the journal has to say who claimed it and why"
+        )
+        log.warning("maintenance: failed requeue refused — %s", report["refused"])
+        return report
+    backup = _fresh_backup_copy()
+    report["backup"] = backup
+    if not backup["ok"]:
+        report["refused"] = f"no fresh copy in backup/: {backup.get('reason')}"
+        log.warning("maintenance: failed requeue refused — %s", report["refused"])
+        return report
+    if not moving:
+        return report
+
+    changed = 0
+    with session_scope() as session:
+        for row in moving:
+            name = str(row["platform"])
+            fresh = session.get(PostRow, int(row["id"]))
+            if fresh is None:
+                continue
+            ok, refusal = requeue_eligibility(
+                status=fresh.status,
+                publish_error=fresh.publish_error,
+                tg_message_id=fresh.tg_message_id,
+                published_at=fresh.published_at,
+                journaled_posted=(str(fresh.public_id), name) in journal,
+                platform=name,
+                enabled=enabled.get(name, False),
+            )
+            if not ok:
+                # The row moved under us between the scan and the write — most
+                # likely a publisher tick picked it up. Counting the change here
+                # would credit this pass with a requeue it did not perform.
+                report["refusals"][refusal] = int(report["refusals"].get(refusal, 0)) + 1
+                continue
+            previous = redact_sensitive_text(fresh.publish_error, limit=240)
+            reset_from = int(fresh.attempts or 0)
+            fresh.status = "scheduled"
+            fresh.scheduled_at = current
+            fresh.attempts = 0
+            fresh.publish_error = None
+            fresh.publish_heartbeat_at = None
+            session.add(
+                OperatorLog(
+                    action="requeue-failed",
+                    target=str(fresh.public_id)[:64],
+                    detail=(
+                        f"{name}: failed -> scheduled; budget reset from "
+                        f"{reset_from} attempts; reason: {operator_reason}"
+                        f" | last error: {previous}"
+                    )[:500],
+                )
+            )
+            changed += 1
+
+    report["changed"] = changed
+    log.warning(
+        "maintenance: requeued %d terminal publish failures into the queue "
+        "(%d still eligible beyond this pass, refusals: %s, reason: %s)",
+        changed,
+        report["remaining"],
+        report["refusals"],
+        operator_reason,
+    )
+    return report
+
+
 def _close_stale_ai_reservations() -> int:
     """Close AI budget reservations whose process died mid-call.
 
@@ -484,7 +839,17 @@ def _close_stale_ai_reservations() -> int:
 
 
 def run_maintenance() -> dict[str, int | bool]:
-    """One maintenance pass; every step fails separately, not the stage."""
+    """One maintenance pass; every step fails separately, not the stage.
+
+    `requeue_failed_publishes` is deliberately NOT in this list. The two
+    consent-gated repairs above can run from the cycle because they only ever move
+    a row into a state that is more honest than the one it sat in; a requeue is the
+    opposite — it restarts a publication the farm already gave up on, and it does
+    so for rows the system closed out precisely because the content had gone stale.
+    That judgement is an operator action (`tgfarm requeue-failed`, the panel, the
+    API), not something a scheduled stage should be able to do because an
+    environment variable happened to be set.
+    """
     out: dict[str, int | bool] = {}
     for name, fn in (
         ("stale_clusters", expire_stale_clusters),
@@ -519,5 +884,7 @@ __all__ = [
     "prune_crosspost_logs",
     "prune_pipeline_runs",
     "prune_raw_items",
+    "requeue_eligibility",
+    "requeue_failed_publishes",
     "run_maintenance",
 ]

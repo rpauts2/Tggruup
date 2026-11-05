@@ -4800,6 +4800,95 @@
     }
   }
 
+  // Rows one click may return to the queue. The card says «365 failed, 1890
+  // attempts»; a button that quietly moved all of them at once would hand the
+  // publisher a year of stale drafts, so the panel asks for a pass, not for a pile.
+  const REQUEUE_PASS = 50;
+
+  const REQUEUE_REFUSAL_LABELS = {
+    publish_outcome_unknown: "исход неизвестен (§80: сверка, не повтор)",
+    not_failed: "не финальный отказ",
+    already_published: "есть сообщение или отметка публикации",
+    journaled_posted: "в журнале уже стоит posted",
+    outcome_uncertain: "драйвер умер во время отправки",
+    platform_disabled: "площадка выключена",
+  };
+
+  function requeueSummary(report) {
+    const byPlatform = Object.entries(report.by_platform || {})
+      .map(([name, count]) => name + ": " + count)
+      .join(", ");
+    const refusals = Object.entries(report.refusals || {})
+      .map(([reason, count]) => (REQUEUE_REFUSAL_LABELS[reason] || reason) + " — " + count)
+      .join("; ");
+    // `Number(undefined || 0)` is a finite 0, so the filter below it could never
+    // drop anything and a sample with no age printed «самому старшему 0 дн» — a
+    // number for a thing that was never measured. Keep only real numbers and let
+    // `hrs` say «нет отчёта» for the rest, the same way the queue card does.
+    const ages = (report.sample || [])
+      .map((row) => row.age_hours)
+      .filter((value) => typeof value === "number" && Number.isFinite(value));
+    const oldest = ages.length ? hrs(Math.max(...ages)) : "нет отчёта";
+    const lines = [
+      "Строк в состоянии failed: " + Number(report.scanned || 0) + ".",
+      "Можно вернуть: " + Number(report.eligible || 0)
+        + " (за один проход не больше " + Number(report.limit || 0) + ")",
+      "самому старшему из выборки " + oldest + ".",
+      byPlatform ? "Площадки: " + byPlatform + "." : "",
+      refusals ? "Не трогает: " + refusals + "." : "",
+      Number(report.remaining || 0)
+        ? "Ещё ждут следующего прохода: " + Number(report.remaining) + "."
+        : "",
+    ].filter(Boolean);
+    return lines.join(" ");
+  }
+
+  async function requeueFailedBatch() {
+    let preview;
+    try {
+      preview = await post("/api/posts/retry-failed", { apply: false, limit: REQUEUE_PASS });
+    } catch (error) {
+      toast("Предпросмотр не получился: " + (error?.message || error), "err");
+      return;
+    }
+    const summary = requeueSummary(preview);
+    if (!Number(preview.eligible || 0)) {
+      toast("Возвращать нечего. " + summary, "ok");
+      return;
+    }
+    if (!confirm(summary + "\n\nЭти строки были закрыты как устаревшие. Возврат в очередь —"
+      + " обещание издателя, что материал ещё актуален; причина попадёт в журнал."
+      + " Площадку никто не трогает: посты просто снова окажутся в scheduled.")) return;
+    let reason;
+    try {
+      reason = prompt("Причина возврата (попадёт в журнал оператора):");
+    } catch (error) {
+      toast("Браузер не дал ввести причину — возврат отменён.", "err");
+      return;
+    }
+    const text = (reason || "").trim();
+    if (!text) {
+      toast("Без причины сервер не пишет: эти строки уже были признаны устаревшими.", "err");
+      return;
+    }
+    try {
+      const report = await post("/api/posts/retry-failed", {
+        apply: true,
+        limit: REQUEUE_PASS,
+        reason: text,
+      });
+      if (report.refused) {
+        toast("Отказано: " + report.refused, "err");
+        return;
+      }
+      toast("В очередь вернулось постов: " + Number(report.changed || 0) + ". " + summary, "ok");
+      await loadReviewBoard(true);
+      refresh();
+    } catch (error) {
+      toast("Проход не выполнился: " + (error?.message || error), "err");
+    }
+  }
+
   /* ---------------------------------------------------------------- wiring */
   function switchView(view) {
     state.view = view;
@@ -4860,6 +4949,8 @@
   }
   const reviewRefresh = $("#review-refresh");
   if (reviewRefresh) reviewRefresh.addEventListener("click", () => loadReviewBoard(true));
+  const reviewRequeue = $("#review-requeue");
+  if (reviewRequeue) reviewRequeue.addEventListener("click", () => requeueFailedBatch());
   $$("#review-filters button").forEach((button) =>
     button.addEventListener("click", () => {
       state.reviewFilter = button.dataset.bucket || "";

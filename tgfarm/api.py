@@ -70,6 +70,17 @@ class PublishReconcileRequest(BaseModel):
     confirm_not_published: bool = False
 
 
+class FailedRequeueRequest(BaseModel):
+    """The bulk requeue asks for the same three things the CLI does: how many,
+    where, and why. `apply` is False in the shipped default because the panel's
+    first call is the preview, and a click that only looked must be the default."""
+
+    apply: bool = False
+    limit: int = 50
+    platform: str | None = None
+    reason: str = ""
+
+
 class CrosspostReconcileRequest(BaseModel):
     action: Literal["confirm_posted", "retry_after_check"]
     confirm_not_published: bool = False
@@ -1845,7 +1856,14 @@ def _unknown_publish_ids(public_ids: list[str]) -> list[str]:
 
 
 def _retry_failed_publish(public_id: str) -> dict:
-    """Manually requeue a terminal, definite publish failure after the cause is fixed."""
+    """Manually requeue a terminal, definite publish failure after the cause is fixed.
+
+    The guard is `maintenance.requeue_eligibility` — the same one the bulk sweep
+    uses — so the single-post click and the bounded pass can never disagree about
+    what is safe to requeue. A second, looser requeue path is the failure mode this
+    is written against.
+    """
+    from tgfarm.maintenance import REQUEUE_REFUSALS, requeue_eligibility
     from tgfarm.platforms import is_platform_enabled
 
     with session_scope() as session:
@@ -1854,19 +1872,43 @@ def _retry_failed_publish(public_id: str) -> dict:
         ).scalar_one_or_none()
         if row is None:
             return {"ok": False, "error": "not_found"}
-        if row.status != "failed":
-            return {"ok": False, "error": "not_failed", "status": row.status}
-        if row.tg_message_id is not None:
-            return {"ok": False, "error": "already_published"}
         channel = session.get(Channel, row.channel_id)
         platform = ((channel.platform if channel else None) or "telegram").lower()
-        if not is_platform_enabled(platform):
-            return {
+        journaled = (
+            session.execute(
+                select(CrosspostLog.id).where(
+                    CrosspostLog.post_public_id == public_id,
+                    # Lowered on the SQL side, exactly as the bulk sweep does it:
+                    # `platform` here is already lowercased, and the docstring of
+                    # the shared guard promises these two paths cannot disagree.
+                    func.lower(CrosspostLog.platform) == platform,
+                    CrosspostLog.status == "posted",
+                ).limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+        ok, refusal = requeue_eligibility(
+            status=row.status,
+            publish_error=row.publish_error,
+            tg_message_id=row.tg_message_id,
+            published_at=row.published_at,
+            journaled_posted=journaled,
+            platform=platform,
+            enabled=is_platform_enabled(platform),
+        )
+        if not ok:
+            payload: dict[str, Any] = {
                 "ok": False,
-                "error": "platform_disabled",
+                "error": refusal,
+                "reason": REQUEUE_REFUSALS.get(refusal, refusal),
                 "platform": platform,
             }
+            if refusal == "not_failed":
+                payload["status"] = row.status
+            return payload
 
+        previous = row.publish_error
+        previous_attempts = int(row.attempts or 0)
         row.status = "scheduled"
         row.scheduled_at = datetime.now(UTC)
         row.attempts = 0
@@ -1877,6 +1919,11 @@ def _retry_failed_publish(public_id: str) -> dict:
             "public_id": public_id,
             "platform": platform,
             "scheduled_at": row.scheduled_at,
+            # The reset above erases the reason from the row, so the audit trail is
+            # the only place left that says what this post failed with. Redacted and
+            # bounded: `publish_error` is untrusted platform text.
+            "previous_error": redact_sensitive_text(previous, limit=200),
+            "previous_attempts": previous_attempts,
         }
 
 
@@ -4897,16 +4944,61 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         )
         return {"rescheduled": updated, **published}
 
+    @app.post("/api/posts/retry-failed")
+    async def requeue_failed_posts(request: FailedRequeueRequest) -> dict:
+        """Bounded, consented, journalled requeue of terminal publish failures.
+
+        A POST that writes nothing unless `apply` is true: the panel calls it once
+        to see what a pass would do (counts, a sample with ages, and every refusal
+        with the rule that produced it) and again to do it. The §80 gates — the
+        consent flag and a fresh copy in `backup/` — are enforced inside
+        `maintenance.requeue_failed_publishes`, not here, so the CLI cannot bypass
+        them by importing the function and this route cannot weaken them. A refusal
+        comes back as a normal report carrying `refused`, not as an HTTP error,
+        because the numbers the operator was reading are still the product.
+        """
+        from tgfarm.maintenance import requeue_failed_publishes
+
+        report = await io(
+            requeue_failed_publishes,
+            apply=request.apply,
+            limit=request.limit,
+            platform=request.platform,
+            reason=request.reason,
+        )
+        _operator(
+            "requeue-failed-batch",
+            (request.platform or "all"),
+            " ".join(
+                part
+                for part in (
+                    f"apply={report['apply']}",
+                    f"changed={report['changed']}",
+                    f"eligible={report['eligible']}",
+                    f"scanned={report['scanned']}",
+                    f"refusals={report['refusals']}",
+                    f"reason={redact_sensitive_text(request.reason, limit=120)}",
+                    f"REFUSED: {report['refused']}" if report.get("refused") else "",
+                )
+                if part
+            )[:500],
+        )
+        return report
+
     @app.post("/api/posts/{post_public_id}/retry")
     async def retry_failed_publish(post_public_id: str) -> dict:
         result = await io(_retry_failed_publish, post_public_id)
         if not result.get("ok"):
             code = 404 if result.get("error") == "not_found" else 409
-            raise HTTPException(code, result.get("error", "retry failed"))
+            # The refusal has to say which rule refused it, or the operator reads
+            # "not_failed" and has to guess whether that means §80 or a stale click.
+            raise HTTPException(code, result.get("reason") or result.get("error", "retry failed"))
         _operator(
             "publish-retry",
             post_public_id,
-            f"manually requeued after definite failure on {result['platform']}",
+            f"manually requeued after definite failure on {result['platform']}: budget "
+            f"reset from {result.get('previous_attempts')} attempts"
+            f" | last error: {result.get('previous_error')}",
         )
         return result
 

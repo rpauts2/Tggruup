@@ -76,3 +76,67 @@ def test_dashboard_refresh_degrades_gracefully(client):
     # Failed sections are reported, a total outage still raises.
     assert 'failed.length === Object.keys(endpoints).length' in body
     assert '"status" in data' in body
+
+
+def _requeue_body(script: str) -> str:
+    start = script.index("async function requeueFailedBatch()")
+    end = script.index("/* ---------------------------------------------------------------- wiring */", start)
+    return script[start:end]
+
+
+def test_bulk_requeue_button_is_wired_and_previews_first(client):
+    """The board shows 365 failed posts and used to offer 365 clicks.
+
+    Contract: one button, one bounded pass, and the preview call happens before
+    anything can write — a button that POSTed `apply: true` straight away would
+    restart 50 abandoned publications on a single click.
+    """
+    html = client.get("/").text
+    script = client.get("/ui/app.js").text
+    assert 'id="review-requeue"' in html
+    body = _requeue_body(script)
+    assert 'post("/api/posts/retry-failed", { apply: false, limit: REQUEUE_PASS })' in body
+    assert "apply: true" in body
+    assert "report.refused" in body, "a refused pass must be shown, not toasted as success"
+    assert "REQUEUE_PASS = 50" in script
+    assert "await loadReviewBoard(true)" in body
+
+
+def test_bulk_requeue_demands_a_reason_before_it_asks(client):
+    """Server-side, an empty reason is refused. The panel must not offer to write
+    without one, or every click ends in an error toast and an operator who cannot
+    tell what they did wrong."""
+    body = _requeue_body(client.get("/ui/app.js").text)
+    preview_call = body.index("apply: false")
+    prompt_call = body.index("prompt(")
+    apply_call = body.index("apply: true")
+    assert preview_call < prompt_call < apply_call, "preview, then reason, then write"
+    assert "if (!text)" in body
+    assert "requeueSummary" in body
+
+
+def test_bulk_requeue_names_the_80_refusal_in_the_ui(client):
+    """A refusal the operator cannot read is a refusal they route around with SQL."""
+    script = client.get("/ui/app.js").text
+    assert "publish_outcome_unknown" in script
+    labels = script[script.index("REQUEUE_REFUSAL_LABELS") :]
+    assert "§80" in labels[: labels.index("};")]
+    report = script[script.index("function requeueSummary") :]
+    assert "report.remaining" in report, "a bounded pass must say how much is left"
+    assert "report.scanned" in report and "report.eligible" in report
+
+
+def test_bulk_requeue_summary_refuses_to_invent_an_age(client):
+    """P34, applied to the button's own sentence.
+
+    `Number(row.age_hours || 0)` is a finite zero, so a sample whose rows carry no
+    age printed «самому старшему 0 дн» — a measurement that never happened, stated
+    as a fact, in the one line the operator reads before agreeing to a write.
+    """
+    script = client.get("/ui/app.js").text
+    start = script.index("function requeueSummary")
+    summary = script[start : script.index("async function requeueFailedBatch()", start)]
+    assert "Number(row.age_hours || 0)" not in summary
+    assert 'typeof value === "number"' in summary
+    assert "hrs(Math.max(...ages))" in summary, "the queue card already owns this formatter"
+    assert '"нет отчёта"' in summary

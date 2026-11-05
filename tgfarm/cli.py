@@ -25,6 +25,7 @@
     tgfarm dzen-stats           read Dzen Studio metrics into PostStat
     tgfarm repair-duplicates [--apply]  preview, then repoint stored duplicate links
     tgfarm publication-evidence [--apply]  preview, then reclassify evidence-free publications
+    tgfarm requeue-failed [--apply] [--reason TEXT]  preview, then return terminal failures to the queue
     tgfarm history-import FILE  import old publication exports (preview by default)
 """
 
@@ -610,6 +611,40 @@ def cmd_requeue_unsubmitted(args) -> int:
     return 0
 
 
+def cmd_requeue_failed(args) -> int:
+    """Move terminal publish failures back into the queue, a bounded pass at a time.
+
+    The sibling of `requeue-unsubmitted` for the rows that sweep deliberately will
+    not touch: `requeue_unsubmitted` closes a stale never-submitted post out with
+    "Requeue manually if it is still relevant", and until now the only manual path
+    was one click per row on a board that lists 25 per bucket. Preview is the
+    default, like the other two writes; `--apply` additionally needs
+    `PUBLISH_FAILURE_REQUEUE_APPLY`, a fresh copy in `backup/`, and `--reason`,
+    because declaring week-old material still relevant is a human decision and the
+    journal has to record who made it.
+    """
+    from tgfarm.maintenance import REQUEUE_BUDGET_MAX, requeue_failed_publishes
+
+    _bootstrap()
+    report = requeue_failed_publishes(
+        apply=bool(args.apply),
+        limit=args.limit,
+        platform=args.platform,
+        reason=args.reason,
+    )
+    _print(report)
+    if not args.apply:
+        print(
+            f"предпросмотр: {report['eligible']} строк можно вернуть в очередь "
+            f"(за один проход не больше {min(report['limit'], REQUEUE_BUDGET_MAX)}); "
+            "ни одна строка не изменена, повтори с --apply --reason \"...\""
+        )
+    elif report.get("refused"):
+        print(f"отказано: {report['refused']}")
+        return 1
+    return 0
+
+
 def cmd_doctor(_args) -> int:
     from tgfarm.diagnostics import run_doctor
 
@@ -890,6 +925,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the changes; without it the command is a dry run",
     )
     p_requeue.set_defaults(func=cmd_requeue_unsubmitted)
+
+    p_requeue_failed = sub.add_parser(
+        "requeue-failed",
+        help="preview, then return terminal publish failures to the queue",
+    )
+    p_requeue_failed.add_argument("--platform", default=None, help="only this platform id")
+    p_requeue_failed.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="rows one --apply pass may requeue (clamped to 200)",
+    )
+    p_requeue_failed.add_argument(
+        "--reason",
+        default="",
+        help="why this material is still relevant; required for --apply, journalled",
+    )
+    p_requeue_failed.add_argument(
+        "--apply",
+        action="store_true",
+        help="write for real; needs PUBLISH_FAILURE_REQUEUE_APPLY, a fresh copy in "
+        "backup/ and --reason",
+    )
+    p_requeue_failed.set_defaults(func=cmd_requeue_failed)
 
     p_report = sub.add_parser("report", help="performance report")
     p_report.add_argument("--days", type=int, default=7)

@@ -64,6 +64,7 @@ DELIBERATE_EXCEPTIONS: dict[str, str] = {
 # key that is claimed here but read nowhere, so an entry cannot outlive its reader.
 DIRECT_ENV_KEYS: dict[str, str] = {
     "PUBLICATION_EVIDENCE_REPAIR_APPLY": "read by _truthy_env() in tgfarm/maintenance.py",
+    "PUBLISH_FAILURE_REQUEUE_APPLY": "read by _truthy_env() in tgfarm/maintenance.py",
 }
 
 
