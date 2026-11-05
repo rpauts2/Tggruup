@@ -155,6 +155,74 @@
       .join("");
   }
 
+  // The four statuses come from tgfarm/s8_analytics/coverage.py (STATUS_*). Each
+  // gets its own colour and its own wording: "nobody measures this platform" and
+  // "we measure it and throw the numbers away" are different defects, and an
+  // operator who sees one grey label for both cannot act on either.
+  const COVERAGE_STATUS = {
+    blocked: { cls: "tag-err", label: "измерение заблокировано", order: 0 },
+    unmeasured: { cls: "tag-none", label: "не измерено", order: 1 },
+    partial: { cls: "tag-warn", label: "измеряет частично", order: 2 },
+    measured: { cls: "tag-ok", label: "измеряется", order: 3 },
+  };
+
+  function renderMetricsCoverage(payload) {
+    const root = $("#metrics-coverage");
+    if (!root) return;
+    const data = payload || {};
+    const meta = $("#metrics-coverage-meta");
+    // A failed read has no numbers at all. Rendering the totals of the empty
+    // report it comes back as would print "0 of 0 measured", which looks exactly
+    // like a quiet platform and would destroy the only reason this audit exists.
+    if (data.error) {
+      if (meta) meta.textContent = "Аудит не выполнен — ниже не нули, а отсутствие данных";
+      root.innerHTML = '<div class="alert alert-err"><b>Чтение покрытия не удалось:</b> '
+        + esc(data.error) + "</div>"
+        + '<div class="empty">Ни одной цифры не показано: вместо них был бы ноль.</div>';
+      return;
+    }
+    const rows = Object.values(data.platforms || {});
+    if (!rows.length) {
+      if (meta) meta.textContent = "Измерять пока нечего: публикаций нет";
+      root.innerHTML = '<div class="empty">Ни на одной площадке нет публикаций — аудит пуст, '
+        + "это не ноль покрытия, это отсутствие предмета.</div>";
+      return;
+    }
+    const totals = data.totals || {};
+    if (meta) {
+      meta.textContent = `из ${Number(totals.published || 0)} опубликованных снимок имеют `
+        + `${Number(totals.measured_posts || 0)}, в них содержательное число — `
+        + `${Number(totals.measured_with_signal || 0)}`;
+    }
+    root.innerHTML = rows
+      .slice()
+      .sort((a, b) => {
+        const rank = (r) => (COVERAGE_STATUS[r.status] || {}).order ?? 4;
+        return rank(a) - rank(b) || Number(b.published || 0) - Number(a.published || 0);
+      })
+      .map((row) => {
+        const status = COVERAGE_STATUS[row.status]
+          || { cls: "tag-none", label: row.status || "статус не распознан" };
+        // The collector line is the whole point: an absent collector is our gap,
+        // a present one returning nothing is a broken read. Say which.
+        const collectorLine = row.collector
+          ? "сборщик " + esc(row.collector)
+          : "<b>сборщика метрик нет — эту площадку никто не измеряет</b>";
+        return '<div class="item"><div class="item-main"><div class="item-title">'
+          + esc(row.platform) + "</div>"
+          + '<div class="item-meta">опубликовано ' + Number(row.published || 0)
+          + " · со снимком " + Number(row.measured_posts || 0)
+          + " · со значимым числом " + Number(row.measured_with_signal || 0)
+          + " · строк метрик " + Number(row.stat_rows || 0) + "</div>"
+          + '<div class="item-meta">' + collectorLine
+          + " · последний снимок " + esc(dt(row.last_snapshot_at)) + "</div>"
+          + (row.reason ? '<div class="item-meta">' + esc(row.reason) + "</div>" : "")
+          + '</div><div class="item-side"><span class="tag ' + status.cls + '">'
+          + esc(status.label) + "</span></div></div>";
+      })
+      .join("");
+  }
+
   function renderMetricsFormats(payload) {
     const root = $("#metrics-formats");
     if (!root) return;
@@ -3558,6 +3626,7 @@
         redditMetrics: "/api/reddit/metrics",
         aiUsage: "/api/ai/usage?days=7",
         metricsFreshness: "/api/metrics/freshness",
+        metricsCoverage: "/api/metrics/coverage",
         metricsFormats: "/api/metrics/formats?days=30",
         distributionPlan: "/api/distribution/plan",
         agentBenchmark: "/api/agents/benchmark",
@@ -3596,6 +3665,7 @@
       }
       if ("report" in data) renderReport(data.report);
       if ("metricsFreshness" in data) renderMetricsFreshness(data.metricsFreshness);
+      if ("metricsCoverage" in data) renderMetricsCoverage(data.metricsCoverage);
       if ("metricsFormats" in data) renderMetricsFormats(data.metricsFormats);
       if ("runs" in data) {
         renderPipeline(data.runs.runs || []);
