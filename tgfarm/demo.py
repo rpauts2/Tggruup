@@ -304,6 +304,37 @@ SEED_STORIES: list[tuple[str, str, list[tuple[str, float, str, str]]]] = [
 ]
 
 
+def _corpus(now: datetime) -> list[RawItem]:
+    """The synthetic corpus as S1 would hand it over: one `RawItem` per outlet.
+
+    Separate from the write because the corpus is a claim about production
+    behaviour, and a claim nobody can measure is a claim nobody can keep: the
+    tests read it with the ingest module's own predicates instead of re-typing
+    the headlines, and the store sees exactly the same documents.
+    """
+    items: list[RawItem] = []
+    for story_index, (niche, _label, outlets) in enumerate(SEED_STORIES):
+        for i, (source_id, weight, title, body) in enumerate(outlets):
+            items.append(
+                RawItem(
+                    source_id=source_id,
+                    external_id=f"demo-{niche}-{source_id}-{i}",
+                    url=f"https://demo.invalid/{niche}/{source_id}/{i}",
+                    title=title,
+                    text=body,
+                    lang="ru",
+                    # every outlet of a story sits inside the current interest
+                    # window, so the demo is judged on the shape a fresh
+                    # multi-outlet story has in production; the per-outlet offset
+                    # fixes the walk order instead of leaving it to insertion time
+                    published_at=now - timedelta(minutes=11 * i + story_index),
+                    niche_hint=[niche],
+                    source_weight=weight,
+                )
+            )
+    return items
+
+
 def _seed_items() -> int:
     """Write synthetic items straight into the store, mirroring what S1 produces.
 
@@ -317,7 +348,6 @@ def _seed_items() -> int:
 
     embedder = get_embedder()
     index = get_index(embedder.dim)
-    now = datetime.now(UTC)
     written = 0
 
     with session_scope() as session:
@@ -332,44 +362,27 @@ def _seed_items() -> int:
             )
         }
 
-        for story_index, (niche, _label, outlets) in enumerate(SEED_STORIES):
-            for i, (source_id, weight, title, body) in enumerate(outlets):
-                external = f"demo-{niche}-{source_id}-{i}"
-                if (source_id, external) in already:
-                    continue
-                item = RawItem(
-                    source_id=source_id,
-                    external_id=external,
-                    url=f"https://demo.invalid/{niche}/{source_id}/{i}",
-                    title=title,
-                    text=body,
-                    lang="ru",
-                    # every outlet of a story sits inside the current interest
-                    # window, so the demo is judged on the shape a fresh
-                    # multi-outlet story has in production; the per-outlet offset
-                    # fixes the walk order instead of leaving it to insertion time
-                    published_at=now - timedelta(minutes=11 * i + story_index),
-                    niche_hint=[niche],
-                    source_weight=weight,
-                )
-                vec = embedder.embed(item.blend)
-                row = RawItemRow(
-                    source_id=item.source_id,
-                    external_id=item.external_id,
-                    url=item.url,
-                    title=item.title,
-                    text=item.text,
-                    lang=item.lang,
-                    published_at=item.published_at,
-                    niche_hint=item.niche_hint,
-                    source_weight=item.source_weight,
-                    embedding=pack(vec),
-                    simhash=fingerprint_of(item.title, item.text),
-                )
-                session.add(row)
-                session.flush()
-                index.add(row.id, vec)
-                written += 1
+        for item in _corpus(datetime.now(UTC)):
+            if (item.source_id, item.external_id) in already:
+                continue
+            vec = embedder.embed(item.blend)
+            row = RawItemRow(
+                source_id=item.source_id,
+                external_id=item.external_id,
+                url=item.url,
+                title=item.title,
+                text=item.text,
+                lang=item.lang,
+                published_at=item.published_at,
+                niche_hint=item.niche_hint,
+                source_weight=item.source_weight,
+                embedding=pack(vec),
+                simhash=fingerprint_of(item.title, item.text),
+            )
+            session.add(row)
+            session.flush()
+            index.add(row.id, vec)
+            written += 1
 
     log.info("demo: seeded %d synthetic items across %d stories", written, len(SEED_STORIES))
     return written
