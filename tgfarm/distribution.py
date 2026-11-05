@@ -22,6 +22,8 @@ from tgfarm.core.text import content_tokens, normalize, token_jaccard
 from tgfarm.crosspost_journal import (
     JOURNAL_STATUS_DRY_RUN,
     JOURNAL_STATUS_FAILED,
+    JOURNAL_STATUS_POSTED,
+    JOURNAL_STATUS_PUBLISHING,
     JOURNAL_STATUS_RETRY_AUTHORIZED,
     JOURNAL_STATUS_SKIPPED,
     JOURNAL_UNKNOWN_STATUS_REASON,
@@ -30,6 +32,73 @@ from tgfarm.crosspost_journal import (
 )
 from tgfarm.db.models import Channel, CrosspostLog, Media, Post, PostStat
 from tgfarm.db.session import session_scope
+
+# ---------------------------------------------------------------------------
+# The journal `status` column read along this module's *budget* axis.
+#
+# `tgfarm/crosspost_journal.py` owns the re-offer vocabulary — SUPPRESSED /
+# TIME_BOUNDED / REOPEN / UNKNOWN — and it answers one question: *may this
+# (post, platform) pair be offered again?* The three sets below answer three
+# different questions about the same column, and every one of them feeds a
+# publishing number:
+#
+#   JOURNAL_ATTEMPT_STATUSES          the denominator of the reliability ratio
+#   JOURNAL_DELIVERED_STATUSES        its numerator, and the "already landed"
+#                                     filter that keeps a delivered text out of
+#                                     the near-duplicate comparison set
+#   JOURNAL_SLOT_OCCUPYING_STATUSES   which newest rows burn a slot of the
+#                                     trailing-24h daily budget
+#
+# They are deliberately *not* derived from the re-offer classes, because the
+# answers differ, and a substitution that reads like a spelling change moves a
+# number:
+#
+#   * `JOURNAL_SUPPRESSED_STATUSES` = {posted, scheduled, unknown, publishing,
+#     permanent}. Using it as the numerator would score `permanent` (the
+#     destination refused this exact content), `publishing` (a claim still in
+#     flight) and `unknown` (an unanswered request) as deliveries, and
+#     `success_rate >= 0.95` would fire on platforms that never succeeded; the
+#     same substitution on the slot filter would add `permanent`.
+#   * `JOURNAL_SUPPRESSED_STATUSES | JOURNAL_TIME_BOUNDED_STATUSES` would add
+#     `skipped` to the attempt denominator, which is not a delivery attempt the
+#     planner made against the destination's API.
+#   * `JOURNAL_KNOWN_STATUSES` would put `dry_run` and `retry_authorized` in the
+#     denominator and every re-openable row in the spent-slot count, so a
+#     dry-run would start costing a publication.
+#
+# Membership is pinned status-by-status in
+# `tests/test_distribution_journal_vocabulary.py`, with the resulting caps and
+# allowances written as literals derived by hand.
+#
+# `scheduled` and `permanent` are still spelled out inside the sets below: the
+# leaf module lists both in `JOURNAL_SUPPRESSED_STATUSES` but declares no
+# `JOURNAL_STATUS_*` constant for either (unlike every other member of these
+# sets), and this block does not own that file. They are deliberately *not*
+# re-declared here as `JOURNAL_STATUS_SCHEDULED` / `JOURNAL_STATUS_PERMANENT`:
+# two public names for one token is the exact failure this module is supposed to
+# remove. Until the leaf declares them, these two literals are the only place
+# the budget vocabulary has to be re-typed, and
+# `tests/test_distribution_journal_vocabulary.py` pins that they are the only
+# two.
+# ---------------------------------------------------------------------------
+
+#: A row that records a real request against the destination's API, answered or
+#: not. A refusal (`permanent`) is still an attempt — it is evidence about the
+#: platform's tolerance of this content, which is exactly what the ratio measures.
+JOURNAL_ATTEMPT_STATUSES = frozenset(
+    {JOURNAL_STATUS_POSTED, "scheduled", JOURNAL_STATUS_FAILED, "permanent"}
+)
+#: A row that says the destination has the material or will publish it. This is
+#: the *success* of an attempt, not the absence of a failure: `skipped`, `dry_run`
+#: and `retry_authorized` are all "not sent yet", and `unknown` is unmeasured.
+JOURNAL_DELIVERED_STATUSES = frozenset({JOURNAL_STATUS_POSTED, "scheduled"})
+#: A row whose pair may not be sent again today. Narrower than SUPPRESSED, the
+#: set its parent question uses, on purpose: a destination that refused this
+#: content (`permanent`) frees its slot, while a claim in flight (`publishing`)
+#: and an unanswered request (`unknown`) spend one.
+JOURNAL_SLOT_OCCUPYING_STATUSES = frozenset(
+    {JOURNAL_STATUS_POSTED, "scheduled", JOURNAL_STATUS_PUBLISHING, "unknown"}
+)
 
 # These are conservative starting budgets, not claims about provider hard caps.
 # Learning may adjust them by at most one post/day from delivery reliability.
@@ -485,11 +554,11 @@ def effective_daily_cap(platform_id: str, recent_logs: list[Any]) -> int:
     base = int(rule["daily"])
     attempts = [
         row for row in recent_logs
-        if row.platform == platform_id and row.status in {"posted", "scheduled", "failed", "permanent"}
+        if row.platform == platform_id and row.status in JOURNAL_ATTEMPT_STATUSES
     ]
     if len(attempts) < 8:
         return clamp_channel_daily_cap(base)
-    success_rate = sum(1 for row in attempts if row.status in {"posted", "scheduled"}) / len(attempts)
+    success_rate = sum(1 for row in attempts if row.status in JOURNAL_DELIVERED_STATUSES) / len(attempts)
     if success_rate >= 0.95:
         return clamp_channel_daily_cap(min(int(rule["max_daily"]), base + 1))
     if success_rate < 0.70:
@@ -747,11 +816,10 @@ def build_distribution_plan(
 
         pair_logs = [row for row in logs if row.platform == platform_id]
         cap = effective_daily_cap(platform_id, pair_logs)
-        count_statuses = {"posted", "scheduled", "publishing", "unknown"}
         daily_sent = sum(
             1 for row in latest.values()
             if row.platform == platform_id
-            and row.status in count_statuses
+            and row.status in JOURNAL_SLOT_OCCUPYING_STATUSES
             and (_utc(row.created_at) or cutoff) >= day_cutoff
         )
         remaining = max(0, cap - daily_sent)
@@ -759,7 +827,9 @@ def build_distribution_plan(
             (
                 _utc(row.created_at)
                 for row in latest.values()
-                if row.platform == platform_id and row.status in count_statuses and row.created_at
+                if row.platform == platform_id
+                and row.status in JOURNAL_SLOT_OCCUPYING_STATUSES
+                and row.created_at
             ),
             default=None,
         )
@@ -805,7 +875,10 @@ def build_distribution_plan(
                     f"{post.hook}\n{post.body}"
                     for post, _channel in candidates
                     if (post.public_id, platform_id) in latest
-                    and latest[(post.public_id, platform_id)].status in {"posted", "scheduled"}
+                    # The same "the destination has it" set the reliability
+                    # numerator uses: a pair already delivered to this platform is
+                    # what makes a near-identical second send a duplicate.
+                    and latest[(post.public_id, platform_id)].status in JOURNAL_DELIVERED_STATUSES
                     and (_utc(latest[(post.public_id, platform_id)].created_at) or cutoff) >= logs_cutoff
                 ]
                 for post, channel in candidates:

@@ -30,6 +30,9 @@ row-likes is enough) and the plan-level allowance arithmetic (`daily_cap` /
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -85,8 +88,6 @@ NON_ATTEMPT_STATUSES = (
     "unknown",
     *UNDECLARED_STATUSES,
 )
-#: The four statuses that *are* attempts, spelled from this file's own table.
-ATTEMPT_STATUSES = ("posted", "scheduled", "failed", "permanent")
 
 
 def _rows(platform: str, statuses) -> list[SimpleNamespace]:
@@ -415,3 +416,147 @@ def test_a_slot_only_counts_inside_the_trailing_day(plan_env: datetime) -> None:
     _assert_budget(entry, cap=OK_BASE, sent=0, remaining=OK_BASE)
     with session_scope() as session:
         session.execute(delete(CrosspostLog).where(CrosspostLog.post_public_id.in_(public_ids)))
+
+
+# ---------------------------------------------------------------------------
+# 4. The vocabulary itself: what the refactor was allowed to change.
+# ---------------------------------------------------------------------------
+
+
+def test_the_budget_sets_are_the_hand_written_tables() -> None:
+    """The named constants are exactly the literals this module always used."""
+    assert distribution.JOURNAL_ATTEMPT_STATUSES == _attempts_set_for_test()
+    assert distribution.JOURNAL_DELIVERED_STATUSES == _delivered_set_for_test()
+    assert distribution.JOURNAL_SLOT_OCCUPYING_STATUSES == _budget_slot_set_for_test()
+
+
+def test_the_budget_axis_is_not_the_reoffer_axis() -> None:
+    """Name the membership that blocks each tempting substitution.
+
+    Pinned as *differences*, so a future change to the leaf vocabulary has to pass
+    through this test rather than silently re-pointing a budget at a re-offer class.
+    """
+    suppressed = crosspost_journal.JOURNAL_SUPPRESSED_STATUSES
+    known = crosspost_journal.JOURNAL_KNOWN_STATUSES
+
+    # `success_rate` may not read SUPPRESSED: three of its members are not
+    # successes, and scoring them as ones pushes platforms over the 0.95 raise.
+    assert suppressed - distribution.JOURNAL_DELIVERED_STATUSES == frozenset(
+        {"permanent", "publishing", "unknown"}
+    )
+    # `daily_sent` may not read SUPPRESSED either: a publication the destination
+    # refused frees its slot, every other member of that class spends one.
+    assert suppressed - distribution.JOURNAL_SLOT_OCCUPYING_STATUSES == frozenset({"permanent"})
+    assert distribution.JOURNAL_SLOT_OCCUPYING_STATUSES < suppressed
+    # The attempt denominator may not read KNOWN: five declared statuses are not
+    # requests made against the destination's API.
+    assert known - distribution.JOURNAL_ATTEMPT_STATUSES == frozenset(
+        {"dry_run", "skipped", "publishing", "retry_authorized", "unknown"}
+    )
+    assert distribution.JOURNAL_ATTEMPT_STATUSES < known
+    # `skipped` in particular is a time-bounded re-offer, not an attempt.
+    assert "skipped" in crosspost_journal.JOURNAL_TIME_BOUNDED_STATUSES
+    assert "skipped" not in distribution.JOURNAL_ATTEMPT_STATUSES
+    # The delivered set is a strict subset of the slot set: an in-flight claim
+    # spends the day's budget without being a delivery.
+    assert distribution.JOURNAL_DELIVERED_STATUSES < distribution.JOURNAL_SLOT_OCCUPYING_STATUSES
+
+
+def test_an_undeclared_status_is_invisible_to_every_budget_number() -> None:
+    """No report, no effect: neither numerator, nor denominator, nor spent slot.
+
+    A status nobody declared is fail-*closed* for the re-offer question (the pair
+    stops being offered) but fail-*quiet* for the budget: it is not evidence that
+    a request was made, so it does not enter the denominator either. That is the
+    honest reading — an unmeasured row must not be able to move a rate in either
+    direction — and it is why `unknown` appears in the spent-slot set (it may
+    already be a publication) but in neither half of the ratio.
+    """
+    for status in ("sent_ok", "published_recently", "", "POSTED"):
+        assert status not in crosspost_journal.JOURNAL_KNOWN_STATUSES
+        assert status not in distribution.JOURNAL_ATTEMPT_STATUSES
+        assert status not in distribution.JOURNAL_DELIVERED_STATUSES
+        assert status not in distribution.JOURNAL_SLOT_OCCUPYING_STATUSES
+    # `unknown` is the declared one that behaves the same way in the ratio...
+    assert "unknown" in crosspost_journal.JOURNAL_KNOWN_STATUSES
+    assert "unknown" not in distribution.JOURNAL_ATTEMPT_STATUSES
+    # ...but is *not* invisible for the allowance, unlike a truly undeclared row.
+    assert "unknown" in distribution.JOURNAL_SLOT_OCCUPYING_STATUSES
+    assert "sent_ok" not in distribution.JOURNAL_SLOT_OCCUPYING_STATUSES
+
+
+def test_the_budget_reads_are_case_sensitive_and_must_stay_so() -> None:
+    """`normalize_journal_status` may not be borrowed for the ratio.
+
+    The re-offer path lower-cases and trims, because a smuggled casing must not
+    dodge its fail-closed default. The budget path compares the stored column
+    verbatim: `CrosspostResult` validates lowercase tokens, so a row written
+    `Posted` is not a row this farm wrote, and normalising it would hand a
+    platform with zero real attempts a success rate of 1.0 and a raised cap.
+    """
+    assert _cap(CAP_PLATFORM, ["Posted"] * 20) == VK_BASE
+    assert _cap(CAP_PLATFORM, [" posted "] * 20) == VK_BASE
+    # The same fixture spelled the way the farm writes it earns the raise.
+    assert _cap(CAP_PLATFORM, ["posted"] * 20) == VK_MAX_DAILY
+
+
+def _string_set_literals(func) -> list[frozenset[str]]:
+    """Every inline `{...}` literal of plain strings inside `func`'s source."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    found: list[frozenset[str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Set) and node.elts:
+            values = [element.value for element in node.elts]
+            if all(isinstance(value, str) for value in values):
+                found.append(frozenset(values))
+    return found
+
+
+def test_no_journal_status_literal_survives_in_the_budget_code() -> None:
+    """Source contract: the readers name the constants, they do not respell them."""
+    for func in (
+        distribution.effective_daily_cap,
+        distribution._latest_logs,
+        distribution._build_primary_platform_plan,
+        distribution.build_distribution_plan,
+    ):
+        for literal in _string_set_literals(func):
+            assert not (literal & _attempts_set_for_test()), (
+                f"{func.__name__} still spells a journal status set inline: {sorted(literal)}"
+            )
+    # And the two readers do reference the constants.
+    cap_source = inspect.getsource(distribution.effective_daily_cap)
+    assert "JOURNAL_ATTEMPT_STATUSES" in cap_source
+    assert "JOURNAL_DELIVERED_STATUSES" in cap_source
+    plan_source = inspect.getsource(distribution.build_distribution_plan)
+    assert "JOURNAL_SLOT_OCCUPYING_STATUSES" in plan_source
+    assert plan_source.count("JOURNAL_DELIVERED_STATUSES") == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. The `posts` table's own vocabulary is a different column and stays literal.
+# ---------------------------------------------------------------------------
+
+
+def test_post_status_literals_are_not_journal_statuses_and_are_untouched() -> None:
+    """`Post.status.in_(...)` filters `posts.status`, not `crosspost_logs.status`.
+
+    `published` and `gated` are `POST_STATUSES` members from `tgfarm.s7_publish`
+    and are not journal statuses at all: `posts.status` is the editorial state of
+    the material, `crosspost_logs.status` is the outcome of one delivery to one
+    destination. Re-pointing those two filters at the journal vocabulary would
+    test a column on tokens it can never hold, and both primary-plan counters
+    would read zero — the silent budget change this block exists to prevent.
+    """
+    from tgfarm.s7_publish import POST_STATUSES
+
+    source = inspect.getsource(distribution._build_primary_platform_plan)
+    assert 'Post.status.in_(("scheduled", "publishing", "published"))' in source
+    assert 'Post.status.in_(("gated", "scheduled"))' in source
+
+    assert "published" in POST_STATUSES and "gated" in POST_STATUSES
+    assert not ({"published", "gated"} & set(FULL_VOCABULARY))
+    assert not ({"published", "gated"} & crosspost_journal.JOURNAL_KNOWN_STATUSES)
+    # `scheduled` and `publishing` genuinely are ambiguous tokens — both columns
+    # use them, which is the second reason the two filters cannot share a constant.
+    assert {"scheduled", "publishing"} <= set(POST_STATUSES)
