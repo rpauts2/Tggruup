@@ -64,3 +64,6 @@ ignore = ["B008"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "w17chain: offline end-to-end autonomy chain; no outbound call may leave the process",
+]
