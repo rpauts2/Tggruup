@@ -14,6 +14,18 @@ cycle that found no new material is reported as *not proven* rather than
 invocation against a throwaway store so a repeat `tgfarm demo` is a real run
 rather than a judgement of nothing.
 
+The editorial plan is one of those stages now: between the ranked queue and the
+draft the demo asks the plan what it makes of the material and records the
+answer. On the store the demo owns it runs the scheduler's own two jobs, so the
+journal rows and the persisted plan are production ones; on the operator's store
+(`--configured-store`) it reads the active plan and takes the dry-run judgement
+instead, because superseding a plan and moving a real gated draft is more than a
+rehearsal asks for. Either way the plan's counters are numbers that were really
+measured: a plan that books nothing says so in words (its entries are `produce`,
+which is S4's to generate), a plan over an empty queue is *consulted and nothing
+to plan*, and a stage the demo did not run reports nothing beside it at all —
+never a zero standing in for a measurement that was never taken.
+
 What is deterministic is the stage trail — items, duplicates, clusters,
 promoted, drafts, gated, covers, scheduled and the named holds. It is identical
 on every run over a fresh store. The wording of one draft is not: S4 picks an
@@ -460,6 +472,7 @@ def _stage_counts(
     stored: int,
     fresh: int,
     trends: dict,
+    plan: dict,
     ready_clusters: int,
     drafts: int,
     quality: dict,
@@ -477,6 +490,9 @@ def _stage_counts(
         "duplicates": int(trends.get("duplicates") or 0),
         "clusters": int(trends.get("clusters") or 0),
         "promoted": int(trends.get("promoted") or 0),
+        # the plan's counters arrive already judged — None where the stage
+        # measured nothing — so they are copied, not coerced into zeros here
+        **plan,
         "ready_clusters": ready_clusters,
         "drafts": drafts,
         "gated": int(quality.get("passed") or 0),
@@ -505,6 +521,212 @@ def _hold_note(holds: dict) -> str:
     return "held: " + ", ".join(f"{reason}={count}" for reason, count in sorted(named.items()))
 
 
+# ---------------------------------------------------------------- editorial plan
+#: The two ways the demo can meet the plan, named after the store it stands on.
+PLAN_EXECUTED = "executed"
+PLAN_READ_ONLY = "read-only"
+#: The endings a plan look can have. They ride in the trail because "the plan
+#: judged nothing" and "the plan was never asked" both print as a zero and mean
+#: opposite things — the distinction P34 was filed for.
+PLAN_BUILT = "built"
+PLAN_BUILT_EMPTY = "built-empty"
+PLAN_READ_ACTIVE = "read-active"
+PLAN_READ_NONE = "read-none"
+PLAN_SKIPPED = "skipped"
+PLAN_ERROR = "error"
+#: statuses that reached the plan itself; every other one says the plan was not
+#: read, and then no counter below may carry a number.
+PLAN_CONSULTED = frozenset({PLAN_BUILT, PLAN_BUILT_EMPTY, PLAN_READ_ACTIVE, PLAN_READ_NONE})
+#: a status that printed a zero because it measured one, not because it skipped.
+PLAN_MEASURED_ZEROS = frozenset({PLAN_BUILT, PLAN_BUILT_EMPTY, PLAN_READ_ACTIVE})
+
+
+def _plan_int(value: object) -> int | None:
+    """The number the plan recorded, or None — never a defaulted 0."""
+    return None if value is None else int(value)
+
+
+async def _plan_look(*, writes: bool, moment: datetime | None = None) -> dict:
+    """Ask the editorial plan what it makes of the queue, and keep what it said.
+
+    Two modes, because two stores. On the throwaway file the demo owns — what
+    `tgfarm demo` runs by default — it drives the scheduler's own jobs in their
+    own order: `build_plan_tick` persists the snapshot and journals it, then
+    `apply_plan_tick` judges every entry and hands the qualified ones to the
+    scheduling transition, journalling the reasons. The executor's switch is
+    forced on for that run only (by `_run_demo_workflow`), because a rehearsal
+    that never asks the editor proves a pipeline with no editorial decision in it.
+
+    On a store the demo does not own the writes are withheld — no snapshot that
+    supersedes the operator's active plan, no gated draft moved by a demo — and
+    the read is the honest one instead: `get_active_plan` for what the store
+    really holds, `evaluate_plan` for the judgement it would reach. `booked`
+    stays None there, because a reading books nothing.
+    """
+    from tgfarm import plan_execution
+    from tgfarm.core.settings import get_settings
+    from tgfarm.editorial_plan import get_active_plan
+
+    look: dict = {
+        "mode": PLAN_EXECUTED if writes else PLAN_READ_ONLY,
+        "status": PLAN_SKIPPED,
+        "flag": bool(getattr(get_settings(), "plan_execution_enabled", False)),
+        "public_id": None,
+        "entries": None,
+        "produce": None,
+        "schedule": None,
+        "hold": None,
+        "scanned": None,
+        "booked": None,
+        "held": None,
+        "reasons": None,
+        "note": "",
+        "build": None,
+        "judgement": None,
+    }
+    try:
+        if writes:
+            built = await plan_execution.build_plan_tick(now=moment)
+            look["build"] = {key: built.get(key) for key in ("skipped", "error") if key in built}
+            if "error" in built:
+                look.update(status=PLAN_ERROR, note=str(built["error"])[:200])
+                return look
+            if "skipped" in built:
+                look.update(status=PLAN_SKIPPED, note=f"build skipped: {built['skipped']}")
+                return look
+            summary = built.get("summary") or {}
+            look.update(
+                status=PLAN_BUILT if summary.get("total") else PLAN_BUILT_EMPTY,
+                public_id=built.get("public_id"),
+                entries=_plan_int(summary.get("total")),
+                produce=_plan_int(summary.get("produce")),
+                schedule=_plan_int(summary.get("schedule")),
+                hold=_plan_int(summary.get("hold")),
+            )
+            judged = await plan_execution.apply_plan_tick(now=moment)
+            look["judgement"] = {
+                key: judged.get(key) for key in ("skipped", "error") if key in judged
+            }
+            if "error" in judged:
+                look.update(status=PLAN_ERROR, note=f"apply raised: {judged['error']}"[:200])
+                return look
+            if "skipped" in judged:
+                look.update(status=PLAN_SKIPPED, note=f"apply skipped: {judged['skipped']}")
+                return look
+            # a real apply carries no `scanned` key — the number of entries it
+            # looked at is the length of its `entries` list, exactly the way
+            # `apply_plan_tick` journals it; reading a missing key as a zero was
+            # the old bug this line refuses to repeat.
+            look.update(
+                scanned=_plan_int(len(judged.get("entries") or [])),
+                booked=_plan_int(judged.get("applied")),
+                held=_plan_int(judged.get("held")),
+                reasons=dict(judged.get("reasons") or {}),
+            )
+            return look
+
+        active = await asyncio.to_thread(get_active_plan)
+        if active is None:
+            # None is the plan's own way of saying "never built here"; the caller
+            # must show that, and must not turn it into a plan of zero entries.
+            look.update(status=PLAN_READ_NONE, note="this store holds no active plan to read")
+            return look
+        summary = active.get("summary") or {}
+        look.update(
+            status=PLAN_READ_ACTIVE,
+            public_id=active.get("public_id"),
+            entries=_plan_int(summary.get("total")),
+            produce=_plan_int(summary.get("produce")),
+            schedule=_plan_int(summary.get("schedule")),
+            hold=_plan_int(summary.get("hold")),
+        )
+        judged = await asyncio.to_thread(plan_execution.evaluate_plan)
+        look["judgement"] = {"dry_run": True}
+        look.update(
+            scanned=_plan_int(judged.get("scanned")),
+            held=_plan_int(judged.get("held")),
+            reasons=dict(judged.get("reasons") or {}),
+        )
+        return look
+    except Exception as exc:  # noqa: BLE001 - a plan failure is a stage outcome, not a crash
+        message = f"{type(exc).__name__}: {exc}"
+        log.warning("demo: the editorial plan raised %s", message[:200])
+        look.update(status=PLAN_ERROR, note=message[:200])
+        return look
+
+
+def _plan_note(look: dict) -> str:
+    """One line saying what the plan stage actually was, in the report's words."""
+    status = look["status"]
+    if status == PLAN_BUILT:
+        base = (
+            f"{look['entries']} entries judged ({look['produce']} produce, "
+            f"{look['schedule']} schedule, {look['hold']} hold)"
+        )
+        if look["booked"]:
+            return f"{base}; {look['booked']} booked to scheduling"
+        return (
+            f"{base}; booked nothing here — a produce entry is S4's to generate, "
+            "so this is a measured zero, not a failure"
+        )
+    if status == PLAN_BUILT_EMPTY:
+        return "the plan was consulted over an empty queue: nothing to plan"
+    if status == PLAN_READ_ACTIVE:
+        return (
+            f"{look['entries']} entries read from this store's active plan "
+            f"({look['produce']} produce, {look['schedule']} schedule, "
+            f"{look['hold']} hold); judgement only, no booking"
+        )
+    if status == PLAN_READ_NONE:
+        return (
+            "the plan was read and this store holds none: it was never built here, "
+            "and the demo does not build a plan on a store it does not own"
+        )
+    if status == PLAN_SKIPPED:
+        return f"the plan declined to run: {look['note'] or 'the executor switch was off'}"
+    return f"the plan raised: {look['note']}"
+
+
+def _plan_counters(look: dict) -> dict:
+    """The plan's numbers for the stage trail; None where nothing was measured."""
+    consulted = look["status"] in PLAN_CONSULTED
+    measured = look["status"] in PLAN_MEASURED_ZEROS
+    counts: dict = {
+        "plan_mode": look["mode"],
+        "plan_status": look["status"],
+        "plan_consulted": consulted,
+        "plan_flag": look["flag"],
+        "plan_note": look["note"] or _plan_note(look),
+    }
+    for key, name in (
+        ("plan_entries", "entries"),
+        ("plan_produce", "produce"),
+        ("plan_schedule", "schedule"),
+        ("plan_hold", "hold"),
+        ("plan_scanned", "scanned"),
+        ("plan_booked", "booked"),
+        ("plan_held", "held"),
+        ("plan_reasons", "reasons"),
+    ):
+        counts[key] = look[name] if measured else None
+    return counts
+
+
+def _plan_verdict(cycle: int, look: dict) -> str:
+    """The sentence the verdict carries for this cycle's plan stage."""
+    return f"cycle {cycle}: editorial plan {_plan_note(look)}"
+
+
+def _trail_count(value: object) -> str:
+    """A counter in the failure trail: the number, or `?` for an unmeasured one.
+
+    The trail is what an operator reads when the gate fails; printing `0` for a
+    stage that never ran would put a measurement in front of them that was never
+    taken — the exact thing this file's plan keys refuse to do.
+    """
+    return "?" if value is None else str(value)
+
+
 def _log_stages(cycle: int, stages: dict) -> None:
     """One line per stage with the count it reached.
 
@@ -526,6 +748,12 @@ def _log_stages(cycle: int, stages: dict) -> None:
         ("s2 reprints", stages["duplicates"], "documents excluded as copies", True),
         ("s2 clusters", stages["clusters"], "stories grouped", False),
         ("s2 promoted", stages["promoted"], "clusters above the heat threshold", False),
+        (
+            "plan",
+            stages["plan_entries"] or 0,
+            stages["plan_note"],
+            stages["plan_status"] in PLAN_CONSULTED,
+        ),
         ("s4 drafts", stages["drafts"], f"from {stages['ready_clusters']} ready clusters", False),
         ("s5 gated", stages["gated"], "drafts through the quality gate", False),
         ("s6 covers", stages["covers"], "posts with primary media", False),
@@ -551,25 +779,47 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
     a named scheduling decision — a slot, or a hold reason that says why there
     is no slot. Zero drafts is always fatal; so are zero survivors and a
     scheduler that says nothing, because both are indistinguishable from a
-    healthy queue from the outside.
+    healthy queue from the outside. The editorial plan adds one failure of its
+    own: a plan that raised, or a plan the writing demo forced the switch on for
+    and that still declined to run. A plan that found nothing to plan, or booked
+    nothing because its entries belong to S4, is *not* a failure — an empty
+    reading is a reading, and a produce entry that was never the plan's to run is
+    a measurement of zero, not a break.
     """
     trail = (
         f"cycle {cycle}: seeded={stages['seeded_items']} stored={stages['stored_items']} "
         f"fresh={stages['fresh_items']} dup={stages['duplicates']} "
         f"clusters={stages['clusters']} promoted={stages['promoted']} "
-        f"ready={stages['ready_clusters']} drafts={stages['drafts']} "
+        f"ready={stages['ready_clusters']} "
+        f"plan={stages['plan_status']} plan_entries={_trail_count(stages['plan_entries'])} "
+        f"plan_booked={_trail_count(stages['plan_booked'])} "
+        f"drafts={stages['drafts']} "
         f"gated={stages['gated']} covers={stages['covers']} "
         f"scheduled={stages['scheduled']}"
     )
-    failures: list[str] = []
+    # The plan's own failures come first and are kept whatever the draft count
+    # says: a cycle whose plan crashed is broken for a different reason than a
+    # cycle that had no material, and the second must not hide the first.
+    plan_failures: list[str] = []
+    if stages["plan_status"] == PLAN_ERROR:
+        plan_failures.append(
+            f"{trail} -> DEMO GATE FAILED: the editorial plan raised: {stages['plan_note']}"
+        )
+    elif stages["plan_status"] == PLAN_SKIPPED and stages["plan_mode"] == PLAN_EXECUTED:
+        plan_failures.append(
+            f"{trail} -> DEMO GATE FAILED: the editorial plan declined to run "
+            f"({stages['plan_note'] or 'the executor switch was off'}), so the cycle "
+            "judged no editorial decision"
+        )
+    failures: list[str] = list(plan_failures)
     if not stages["drafts"]:
         # Two different zeroes. Material to work on and no draft is a broken
         # chain; so is a store that holds no demo corpus at all. A spent corpus
         # (stored but nothing new for S2) is not a failure — it is a run that
         # judged nothing, and it must be named as that rather than as a break.
         if stages["fresh_items"] or not stages["stored_items"]:
-            return [f"{trail} -> DEMO GATE FAILED: no draft was generated"]
-        return [
+            return plan_failures + [f"{trail} -> DEMO GATE FAILED: no draft was generated"]
+        return plan_failures + [
             f"{trail} -> DEMO GATE NOT PROVEN: the store held no new demo material "
             "for S2, so this cycle had nothing to judge (run against an empty store)"
         ]
@@ -650,7 +900,9 @@ async def run_demo(
     `isolated=True` (also what the CLI uses by default) runs against a throwaway
     database under the system temp dir and reports where it lives as
     `report["store"]`, so an invocation is repeatable and synthetic rows never
-    enter the operator's store. `--configured-store` on the CLI opts out.
+    enter the operator's store. `--configured-store` on the CLI opts out, and
+    with it the editorial plan is read rather than rewritten: the demo only
+    persists and books on a store it owns.
     """
 
     async def _workflow() -> dict:
@@ -658,7 +910,7 @@ async def run_demo(
             return _enforce_gate(report) if strict else report
 
         if not offline:
-            return _judge(await _run_demo_workflow(cycles=cycles))
+            return _judge(await _run_demo_workflow(cycles=cycles, plan_writes=isolated))
 
         from tgfarm.core.settings import get_settings
 
@@ -666,7 +918,7 @@ async def run_demo(
         previous_mode = settings.mode
         settings.mode = "off"
         try:
-            report = await _run_demo_workflow(cycles=cycles)
+            report = await _run_demo_workflow(cycles=cycles, plan_writes=isolated)
         finally:
             settings.mode = previous_mode
         return _judge(report)
@@ -685,8 +937,31 @@ async def run_demo(
     return report
 
 
-async def _run_demo_workflow(cycles: int = 1) -> dict:
-    """Drive the full synthetic pipeline. Caller controls the runtime mode."""
+async def _run_demo_workflow(cycles: int = 1, plan_writes: bool = False) -> dict:
+    """Drive the full synthetic pipeline. Caller controls the runtime mode.
+
+    `plan_writes=True` says the store under this run belongs to the demo, so the
+    editorial plan may be persisted and acted on for real; with it False the plan
+    is only read. The executor's switch is forced on for the duration of a
+    writing run and given back afterwards, exactly as the offline run gives back
+    `mode` — a rehearsal that quietly skips the editor is not a rehearsal. On the
+    read-only run the switch is left exactly as the operator set it, because the
+    demo has no business rewriting a plan it does not own.
+    """
+    from tgfarm.core.settings import get_settings
+
+    settings = get_settings()
+    previous_plan_flag = settings.plan_execution_enabled
+    if plan_writes and not previous_plan_flag:
+        settings.plan_execution_enabled = True
+    try:
+        return await _run_demo_cycles(cycles=cycles, plan_writes=plan_writes)
+    finally:
+        settings.plan_execution_enabled = previous_plan_flag
+
+
+async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
+    """The walk itself, on the mode and the plan switch the caller arranged."""
     from tgfarm import (
         pipeline,
         s2_trends,
@@ -702,6 +977,7 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
     seeded = await asyncio.to_thread(_seed_items)
     report: dict = {"seeded_items": seeded}
     failures: list[str] = []
+    plan_lines: list[str] = []
 
     for cycle in range(cycles):
         # measured before S2 runs: this is the material the chain is being
@@ -710,6 +986,15 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
         # --- S2: trends
         trends = await s2_trends.run()
         report[f"cycle{cycle}_trends"] = trends
+
+        # --- the editorial plan, between the ranked queue and the draft.
+        # The scheduler's own two jobs in its own order, on one instant, so the
+        # booking decision is judged against the same clock the entries were
+        # planned against. `plan_writes` decides whether this run may persist
+        # and book at all; the reading it withholds is reported as such.
+        moment = datetime.now(UTC).replace(microsecond=0)
+        plan_look = await _plan_look(writes=plan_writes, moment=moment)
+        report[f"cycle{cycle}_plan"] = plan_look
 
         # --- S4: generate for every ready cluster
         clusters = await asyncio.to_thread(s2_trends.ready_clusters, 2)
@@ -755,6 +1040,7 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
             stored=await asyncio.to_thread(_stored_demo_items),
             fresh=fresh,
             trends=trends,
+            plan=_plan_counters(plan_look),
             ready_clusters=len(clusters),
             drafts=len(drafts),
             quality=quality,
@@ -766,6 +1052,7 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
         )
         report[f"cycle{cycle}_stages"] = stages
         _log_stages(cycle, stages)
+        plan_lines.append(_plan_verdict(cycle, plan_look))
         failures.extend(_gate_failures(cycle, stages))
 
     report["final"] = await asyncio.to_thread(_final_stats)
@@ -774,6 +1061,7 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
         "ok": not failures,
         "cycles": cycles,
         "failures": failures,
+        "plan": "; ".join(plan_lines),
         "reason": "; ".join(failures)[:400],
     }
     return report
