@@ -15,10 +15,15 @@ that owns the post, not under the destination it was copied to.
 Timestamps are returned as ISO 8601 strings in UTC so the result is directly
 JSON-serialisable for the API layer.
 
-``stale`` is a purely factual age test ("the newest snapshot is older than
-24 hours"). ``status`` is the classification: a platform can be ``blocked``
-while its last zero-only snapshot is already old, and then ``stale`` is still
-true because the row really is old.
+``stale`` is a purely factual age test. For a platform row that test is "the
+newest snapshot is older than ``STALE_AFTER_HOURS``", the bound the shared
+``ok``/``stale``/``never``/``blocked`` vocabulary is defined against. For a
+collector row it is "the newest row is older than this job's own bound", derived
+per collector from the cadence the registry registers for it - see
+``stale_bound_hours`` - because a single constant would let an hourly reader stay
+``ok`` through a day of silence. ``status`` is the classification beside that test:
+a platform can be ``blocked`` while its last zero-only snapshot is already old,
+and then ``stale`` is still true because the row really is old.
 
 A per-platform row can only ever speak about ``post_stats``, and that is not
 enough. ``telegram`` and ``telegraph`` are both scheduled, both are in the
@@ -69,7 +74,38 @@ from tgfarm.s8_analytics.coverage import SCHEDULED_COLLECTORS, SESSION_GATED_COL
 
 log = get_logger(__name__)
 
+#: The platform-level bound, and nothing else. A ``post_stats`` platform row is
+#: stale when its newest snapshot is older than this, and the ``ok``/``stale``/
+#: ``never``/``blocked`` vocabulary the rest of the modules share keeps that
+#: meaning: no other module's threshold moves because of the collector rule below.
 STALE_AFTER_HOURS = 24.0
+
+#: How long one collector may stay silent, measured in the cadences the registry
+#: registers for it instead of in one constant shared by every job.
+#:
+#: Why a multiple at all: an hourly reader judged by a 24-hour bound can be read
+#: as ``ok`` through 23 hours of silence - 23 missed ticks in a row.
+#:
+#: Why this multiple: one cadence would flag every restart, and two would flag
+#: every tick that overruns its slot, because `_register_collector_jobs` registers
+#: `coalesce=True`, `max_instances=1` and a one-hour `misfire_grace_time` - a long
+#: tick is legitimately skipped rather than dead. Three cadences means at least
+#: three of this job's own slots have passed without a new dated row.
+#:
+#: Why a floor: under it the window would be tighter than the scheduler's own
+#: jitter. The floor is also the deliberate soft cap on this rule's sensitivity -
+#: a hypothetical collector registered faster than every 40 minutes would be
+#: bounded by the floor and not by its cadence, so raising a cadence that far
+#: means revisiting both numbers here.
+STALE_BOUND_CADENCES = 3
+STALE_BOUND_FLOOR_HOURS = 2.0
+
+#: Which of the two bounds a row was judged by. Stated per row so that no number
+#: in this report can ever be read as "the threshold" without saying what it
+#: measured: a collector bounded by its own cadence and a dated table with no
+#: registered cadence are not the same claim.
+BOUND_FROM_CADENCE = "cadence"
+BOUND_FROM_UNREGISTERED_DEFAULT = "unregistered_default"
 
 STATUS_OK = "ok"
 STATUS_STALE = "stale"
@@ -413,16 +449,62 @@ def _journal_facts(
     return runs, stamp, status
 
 
-def _collector_status(rows: int | None, age: float | None) -> str:
+def stale_bound_hours(interval_hours: int | float | None) -> float | None:
+    """The staleness bound of one collector, derived from its registered cadence.
+
+    ``interval_hours`` is the number the registry itself carries, so the bound
+    cannot be set without changing a schedule. ``None`` means there is no cadence
+    to derive from - an absent measurement, not a bound of zero hours.
+    """
+    if interval_hours is None:
+        return None
+    try:
+        cadence = float(interval_hours)
+    except (TypeError, ValueError):
+        return None
+    if cadence <= 0:
+        return None
+    return max(STALE_BOUND_FLOOR_HOURS, STALE_BOUND_CADENCES * cadence)
+
+
+def _row_stale_bound(row: dict[str, Any]) -> tuple[float, str, str]:
+    """``(hours, source, derivation)`` for one report row.
+
+    The third element is the sentence the operator reads next to the number, so a
+    printed threshold always arrives with the reason it is that size: a bound
+    derived from a cadence is quoted as "3 intervals of 1 h", and a dated table
+    with no registered cadence is quoted as the default it is.
+    """
+    derived = stale_bound_hours(row.get("interval_hours"))
+    if derived is not None:
+        text = (
+            f"{STALE_BOUND_CADENCES} интервала(ов) по {row['interval_hours']} ч"
+        )
+        if derived == STALE_BOUND_FLOOR_HOURS and STALE_BOUND_CADENCES * float(
+            row["interval_hours"]
+        ) < STALE_BOUND_FLOOR_HOURS:
+            text = f"{text}, но не меньше {STALE_BOUND_FLOOR_HOURS:g} ч"
+        return derived, BOUND_FROM_CADENCE, text
+    return (
+        STALE_AFTER_HOURS,
+        BOUND_FROM_UNREGISTERED_DEFAULT,
+        f"порог {STALE_AFTER_HOURS:g} ч по умолчанию: зарегистрированного интервала нет",
+    )
+
+
+def _collector_status(rows: int | None, age: float | None, bound_hours: float) -> str:
     """The data verdict for one collector, from its destination table alone.
 
-    This signature is the defect class: no schedule, no job id, no gate and no
-    cadence can be read here, so a registered collector with an empty table can
-    only ever come out ``no_report``.
+    This signature is the defect class: no schedule, no job id and no gate can be
+    read here, so a registered collector with an empty table can only ever come out
+    ``no_report``. ``bound_hours`` is the only place the cadence enters, and it
+    enters as an already-measured number of hours: it can only ever make a row
+    *more* suspect, never excuse an empty table or a missing age, because both are
+    tested before it.
     """
     if rows is None or rows == 0 or age is None:
         return COLLECTOR_NO_REPORT
-    if age > STALE_AFTER_HOURS:
+    if age > bound_hours:
         return COLLECTOR_STALE
     return COLLECTOR_OK
 
@@ -485,6 +567,21 @@ def _attributes_by_post(table_name: str) -> bool:
     return table is not None and "post_id" in table.c
 
 
+def _threshold_claim(row: dict[str, Any]) -> str:
+    """The bound this row was judged by, with the derivation that produced it.
+
+    A threshold is never printed bare: a number without its rule is exactly how a
+    24-hour constant came to be read as "fresh" by an hourly job for a day.
+    """
+    bound = row.get("stale_after_hours")
+    derivation = row.get("stale_bound_derivation")
+    if bound is None:
+        return "порог не вычислен: у строки нет зарегистрированного интервала"
+    if not derivation:
+        return f"порог {bound:g} ч"
+    return f"порог {bound:g} ч ({derivation})"
+
+
 def _collector_reason(
     row: dict[str, Any],
     *,
@@ -512,7 +609,7 @@ def _collector_reason(
         )
     return (
         f"снимков {row['rows']}, последний в `{table}` - {latest.isoformat()}, "
-        f"{age:.1f} ч назад (порог {STALE_AFTER_HOURS:.0f} ч): "
+        f"{age:.1f} ч назад ({_threshold_claim(row)}): "
         f"новый снимок не записан с {latest.isoformat()}; {attempt}"
     )
 
@@ -541,6 +638,12 @@ def _unmeasured_fields() -> dict[str, Any]:
         "fresh": False,
         "data_status": COLLECTOR_UNREADABLE,
         "reason": None,
+        # The bound this row was judged by. It starts as None because a row nobody
+        # filled has not been judged by any number at all - which is a different
+        # state from "judged by 0 hours" and from "judged by the default".
+        "stale_after_hours": None,
+        "stale_bound_source": None,
+        "stale_bound_derivation": None,
         "runs_recorded": None,
         "last_run_at": None,
         "last_run_status": None,
@@ -623,6 +726,14 @@ def _fill_collector(
     session, row: dict[str, Any], *, current: datetime, journal_is_here: bool
 ) -> None:
     """Attach one collector's data claims, read from the table it is meant to feed."""
+    bound, bound_source, bound_text = _row_stale_bound(row)
+    row.update(
+        {
+            "stale_after_hours": bound,
+            "stale_bound_source": bound_source,
+            "stale_bound_derivation": bound_text,
+        }
+    )
     table = _collector_table(row["snapshot_table"])
     if table is None:
         row["data_status"] = COLLECTOR_MISSING_TABLE
@@ -645,13 +756,13 @@ def _fill_collector(
         session, tuple(row["journal_stages"]), journal_is_here=journal_is_here
     )
     age = _age_hours(latest, current)
-    status = _collector_status(rows, age)
+    status = _collector_status(rows, age, bound)
     row.update(
         {
             "rows": rows,
             "last_collected_at": _iso(latest),
             "age_hours": round(age, 2) if age is not None else None,
-            "stale": bool(age is not None and age > STALE_AFTER_HOURS),
+            "stale": bool(age is not None and age > bound),
             "fresh": status == COLLECTOR_OK,
             "data_status": status,
             "runs_recorded": runs,
@@ -668,6 +779,14 @@ def _fill_collector(
 def _fill_outside_table(session, row: dict[str, Any], *, current: datetime) -> None:
     """Attach the data claims for a dated table no registered collector names."""
     name = row["snapshot_table"]
+    bound, bound_source, bound_text = _row_stale_bound(row)
+    row.update(
+        {
+            "stale_after_hours": bound,
+            "stale_bound_source": bound_source,
+            "stale_bound_derivation": bound_text,
+        }
+    )
     unregistered = f"расписания для `{name}` нет: ни одна зарегистрированная задача её не наполняет"
     table = _collector_table(name)
     if table is None or not _table_is_here(session, name):
@@ -676,7 +795,7 @@ def _fill_outside_table(session, row: dict[str, Any], *, current: datetime) -> N
         return
     rows, latest = _table_facts(session, table, None)
     age = _age_hours(latest, current)
-    status = _collector_status(rows, age)
+    status = _collector_status(rows, age, bound)
     if status == COLLECTOR_NO_REPORT and rows == 0:
         reason = f"{NO_REPORT_CLAIM}: в таблице `{name}` ни одного снимка; {unregistered}"
     elif status == COLLECTOR_NO_REPORT:
@@ -687,7 +806,7 @@ def _fill_outside_table(session, row: dict[str, Any], *, current: datetime) -> N
     elif status == COLLECTOR_STALE:
         reason = (
             f"снимков {rows}, последний - {latest.isoformat()}, {age:.1f} ч назад "
-            f"(порог {STALE_AFTER_HOURS:.0f} ч): новый снимок не записан с "
+            f"({_threshold_claim(row)}): новый снимок не записан с "
             f"{latest.isoformat()}; {unregistered}"
         )
     else:
@@ -697,7 +816,7 @@ def _fill_outside_table(session, row: dict[str, Any], *, current: datetime) -> N
             "rows": rows,
             "last_collected_at": _iso(latest),
             "age_hours": round(age, 2) if age is not None else None,
-            "stale": bool(age is not None and age > STALE_AFTER_HOURS),
+            "stale": bool(age is not None and age > bound),
             "fresh": status == COLLECTOR_OK,
             "data_status": status,
             "reason": reason,
@@ -742,10 +861,32 @@ def _load_collectors(
     return collectors, destinations, outside, None
 
 
+def _stale_bound_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The bound rule, next to the bounds it produced.
+
+    One number for every row was the defect: a report that prints
+    ``stale_after_hours: 24`` beside an hourly job invites the reader to treat 24
+    as that job's bound. So the top level states the rule and the per-row numbers
+    it derived, and each row carries both as well.
+    """
+    return {
+        "rule": (
+            f"порог сборщика = {STALE_BOUND_CADENCES} интервала(ов) его собственной "
+            f"задачи, но не меньше {STALE_BOUND_FLOOR_HOURS:g} ч; для датированной "
+            f"таблицы без зарегистрированного расписания - {STALE_AFTER_HOURS:g} ч "
+            "по умолчанию"
+        ),
+        "cadences": STALE_BOUND_CADENCES,
+        "floor_hours": STALE_BOUND_FLOOR_HOURS,
+        "unregistered_default_hours": STALE_AFTER_HOURS,
+        "per_row": {row["id"]: row.get("stale_after_hours") for row in rows},
+    }
+
+
 def collector_freshness(now: datetime | None = None) -> dict[str, Any]:
     """Every registered collector, judged by the rows it left behind.
 
-    The mapping is ``{"generated_at", "stale_after_hours", "collectors",
+    The mapping is ``{"generated_at", "stale_bound", "collectors",
     "secondary_destinations", "tables_without_collector", "error"}``, where each
     collector row separates the schedule claims (``scheduled``, ``job_id``,
     ``interval_hours``, ``schedule``) from the data claims (``rows``,
@@ -753,6 +894,12 @@ def collector_freshness(now: datetime | None = None) -> dict[str, Any]:
     ``reason``) and from the attempt claims (``runs_recorded``, ``last_run_at``,
     ``last_run_status``). ``age_hours`` is ``None`` whenever there is nothing to
     date, and ``data_status`` is then ``no_report`` - never ``ok``, never ``fresh``.
+
+    There is deliberately no single ``stale_after_hours`` at this level: every row
+    is judged by the bound its own registered cadence derives, and
+    ``stale_bound.per_row`` plus each row's ``stale_after_hours``,
+    ``stale_bound_source`` and ``stale_bound_derivation`` say which number measured
+    what.
 
     ``secondary_destinations`` holds the *other* tables those same registered
     ticks write, judged exactly the same way: ``channel_stats`` is not an orphan
@@ -763,7 +910,7 @@ def collector_freshness(now: datetime | None = None) -> dict[str, Any]:
     collectors, destinations, outside, error = _load_collectors(current)
     return {
         "generated_at": current.isoformat(),
-        "stale_after_hours": STALE_AFTER_HOURS,
+        "stale_bound": _stale_bound_block([*collectors, *destinations, *outside]),
         "collectors": collectors,
         "secondary_destinations": destinations,
         "tables_without_collector": outside,
@@ -779,7 +926,9 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
 
         {
           "generated_at": "2026-11-04T12:00:00+00:00",
-          "stale_after_hours": 24.0,
+          "platform_stale_after_hours": 24.0,
+          "stale_bound": {"rule": ..., "cadences": 3, "floor_hours": 2.0,
+                          "unregistered_default_hours": 24.0, "per_row": {...}},
           "snapshots_total": 123,
           "platforms": {
             "vk": {
@@ -874,7 +1023,11 @@ def metrics_freshness(now: datetime | None = None) -> dict[str, Any]:
 
     return {
         "generated_at": current.isoformat(),
-        "stale_after_hours": STALE_AFTER_HOURS,
+        # The platform bound, and only the platform bound: it is uniform because
+        # the `ok`/`stale`/`never`/`blocked` platform vocabulary every other module
+        # reads is defined against it. Collector rows are named by `stale_bound`.
+        "platform_stale_after_hours": STALE_AFTER_HOURS,
+        "stale_bound": _stale_bound_block([*collectors, *destinations, *outside]),
         "snapshots_total": snapshots_total,
         "platforms": platforms,
         "collectors": collectors,
@@ -908,6 +1061,12 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
     ``collectors_total``: the two lists answer to different registry claims - one
     row per platform reader, one row per additional table - and a card that summed
     them would be counting tables as if they were readers.
+
+    ``stale_after_hours`` is gone from this level on purpose. What is printed here
+    is ``platform_stale_after_hours`` (the uniform bound of the platform rows above)
+    and ``stale_bound``, which states the collector rule and the number it derived
+    for each row; every row repeats its own bound and its derivation, so no card
+    can quote a threshold that does not describe the row it sits on.
     """
     report = metrics_freshness(now)
     counts = {status: 0 for status in STATUSES}
@@ -940,6 +1099,9 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
             "rows": collector["rows"],
             "last_collected_at": collector["last_collected_at"],
             "age_hours": collector["age_hours"],
+            "stale_after_hours": collector["stale_after_hours"],
+            "stale_bound_source": collector["stale_bound_source"],
+            "stale_bound_derivation": collector["stale_bound_derivation"],
             "runs_recorded": collector["runs_recorded"],
             "claim": collector["reason"],
         }
@@ -957,7 +1119,8 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
 
     return {
         "generated_at": report["generated_at"],
-        "stale_after_hours": report["stale_after_hours"],
+        "platform_stale_after_hours": report["platform_stale_after_hours"],
+        "stale_bound": report["stale_bound"],
         "platforms_total": len(report["platforms"]),
         "ok": counts[STATUS_OK],
         "stale": counts[STATUS_STALE],
@@ -987,6 +1150,8 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
 
 
 __all__ = [
+    "BOUND_FROM_CADENCE",
+    "BOUND_FROM_UNREGISTERED_DEFAULT",
     "COLLECTOR_MISSING_TABLE",
     "COLLECTOR_NO_REPORT",
     "COLLECTOR_OK",
@@ -998,8 +1163,11 @@ __all__ = [
     "KIND_UNREGISTERED",
     "NO_REPORT_CLAIM",
     "STALE_AFTER_HOURS",
+    "STALE_BOUND_CADENCES",
+    "STALE_BOUND_FLOOR_HOURS",
     "STATUSES",
     "collector_freshness",
     "freshness_summary",
     "metrics_freshness",
+    "stale_bound_hours",
 ]
