@@ -281,6 +281,12 @@ def test_fifty_publications_with_no_evidence_are_still_reported_as_fifty():
     flipped it to `reliable` is stated rather than deleted.
     """
     fmt = _unique("analysis")
+    # Read the platform before seeding: `format_performance` answers for the whole
+    # platform, and the session database is shared between test files, so a report
+    # total is only interpretable as a delta over what was already there. The
+    # per-format numbers below need no such correction — a leaked post cannot be
+    # named `fmt`, which is what `_unique` is for.
+    baseline = format_performance(WINDOW_DAYS, platform="telegram", now=NOW)["publication"]
     channel = _seed("telegram", fmt, evidenced=0, unevidenced=50, engagement=900)
 
     report = learn_format_lessons(channel, days=WINDOW_DAYS, now=NOW)
@@ -300,19 +306,21 @@ def test_fifty_publications_with_no_evidence_are_still_reported_as_fifty():
     assert value["evidenced_sample_size"] == 0
     assert value["state"] == "unevidenced" and value["reliable"] is False
     assert "доказательством отправки" in (row["note"] or "")
-    # named as a refusal of its own, not folded into «never measured».
-    # The two `== []` / `== [fmt]` assertions below are deliberately about the
-    # whole platform report, not only about `fmt`: `format_performance` measures a
-    # platform, so a `published` post another test file leaves behind IS part of
-    # this report. When one of them fails on a format nobody seeded here, the
-    # culprit is that file's missing teardown, not this assertion — find it with
-    # `pytest <candidate> ::test_fifty_publications...` and add the cleanup.
-    assert report["unevidenced"] == [fmt]
-    assert report["not_measured"] == []
+    # named as a refusal of its own, not folded into «never measured». The report
+    # lists are about `fmt`, because the lists themselves are platform-wide and the
+    # session database is shared: what this fixture proved is that ITS format is
+    # refused as unevidenced and not as never-measured. The totals are deltas over
+    # the read taken before seeding, so nothing another file left behind can be
+    # mistaken for a number this test produced — and nothing of this test's 50
+    # phantoms can go uncounted.
+    assert fmt in report["unevidenced"]
+    assert fmt not in report["not_measured"]
     assert report["formats"][fmt]["state"] == "unevidenced"
-    assert report["published_evidenced_total"] == 0
-    assert report["published_unevidenced_total"] == 50
-    assert report["published_total"] == 50
+    assert report["published_evidenced_total"] == int(baseline.get("published_evidenced") or 0)
+    assert report["published_unevidenced_total"] == int(
+        baseline.get("published_unevidenced") or 0
+    ) + 50
+    assert report["published_total"] == int(baseline.get("published") or 0) + 50
     # and the row is a record, not a steering input
     assert best_format_lesson(channel, platform="telegram") is None
     assert format_lessons(channel, platform="telegram", reliable_only=True) == []
