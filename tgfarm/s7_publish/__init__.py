@@ -22,12 +22,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from sqlalchemy import func, select, update
 
 from tgfarm.config import get_config
 from tgfarm.core.errors import PublishError
+from tgfarm.core.schemas import PostStatus
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.run import StageTimer, to_thread
@@ -35,6 +36,7 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
 from tgfarm.db.models import Channel as ChannelRow
+from tgfarm.db.models import CrosspostLog as CrosspostLogRow
 from tgfarm.db.models import Post as PostRow
 from tgfarm.db.session import session_scope
 from tgfarm.tg_sync import real_tg_chat_id
@@ -55,6 +57,76 @@ PLATFORM_TEXT_LIMITS = {
 # A post left in `publishing` longer than this was interrupted (crash,
 # timeout, kill). Its outcome becomes `publish_unknown` until reconciled.
 STUCK_PUBLISHING_MIN = 15
+
+
+# ---------------------------------------------------------- status vocabulary
+#: The canonical persisted value of `posts.status`. This is not a copy of a prose
+#: list: it is read out of `core.schemas.PostStatus`, the one `Literal` the domain
+#: contracts already declare, so the publish path cannot grow a second spelling of
+#: a state the panel and the backlog card count.
+POST_STATUSES: frozenset[str] = frozenset(get_args(PostStatus))
+
+STATUS_DRAFT = "draft"
+STATUS_GATED = "gated"
+STATUS_SCHEDULED = "scheduled"
+STATUS_PUBLISHING = "publishing"
+#: "we sent it and cannot tell whether the platform took it". 51 live rows depend
+#: on this exact spelling. `"unknown"` is the *crosspost journal's* word for the
+#: same fact (`CrosspostResult.status`, a different table, `distribution.py:741`)
+#: and has never been a valid `posts.status`. The two vocabularies are named here
+#: rather than reconciled: unifying them is a data migration, not a rename.
+STATUS_PUBLISH_UNKNOWN = "publish_unknown"
+STATUS_PUBLISHED = "published"
+STATUS_REJECTED = "rejected"
+STATUS_FAILED = "failed"
+
+#: Statuses the crosspost journal uses for the same facts. Present so the
+#: distinction is checkable rather than remembered: none of these may be written
+#: to `posts.status`.
+CROSSPOST_ONLY_STATUSES: frozenset[str] = frozenset(
+    {"posted", "skipped", "permanent", "unknown", "dry_run"}
+)
+
+
+def canonical_post_status(value: str) -> str:
+    """Return `value` when it is a persistable `posts.status`, else refuse loudly.
+
+    A misspelled state is not cosmetic. `tgfarm/api.py` counts the waiting set as
+    `publish_unknown`; `distribution.py` counts `unknown` on the journal. A row
+    written with the wrong vocabulary's word is read by neither, and the operator
+    looking for the 51 uncertain posts stops finding them.
+    """
+    if value not in POST_STATUSES:
+        raise PublishError(
+            f"{value!r} is not a canonical posts.status; the publish path persists only "
+            f"{sorted(POST_STATUSES)}"
+        )
+    return value
+
+
+def publisher_owns(status: str | None) -> bool:
+    """True only while the row still says `publishing`.
+
+    `_claim_post` earns `publishing` with a conditional UPDATE, which is the
+    publish path's whole claim on a row. From the claim until it records one
+    outcome, that is the only state the row may hold. If it says anything else
+    when the outcome arrives, someone else has already described this attempt —
+    the heartbeat watchdog moved it to `publish_unknown`, the operator reconciled
+    it, an earlier send published it — and a second, unpreconditioned write does
+    not record that attempt, it invents one.
+    """
+    return status == STATUS_PUBLISHING
+
+
+def publish_outcome_allowed(current: str | None, target: str) -> bool:
+    """Every outcome write of `posts.status` in this module passes through here.
+
+    Two independent refusals, both about fabrication: the target must be a word
+    the persisted vocabulary contains, and the row must still belong to this
+    worker — `scheduled` may be claimed, `publishing` may be resolved, and nothing
+    that already carries a verdict may be overwritten by a second one.
+    """
+    return target in POST_STATUSES and publisher_owns(current)
 
 
 # ------------------------------------------------------------------ scheduling
@@ -304,7 +376,7 @@ def schedule_ready_posts(
                 post.scheduled_at = now
             else:
                 post.scheduled_at = slot
-            post.status = "scheduled"
+            post.status = canonical_post_status(STATUS_SCHEDULED)
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
                 platform_daily_counts[platform] = today_count + 1
             scheduled += 1
@@ -661,7 +733,7 @@ def _claim_post(post_id: int) -> bool:
             update(PostRow)
             .where(PostRow.id == post_id, PostRow.status == "scheduled")
             .values(
-                status="publishing",
+                status=canonical_post_status(STATUS_PUBLISHING),
                 attempts=PostRow.attempts + 1,
                 # the claim timestamp is when publishing *starts*: the stuck
                 # detector measures from here, not from queue time, or a slow
@@ -868,7 +940,7 @@ def _requeue_stuck(minutes: int = STUCK_PUBLISHING_MIN) -> int:
                 last_activity <= cutoff,
             )
             .values(
-                status="publish_unknown",
+                status=canonical_post_status(STATUS_PUBLISH_UNKNOWN),
                 publish_heartbeat_at=None,
                 publish_error=f"outcome unknown after {minutes} min without heartbeat; verify platform before retry",
             )
@@ -988,7 +1060,7 @@ def requeue_unsubmitted(
             if post is None or post.status not in ("scheduled", "failed") or post.published_at is not None:
                 continue
             if action == "requeue":
-                post.status = "scheduled"
+                post.status = canonical_post_status(STATUS_SCHEDULED)
                 post.attempts = 0
                 post.scheduled_at = now
                 post.publish_error = (
@@ -996,7 +1068,7 @@ def requeue_unsubmitted(
                 )[:400]
                 log_action = "requeue-unsubmitted"
             elif action == "expire":
-                post.status = "failed"
+                post.status = canonical_post_status(STATUS_FAILED)
                 post.scheduled_at = None
                 post.publish_error = (
                     "expired: never submitted and older than "
@@ -1005,7 +1077,13 @@ def requeue_unsubmitted(
                 )[:400]
                 log_action = "expire-stale-unsubmitted"
             else:
-                post.status = "publish_unknown"
+                # The candidate token that reaches this branch is spelled
+                # `unknown` — the crosspost journal's word for the same fact. The
+                # persisted value is this module's constant, never that token:
+                # writing the action label itself would put a status in
+                # `posts.status` that neither the backlog card nor the
+                # reconciliation board counts, on the 51 rows that need one.
+                post.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
                 post.scheduled_at = None
                 post.publish_error = (
                     "outcome unknown: publisher driver died; verify the platform before retry. "
@@ -1157,6 +1235,55 @@ def _dry_run_remote_id(platform: str, post_id: int) -> str:
     return f"dry-{post_id}" if platform == "dzen" else f"dry-{platform}-{post_id}"
 
 
+def has_publication_evidence(
+    session,
+    *,
+    public_id: str,
+    platform: str,
+    post_id: int,
+    message_id: Any,
+    remote_id: Any = None,
+) -> bool:
+    """True when the destination now holds something this row can point at.
+
+    The claim "`published`" is the denominator of every evidence number
+    downstream — `format_performance`, `measurement_coverage`, the S12 lessons,
+    the panel cards — so it may only be written when at least one of three
+    measurable facts holds:
+
+    * `message_id` is not `None`. Telegram's Bot API returns it for every message
+      it accepted, and `maintenance.publication_evidence_repair` names a
+      `published` row with `tg_message_id IS NULL` as the original defect (15 live
+      rows on 2026-10-26);
+    * the platform returned a real remote id. `dry-*` placeholders are not that:
+      they are what the off-mode adapters invent, and `_publish_dzen` /
+      `_publish_vk` hand them back with `ok=True`;
+    * the crosspost journal holds a `posted` row for this post and platform. That
+      is where Dzen and VK leave their identifier — the publishers call
+      `log_result()` rather than writing a column on the post — and `maintenance`
+      already counts such a row as evidence: 29 of the 37 live Dzen publications
+      have a `posted` row and no id, and treating a missing *id* as a missing
+      *publication* would un-publish real work.
+    """
+    if message_id is not None:
+        return True
+    text = str(remote_id or "").strip()
+    if text and text != _dry_run_remote_id(platform, post_id):
+        return True
+    return (
+        session.execute(
+            select(CrosspostLogRow.id)
+            .where(
+                CrosspostLogRow.post_public_id == public_id,
+                CrosspostLogRow.platform == platform,
+                CrosspostLogRow.status == "posted",
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def _dry_run_reason(platform: str, settings: Any) -> str | None:
     """Name the outcome when nothing could possibly have reached the platform.
 
@@ -1235,7 +1362,7 @@ async def _publish_one(
         post = session.get(PostRow, post_id)
         if post is None:
             return {"ok": False, "error": "post disappeared"}
-        if post.status == "published":
+        if post.status == STATUS_PUBLISHED:
             return {"ok": True, "skipped": True, "message_id": post.tg_message_id}
         public_id = post.public_id
     from tgfarm.platforms import is_platform_enabled
@@ -1283,6 +1410,8 @@ async def _publish_one(
     heartbeat_task = asyncio.create_task(_publish_heartbeat_loop(post_id))
     budget = publish_timeout_seconds(platform, settings)
     message_id = None
+    #: Where Dzen and VK put their identifier: on the journal, not on the post.
+    remote_id: Any = None
     try:
         if not settings.live:
             # Unreachable by construction, and stated as the raw fact rather than
@@ -1318,6 +1447,7 @@ async def _publish_one(
                 post_id=post_id,
             )
             message_id = outcome.get("message_id")
+            remote_id = outcome.get("remote_id")
         elif platform == "vk":
             outcome = await _await_publish(
                 _publish_vk(post_id, text),
@@ -1326,6 +1456,7 @@ async def _publish_one(
                 post_id=post_id,
             )
             message_id = outcome.get("message_id")
+            remote_id = outcome.get("remote_id")
         elif settings.live and settings.telegram_bot_token:
             message_id = await _await_publish(
                 PUBLISHER.send(real_tg_chat_id(target), text, media),
@@ -1349,8 +1480,10 @@ async def _publish_one(
         await _stop_publish_heartbeat(heartbeat_task)
         with session_scope() as session:
             post = session.get(PostRow, post_id)
-            if post and post.status == "publishing":
-                post.status = "publish_unknown"
+            # `publisher_owns`, spelled as the predicate so the one guard that
+            # already existed here and the four that did not cannot drift apart.
+            if post and publisher_owns(post.status):
+                post.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
                 post.publish_heartbeat_at = None
                 post.publish_error = "publisher task cancelled; verify platform before retry"
         log.error(
@@ -1388,31 +1521,47 @@ async def _publish_one(
             max_attempts = 5
         terminal_failure = False
         attempts = 1
+        outcome_refused: str | None = None
         with session_scope() as session:
             post = session.get(PostRow, post_id)
             if post:
                 attempts = max(1, int(post.attempts or 1))
-                post.publish_error = error_text[:400]
-                post.publish_heartbeat_at = None
-                if ambiguous:
-                    post.status = "publish_unknown"
-                    # Keep scheduled_at as the start timestamp for this attempt.
-                elif permanent or attempts >= max_attempts:
-                    # Stop retrying a definite failure after the configured cap.
-                    # The operator can explicitly requeue it after fixing the cause.
-                    post.status = "failed"
-                    post.scheduled_at = None
-                    terminal_failure = True
+                if not publisher_owns(post.status):
+                    # The row left `publishing` while this worker was waiting on
+                    # the platform, so another path has already recorded this
+                    # attempt. Writing `failed`/`scheduled`/`publish_unknown` over
+                    # it would be a second, unasked-for verdict on the same send —
+                    # and over a `published` row, an erasure of a real one.
+                    outcome_refused = (
+                        f"publish failure not recorded: row is {post.status!r}, not "
+                        f"{STATUS_PUBLISHING!r}; its outcome already belongs to another path"
+                    )
                 else:
-                    if retry_after_seconds is not None:
-                        next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+                    post.publish_error = error_text[:400]
+                    post.publish_heartbeat_at = None
+                    if ambiguous:
+                        post.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
+                        # Keep scheduled_at as the start timestamp for this attempt.
+                    elif permanent or attempts >= max_attempts:
+                        # Stop retrying a definite failure after the configured cap.
+                        # The operator can explicitly requeue it after fixing the cause.
+                        post.status = canonical_post_status(STATUS_FAILED)
+                        post.scheduled_at = None
+                        terminal_failure = True
                     else:
-                        if transport:
-                            retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
-                        next_attempt_at = datetime.now(UTC) + timedelta(minutes=retry_min)
-                    post.status = "scheduled"
-                    post.scheduled_at = next_attempt_at
-        if ambiguous:
+                        if retry_after_seconds is not None:
+                            next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+                        else:
+                            if transport:
+                                retry_min = min(360, 10 * 2 ** min(attempts - 1, 5))
+                            next_attempt_at = datetime.now(UTC) + timedelta(minutes=retry_min)
+                        post.status = canonical_post_status(STATUS_SCHEDULED)
+                        post.scheduled_at = next_attempt_at
+        if outcome_refused is not None:
+            log.error(
+                "s7: %s for post %s (%s): %s", outcome_refused, post_id, platform, error_text
+            )
+        elif ambiguous:
             log.error(
                 "publish outcome unknown for %s (%s): %s; operator reconciliation required",
                 post_id, platform, error_text,
@@ -1435,12 +1584,14 @@ async def _publish_one(
             )
         return {
             "ok": False,
-            "error": error_text,
+            "error": outcome_refused or error_text,
             "outcome_unknown": ambiguous,
             "terminal_failure": terminal_failure,
+            **({"outcome_not_recorded": True} if outcome_refused else {}),
         }
 
     await _stop_publish_heartbeat(heartbeat_task)
+    refusal: str | None = None
     with session_scope() as session:
         # A lock here loses the publish outcome: the platform already has the
         # post, so the DB write retries hard before admitting "unknown".
@@ -1451,16 +1602,53 @@ async def _publish_one(
         for attempt in range(3):
             try:
                 row = session.get(PostRow, post_id)
-                if row:
-                    row.status = "published"
-                    row.published_at = datetime.now(UTC)
-                    row.tg_message_id = message_id
+                if row is None:
+                    break
+                if not publish_outcome_allowed(row.status, STATUS_PUBLISHED):
+                    # The only writer of `published` in this module, and the one
+                    # place a fabrication still fitted: the heartbeat watchdog, an
+                    # operator reconciliation or a second worker can put this row
+                    # anywhere between the claim and here, and an unpreconditioned
+                    # write would stamp `published` on a verdict the farm has
+                    # already recorded — including `publish_unknown`, whose whole
+                    # meaning is "a human has not checked yet".
+                    refusal = (
+                        f"publication not recorded: the row left {STATUS_PUBLISHING!r} and "
+                        f"is now {row.status!r}; the destination may hold a copy this "
+                        "database no longer owns"
+                    )
+                    break
+                if not has_publication_evidence(
+                    session,
+                    public_id=public_id,
+                    platform=platform,
+                    post_id=post_id,
+                    message_id=message_id,
+                    remote_id=remote_id,
+                ):
+                    # Nothing was sent, or something was sent and no identifier
+                    # came back — either way there is nothing to point at. The
+                    # honest state is the one `maintenance.publication_evidence_repair`
+                    # already moves these rows to after the fact.
+                    row.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
                     row.publish_heartbeat_at = None
-                    if platform == "telegram":
-                        # Named by the chat guard before the post was claimed: an
-                        # unknown chat can no longer be written as `-1`.
-                        row.tg_chat_id = real_tg_chat_id(target)
-                    row.publish_error = None
+                    row.publish_error = (
+                        f"{platform} returned ok with no remote identifier of any kind "
+                        "(no message id, no non-placeholder remote id, no journalled "
+                        f"`posted` row); verify the destination before trusting or "
+                        "retrying it"
+                    )[:400]
+                    refusal = "publication without evidence: recorded as publish_unknown"
+                    break
+                row.status = canonical_post_status(STATUS_PUBLISHED)
+                row.published_at = datetime.now(UTC)
+                row.tg_message_id = message_id
+                row.publish_heartbeat_at = None
+                if platform == "telegram":
+                    # Named by the chat guard before the post was claimed: an
+                    # unknown chat can no longer be written as `-1`.
+                    row.tg_chat_id = real_tg_chat_id(target)
+                row.publish_error = None
                 break
             except _OpErr as exc:
                 if "locked" not in str(exc) or attempt == 2:
@@ -1468,6 +1656,16 @@ async def _publish_one(
                     raise
                 session.rollback()
                 _time.sleep(5 * (attempt + 1))
+
+    if refusal is not None:
+        log.error("s7: %s for post %s (%s)", refusal, post_id, platform)
+        return {
+            "ok": False,
+            "error": refusal[:400],
+            "outcome_unknown": True,
+            "outcome_not_recorded": True,
+            "post_id": post_id,
+        }
 
     return {"ok": True, "message_id": message_id, "post_id": post_id}
 
@@ -1802,7 +2000,7 @@ def unpublish(posts_public_ids: list[str]) -> int:
                 PostRow.public_id.in_(posts_public_ids),
                 PostRow.status.in_(("scheduled", "gated")),
             )
-            .values(status="scheduled", scheduled_at=datetime.now(UTC))
+            .values(status=canonical_post_status(STATUS_SCHEDULED), scheduled_at=datetime.now(UTC))
         )
         return result.rowcount or 0
 
