@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from tgfarm.core.settings import ROOT, get_settings
 from tgfarm.core.text import content_tokens, normalize, token_jaccard
@@ -35,6 +36,13 @@ from tgfarm.crosspost_journal import (
 )
 from tgfarm.db.models import Channel, CrosspostLog, Media, Post, PostStat
 from tgfarm.db.session import session_scope
+from tgfarm.editorial_plan import (
+    PROVENANCE_COLUMNS_MISSING,
+    plan_provenance,
+    provenance_columns_missing,
+    provenance_not_read,
+    resolve_plan_labels,
+)
 
 # ---------------------------------------------------------------------------
 # The journal `status` column read along this module's *budget* axis.
@@ -589,6 +597,149 @@ def _latest_logs(rows: list[Any]) -> dict[tuple[str, str], Any]:
     return latest
 
 
+#: Rows one platform's queue preview is allowed to name. The panel prints this
+#: window's length as «В очереди: N+» and slices the first three (`app.js:2426`),
+#: so the cap is the difference between "these are waiting" and "this is all there
+#: is" — and both readers below have to agree on it.
+PRIMARY_QUEUE_PREVIEW_ROWS = 5
+#: The preview's answer to "could the booking columns be read at all". Not a
+#: boolean, and not per row: `plan_columns_missing` and "read, nothing booked" are
+#: two different silences and the card has to be able to say which one it holds.
+#: `PROVENANCE_COLUMNS_MISSING` is the owner's own string for the first of them.
+QUEUE_PROVENANCE_MEASURED = "measured"
+
+
+def _queue_preview_fields(
+    *,
+    public_id: Any,
+    hook: Any,
+    channel_title: Any,
+    status: Any,
+    scheduled_at: Any,
+) -> dict[str, Any]:
+    """The five keys this preview has always carried, assembled in one place.
+
+    Both shapes of the read below produce them — the full ORM row and the drift
+    fallback that names only the columns that exist — and a second literal copy of
+    the 160-character truncation or of the minute-precision stamp is how the same
+    post would start rendering differently depending on whether the migration had
+    run.
+    """
+    return {
+        "post_public_id": public_id,
+        "title": str(hook or "")[:160],
+        "channel": channel_title,
+        "status": status,
+        "scheduled_at": (
+            _utc(scheduled_at).isoformat(timespec="minutes") if scheduled_at else None
+        ),
+    }
+
+
+def _queue_preview_without_booking(
+    session: Any,
+    queue_window: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    """The same window, read without the booking columns, and so without provenance.
+
+    `queue_window` is the caller's predicate tuple, not one re-stated here: which
+    statuses count as queued material is a budget decision, and the literal stays
+    where the other `Post.status.in_(...)` counter lives
+    (`_build_primary_platform_plan`, pinned by
+    `tests/test_distribution_journal_vocabulary.py::test_post_status_literals_are_not_journal_statuses_and_are_untouched`).
+    This is the seam the rejected `b271066` missed: it passed a `platform_id`
+    string into a parameter it then spread as `.where(*queue_window)`, and
+    SQLAlchemy read the characters — `ArgumentError: Textual SQL expression 'v'
+    should be explicitly declared as text('v')`.
+
+    `provenance_not_read()` is the whole difference from the measured shape: the
+    three keys are *absent*. Nulls invented here would print «создан без плана»
+    about a store that was never asked, which is the inversion
+    `editorial_plan.provenance_not_read` exists to prevent.
+    """
+    rows = session.execute(
+        select(
+            Post.public_id,
+            Post.hook,
+            Post.status,
+            Post.scheduled_at,
+            Channel.title,
+        )
+        .join(Channel, Channel.id == Post.channel_id)
+        .where(*queue_window)
+        .order_by(Post.scheduled_at.asc().nullsfirst(), Post.created_at.asc())
+        .limit(PRIMARY_QUEUE_PREVIEW_ROWS)
+    ).all()
+    return [
+        {
+            **_queue_preview_fields(
+                public_id=row.public_id,
+                hook=row.hook,
+                channel_title=row.title,
+                status=row.status,
+                scheduled_at=row.scheduled_at,
+            ),
+            **provenance_not_read(),
+        }
+        for row in rows
+    ]
+
+
+def _primary_queue_preview(
+    session: Any,
+    queue_window: tuple[Any, ...],
+) -> tuple[list[dict[str, Any]], str]:
+    """What is waiting on one primary platform, and what the plan read could say.
+
+    The provenance comes from `editorial_plan.plan_provenance` — the owner both
+    this service and `api._post_view` call — resolved with one bounded
+    `resolve_plan_labels` for the whole window, so a post cannot be «по плану» on
+    its card and unplanned in the queue, and cannot pay one join per row either.
+
+    The other half is the silence, and it is the live case rather than an edge
+    case: `select(Post, Channel)` asks for every column the mapper declares, and a
+    database whose additive drift pass has not run has no `posts.plan_slot_at`, so
+    SQLite refuses the *whole* statement. Measured at `dd75c42`, that already
+    raises out of `/api/distribution/plan` before any provenance is added here.
+    That one case re-reads the window from the columns that do exist and reports
+    `PROVENANCE_COLUMNS_MISSING`; every other `SQLAlchemyError` propagates, because
+    a queue the store refused to answer and a queue that is empty must not arrive
+    as the same five rows of nothing (P34).
+    """
+    try:
+        pairs = list(
+            session.execute(
+                select(Post, Channel)
+                .join(Channel, Channel.id == Post.channel_id)
+                .where(*queue_window)
+                .order_by(Post.scheduled_at.asc().nullsfirst(), Post.created_at.asc())
+                .limit(PRIMARY_QUEUE_PREVIEW_ROWS)
+            ).all()
+        )
+    except SQLAlchemyError as exc:
+        if not provenance_columns_missing(exc):
+            raise
+        return (
+            _queue_preview_without_booking(session, queue_window),
+            PROVENANCE_COLUMNS_MISSING,
+        )
+
+    labels = resolve_plan_labels(session, (post.plan_entry_id for post, _channel in pairs))
+    return [
+        {
+            **_queue_preview_fields(
+                public_id=post.public_id,
+                hook=post.hook,
+                channel_title=channel.title,
+                status=post.status,
+                scheduled_at=post.scheduled_at,
+            ),
+            **plan_provenance(post, labels),
+        }
+        for post, channel in pairs
+    ], QUEUE_PROVENANCE_MEASURED
+
+
 def _build_primary_platform_plan(
     now: datetime,
     settings: Any,
@@ -637,30 +788,15 @@ def _build_primary_platform_plan(
                     )
                 ).scalar_one()
             )
-            queued_rows = session.execute(
-                select(Post, Channel)
-                .join(Channel, Channel.id == Post.channel_id)
-                .where(
-                    Channel.platform == platform_id,
-                    Channel.enabled.is_(True),
-                    Post.status.in_(("gated", "scheduled")),
-                )
-                .order_by(Post.scheduled_at.asc().nullsfirst(), Post.created_at.asc())
-                .limit(5)
-            ).all()
-            queue_preview = [
-                {
-                    "post_public_id": post.public_id,
-                    "title": str(post.hook or "")[:160],
-                    "channel": channel.title,
-                    "status": post.status,
-                    "scheduled_at": (
-                        _utc(post.scheduled_at).isoformat(timespec="minutes")
-                        if post.scheduled_at else None
-                    ),
-                }
-                for post, channel in queued_rows
-            ]
+            # The window is stated here and handed to both readers, which keeps
+            # the budget literal in this function (where the other counter sits)
+            # and makes the drift fallback re-read exactly these rows.
+            queue_window = (
+                Channel.platform == platform_id,
+                Channel.enabled.is_(True),
+                Post.status.in_(("gated", "scheduled")),
+            )
+            queue_preview, queue_provenance = _primary_queue_preview(session, queue_window)
         item = platform_catalog.get(platform_id, {})
         enabled = bool(item.get("enabled"))
         configured = bool(item.get("configured"))
@@ -690,6 +826,13 @@ def _build_primary_platform_plan(
             "channels": [persona.title for persona in active],
             "topics": topics,
             "queue_preview": queue_preview,
+            # Which of the two silences this preview is holding: the booking
+            # columns were read (`measured`, and a row whose three keys are null
+            # is a post that was not booked), or they are not in this store yet
+            # (`plan_columns_missing`, and the keys are absent because nothing
+            # could answer for them). The panel cannot tell those apart from the
+            # rows alone, which is why this is one name per window.
+            "queue_provenance": queue_provenance,
             "reason": reason,
         })
     return result
