@@ -6,8 +6,22 @@ justification and a concrete slot per channel. Every refresh supersedes
 the previous active snapshot but keeps it as decision history, so the
 system never silently rewrites its past choices.
 
-The plan never publishes anything by itself: entries feed the existing
-generation and scheduling flows.
+What is true at this commit: the plan is a *ledger, not a driver*. Nothing in
+the pipeline consumes it — no generation, routing, scheduling or maintenance
+stage imports this module, and ``build_editorial_plan`` is reached only from
+the three HTTP endpoints in ``tgfarm.api`` (``GET /api/editorial/plan``,
+``POST /api/editorial/plan/refresh``, ``GET /api/editorial/plan/history``).
+An entry becomes a post only because some other flow happened to act on the
+topic on its own; the plan never publishes anything and never will by itself.
+Each entry therefore carries an ``outcome`` measured afterwards from real
+posts (see ``_entry_dict``), and each plan carries ``coverage`` saying how
+many of its decisions could be answered at all.
+
+CONSUMER SEAM — the one marked place where a consumer may be recorded later.
+``CONSUMER_MODULE`` below stays ``None`` until some module actually reads the
+entries; when that happens it is set here *and* the paragraph above is
+rewritten in the same commit, so this docstring can never again claim a flow
+that does not exist.
 """
 
 from __future__ import annotations
@@ -18,8 +32,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
-from tgfarm.db.models import Channel, CrosspostLog, EditorialPlan, EditorialPlanEntry, Post
+from tgfarm.core.run import ensure_utc
+from tgfarm.db.models import Channel, Cluster, CrosspostLog, EditorialPlan, EditorialPlanEntry, Post
 from tgfarm.db.session import session_scope
 from tgfarm.editorial import queue as editorial_queue
 
@@ -28,6 +44,24 @@ SLOT_STEP_MINUTES = 90
 SLOT_START_OFFSET_MINUTES = 30
 STALE_HOURS = 96
 MAX_ENTRIES = 40
+
+# The consumer seam named in the module docstring: module path of whatever
+# actually turns entries into work. None == "no consumer exists".
+CONSUMER_MODULE: str | None = None
+
+# A gated draft that has not moved for this many hours is a decision nobody
+# picked up: the entry that planned to schedule it is reported as abandoned
+# instead of waiting forever in "not_yet". Stated here because the number is
+# a policy, not a measurement.
+ABANDON_GATED_HOURS = 72
+
+# Posts whose status means "this cluster was reached by a real publication
+# step" for the purposes of the outcome measurement.
+_MATERIALIZED_STATUSES = ("scheduled", "published")
+_FAILED_STATUSES = ("rejected", "failed")
+# Chunked IN lists: SQLite binds one variable per id and dies past its limit,
+# and an enormous plan must not turn the read into a per-entry query.
+_IN_CHUNK = 400
 
 
 def _now() -> datetime:
@@ -115,7 +149,260 @@ def _reasons(row: dict[str, Any], action: str, channel: Channel | None, slot: da
     return parts
 
 
-def _entry_dict(entry: EditorialPlanEntry) -> dict[str, Any]:
+def _iso(value: datetime | None) -> str | None:
+    moment = ensure_utc(value)
+    return moment.isoformat() if moment is not None else None
+
+
+def _unknown_outcome(checked_at: datetime) -> dict[str, Any]:
+    """The honest answer when the data cannot tell us anything.
+
+    ``unknown`` is a state of its own and is never folded into the other three
+    or into a zero: an entry nobody could check is not an entry that failed.
+    """
+
+    return {
+        "state": "unknown",
+        "post_status": None,
+        "scheduled_at": None,
+        "checked_at": _iso(checked_at),
+    }
+
+
+def _post_reached_at(post: Any) -> datetime | None:
+    """When this post last entered a state a publication step writes."""
+
+    return (
+        ensure_utc(post.published_at)
+        or ensure_utc(post.scheduled_at)
+        or ensure_utc(post.updated_at)
+        or ensure_utc(post.created_at)
+    )
+
+
+def _last_touched(post: Any) -> datetime | None:
+    return ensure_utc(post.updated_at) or ensure_utc(post.created_at)
+
+
+def _load_outcome_rows(
+    session: Any, cluster_ids: list[str]
+) -> tuple[dict[str, list], dict[str, Any]]:
+    """One bounded read for the whole plan: its posts and its cluster rows.
+
+    Exactly two statements per chunk of ids, never one per entry — this runs on
+    every ``GET /api/editorial/plan``, so a per-entry query would be an N+1 on
+    the endpoint the panel polls.
+    """
+
+    posts_by_cluster: dict[str, list] = defaultdict(list)
+    clusters: dict[str, Any] = {}
+    ids = sorted(set(cluster_ids))
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start : start + _IN_CHUNK]
+        for row in session.execute(
+            select(
+                Post.cluster_public_id,
+                Post.channel_id,
+                Post.status,
+                Post.scheduled_at,
+                Post.published_at,
+                Post.created_at,
+                Post.updated_at,
+            ).where(Post.cluster_public_id.in_(chunk))
+        ):
+            if row.cluster_public_id:
+                posts_by_cluster[str(row.cluster_public_id)].append(row)
+        for row in session.execute(select(Cluster.public_id).where(Cluster.public_id.in_(chunk))):
+            clusters[str(row[0])] = True
+    return posts_by_cluster, clusters
+
+
+def _classify_entry(
+    entry: EditorialPlanEntry,
+    posts: list,
+    cluster_known: bool,
+    plan_created_at: datetime,
+    horizon_days: int,
+    checked_at: datetime,
+) -> dict[str, Any]:
+    """What became of this decision, from post rows and cluster rows only.
+
+    The question is the same for every action: did this cluster reach a real
+    publication step after the plan was written. For ``produce`` and
+    ``schedule`` "yes" means the decision was carried out (a ``schedule`` entry
+    additionally has to land on the channel the plan picked, otherwise another
+    flow published the topic and this plan did not); for ``hold`` the same
+    answer means the hold did not stick. ``not_yet`` is only ever used inside
+    the plan's own horizon — once the horizon closes with nothing happening the
+    decision lapsed, which is a fact and not a waiting state.
+    """
+
+    def _outcome(state: str, post: Any = None) -> dict[str, Any]:
+        return {
+            "state": state,
+            "post_status": str(post.status) if post is not None else None,
+            "scheduled_at": _iso(post.scheduled_at) if post is not None else None,
+            "checked_at": _iso(checked_at),
+        }
+
+    any_channel = entry.action != "schedule" or not entry.channel_id
+
+    def _matches_channel(post: Any) -> bool:
+        return any_channel or post.channel_id == entry.channel_id
+
+    def _stamp(post: Any) -> datetime:
+        return _post_reached_at(post) or plan_created_at
+
+    reached = [
+        post
+        for post in posts
+        if post.status in _MATERIALIZED_STATUSES
+        and _matches_channel(post)
+        and _stamp(post) >= plan_created_at
+    ]
+    if reached:
+        return _outcome("materialized", max(reached, key=_stamp))
+
+    failures = [
+        post
+        for post in posts
+        if post.status in _FAILED_STATUSES and _matches_channel(post) and _stamp(post) >= plan_created_at
+    ]
+    if failures:
+        return _outcome("abandoned", max(failures, key=_stamp))
+
+    stalled = [
+        post
+        for post in posts
+        if post.status == "gated"
+        and _matches_channel(post)
+        and checked_at - (_last_touched(post) or checked_at) >= timedelta(hours=ABANDON_GATED_HOURS)
+    ]
+    if stalled:
+        oldest = min(stalled, key=lambda post: _last_touched(post) or checked_at)
+        return _outcome("abandoned", oldest)
+
+    if not cluster_known:
+        # The topic disappeared from the queue while the plan still lists it:
+        # nothing can materialise this entry any more.
+        return _outcome("abandoned")
+
+    horizon_end = plan_created_at + timedelta(days=max(1, int(horizon_days)))
+    if checked_at <= horizon_end:
+        return _outcome("not_yet")
+    return _outcome("abandoned")
+
+
+def _coverage(states: list[str], note: str) -> dict[str, Any]:
+    materialized = states.count("materialized")
+    not_yet = states.count("not_yet")
+    abandoned = states.count("abandoned")
+    unknown = states.count("unknown")
+    return {
+        "coverage": {
+            # `measured` is the denominator the other three counts divide by;
+            # `unknown` stays outside it on purpose, so a plan nobody checked
+            # can never be read as "0 % done".
+            "measured": materialized + not_yet + abandoned,
+            "materialized": materialized,
+            "not_yet": not_yet,
+            "abandoned": abandoned,
+            "unknown": unknown,
+        },
+        "coverage_note": note,
+    }
+
+
+def _measure_plan(
+    session: Any,
+    plan: EditorialPlan,
+    entries: list[EditorialPlanEntry],
+    *,
+    now: datetime,
+    persisted: bool = True,
+) -> dict[str, Any]:
+    """Attach a per-entry outcome plus plan coverage.
+
+    Derived at read time and never stored: an ``EditorialPlanEntry`` is a
+    snapshot of a decision, while the outcome describes what the rest of the
+    system did afterwards, so persisting it would freeze an answer that keeps
+    changing (and would need a migration for a column that is not a fact about
+    the plan).
+    """
+
+    total = len(entries)
+    # Callers hand us a wall clock that may be naive (a test, a passed-in
+    # moment); SQLite always hands back naive timestamps, so normalise once.
+    checked_at = ensure_utc(now) or _now()
+    if not persisted:
+        # A preview was never written down, so there is no decision history to
+        # answer for: measured stays 0 and the note says "nothing ran".
+        return {
+            "outcomes": [_unknown_outcome(checked_at) for _ in entries],
+            **_coverage(
+                ["unknown"] * total,
+                f"План не сохранён (это предпросмотр): из {total} решений не измерено ни одного — "
+                "сверять нечего, это не провал плана.",
+            ),
+        }
+    created_at = ensure_utc(plan.created_at)
+    if created_at is None:
+        return {
+            "outcomes": [_unknown_outcome(checked_at) for _ in entries],
+            **_coverage(
+                ["unknown"] * total,
+                f"У плана нет created_at: из {total} решений не измерено ни одного — "
+                "время решения неизвестно, сравнивать не с чем.",
+            ),
+        }
+    try:
+        posts_by_cluster, clusters = _load_outcome_rows(
+            session, [entry.cluster_public_id for entry in entries if entry.cluster_public_id]
+        )
+    except SQLAlchemyError:
+        # The read failed. Say so in the note instead of reporting zeros, which
+        # a reader would take for "the plan produced nothing".
+        return {
+            "outcomes": [_unknown_outcome(checked_at) for _ in entries],
+            **_coverage(
+                ["unknown"] * total,
+                f"Чтение базы не удалось: из {total} решений не измерено ни одного. "
+                "Это сбой проверки, а не нулевой результат плана.",
+            ),
+        }
+
+    outcomes = [
+        _classify_entry(
+            entry,
+            posts_by_cluster.get(entry.cluster_public_id, []),
+            entry.cluster_public_id in clusters,
+            created_at,
+            int(plan.horizon_days or PLAN_HORIZON_DAYS),
+            checked_at,
+        )
+        for entry in entries
+    ]
+    states = [str(outcome["state"]) for outcome in outcomes]
+    measured = sum(1 for state in states if state != "unknown")
+    if not total:
+        note = "В плане нет ни одного решения — измерять нечего (0 решений в знаменателе)."
+    elif measured == 0:
+        note = (
+            f"Из {total} решений плана не измерено ни одного: все остались без ответа "
+            "(\u00abнеизвестно\u00bb), а не \u00abне выполнено\u00bb."
+        )
+    else:
+        note = (
+            f"Знаменатель — {measured} из {total} решений плана: выполнено "
+            f"{states.count('materialized')}, не дошло {states.count('abandoned')}, "
+            f"пока в горизонте {states.count('not_yet')}, без ответа {states.count('unknown')}."
+        )
+    return {"outcomes": outcomes, **_coverage(states, note)}
+
+
+def _entry_dict(
+    entry: EditorialPlanEntry, outcome: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "cluster_public_id": entry.cluster_public_id,
         "title": entry.title,
@@ -130,17 +417,38 @@ def _entry_dict(entry: EditorialPlanEntry) -> dict[str, Any]:
         "reasons": entry.reasons or [],
         "slot_at": entry.slot_at.isoformat() if entry.slot_at else None,
         "payload": entry.payload or {},
+        # Additive: without a measurement the state is `unknown`, never a
+        # guessed `not_yet`.
+        "outcome": dict(outcome) if outcome else _unknown_outcome(_now()),
     }
 
 
-def _plan_dict(plan: EditorialPlan, entries: list[EditorialPlanEntry]) -> dict[str, Any]:
+def _plan_dict(
+    plan: EditorialPlan,
+    entries: list[EditorialPlanEntry],
+    measurement: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    outcomes = list((measurement or {}).get("outcomes") or [])
+    summary = dict(plan.summary or {})
+    # Additive: coverage is derived from live posts, so it is computed per read
+    # and deliberately never written back into the persisted summary.
+    fallback = _coverage(["unknown"] * len(entries), "")
+    measured_coverage = (measurement or {}).get("coverage")
+    summary["coverage"] = dict(measured_coverage) if measured_coverage else fallback["coverage"]
+    summary["coverage_note"] = str(
+        (measurement or {}).get("coverage_note")
+        or "Исход решений плана не проверялся: ни одно решение не измерено."
+    )
     return {
         "public_id": plan.public_id,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
         "horizon_days": plan.horizon_days,
         "status": plan.status,
-        "summary": plan.summary or {},
-        "entries": [_entry_dict(e) for e in entries],
+        "summary": summary,
+        "entries": [
+            _entry_dict(entry, outcomes[index] if index < len(outcomes) else None)
+            for index, entry in enumerate(entries)
+        ],
     }
 
 
@@ -286,7 +594,8 @@ def build_editorial_plan(
             )
             for e in entries:
                 e.plan_id = 0
-            return _plan_dict(transient, entries)
+            measurement = _measure_plan(session, transient, entries, now=moment, persisted=False)
+            return _plan_dict(transient, entries, measurement)
 
         plan = EditorialPlan(
             public_id=uuid.uuid4().hex,
@@ -304,11 +613,16 @@ def build_editorial_plan(
             previous.status = "superseded"
             previous.superseded_by_id = plan.id
         session.flush()
-        return _plan_dict(plan, entries)
+        measurement = _measure_plan(session, plan, entries, now=moment)
+        return _plan_dict(plan, entries, measurement)
 
 
 def get_active_plan() -> dict[str, Any] | None:
-    """Currently active persisted plan, or None when nothing was planned yet."""
+    """Currently active persisted plan with each decision's outcome, or None.
+
+    None means the plan was never built — the caller must show "nothing ran",
+    never a plan with zero materialized entries.
+    """
 
     with session_scope() as session:
         plan = session.execute(
@@ -319,16 +633,15 @@ def get_active_plan() -> dict[str, Any] | None:
         ).scalar_one_or_none()
         if plan is None:
             return None
-        entries = (
+        entries = list(
             session.execute(
                 select(EditorialPlanEntry)
                 .where(EditorialPlanEntry.plan_id == plan.id)
                 .order_by(EditorialPlanEntry.priority, EditorialPlanEntry.id)
-            )
-            .scalars()
-            .all()
+            ).scalars()
         )
-        return _plan_dict(plan, entries)
+        measurement = _measure_plan(session, plan, entries, now=_now())
+        return _plan_dict(plan, entries, measurement)
 
 
 def plan_history(limit: int = 10) -> list[dict[str, Any]]:
