@@ -1950,6 +1950,10 @@
     // Read independently of the plan itself: whether the consumer runs does not
     // depend on this process being able to serialize the plan.
     loadPlanExecution();
+    // The same argument in the other direction: booking fidelity is a fact about
+    // stored rows, not about the plan snapshot this call is building, and it keeps
+    // its own request so a failed one cannot be reported as the other.
+    loadBookingFidelity();
     try {
       const [plan, history] = await Promise.all([
         api("/api/editorial/plan"),
@@ -2174,6 +2178,213 @@
       renderPlanExecution(await api("/api/editorial/plan/execution"), null);
     } catch (error) {
       renderPlanExecution(null, error);
+    }
+  }
+
+  // ── Бронь плана против факта: попал ли пост в зарезервированный слот ──────
+  // The question this card exists to answer is «план забронировал слот — ферма
+  // опубликовала в него?». `posts.plan_slot_at` is the reservation, written once
+  // at insert; `posts.scheduled_at` is the slot the queue ended up using and is
+  // rewritten by every requeue, retry and unpublish; `posts.published_at` is what
+  // the platform actually took. `_post_view` has shown the reservation since
+  // W19-C and the queue has always shown the slot — the subtraction was left to
+  // the operator, so nobody could say whether the plan's schedule means anything.
+  // `/api/editorial/plan/booking` does it server-side and this card only words it.
+  //
+  // Six wordings, six facts, and no borrowing between them: «брони нет» is not a
+  // zero, «уважено» is not the absence of a shift, «отказано» is not «заблокировано»
+  // in general but the one named gate the scheduler registers, «ждёт» says nothing
+  // about the future, and «не прочитано» says the read did not happen — which is
+  // what the live store answers today, because its `posts` table has no booking
+  // column yet. A failed request is a seventh case and its own sentence: the
+  // server answering "nothing measured" and the server not answering are not one
+  // state, and this panel must never print them with the same words (P34).
+  const BOOKING_UNREAD = "не прочитано";
+  const BOOKING_STATE_WORDS = {
+    no_booking: "брони нет",
+    honoured: "забронировано и уважено",
+    shifted: "забронировано и сдвинуто",
+    refused: "забронировано и отказано",
+    awaiting_slot: "забронировано, слот ещё не выдан",
+    unread_row: "бронь не читается",
+  };
+  const BOOKING_STATE_ORDER = [
+    "no_booking", "honoured", "shifted", "refused", "awaiting_slot", "unread_row",
+  ];
+  const BOOKING_DIRECTION_WORDS = { later: "позже брони", earlier: "раньше брони" };
+  const bookingCount = (v) => (typeof v === "number" && Number.isFinite(v) ? n(v) : BOOKING_UNREAD);
+  // `index.html` is outside this file's reach, so the card adds its own mount next
+  // to the consumer block instead of writing into `#plan-execution`, whose
+  // innerHTML the consumer render owns and replaces on every load.
+  function bookingMount() {
+    const existing = $("#plan-booking");
+    if (existing) return existing;
+    const anchor = $("#plan-execution");
+    if (!anchor || !anchor.parentNode) return null;
+    const node = document.createElement("div");
+    node.id = "plan-booking";
+    anchor.parentNode.insertBefore(node, anchor.nextSibling);
+    return node;
+  }
+
+  // A signed displacement, spelled with its sign and its direction, in the units
+  // that were measured. Seconds under a minute are printed instead of rounded
+  // away: a 30-second shift the server measured may not read as "nothing moved",
+  // and a bare `0 мин` is exactly the fabricated zero this project refuses.
+  function bookingDeltaText(seconds) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds === 0) return "";
+    const abs = Math.abs(Math.trunc(seconds));
+    const hours = Math.floor(abs / 3600);
+    const minutes = Math.floor((abs % 3600) / 60);
+    const rest = abs % 60;
+    const parts = [];
+    if (hours) parts.push(`${hours} ч`);
+    if (minutes) parts.push(`${minutes} мин`);
+    if (rest || !parts.length) parts.push(`${rest} с`);
+    const sign = seconds > 0 ? "+" : "−";
+    const words = seconds > 0 ? BOOKING_DIRECTION_WORDS.later : BOOKING_DIRECTION_WORDS.earlier;
+    return `${sign}${parts.join(" ")} ${words}`;
+  }
+
+  // A measured zero and an unmeasured distance are two different sentences.
+  // `shift_seconds: 0` is the reading of a booking against a slot that matched it;
+  // printing "не измерен" there would deny a measurement the server made, and
+  // printing the empty string `bookingDeltaText(0)` returns would look like a
+  // missing field. Both errors are the same one P34 names, only inverted.
+  function bookingShiftWords(seconds, zeroWords) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
+    return seconds === 0 ? zeroWords : bookingDeltaText(seconds);
+  }
+
+  function bookingStateChip(code, state) {
+    const view = state && typeof state === "object" ? state : {};
+    const word = BOOKING_STATE_WORDS[code] || `состояние «${String(code)}» не описано`;
+    const parts = [`${word}: ${bookingCount(view.count)}`];
+    // One row is an observation, not a finding, and the card says so while it
+    // still prints the number.
+    if (view.single_row === true) parts.push("одна строка — не вывод");
+    if (view.basis === "sample") parts.push("по прочитанному окну");
+    return `<span class="plan-chip">${esc(parts.join(" · "))}</span>`;
+  }
+
+  // A stamp has three readings and they are not interchangeable: the key is absent
+  // (this server sent no such field — nothing was read), the key is null (read, and
+  // there is nothing there), the key names a moment. Calling a null «не прочитано»
+  // reports a broken column where the column is fine and simply empty, which is the
+  // same invention in the other direction as printing a fabricated date for it.
+  function bookingStampWords(value, absentWords, emptyWords) {
+    if (value === undefined) return absentWords;
+    if (typeof value !== "string" || !value) return emptyWords;
+    return nextRunCell(value);
+  }
+
+  function bookingRowLine(row) {
+    const r = row && typeof row === "object" ? row : {};
+    const code = typeof r.state === "string" ? r.state : "";
+    const word = BOOKING_STATE_WORDS[code] || `${BOOKING_UNREAD} (${code || "состояние не прислано"})`;
+    const head = `<div class="plan-entry-head">`
+      + `<span class="plan-chip">${esc(String(r.post_id || "—"))}</span>`
+      + `<span class="plan-chip">${esc(word)}</span>`
+      + `</div>`;
+    const booked = `бронь: ${esc(bookingStampWords(r.plan_slot_at, "поле не прислано", BOOKING_UNREAD))}`;
+    const used = `слот: ${esc(bookingStampWords(r.scheduled_at, "поле не прислано", "ещё не выдан"))}`;
+    const shift = bookingShiftWords(r.shift_seconds, "0 с — слот совпал с бронью");
+    const sentShift = bookingShiftWords(r.published_shift_seconds, "ровно по брони");
+    const sentStamp = typeof r.published_at === "string" && r.published_at
+      ? nextRunCell(r.published_at) : null;
+    const sent = sentStamp
+      ? `отправлен ${esc(sentStamp)}${sentShift ? " · " + esc(sentShift) : " · дельта к брони не измерена"}`
+      : "published_at" in r
+        ? "не отправлен"
+        : "отправка: поле не прислано";
+    const details = [booked, used, shift ? `сдвиг ${esc(shift)}` : "сдвиг не измерен", sent];
+    // The refusal keeps the gate's own code in the sentence: «заблокировано» would
+    // be a second, vaguer word for a fact the ledger already names exactly.
+    if (code === "refused") {
+      const gateCode = typeof r.refusal_gate_code === "string" && r.refusal_gate_code
+        ? r.refusal_gate_code : null;
+      details.push(gateCode
+        ? `отказ по гейту ${esc(String(gateCode))} — счётчик журнала принадлежит тику, не посту`
+        : "код гейта не прислан — называть отказ нечем");
+    }
+    return `<li class="plan-entry">${head}<div class="plan-entry-reasons">${details.join(" · ")}</div></li>`;
+  }
+
+  function bookingTransportText(failure) {
+    const reason = !failure ? "ответ не пришёл в запросе"
+      : typeof failure === "string" ? failure
+        : String((failure && failure.message) || failure);
+    // «не прочитано» is reserved for a server that answered and could not measure.
+    // A request that never landed says «ответ не пришёл», so the two silences can
+    // never be read as one.
+    return `<div class="plan-chips"><span class="plan-chip">${esc("бронь: ответ не пришёл")}</span></div>`
+      + `<p class="plan-entry-reasons">Запрос состояния брони не удался: ${esc(reason)}. `
+      + "Это не «брони нет», не «совпало» и не «сервер ответил пусто» — ответа не было.</p>";
+  }
+
+  function renderBookingFidelity(data, failure) {
+    const root = bookingMount();
+    if (!root) return;
+    if (!data || typeof data !== "object") {
+      root.innerHTML = bookingTransportText(failure);
+      return;
+    }
+    const head = `<h3>Бронь плана против факта</h3>`;
+    // The server could not read the table at all. Every count under it stays
+    // «не прочитано»: printing zeros here would print outcomes nobody measured.
+    if (data.readable !== true) {
+      const reason = typeof data.reason === "string" && data.reason ? data.reason : BOOKING_UNREAD;
+      root.innerHTML = head
+        + `<div class="plan-chips"><span class="plan-chip">${esc(`бронь: ${BOOKING_UNREAD}`)}</span>`
+        + `<span class="plan-chip">${esc(`причина: ${reason}`)}</span></div>`
+        + `<p class="plan-entry-reasons">${esc(typeof data.note === "string" && data.note
+          ? data.note
+          : "Состояние брони не измерено.")}</p>`;
+      return;
+    }
+    const population = data.population && typeof data.population === "object"
+      ? data.population : {};
+    const gate = data.gate && typeof data.gate === "object" ? data.gate : {};
+    const stats = data.states && typeof data.states === "object" ? data.states : {};
+    const booked = typeof population.booked === "number" ? population.booked : null;
+    const chips = [
+      `<span class="plan-chip">${esc(`постов с бронью: ${bookingCount(population.booked)}`)}</span>`,
+      `<span class="plan-chip">${esc(`без брони: ${bookingCount(population.unbooked)}`)}</span>`,
+      `<span class="plan-chip">${esc(`прочитано строк: ${bookingCount(population.scanned)}`)}</span>`,
+    ];
+    if (population.truncated === true) {
+      chips.push(`<span class="plan-chip">${esc(`окно ограничено: ${bookingCount(population.limit)} строк`)}</span>`);
+    }
+    const stateChips = BOOKING_STATE_ORDER.map((code) => bookingStateChip(code, stats[code]));
+    // With no booking in the table the four booked states are vacuous, and
+    // printing their measured zeros would look exactly like a verdict about them.
+    const stateLine = booked === 0
+      ? `<p class="plan-entry-reasons">Бронированных постов нет — состояния «уважено / сдвинуто / `
+        + "отказано / ждёт» не о чём спрашивать, и нули вместо них не печатаются.</p>"
+      : `<div class="plan-chips">${stateChips.join("")}</div>`;
+    const rows = Array.isArray(data.samples) ? data.samples : [];
+    const rowsBlock = rows.length
+      ? `<ul class="plan-entries">${rows.map(bookingRowLine).join("")}</ul>`
+      : `<p class="plan-entry-reasons">Ни одной строки с бронью читатель не назвал.</p>`;
+    const gateCount = bookingCount(gate.count);
+    const gateLine = `<p class="plan-entry-reasons">Отказы: гейт ${esc(String(gate.code || BOOKING_UNREAD))} — `
+      + `${esc(gateCount)}`
+      + (gate.count === null || gate.count === undefined
+        ? " (ни один publish-тик этот счётчик ещё не записывал)"
+        : " (счётчик последнего publish-тика, не отдельного поста)")
+      + ".</p>";
+    root.innerHTML = head + `<div class="plan-chips">${chips.join("")}</div>` + stateLine
+      + gateLine + rowsBlock
+      + `<p class="plan-entry-reasons">${esc(typeof data.note === "string" ? data.note : "")}</p>`;
+  }
+
+  async function loadBookingFidelity() {
+    const root = bookingMount();
+    if (!root) return;
+    try {
+      renderBookingFidelity(await api("/api/editorial/plan/booking"), null);
+    } catch (error) {
+      renderBookingFidelity(null, error);
     }
   }
 
