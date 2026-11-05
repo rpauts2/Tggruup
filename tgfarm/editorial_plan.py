@@ -6,22 +6,27 @@ justification and a concrete slot per channel. Every refresh supersedes
 the previous active snapshot but keeps it as decision history, so the
 system never silently rewrites its past choices.
 
-What is true at this commit: the plan is a *ledger, not a driver*. Nothing in
-the pipeline consumes it — no generation, routing, scheduling or maintenance
-stage imports this module, and ``build_editorial_plan`` is reached only from
-the three HTTP endpoints in ``tgfarm.api`` (``GET /api/editorial/plan``,
-``POST /api/editorial/plan/refresh``, ``GET /api/editorial/plan/history``).
-An entry becomes a post only because some other flow happened to act on the
-topic on its own; the plan never publishes anything and never will by itself.
-Each entry therefore carries an ``outcome`` measured afterwards from real
-posts (see ``_entry_dict``), and each plan carries ``coverage`` saying how
-many of its decisions could be answered at all.
+What is true at this commit: the plan is a *ledger, and now it has one driver*.
+``tgfarm.plan_execution`` reads the active plan and hands a qualifying
+``schedule`` entry to the existing scheduling transition — but only behind
+``PLAN_EXECUTION_ENABLED``, whose default is off. With that switch off the plan
+is still consumed by nobody: no generation, routing or maintenance stage reads
+it, and ``build_editorial_plan`` is reached only from the three HTTP endpoints
+in ``tgfarm.api`` (``GET /api/editorial/plan``,
+``POST /api/editorial/plan/refresh``, ``GET /api/editorial/plan/history``). The
+driver never publishes and never generates, so an entry becomes a queued post
+only; sending stays the publisher tick's decision. Each entry therefore carries
+an ``outcome`` measured afterwards from real posts (see ``_entry_dict``), and
+each plan carries ``coverage`` saying how many of its decisions could be
+answered at all.
 
 CONSUMER SEAM — the one marked place where a consumer may be recorded later.
 ``CONSUMER_MODULE`` below stays ``None`` until some module actually reads the
 entries; when that happens it is set here *and* the paragraph above is
 rewritten in the same commit, so this docstring can never again claim a flow
-that does not exist.
+that does not exist. ``tests/test_plan_consumer_seam.py`` checks both halves of
+that promise: a named consumer must really read the plan, and a paragraph that
+says nobody consumes it must not survive a set ``CONSUMER_MODULE``.
 """
 
 from __future__ import annotations
@@ -47,7 +52,7 @@ MAX_ENTRIES = 40
 
 # The consumer seam named in the module docstring: module path of whatever
 # actually turns entries into work. None == "no consumer exists".
-CONSUMER_MODULE: str | None = None
+CONSUMER_MODULE: str | None = "tgfarm.plan_execution"
 
 # A gated draft that has not moved for this many hours is a decision nobody
 # picked up: the entry that planned to schedule it is reported as abandoned
