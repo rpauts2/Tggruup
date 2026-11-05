@@ -401,16 +401,20 @@ def test_the_provenance_read_touches_the_entry_table_only_when_something_is_name
 ):
     """No post carries provenance today, so the panel must cost nothing today.
 
-    The live base is exactly this state, so this is the measurement of "the change
-    is invisible until the plan starts producing".
+    Measured on a status this file owns rather than on the newest 200 rows of the
+    shared database: another file's planned row must not be able to turn "this read
+    costs nothing" into "this read cost one statement", and the live base is exactly
+    this state.
     """
     channel_id = _channel(owned)
-    _post(owned, channel_id)
-    _post(owned, channel_id)
+    status = _status()
+    _post(owned, channel_id, status=status)
+    _post(owned, channel_id, status=status)
 
     def read():
-        response = client.get("/api/posts?limit=200")
+        response = client.get(f"/api/posts?status={status}&limit=200")
         assert response.status_code == 200, response.text
+        assert len(response.json()["posts"]) == 2
 
     assert _count_entry_reads(read) == []
 
