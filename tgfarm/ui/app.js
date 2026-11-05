@@ -1902,6 +1902,9 @@
   // ── План тем (глобальный редакционный план) ─────────────────────────────
   async function loadEditorialPlan(force = false) {
     if (force) state.planLoaded = false;
+    // Read independently of the plan itself: whether the consumer runs does not
+    // depend on this process being able to serialize the plan.
+    loadPlanExecution();
     try {
       const [plan, history] = await Promise.all([
         api("/api/editorial/plan"),
@@ -2000,6 +2003,120 @@
           return `<li>${esc(String(h.public_id || ""))} — ${esc(when)}: ${esc(String(s.total ?? 0))} тем (в работу ${esc(String(s.produce ?? 0))}, отложено ${esc(String(s.hold ?? 0))})</li>`;
         }).join("")}</ul>`
       : `<p class="plan-entry-reasons">Зафиксированных планов пока нет.</p>`;
+  }
+
+  // ── Исполнитель плана: работает ли потребитель и что он уже сделал ───────
+  const EXECUTION_UNKNOWN = "неизвестно";
+  // Three different silences must keep three different wordings. `registered:
+  // null` means the API process is blind to the scheduler, `next_run_at: null`
+  // means no moment is planned, a missing `last_apply` means the consumer never
+  // ran. None of them is a zero, and none of them may borrow another's words.
+  const registeredCell = (v) => (v === true ? "зарегистрировано"
+    : v === false ? "не зарегистрировано" : EXECUTION_UNKNOWN);
+  const nextRunCell = (v) => (typeof v === "string" && v ? dt(v) : "—");
+  const execCount = (v) => (typeof v === "number" && Number.isFinite(v) ? n(v) : EXECUTION_UNKNOWN);
+  const execChip = (label, value) => `<span class="plan-chip">${esc(label)}: ${esc(value)}</span>`;
+
+  function execReasonChips(reasons) {
+    return Object.entries(reasons).map(([code, count]) => execChip(code, execCount(count)));
+  }
+
+  function execJobChips(jobs) {
+    return jobs.map((raw) => {
+      const job = raw || {};
+      const id = String(job.id || "—");
+      return `<span class="plan-chip">${esc(id)}: ${esc(registeredCell(job.registered))}</span>`
+        + `<span class="plan-chip">${esc(id)} · далее ${esc(nextRunCell(job.next_run_at))}</span>`;
+    });
+  }
+
+  function execLastApplyBlock(la) {
+    if (!la || typeof la !== "object") {
+      return `<p class="plan-entry-reasons">ни одного пропуска: исполнитель ещё ни разу не запускался.</p>`;
+    }
+    const chips = [
+      execChip("пропуск", la.at ? dt(la.at) : EXECUTION_UNKNOWN),
+      execChip("по плану", la.plan_id ? String(la.plan_id) : EXECUTION_UNKNOWN),
+      execChip("исполнено", execCount(la.applied)),
+      execChip("удержано", execCount(la.held)),
+    ];
+    const hasReasons = la.reasons && typeof la.reasons === "object";
+    const reasons = hasReasons ? execReasonChips(la.reasons) : [];
+    const reasonLine = !hasReasons
+      ? `<p class="plan-entry-reasons">причины не записаны</p>`
+      : reasons.length
+        ? `<p class="plan-entry-reasons">итоги по причинам:</p><div class="plan-chips">${reasons.join("")}</div>`
+        : `<p class="plan-entry-reasons">ни одной причины в отчёте</p>`;
+    return `<div class="plan-chips">${chips.join("")}</div>${reasonLine}`;
+  }
+
+  function execPlanBlock(pl) {
+    if (!pl || typeof pl !== "object") return "";
+    const facts = [
+      execChip("действующий план", pl.id ? String(pl.id) : EXECUTION_UNKNOWN),
+      execChip("составлен", pl.created_at ? dt(pl.created_at) : EXECUTION_UNKNOWN),
+      execChip("всего тем", execCount(pl.total)),
+      execChip("в работу", execCount(pl.produce)),
+      execChip("в расписание", execCount(pl.schedule)),
+      execChip("отложено", execCount(pl.hold)),
+    ];
+    const coverage = pl.coverage && typeof pl.coverage === "object"
+      ? Object.entries(pl.coverage).map(([key, value]) => execChip(String(key), execCount(value)))
+      : [];
+    return `<div class="plan-chips">${facts.concat(coverage).join("")}</div>`;
+  }
+
+  function renderPlanExecution(payload, failure) {
+    const root = $("#plan-execution");
+    if (!root) return;
+    const data = payload && typeof payload === "object" ? payload : null;
+
+    if (!data) {
+      const reason = !failure ? "ответ не пришёл в запросе"
+        : typeof failure === "string" ? failure
+          : String((failure && failure.message) || failure);
+      root.innerHTML = `<div class="plan-chips">${execChip("потребитель плана", EXECUTION_UNKNOWN)}</div>`
+        + `<p class="plan-entry-reasons">Отчёт исполнителя не прочитан: ${esc(reason)}. `
+        + "Это не «выключен» и не «ничего не исполнено» — состояние потребителя неизвестно.</p>";
+      return;
+    }
+
+    const enabledChip = data.enabled === true ? `<span class="tag tag-ok">включён</span>`
+      : data.enabled === false ? `<span class="tag tag-warn">выключен</span>`
+        : `<span class="tag tag-none">${esc(EXECUTION_UNKNOWN)}</span>`;
+    const head = `<div class="plan-chips"><span class="tag">потребитель плана</span>${enabledChip}</div>`;
+    // The sentence is about what the flag does, not about how to flip it: this
+    // panel reads a configured setting and never changes one.
+    const offLine = data.enabled === false
+      ? `<p class="plan-entry-reasons">Флаг выключен — задачи исполнителя не регистрируются, `
+        + "ни одна запись плана не двигается, и числа ниже останутся пустыми, пока "
+        + "PLAN_EXECUTION_ENABLED не включат и процесс не перезапустят.</p>"
+      : "";
+    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+    const jobsBlock = jobs.length
+      ? `<div class="plan-chips">${execJobChips(jobs).join("")}</div>`
+      : `<p class="plan-entry-reasons">список задач не прочитан</p>`;
+
+    // An absent field is not a null field: `last_apply: null` is the server
+    // saying the executor never ran, a payload without the key says nothing.
+    const applyBlock = "last_apply" in data
+      ? execLastApplyBlock(data.last_apply)
+      : `<p class="plan-entry-reasons">отчёт о пропуске не прочитан</p>`;
+    const noteLine = typeof data.note === "string" && data.note
+      ? `<p class="plan-entry-reasons">${esc(data.note)}</p>` : "";
+
+    root.innerHTML = head + offLine + jobsBlock + applyBlock
+      + execPlanBlock(data.plan) + noteLine;
+  }
+
+  async function loadPlanExecution() {
+    const root = $("#plan-execution");
+    if (!root) return;
+    try {
+      renderPlanExecution(await api("/api/editorial/plan/execution"), null);
+    } catch (error) {
+      renderPlanExecution(null, error);
+    }
   }
 
   function renderDistributionPlan(payload) {
