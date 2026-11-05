@@ -567,12 +567,15 @@ def test_the_step_cannot_write_when_the_consent_flag_is_off(tmp_path, monkeypatc
             )
         ).all()
         assert {str(row[0]) for row in statuses} == {"published"}
-        assert (
-            session.execute(
-                select(OperatorLog).where(OperatorLog.action == "publication-evidence-repair")
-            ).scalar_one_or_none()
-            is None
-        )
+        # Scoped to this fixture's own rows: other files in the suite do apply the
+        # step under consent, and a repair log of theirs is not this step writing.
+        repaired = session.execute(
+            select(OperatorLog.target).where(
+                OperatorLog.action == "publication-evidence-repair",
+                OperatorLog.target.in_([cell["public_id"][:64] for cell in seeded.values()]),
+            )
+        ).all()
+        assert not repaired, repaired
 
 
 def test_the_cycle_hook_still_returns_zero_without_consent(monkeypatch):
