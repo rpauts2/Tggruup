@@ -79,7 +79,15 @@ def _slug() -> str:
     return uuid4().hex[:8]
 
 
-def _seed(channel_id: str, *, platform: str, public_id: str, booked: datetime | None) -> None:
+def _seed(
+    channel_id: str,
+    *,
+    platform: str,
+    public_id: str,
+    booked: datetime | None,
+    created_at: datetime = OLDEST,
+    entry_id: int | None = None,
+) -> None:
     with session_scope() as session:
         session.merge(
             Channel(
@@ -99,9 +107,10 @@ def _seed(channel_id: str, *, platform: str, public_id: str, booked: datetime | 
                 hook="Хук забронированного слота.",
                 body="Тело поста; слот забронирован редакционным планом.",
                 status="gated",
-                created_at=OLDEST,
+                created_at=created_at,
                 generation_provider="online-model",
                 plan_slot_at=booked,
+                plan_entry_id=entry_id,
             )
         )
     _seeded_channels.append(channel_id)
@@ -364,3 +373,108 @@ def test_the_dzen_offline_model_gate_still_wins_over_a_booking(monkeypatch):
     after = _read(public_id)
     assert after.status == "gated" and after.scheduled_at is None, after
     assert gates[GATE_DZEN_NEEDS_ONLINE_MODEL] == 1, gates
+
+
+# --------------------------------------------------------------------- behaviour 4
+#: Measured off `main`'s own scheduler (not off this change, and not off a prose
+#: description of the algorithm) for three unbooked posts on one fresh channel,
+#: with the clock at `FROZEN_NOW` and every sampler on seed 1234.
+#: interval mode, chained through the per-channel cursor.
+GOLDEN_INTERVAL_NO_BOOKING = (
+    datetime(2026, 11, 4, 16, 29, 7, tzinfo=UTC),
+    datetime(2026, 11, 4, 20, 35, 12, tzinfo=UTC),
+    datetime(2026, 11, 5, 0, 19, 10, tzinfo=UTC),
+)
+#: weights mode, sampled from the shipped peak-hour table.
+GOLDEN_WEIGHTS_NO_BOOKING = (
+    datetime(2026, 11, 4, 19, 39, 0, tzinfo=UTC),
+    datetime(2026, 11, 4, 19, 39, 0, tzinfo=UTC),
+    datetime(2026, 11, 4, 19, 39, 0, tzinfo=UTC),
+)
+
+
+@pytest.mark.parametrize(
+    ("tag", "cadence", "golden"),
+    [
+        (
+            "int",
+            {"mode": "interval", "min_gap_s": 300, "max_gap_s": 620, "active_hours": None},
+            GOLDEN_INTERVAL_NO_BOOKING,
+        ),
+        ("wgt", {"mode": "weights"}, GOLDEN_WEIGHTS_NO_BOOKING),
+    ],
+    ids=["interval", "weights"],
+)
+def test_an_unbooked_post_still_gets_exactly_the_cadences_slot(tag, cadence, golden, monkeypatch):
+    """`plan_slot_at IS NULL` must not change the slot by one second.
+
+    This is the no-regression half of the feature, and the reason the expected
+    values are frozen literals rather than a recomputation: recomputing them from
+    the same helpers the scheduler calls would pass even if the scheduler ignored
+    those helpers, and describing the algorithm in prose would only prove the
+    description matches itself. Three posts in one channel rather than one, so the
+    interval batch exercises the cursor chain and the weights batch the per-hour
+    bucket, both of which a booking branch could quietly disturb.
+    """
+    from tgfarm import s7_publish
+
+    _install_world(monkeypatch, cadence=cadence)
+    channel_id = f"w19d_base_{tag}_{_slug()}"
+    public_ids = [f"w19d_base_{tag}_{i}_{_slug()}" for i in range(len(golden))]
+    for i, public_id in enumerate(public_ids):
+        _seed(
+            channel_id,
+            platform="telegram",
+            public_id=public_id,
+            booked=None,
+            # Distinct and older than any row another file can write, so the batch
+            # order is this test's, not the suite's.
+            created_at=OLDEST + timedelta(minutes=i),
+        )
+
+    gates = empty_gate_report()
+    assert s7_publish.schedule_ready_posts(limit=len(golden), blocked=gates) == len(golden), gates
+
+    for public_id, expected in zip(public_ids, golden, strict=True):
+        after = _read(public_id)
+        assert after.status == "scheduled", after
+        assert _aware(after.scheduled_at) == expected, (
+            f"{public_id}: cadence produced {_aware(after.scheduled_at)}, "
+            f"main produces {expected}"
+        )
+        assert after.plan_slot_at is None, "the pin is about unbooked posts"
+
+
+# --------------------------------------------------------------------- behaviour 5
+def test_the_booking_survives_the_requeue_that_overwrites_scheduled_at(monkeypatch):
+    """After a requeue moves the post, the plan's word is still readable.
+
+    The point of `plan_slot_at` as a separate column is that `scheduled_at` is
+    common property: `unpublish` stamps it with `now`, the retry path stamps it
+    with `next_attempt_at`, an expire clears it. Scheduling must consume the
+    booking without becoming its owner, so the same instant is still on the row
+    after every one of those writes — that is what lets an operator audit "the
+    plan said 21:00, the farm sent 21:00" instead of "the plan said 21:00, the
+    column now says whatever the last queue move said".
+    """
+    from tgfarm import s7_publish
+
+    _install_world(monkeypatch)
+    booked = FROZEN_NOW + timedelta(hours=9)
+    channel_id = f"w19d_surv_{_slug()}"
+    public_id = f"w19d_p_{_slug()}"
+    entry_id = 90210
+    _seed(channel_id, platform="telegram", public_id=public_id, booked=booked, entry_id=entry_id)
+
+    gates = empty_gate_report()
+    assert s7_publish.schedule_ready_posts(limit=1, blocked=gates) == 1, gates
+    scheduled = _read(public_id)
+    assert _aware(scheduled.scheduled_at) == booked, scheduled
+
+    # The real requeue, not a hand-written UPDATE: same function the pipeline calls.
+    assert s7_publish.unpublish([public_id]) == 1
+    after = _read(public_id)
+
+    assert _aware(after.scheduled_at) != booked, "the requeue must actually have moved the slot"
+    assert _aware(after.plan_slot_at) == booked, "the booking was overwritten by scheduling"
+    assert after.plan_entry_id == entry_id, "the provenance link was overwritten too"
