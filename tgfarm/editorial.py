@@ -100,8 +100,14 @@ def awaiting_booking(cluster_public_id: str) -> bool:
 
     Shared by the queue and by `s4_generation.run`, so "the plan still owes this
     topic a slot" and "S4 must not draft this topic again" cannot drift apart.
+
+    The consumer switch is checked here, not at the call site: the half that
+    re-shows an order and the half that refuses to re-draft it are one decision,
+    and an unchecked `run()` would keep refusing rows after an operator turned
+    the executor off — where `main` drafts them. Off the switch the answer is
+    always False, so the pre-W20-B path is what runs.
     """
-    if not cluster_public_id:
+    if not cluster_public_id or not _plan_consumer_enabled():
         return False
     with session_scope() as session:
         found = session.execute(
