@@ -79,9 +79,12 @@ JOURNAL_STATUS_SKIPPED = "skipped"
 JOURNAL_STATUS_DRY_RUN = "dry_run"
 JOURNAL_STATUS_RETRY_AUTHORIZED = "retry_authorized"
 JOURNAL_STATUS_PUBLISHING = "publishing"
+#: The one journal status that *proves* a publication, so the code that decides
+#: whether a post may be called `published` names it rather than respelling it.
+JOURNAL_STATUS_POSTED = "posted"
 
 JOURNAL_SUPPRESSED_STATUSES = frozenset(
-    {"posted", "scheduled", "unknown", JOURNAL_STATUS_PUBLISHING, "permanent"}
+    {JOURNAL_STATUS_POSTED, "scheduled", "unknown", JOURNAL_STATUS_PUBLISHING, "permanent"}
 )
 JOURNAL_TIME_BOUNDED_STATUSES = frozenset({JOURNAL_STATUS_FAILED, JOURNAL_STATUS_SKIPPED})
 JOURNAL_REOPEN_STATUSES = frozenset({JOURNAL_STATUS_DRY_RUN, JOURNAL_STATUS_RETRY_AUTHORIZED})

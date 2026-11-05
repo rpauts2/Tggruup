@@ -35,6 +35,7 @@ from tgfarm.core.run import StageTimer, to_thread
 from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.core.text import truncate
+from tgfarm.crosspost_journal import JOURNAL_STATUS_POSTED
 from tgfarm.db.models import Channel as ChannelRow
 from tgfarm.db.models import CrosspostLog as CrosspostLogRow
 from tgfarm.db.models import Post as PostRow
@@ -84,7 +85,7 @@ STATUS_FAILED = "failed"
 #: distinction is checkable rather than remembered: none of these may be written
 #: to `posts.status`.
 CROSSPOST_ONLY_STATUSES: frozenset[str] = frozenset(
-    {"posted", "skipped", "permanent", "unknown", "dry_run"}
+    {JOURNAL_STATUS_POSTED, "skipped", "permanent", "unknown", "dry_run"}
 )
 
 
@@ -623,7 +624,7 @@ async def _publish_vk(post_id: int, text: str) -> dict:
     )
     result = await adapter.publish(payload)
     await to_thread(log_result, public_id, result)
-    if result.status != "posted":
+    if result.status != JOURNAL_STATUS_POSTED:
         raise PublishError(f"vk: {result.error or result.status}")
     log.info("vk published: %s", result.url or result.remote_id)
     return {"ok": True, "message_id": None, "remote_id": result.remote_id}
@@ -695,7 +696,7 @@ async def _publish_dzen(
     url = canonical_publication_url(remote_id) or published.url
     result = CrosspostResult(
         platform="dzen",
-        status="posted",
+        status=JOURNAL_STATUS_POSTED,
         remote_id=remote_id,
         url=url,
     )
@@ -1278,9 +1279,11 @@ def has_publication_evidence(
     * the crosspost journal holds a `posted` row for this post and platform. That
       is where Dzen and VK leave their identifier — the publishers call
       `log_result()` rather than writing a column on the post — and `maintenance`
-      already counts such a row as evidence: 29 of the 37 live Dzen publications
-      have a `posted` row and no id, and treating a missing *id* as a missing
-      *publication* would un-publish real work.
+      already counts such a row as evidence. Measured on the live base 2026-11-05:
+      35 of the 57 `published` Dzen rows have such a journal row and 27 of those
+      carry an empty `remote_id`, so treating a missing *id* as a missing
+      *publication* would un-publish real work; VK is 403 of 403 and Telegram 0 of
+      15, which is the class `publication_evidence_repair` was written for.
     """
     if message_id is not None:
         return True
@@ -1293,7 +1296,7 @@ def has_publication_evidence(
             .where(
                 CrosspostLogRow.post_public_id == public_id,
                 CrosspostLogRow.platform == platform,
-                CrosspostLogRow.status == "posted",
+                CrosspostLogRow.status == JOURNAL_STATUS_POSTED,
             )
             .limit(1)
         ).scalar_one_or_none()
