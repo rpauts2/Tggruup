@@ -1060,6 +1060,12 @@ def _no_lesson_preference(
 #: publishes as `EVIDENCE_UNTRUSTED`, spelled here to keep S4's imports lazy.
 _UNTRUSTED_LESSON_EVIDENCE = frozenset({"stale", "never", "blocked"})
 
+#: The two reasons a durable lesson can be refused, named apart because they ask
+#: the operator to fix different things: stale snapshots need the collector, an
+#: unevidenced publication needs the publisher to journal an identifier.
+LESSON_REFUSAL_STALE = "stale_evidence"
+LESSON_REFUSAL_UNEVIDENCED = "unevidenced"
+
 
 def _int_or_none(value: Any) -> int | None:
     """An honest integer count from a lesson value; anything else says nothing."""
@@ -1072,14 +1078,37 @@ def _int_or_none(value: Any) -> int | None:
     return size if size >= 0 else None
 
 
-def _lesson_evidence_view(value: dict[str, Any], measured: int, engagement: float) -> dict[str, Any]:
-    """How much of a durable lesson is still *live* measurement.
+def _float_or_none(value: Any) -> float | None:
+    """A non-negative average from a lesson value, or `None` when it says nothing.
 
-    A lesson is meant to outlive the S8 window — that is the whole point of P32 —
-    but the snapshots behind it are not meant to outlive their own collector. S12
-    records, per format, how many measurements were inside
+    `None` is the honest absence (`formats._rate` over an empty evidenced sample),
+    and `0.0` is a measurement that earned nothing; collapsing the two is the
+    reading this repo has already ruled out twice.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number < 0:
+        return None
+    return number
+
+
+def _lesson_evidence_view(value: dict[str, Any], measured: int, engagement: float) -> dict[str, Any]:
+    """How much of a durable lesson is live measurement the farm can *prove*.
+
+    Two independent vetoes over the same stored row, both read from what S12 wrote
+    and both spelled the way `s8_analytics.formats.planner_history` spells them for
+    the live feed, so the durable lesson and the window answer «may this steer
+    work» with one word rather than two:
+
+    *freshness* — a lesson is meant to outlive the S8 window (that is the whole
+    point of P32), but the snapshots behind it are not meant to outlive their own
+    collector. S12 records how many measurements were inside
     ``FORMAT_EVIDENCE_STALE_AFTER_DAYS`` when the lesson was written and what they
-    averaged, so the planner can act on those instead of on a blend:
+    averaged, so the planner acts on those instead of on a blend:
 
     * nothing declared (a lesson written before this existed) — the lesson keeps
       its old numbers; refusing it on a marker it never got would silently change
@@ -1089,6 +1118,14 @@ def _lesson_evidence_view(value: dict[str, Any], measured: int, engagement: floa
     * `mixed` — only the live count and the live average are handed on, so a dead
       snapshot can neither inflate the sample nor drag the engagement;
     * `ok` — live and total counts are the same numbers.
+
+    *publication evidence* — of those live measurements, `evidenced_sample_size`
+    are backed by proof the publication happened (a telegram message id, a
+    journalled `posted` row). A snapshot of a send the platform's own rule
+    disproves says nothing about a format, so it is taken out of the count *and*
+    out of the average handed on, and what was taken out is named in
+    `unevidenced_measured` instead of vanishing. With a row declaring nothing on
+    this axis either, the lesson keeps the numbers it has always had.
     """
     status = str(value.get("evidence_status") or "").strip().lower()
     fresh = _int_or_none(value.get("fresh_measured"))
@@ -1098,38 +1135,75 @@ def _lesson_evidence_view(value: dict[str, Any], measured: int, engagement: floa
         "measured": measured,
         "engagement": engagement,
         "refuse": "",
+        # Which refusal a non-empty `refuse` is: the caller names the state, and
+        # «measured, but weeks ago» and «measured, but nothing was provably sent»
+        # are two different facts for an operator reading the plan reason.
+        "refusal": "",
         "extra": {},
     }
-    if not status:
-        return view
-    view["extra"] = {
-        "evidence_status": status,
-        "fresh_measured": fresh if fresh is not None else measured,
-        "stale_measured": stale if stale is not None else 0,
-    }
-    if status in _UNTRUSTED_LESSON_EVIDENCE:
-        view["measured"] = 0
-        view["engagement"] = 0.0
-        view["refuse"] = (
-            f"живых измерений нет: все снимки этого урока старше порога "
-            f"{_int_or_none(value.get('evidence_stale_after_days')) or 0} дн(а) — "
-            "урок наблюдение, решает окно S8"
-        )
-        return view
-    if fresh is not None:
-        view["measured"] = min(measured, fresh)
-    if status == "mixed":
-        try:
-            fresh_average = float(value.get("fresh_avg_engagement"))
-        except (TypeError, ValueError):
-            fresh_average = float("nan")
-        if fresh_average == fresh_average and fresh_average >= 0:
-            view["engagement"] = fresh_average
-        if view["measured"] < 1:
+    if status:
+        view["extra"] = {
+            "evidence_status": status,
+            "fresh_measured": fresh if fresh is not None else measured,
+            "stale_measured": stale if stale is not None else 0,
+        }
+        if status in _UNTRUSTED_LESSON_EVIDENCE:
+            view["measured"] = 0
+            view["engagement"] = 0.0
             view["refuse"] = (
-                f"из {measured} измерений живых {view['measured']}: мёртвые снимки "
-                "не могут разбавлять выборку — решает окно S8"
+                f"живых измерений нет: все снимки этого урока старше порога "
+                f"{_int_or_none(value.get('evidence_stale_after_days')) or 0} дн(а) — "
+                "урок наблюдение, решает окно S8"
             )
+            view["refusal"] = LESSON_REFUSAL_STALE
+            return view
+        if fresh is not None:
+            view["measured"] = min(measured, fresh)
+        if status == "mixed":
+            try:
+                fresh_average = float(value.get("fresh_avg_engagement"))
+            except (TypeError, ValueError):
+                fresh_average = float("nan")
+            if fresh_average == fresh_average and fresh_average >= 0:
+                view["engagement"] = fresh_average
+            if view["measured"] < 1:
+                view["refuse"] = (
+                    f"из {measured} измерений живых {view['measured']}: мёртвые снимки "
+                    "не могут разбавлять выборку — решает окно S8"
+                )
+                view["refusal"] = LESSON_REFUSAL_STALE
+    # The publication veto, on top of whatever freshness left standing.
+    provable = _int_or_none(value.get("evidenced_sample_size"))
+    if provable is None:
+        return view
+    live = max(0, int(view["measured"]))
+    gated = min(live, max(0, provable))
+    unevidenced_live = _int_or_none(value.get("unevidenced_fresh")) or 0
+    unrulled_published = _int_or_none(value.get("published_unrulled")) or 0
+    view["extra"] = {
+        **view["extra"],
+        # The same names `planner_history` uses for the same facts, so a panel or a
+        # reason string can read either feed without learning a second vocabulary.
+        "publication_evidence": str(value.get("publication_evidence") or ""),
+        "unevidenced_measured": unevidenced_live,
+        "unevidenced_published": _int_or_none(value.get("published_unevidenced")) or 0,
+        "unrulled_published": unrulled_published,
+        "sample_size": gated,
+    }
+    average = _float_or_none(value.get("fresh_evidenced_avg_engagement"))
+    if average is None:
+        # No evidenced measurement: no rate. `0.0` here would be a verdict a
+        # planner could rank, which is exactly what `formats._rate` refuses to write.
+        average = float("nan")
+    view["engagement"] = average
+    view["measured"] = gated
+    if gated < 1 and live >= 1 and not view["refuse"]:
+        view["refuse"] = (
+            f"из {live} живых измерений ни одного нельзя подтвердить доказательством "
+            f"отправки ({unevidenced_live} без доказательства) — публикация, которую "
+            "нечем показать, не исход, решает окно S8"
+        )
+        view["refusal"] = LESSON_REFUSAL_UNEVIDENCED
     return view
 
 
@@ -1156,6 +1230,12 @@ def durable_format_preference(
       ``FORMAT_EVIDENCE_STALE_AFTER_DAYS``) is answered `stale_evidence`: it was
       measured, just not while anyone was collecting, so it does not get to steer
       and the live window does instead;
+    * a lesson whose live measurements are all publications nothing can point at
+      (no telegram message id, no journalled `posted` row) is answered
+      `unevidenced`, and a partly unevidenced one hands on only its provable count
+      and provable average — the veto `planner_history` applies to the window,
+      applied to the durable row too, because two standards for «may this steer
+      work» is how a phantom publication ends up deciding a draft;
     * a trustworthy lesson naming a format this material cannot carry (outside the
       length budgets, `video` without licensed footage, or a sample under the
       planner's own threshold) is marked `unusable`;
@@ -1202,6 +1282,24 @@ def durable_format_preference(
         if observed:
             best_measured = max(int(row.get("measured") or 0) for row in observed)
             threshold = max(int(row.get("min_sample") or 0) for row in observed)
+            # `measured_evidenced` is the same sample S12 gated the verdict on, and
+            # it defaults to `measured` for a row that predates it. A platform whose
+            # lessons are all phantoms must not be reported as «measured, just too
+            # few»: more of the same posts would not change anything there.
+            best_evidenced = max(int(row.get("measured_evidenced") or 0) for row in observed)
+            unevidenced_total = sum(int(row.get("measured_unevidenced") or 0) for row in observed)
+            if best_evidenced <= 0 and unevidenced_total > 0:
+                return _no_lesson_preference(
+                    LESSON_REFUSAL_UNEVIDENCED,
+                    f"уроки S12 по {platform}: {best_measured} измерений, из них "
+                    f"{unevidenced_total} без доказательства отправки — доказанных нет, "
+                    "наблюдение, не вывод",
+                    platform=platform,
+                    sample_size=best_measured,
+                    min_sample=threshold,
+                    lesson_count=len(observed),
+                    unevidenced_measured=unevidenced_total,
+                )
             return _no_lesson_preference(
                 "below_sample",
                 f"уроки S12 по {platform}: лучше всего измерено {best_measured} из порога "
@@ -1228,17 +1326,19 @@ def durable_format_preference(
     live_engagement = float(evidence["engagement"])
 
     if evidence["refuse"]:
-        # Measured, but not while anyone was collecting: the lesson stays an
-        # observation and the live window (or the rules) decides, exactly as it
-        # did before this lesson was trusted.
+        # Measured, but not while anyone was collecting, or not with a publication
+        # anyone can point at: the lesson stays an observation and the live window
+        # (or the rules) decides, exactly as it did before this lesson was trusted.
         return _no_lesson_preference(
-            "stale_evidence",
+            str(evidence["refusal"] or LESSON_REFUSAL_STALE),
             f"урок S12 «{fmt}»: {evidence['refuse']}",
             platform=platform,
             sample_size=measured,
             format=fmt,
             live_sample_size=live_measured,
             evidence_status=str(evidence["status"]),
+            publication_evidence=str(evidence["extra"].get("publication_evidence") or ""),
+            unevidenced_measured=int(evidence["extra"].get("unevidenced_measured") or 0),
         )
     if fmt not in LENGTH_BUDGET:
         return _no_lesson_preference(
