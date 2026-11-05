@@ -813,3 +813,151 @@ def test_a_legal_booking_is_still_honoured_exactly(hours, queue_clock, flag, swi
     assert gates[s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS] == 0, gates
     assert gates[s7_publish.GATE_SLOT_BOOKING_REBOUNDED] == 0, gates
     assert _rebind_journal() == [], "a legal booking was journalled as a correction"
+
+
+# ------------------------------------------------- the two readings, decided once
+def test_the_ledger_counts_a_correction_as_an_outcome_and_the_post_is_scheduled(
+    hours, queue_clock, flag, switches
+) -> None:
+    """`blocked` names this pass's gate OUTCOMES, not only the posts it left behind.
+
+    The out-parameter used to be documented as "the gates that returned a post to
+    the queue unscheduled", and a corrected booking counted into it anyway made
+    that sentence false in the file that wrote it. Two readings were possible, and
+    this package picks the first one and pins it:
+
+    1. the correction IS a gate outcome — the slot gate decided something about
+       this post — so it belongs in the same ledger, and the ledger's own
+       documentation says a key can mean a post this pass *scheduled*;
+    2. or the correction is not a blocked post at all, so it must not be counted
+       here, and the documentation has to name the other place it goes.
+
+    Reading 2 is what fails below, in both of its shapes. A pass that moved the
+    count out of `blocked` leaves `slot_booking_rebounded` at zero while still
+    scheduling the post — the number asserted first, and the ledger would then
+    carry no trace of a booking the queue replaced, which is the invisible
+    transition registry P95 exists to forbid. A pass that took the old sentence
+    literally — "returned to the queue unscheduled" — would leave the row `gated`
+    and return `scheduled 0`, and the second assertion is the one that catches it
+    (the same mistake from the other side: a correction that reports itself and
+    does not release the post is a refusal with new paperwork). What is *not*
+    asserted anywhere is that the parameter is renamed: `pipeline`, `demo` and the
+    gate tests all pass `blocked=` by keyword in files this package does not own,
+    so the name stays and the meaning is carried by the documentation and by this
+    test.
+    """
+    _channel_id, public_id, _cluster = _channel(booked=ILLEGAL_BOOKING)
+
+    _CLOCK["now"] = TICK_1
+    gates = s7_publish.empty_gate_report()
+    scheduled = s7_publish.schedule_ready_posts(limit=1, blocked=gates)
+
+    # The outcome is in the ledger, and the post left the queue on the same pass.
+    assert gates[s7_publish.GATE_SLOT_BOOKING_REBOUNDED] == 1, gates
+    assert scheduled == 1, f"counted a correction and did not release the post: {scheduled}"
+    row = _read(public_id)
+    assert row.status == "scheduled", row
+    assert row.scheduled_at == CORRECTED_INSTANT, row
+    # It is not a refusal, and it is the only thing this pass has to say.
+    assert gates[s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS] == 0, gates
+    assert {code: n for code, n in gates.items() if n} == {
+        s7_publish.GATE_SLOT_BOOKING_REBOUNDED: 1
+    }, gates
+    # The sentence that made the ledger refusals-only is gone, and both places
+    # that now describe it call a code an outcome and name the correction.
+    for fn in (s7_publish.schedule_ready_posts, s7_publish.empty_gate_report):
+        doc = (fn.__doc__ or "").lower()
+        assert "outcome" in doc, fn.__name__
+        assert "gate_slot_booking_rebounded" in doc, fn.__name__
+    assert "naming the gates that returned a post to the queue unscheduled" not in (
+        (s7_publish.schedule_ready_posts.__doc__ or "").lower()
+    ), "the parameter is documented as refusals-only again while it still counts corrections"
+
+
+def test_the_gate_vocabulary_stays_closed_without_anyone_counting_it() -> None:
+    """The invariant the matrix's size literal is a proxy for, owned here.
+
+    `tests/test_publish_gate_matrix.py` pins the closed vocabulary twice: once as
+    a relationship ("every `GATE_*` the module declares is a key of
+    `empty_gate_report()`") and once as a number (`len(VOCABULARY) == 11`). The
+    number is a proxy, and registering a code in a closed vocabulary makes it one
+    too small by construction; the literal is in a file this package does not own
+    and its owner has the diff. What this file CAN own is the relationship,
+    restated with no count anywhere, so that a package which registers a code and
+    forgets the ledger fails here first and the arithmetic never has to be
+    re-derived from a green test. The positive half is the new code itself, in the
+    dictionary before any tick has run, which is what makes it a registered
+    outcome instead of a string that appears only when something goes wrong (P95).
+    """
+    declared = {
+        value
+        for name, value in vars(s7_publish).items()
+        if name.startswith("GATE_") and isinstance(value, str)
+    }
+    ledger = s7_publish.empty_gate_report()
+
+    assert declared == set(ledger), declared ^ set(ledger)
+    assert all(count == 0 for count in ledger.values()), ledger
+    assert s7_publish.GATE_SLOT_BOOKING_REBOUNDED in ledger
+    # The plan layer's own name for the same fact is a key of the same ledger,
+    # exactly as `REASON_LOCAL_HOURS` already is.
+    assert plan_execution.REASON_SLOT_REBOUND in ledger
+    assert plan_execution.REASON_SLOT_REBOUND == s7_publish.GATE_SLOT_BOOKING_REBOUNDED
+
+
+def test_the_booking_reader_can_be_asked_about_a_correction_in_one_line(
+    hours, queue_clock, flag, switches
+) -> None:
+    """The contract W22-C needs from `tgfarm/api.py`, stated as an assertion.
+
+    `/api/editorial/plan/booking` classifies a booked row from its two columns and
+    from `pipeline.last_publish_decision()`, and it asks that ledger exactly one
+    question — `api._booking_refusal_ledger(decision, GATE_SLOT_OUTSIDE_LOCAL_HOURS)`.
+    That is the whole of the gap: after a tick that repaired a booking the reader
+    answers `count: 0` for the refusal, which is true, and has no field that says
+    "one booking was replaced on the way", which is the other half of the fact.
+    The helper it already calls is generic over the code, so the fix is one more
+    call with the rebind code and nothing else — no new reader, no new query, no
+    changed key set, which matters because W22-B renders against this payload
+    right now. Both halves are asserted here against the real tick output, so the
+    seam is a measurement and not a wish, and the key set this file's change must
+    NOT move is asserted on the payload itself.
+
+    `tgfarm/api.py` is not this package's file, so the requested diff is in the
+    package report instead of in the tree; the line it depends on is the one
+    asserted below.
+    """
+    from tgfarm import api
+
+    _channel_id, public_id, _cluster = _channel(booked=ILLEGAL_BOOKING)
+    _CLOCK["now"] = TICK_1
+    gates = _tick()
+    decision = pipeline._publish_decision(
+        {"scheduled": 1, "published": 0, "due": 0, "failed": 0, "gates": gates}
+    )
+
+    # (a) what the reader can say today, unchanged: no refusal was counted…
+    refusal = api._booking_refusal_ledger(
+        decision, s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS
+    )
+    assert refusal == {"count": 0, "tick_reason": "gated"}, refusal
+    # …while the same helper, asked the other registered code, already knows.
+    correction = api._booking_refusal_ledger(
+        decision, s7_publish.GATE_SLOT_BOOKING_REBOUNDED
+    )
+    assert correction == {"count": 1, "tick_reason": "gated"}, correction
+    assert correction["count"] != refusal["count"], (
+        "a repaired booking and a still-held one answer the reader identically"
+    )
+    # (b) the row itself carries both numbers, which is what lets any reader tell
+    # the two states apart without the ledger at all.
+    row = _read(public_id)
+    assert row.plan_slot_at == ILLEGAL_BOOKING, row
+    assert row.scheduled_at == CORRECTED_INSTANT, row
+    # (c) the payload contract W22-B renders against: ten keys, same names.
+    payload = api._booking_fidelity()
+    assert set(payload) == {
+        "readable", "reason", "reason_detail", "precision", "gate",
+        "population", "states", "shift", "samples", "note",
+    }, sorted(payload)
+    assert payload["gate"]["code"] == s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS
