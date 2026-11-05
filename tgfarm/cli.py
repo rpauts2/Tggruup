@@ -16,6 +16,7 @@
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
     tgfarm plan-dry-run [--limit N]  what the plan executor would do; writes nothing
+    tgfarm plan-book [--limit N] [--apply]  what one booking pass would reserve; writes only with --apply
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm agent-benchmark --cluster ID  compare writer vs writer + strategist (never publishes)
     tgfarm agent-benchmark --report      summarize paired benchmark history
@@ -548,6 +549,251 @@ def cmd_plan_dry_run(args) -> int:
     else:
         print("PLAN_EXECUTION_ENABLED включён: следующий тик выполнит ровно эти решения")
     print("ни один пост не изменён, план не перестроен, журнал не записан")
+    return 0
+
+
+# ------------------------------------------------------------------ plan booking
+#: The one state the preview can name and the writing pass never can: the pass
+#: either writes the slot (`PLAN_BOOKING_BOOKED`) or reports why it did not. The
+#: preview may not wear the writing pass's word for a row it only looked at, and
+#: the writing pass may not leave the operator reading `would_book` in a store
+#: where something really moved.
+BOOKING_WOULD_BOOK = "would_book"
+
+#: What each booking outcome means, in the operator's words. Keyed by the state
+#: names `s4_generation` ships (`tests/test_cli_booking_verb.py` fails an entry
+#: that names a state the pass cannot return, so a rename here is caught rather
+#: than quietly glossed over); an unknown state still prints as itself, because a
+#: missing gloss is a gap and a wrong gloss is a lie.
+BOOKING_STATE_NOTES: dict[str, str] = {
+    BOOKING_WOULD_BOOK: "черновик свободен, план назвал минуту — проход забронировал бы её",
+    "booked": "минута записана в posts.plan_slot_at",
+    "execution_disabled": (
+        "PLAN_EXECUTION_ENABLED выключен: проход не смотрит даже в план, "
+        "потому что бронь, которую никто не вправе исполнить, — не решение"
+    ),
+    "no_active_plan": "на этом хранилище нет активного плана: бронировать не из чего",
+    "no_schedule_entry": (
+        "у плана по этой теме нет записи schedule — produce-запись минуту не резервирует"
+    ),
+    "schedule_entry_slot_unreadable": "план назвал минуту, которую не удалось прочитать",
+    "no_unbooked_draft": (
+        "нет живого черновика без слота: строка уже забронирована, снята с очереди "
+        "или её ещё нет"
+    ),
+    "claim_lost": "строку успел занять другой работник — бронь не перезаписана",
+}
+
+
+def booking_pass_limit() -> int:
+    """The booking pass's own per-run bound, read from its owner instead of copied here.
+
+    Same rule as :func:`plan_entry_limit`: a literal in this file would be a second
+    number to keep in sync, and `--limit` exists to *narrow* a run, never to widen
+    one past what the scheduler's job would do.
+    """
+    from tgfarm.s4_generation import MAX_BOOKINGS_PER_RUN
+
+    return int(MAX_BOOKINGS_PER_RUN)
+
+
+def preview_plan_booking(*, limit: int | None = None) -> dict[str, Any]:
+    """What one booking pass would reserve, computed without reserving anything.
+
+    `book_plan_slots` is the pass and it writes — one conditional UPDATE of
+    `posts.plan_slot_at` per open order it can answer — so a rehearsal cannot call
+    it and promise the write was withheld. This is that pass with the one write
+    taken out: the same walk of the open orders
+    (`tgfarm.editorial.open_order_cluster_ids`, with the pass's own limit), the same
+    plan snapshot (`tgfarm.editorial_plan.get_active_plan`), the same reader of its
+    minute (`s4_generation._plan_moment`, imported rather than re-typed so no
+    second calendar appears here) and the same state names the pass returns. The
+    one column read is a `SELECT` on a bare connection, which cannot commit a
+    write any more than `rules-status` can.
+
+    Where the two are *not* identical, the report says so instead of hiding it:
+    `claim_lost` is a race the pass can lose and a preview cannot observe, so it
+    never appears here, and the pass re-reads the plan per order while this reads
+    it once.
+
+    The executor's switch is reported, not obeyed. `apply_plan_booking` refuses to
+    look at all while `PLAN_EXECUTION_ENABLED` is off — a booking nobody may honour
+    is a claim, not a decision — and that refusal is the right behaviour for a
+    writer and the wrong one for a rehearsal, which is the same split wave 18 made
+    for `plan-dry-run`: judge with the flag off, write nothing with the flag off.
+    """
+    from sqlalchemy import select
+
+    from tgfarm import s4_generation
+    from tgfarm.core.settings import get_settings
+    from tgfarm.db.models import Post
+    from tgfarm.db.session import get_engine
+    from tgfarm.editorial import open_order_cluster_ids
+    from tgfarm.editorial_plan import get_active_plan
+
+    cap = booking_pass_limit() if limit is None else max(1, int(limit))
+    cluster_ids = open_order_cluster_ids(cap)
+    plan = get_active_plan()
+    unbooked_draft = select(Post.public_id).where(
+        Post.status == "gated",
+        Post.scheduled_at.is_(None),
+        Post.plan_slot_at.is_(None),
+    )
+
+    decisions: list[dict[str, Any]] = []
+    with get_engine().connect() as conn:
+        for public_id in cluster_ids:
+            decision: dict[str, Any] = {
+                "cluster_public_id": public_id,
+                "state": BOOKING_WOULD_BOOK,
+                "post_public_id": None,
+                "plan_public_id": None if plan is None else plan.get("public_id"),
+                "action": None,
+                "slot_at": None,
+                "channel_id": None,
+                "format": None,
+                "reasons": [],
+            }
+            decisions.append(decision)
+
+            if plan is None:
+                decision["state"] = s4_generation.PLAN_BOOKING_NO_PLAN
+                continue
+            decision["plan_public_id"] = plan.get("public_id")
+
+            entry: dict[str, Any] | None = None
+            for candidate in plan.get("entries") or []:
+                if str(candidate.get("cluster_public_id") or "") != public_id:
+                    continue
+                if decision["action"] is None:
+                    decision["action"] = str(candidate.get("action") or "")
+                if str(candidate.get("action") or "") == "schedule":
+                    entry = candidate
+                    decision["action"] = "schedule"
+                    break
+            if entry is None:
+                decision["state"] = s4_generation.PLAN_BOOKING_NO_ENTRY
+                continue
+
+            decision["channel_id"] = entry.get("channel_id")
+            decision["format"] = entry.get("format")
+            decision["reasons"] = [str(part) for part in (entry.get("reasons") or [])]
+            slot = s4_generation._plan_moment(entry.get("slot_at"))  # noqa: SLF001
+            if slot is None:
+                decision["state"] = s4_generation.PLAN_BOOKING_UNREADABLE_SLOT
+                continue
+            decision["slot_at"] = slot.isoformat()
+
+            target = conn.execute(
+                unbooked_draft.where(Post.cluster_public_id == public_id)
+                .order_by(Post.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if target is None:
+                decision["state"] = s4_generation.PLAN_BOOKING_NO_DRAFT
+                continue
+            decision["post_public_id"] = target
+
+    states: dict[str, int] = {}
+    for decision in decisions:
+        name = str(decision["state"])
+        states[name] = states.get(name, 0) + 1
+    return {
+        "dry_run": True,
+        "flag_enabled": bool(getattr(get_settings(), "plan_execution_enabled", False)),
+        "judged_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "limit": cap,
+        "considered": len(cluster_ids),
+        "would_book": sum(1 for item in decisions if item["state"] == BOOKING_WOULD_BOOK),
+        "states": states,
+        "decisions": decisions,
+    }
+
+
+def _booking_states_line(states: dict, *, booked_key: str) -> str:
+    """Every outcome the pass reported, named, with the reason the booked key has.
+
+    A booking that did not happen has to say why — a bare `0` cannot tell a healthy
+    queue from a stall, which is the rule `book_plan_slots`' own state vocabulary
+    exists to serve.
+    """
+    named = ", ".join(f"{state}={count}" for state, count in sorted(states.items()))
+    if not named:
+        return "открытых заказов у плана нет: бронировать нечего, это измеренный ноль"
+    gloss = BOOKING_STATE_NOTES.get(
+        min(states, key=lambda state: -states[state]) if states else "", ""
+    )
+    tail = f" — {gloss}" if gloss else ""
+    if not states.get(booked_key):
+        return f"забронировано ничего не было{tail}; состояния: {named}"
+    return f"{booked_key}={states[booked_key]}{tail}; состояния: {named}"
+
+
+def cmd_plan_book(args) -> int:
+    """Run one booking pass and print it; write only when the operator says so.
+
+    The verb exists because everything `book_plan_tick` does was reachable only
+    from a scheduler tick: an operator about to restart the farm with
+    `PLAN_EXECUTION_ENABLED` on could not ask, offline, what the booking pass would
+    do to the store right now. The default answer is the rehearsal
+    (:func:`preview_plan_booking`), and `--apply` is the pass itself.
+
+    Both are non-publishing. The pass writes one column of `posts` where that
+    column is still NULL and stops; scheduling, publishing and crossposting belong
+    to other jobs, and this command does not reach them — no transport is even
+    imported on this path.
+    """
+    from tgfarm import s4_generation
+
+    _bootstrap()
+    limit = int(args.limit)
+
+    if not args.apply:
+        report = preview_plan_booking(limit=limit)
+        _print(report)
+        print(
+            f"предпросмотр бронирования: проверено {report['considered']} открытых заказов "
+            f"плана на {report['judged_at']}; забронировано было бы {report['would_book']}"
+        )
+        print(_booking_states_line(report["states"], booked_key=BOOKING_WOULD_BOOK))
+        if not report["flag_enabled"]:
+            print(
+                "PLAN_EXECUTION_ENABLED выключен: реальный проход сейчас не пишет ничего, "
+                "цифры выше — только решение, а не обещание"
+            )
+        else:
+            print(
+                "PLAN_EXECUTION_ENABLED включён: следующий тик бронирования "
+                "запишет ровно эти минуты"
+            )
+        print("ни одна строка не изменена, журнал не записан, ничего не опубликовано")
+        return 0
+
+    print(
+        "пишу в базу из DATABASE_URL: один столбец posts.plan_slot_at, только где он ещё пуст; "
+        "расписание, публикация и кросспост этой команде недоступны"
+    )
+    report = s4_generation.book_plan_slots(limit=limit)
+    _print(report)
+    print(
+        f"бронирование: проверено {report['considered']} открытых заказов плана; "
+        f"забронировано {report['booked']}"
+    )
+    print(_booking_states_line(report["states"], booked_key=s4_generation.PLAN_BOOKING_BOOKED))
+    if not report["states"]:
+        print(
+            "открытых заказов у плана нет: проходить было не через что, "
+            "ни одна строка не изменена"
+        )
+    elif not report["booked"] and s4_generation.PLAN_BOOKING_DISABLED in report["states"]:
+        print(
+            "PLAN_EXECUTION_ENABLED выключен: проход отказался писать, "
+            "ни одна строка не изменена — повтори предпросмотром без --apply"
+        )
+    elif report["booked"]:
+        print("записан только слот; расписанием дальше занимается планировщик, а не эта команда")
+    else:
+        print("ни одна строка не изменена: план не назвал ни одной свободной минуты")
     return 0
 
 
@@ -1356,6 +1602,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="plan entries judged by this run (default: the whole snapshot)",
     )
     p_plan_dry.set_defaults(func=cmd_plan_dry_run)
+
+    p_plan_book = sub.add_parser(
+        "plan-book",
+        help="what one plan booking pass would reserve and why it would not (writes only with --apply)",
+    )
+    p_plan_book.add_argument(
+        "--limit",
+        type=int,
+        default=booking_pass_limit(),
+        help="open orders this pass may consider (default: the whole booking run)",
+    )
+    p_plan_book.add_argument(
+        "--apply",
+        action="store_true",
+        help="write posts.plan_slot_at for real; without it the command is a rehearsal",
+    )
+    p_plan_book.set_defaults(func=cmd_plan_book)
 
     p_audit = sub.add_parser("audit", help="content, source and AI usage audit")
     p_audit.add_argument("--days", type=int, default=7)

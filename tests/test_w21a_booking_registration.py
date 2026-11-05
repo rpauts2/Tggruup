@@ -246,9 +246,21 @@ def test_the_defect_s_grep_now_finds_a_caller_outside_s4():
         }
         if names & {"book_plan_slots", "book_plan_tick"}:
             referenced.append(str(path.relative_to(ROOT)))
-    expected = str(Path("tgfarm") / "pipeline.py")
-    assert referenced == [expected], (
-        f"the only production caller outside s4 should be the scheduler, found {referenced}"
+    # W21-A shipped one caller: the scheduler. W22-D added the two the accepted
+    # residual asked for — `tgfarm/cli.py`'s `plan-book` verb (the operator's
+    # rehearsal and consent path) and `tgfarm/demo.py`'s booking stage (the offline
+    # release gate) — both through this same entry point rather than a copy of it.
+    # The claim this test guards is unchanged in kind: the pass is called by
+    # production modules, and the set of them is known by name. A fourth caller
+    # still lands here red, which is the point of listing them at all.
+    expected = [
+        str(Path("tgfarm") / "cli.py"),
+        str(Path("tgfarm") / "demo.py"),
+        str(Path("tgfarm") / "pipeline.py"),
+    ]
+    assert referenced == expected, (
+        "the booking pass should be called by the scheduler, the CLI verb and the "
+        f"offline gate, and by nothing else, found {referenced}"
     )
 
 

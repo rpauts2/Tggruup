@@ -27,10 +27,20 @@ to plan*, and a stage the demo did not run reports nothing beside it at all —
 never a zero standing in for a measurement that was never taken.
 
 What is deterministic is the stage trail — items, duplicates, clusters,
-promoted, drafts, gated, covers, scheduled and the named holds. It is identical
-on every run over a fresh store. The wording of one draft is not: S4 picks an
-angle through its own holdout lottery, so `final.sample` is evidence a human may
-read, never something the gate asserts on.
+promoted, drafts, gated, covers, the booking walk, scheduled and the named holds.
+It is identical on every run over a fresh store. The wording of one draft is not:
+S4 picks an angle through its own holdout lottery, so `final.sample` is evidence a
+human may read, never something the gate asserts on.
+
+The booking walk is the pass wave 21 gave the farm a live caller for
+(`s4_generation.book_plan_tick`, the scheduler's third plan job) and no offline
+one. It sits between the cover and the queue, which is where it belongs: it is the
+stage that turns the minute a `schedule` entry reserved into `posts.plan_slot_at`,
+the column the scheduler then obeys. On the store the gate owns it runs the
+scheduler's own entry point, journal row included, and reports what that pass
+really returned — including a zero with the reason the pass itself named, which is
+how "the plan booked nothing because its entries are produce" stays readable as a
+measurement instead of a stall.
 """
 
 from __future__ import annotations
@@ -473,6 +483,7 @@ def _stage_counts(
     fresh: int,
     trends: dict,
     plan: dict,
+    booking: dict,
     ready_clusters: int,
     drafts: int,
     quality: dict,
@@ -493,6 +504,7 @@ def _stage_counts(
         # the plan's counters arrive already judged — None where the stage
         # measured nothing — so they are copied, not coerced into zeros here
         **plan,
+        **booking,
         "ready_clusters": ready_clusters,
         "drafts": drafts,
         "gated": int(quality.get("passed") or 0),
@@ -717,6 +729,162 @@ def _plan_verdict(cycle: int, look: dict) -> str:
     return f"cycle {cycle}: editorial plan {_plan_note(look)}"
 
 
+# ------------------------------------------------------------------ plan booking
+#: The two ways the gate can meet the booking pass, named after the store it
+#: stands on — the same split the plan stage above makes, and for the same
+#: reason: booking writes `posts.plan_slot_at`, and a demo that does not own the
+#: rows has no business writing them.
+BOOKING_WALKED = "walked"
+BOOKING_READ_ONLY = "read-only"
+#: The endings of one booking walk. They ride in the trail because three of them
+#: print as `booked: 0` and mean three different things: a pass that looked and
+#: reserved none (a measurement), a pass the executor's switch would not let look,
+#: and a pass this gate did not run at all.
+BOOKING_RAN = "ran"
+BOOKING_SKIPPED = "skipped"
+BOOKING_ERROR = "error"
+BOOKING_NOT_RUN = "not-run"
+#: the one status whose counters were really measured, zeros included.
+BOOKING_MEASURED = frozenset({BOOKING_RAN})
+
+
+def _booking_slots(decisions: list) -> list[dict]:
+    """The rows a pass actually reserved, as the gate reports them.
+
+    Bounded by nothing new: `book_plan_slots` walks at most
+    `MAX_BOOKINGS_PER_RUN` open orders, so this list cannot be longer than one
+    pass, whatever number is printed beside it.
+    """
+    from tgfarm import s4_generation
+
+    return [
+        {
+            "post": decision.get("post_public_id"),
+            "cluster": decision.get("cluster_public_id"),
+            "slot_at": decision.get("slot_at"),
+        }
+        for decision in decisions
+        if decision.get("state") == s4_generation.PLAN_BOOKING_BOOKED
+    ]
+
+
+async def _booking_look(*, writes: bool) -> dict:
+    """Walk the booking pass once and keep the numbers it really reached.
+
+    `s4_generation.book_plan_tick` is the scheduler's own third plan job, so this
+    is not a second reading of the rules: the gate runs the same entry a tick
+    runs, journal row included. The tick returns instead of raising when the pass
+    fails, and it returns `{"skipped": ...}` when `PLAN_EXECUTION_ENABLED` is off;
+    both are recorded as what they are, and neither is allowed to arrive in the
+    trail as a zero that looks like a measurement.
+
+    On a store the demo does not own (`--configured-store`) the pass is not run at
+    all, even when the operator's switch is on: one conditional UPDATE per open
+    order is a write to rows the demo did not seed. `tgfarm demo` owns a throwaway
+    file by default, and there the pass runs for real.
+    """
+    from tgfarm import s4_generation
+    from tgfarm.core.settings import get_settings
+
+    look: dict = {
+        "mode": BOOKING_WALKED if writes else BOOKING_READ_ONLY,
+        "status": BOOKING_NOT_RUN,
+        "job": s4_generation.PLAN_BOOKING_JOB_ID,
+        "flag": bool(getattr(get_settings(), "plan_execution_enabled", False)),
+        "considered": None,
+        "booked": None,
+        "states": None,
+        "slots": None,
+        "note": "not run: this store is the operator's, and the demo books only on its own",
+    }
+    if not writes:
+        return look
+    try:
+        report = await s4_generation.book_plan_tick()
+    except Exception as exc:  # noqa: BLE001 - a booking failure is a stage outcome, not a crash
+        message = f"{type(exc).__name__}: {exc}"
+        log.warning("demo: the booking pass raised %s", message[:200])
+        look.update(status=BOOKING_ERROR, note=message[:200])
+        return look
+    if "error" in report:
+        look.update(status=BOOKING_ERROR, note=f"the pass reported: {report['error']}"[:200])
+        return look
+    if "skipped" in report:
+        look.update(
+            status=BOOKING_SKIPPED,
+            note=(
+                f"the pass could not look: the tick returned {report['skipped']} "
+                "before opening a session"
+            ),
+        )
+        return look
+    look.update(
+        status=BOOKING_RAN,
+        considered=_plan_int(report.get("considered")),
+        booked=_plan_int(report.get("booked")),
+        states=dict(report.get("states") or {}),
+        slots=_booking_slots(list(report.get("decisions") or [])),
+        note="",
+    )
+    return look
+
+
+def _booking_note(look: dict) -> str:
+    """One line saying what the booking walk actually was, in the report's words."""
+    status = look["status"]
+    if status == BOOKING_RAN:
+        states = ", ".join(f"{state}={count}" for state, count in sorted(look["states"].items()))
+        if look["booked"]:
+            return (
+                f"{look['booked']} of {look['considered']} open orders booked to the plan's "
+                f"minute ({states})"
+            )
+        if not look["considered"]:
+            return (
+                "the queue was walked and holds no open order: nothing to book, "
+                "a measured zero and not a stalled pass"
+            )
+        return (
+            f"booked none of {look['considered']} open orders — the pass named its reason "
+            f"({states}): a measured zero, not a failure"
+        )
+    if status == BOOKING_SKIPPED:
+        return (
+            "the booking pass could not look, and that is not the same as having nothing "
+            f"to book: {look['note']}"
+        )
+    if status == BOOKING_ERROR:
+        return f"the booking pass reported a failure: {look['note']}"
+    return look["note"]
+
+
+def _booking_counters(look: dict) -> dict:
+    """The pass's numbers for the stage trail; None where nothing was measured.
+
+    `slots` deliberately does not ride here: it names post ids and instants, and
+    the trail is the one part of the report the gate asserts is byte-identical
+    between two identical runs (`test_w17demo_stage_counts_are_identical_on_repeated_runs`).
+    The booked rows stay in the cycle's own `booking` block, where an operator can
+    read them.
+    """
+    measured = look["status"] in BOOKING_MEASURED
+    return {
+        "booking_mode": look["mode"],
+        "booking_status": look["status"],
+        "booking_job": look["job"],
+        "booking_flag": look["flag"],
+        "booking_note": look["note"] or _booking_note(look),
+        "booking_considered": look["considered"] if measured else None,
+        "booking_booked": look["booked"] if measured else None,
+        "booking_states": look["states"] if measured else None,
+    }
+
+
+def _booking_verdict(cycle: int, look: dict) -> str:
+    """The sentence the verdict carries for this cycle's booking walk."""
+    return f"cycle {cycle}: plan booking {_booking_note(look)}"
+
+
 def _trail_count(value: object) -> str:
     """A counter in the failure trail: the number, or `?` for an unmeasured one.
 
@@ -757,13 +925,23 @@ def _log_stages(cycle: int, stages: dict) -> None:
         ("s4 drafts", stages["drafts"], f"from {stages['ready_clusters']} ready clusters", False),
         ("s5 gated", stages["gated"], "drafts through the quality gate", False),
         ("s6 covers", stages["covers"], "posts with primary media", False),
+        (
+            "s4 booking",
+            stages["booking_booked"],
+            stages["booking_note"],
+            stages["booking_status"] == BOOKING_RAN,
+        ),
         ("s7 scheduled", stages["scheduled"], _hold_note(stages["schedule_holds"]),
          bool(schedule_holds)),
         ("s7 published", stages["published"], publish_detail,
          bool(publish_holds) or stages["dry_run"] > 0),
     )
     for name, count, detail, zero_explained in rows:
-        if count:
+        if count is None:
+            # A stage that never measured must not print a number at all: `0` here
+            # would be the invented zero the rest of this file is written against.
+            log.info("demo c%d %-16s NOT MEASURED  (%s)", cycle, name, detail)
+        elif count:
             log.info("demo c%d %-16s %d  (%s)", cycle, name, count, detail)
         elif zero_explained:
             log.info("demo c%d %-16s 0  (%s)", cycle, name, detail)
@@ -785,6 +963,14 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
     nothing because its entries belong to S4, is *not* a failure — an empty
     reading is a reading, and a produce entry that was never the plan's to run is
     a measurement of zero, not a break.
+
+    The booking walk is judged by the same rule and with the same distinction: a
+    pass that raised, or a pass that could not look on a store where the demo
+    forced the switch on, is a break; a pass that looked at the open orders and
+    reserved none, because a `produce` entry names no minute, is a measurement and
+    the gate says so in those words. A booking stage the gate never ran — the
+    operator's store, which the demo reads and does not write — is neither: it
+    reports nothing measured, which is the one thing a zero may not stand in for.
     """
     trail = (
         f"cycle {cycle}: seeded={stages['seeded_items']} stored={stages['stored_items']} "
@@ -793,6 +979,9 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
         f"ready={stages['ready_clusters']} "
         f"plan={stages['plan_status']} plan_entries={_trail_count(stages['plan_entries'])} "
         f"plan_booked={_trail_count(stages['plan_booked'])} "
+        f"booking={stages['booking_status']} "
+        f"booking_considered={_trail_count(stages['booking_considered'])} "
+        f"booking_booked={_trail_count(stages['booking_booked'])} "
         f"drafts={stages['drafts']} "
         f"gated={stages['gated']} covers={stages['covers']} "
         f"scheduled={stages['scheduled']}"
@@ -810,6 +999,17 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
             f"{trail} -> DEMO GATE FAILED: the editorial plan declined to run "
             f"({stages['plan_note'] or 'the executor switch was off'}), so the cycle "
             "judged no editorial decision"
+        )
+    if stages["booking_status"] == BOOKING_ERROR:
+        plan_failures.append(
+            f"{trail} -> DEMO GATE FAILED: the booking pass raised: {stages['booking_note']}"
+        )
+    elif stages["booking_status"] == BOOKING_SKIPPED and stages["booking_mode"] == BOOKING_WALKED:
+        plan_failures.append(
+            f"{trail} -> DEMO GATE FAILED: the booking pass could not look "
+            f"({stages['booking_note']}), although this run owns the store and switched "
+            "the executor on — a pass that cannot read the plan is not a plan with "
+            "nothing to book"
         )
     failures: list[str] = list(plan_failures)
     if not stages["drafts"]:
@@ -978,6 +1178,7 @@ async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
     report: dict = {"seeded_items": seeded}
     failures: list[str] = []
     plan_lines: list[str] = []
+    booking_lines: list[str] = []
 
     for cycle in range(cycles):
         # measured before S2 runs: this is the material the chain is being
@@ -1016,6 +1217,14 @@ async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
         # `schedule_ready_posts` names its gates through the `blocked`
         # out-parameter; without it `scheduled: 0` is the same blind spot the
         # publish stage already closed.
+        #
+        # The booking walk sits here, deliberately: it is the stage between a
+        # draft the quality gate let through and a queue that has to obey the
+        # plan's minute, so the scheduler in this same cycle is given the
+        # instant the plan reserved instead of re-deriving one from cadence.
+        booking_look = await _booking_look(writes=plan_writes)
+        report[f"cycle{cycle}_booking"] = booking_look
+
         schedule_holds: dict[str, int] = {}
         scheduled = await asyncio.to_thread(
             s7_publish.schedule_ready_posts, 200, schedule_holds
@@ -1041,6 +1250,7 @@ async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
             fresh=fresh,
             trends=trends,
             plan=_plan_counters(plan_look),
+            booking=_booking_counters(booking_look),
             ready_clusters=len(clusters),
             drafts=len(drafts),
             quality=quality,
@@ -1053,6 +1263,7 @@ async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
         report[f"cycle{cycle}_stages"] = stages
         _log_stages(cycle, stages)
         plan_lines.append(_plan_verdict(cycle, plan_look))
+        booking_lines.append(_booking_verdict(cycle, booking_look))
         failures.extend(_gate_failures(cycle, stages))
 
     report["final"] = await asyncio.to_thread(_final_stats)
@@ -1062,6 +1273,7 @@ async def _run_demo_cycles(cycles: int, plan_writes: bool) -> dict:
         "cycles": cycles,
         "failures": failures,
         "plan": "; ".join(plan_lines),
+        "booking": "; ".join(booking_lines),
         "reason": "; ".join(failures)[:400],
     }
     return report
