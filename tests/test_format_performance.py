@@ -54,7 +54,11 @@ def test_unmeasured_posts_do_not_inflate_average():
     row = report["formats"]["news_unmeasured"]
     assert row["published"] >= 2
     assert row["measured"] == 0
-    assert row["avg_engagement"] == 0.0
+    # Never measured is not measured-and-zero: the report has no rate to give here,
+    # and a `0.0` would be the one number a reader could not tell from an audience
+    # that engaged with nothing. (A measured format whose snapshots are all zero
+    # still reports a real `0.0` — see `test_unmeasured_format_rate.py`.)
+    assert row["avg_engagement"] is None
     assert row["reliable"] is False
 
 

@@ -208,7 +208,11 @@ def test_dead_snapshot_is_measured_but_not_live_evidence():
     # and the new question is answered next to it, not instead of it.
     assert evidence["fresh"] == 0 and evidence["stale"] == 3
     assert evidence["evidence_status"] == "stale"
-    assert evidence["fresh_avg_engagement"] == 0.0
+    # No live snapshot means no live average — not a live average of zero, which is
+    # what this line used to print. The three measurements themselves are still
+    # there, named by `measured`/`stale` and by `row["avg_engagement"] == 80.0`
+    # above: the report refuses the second question without lying about the first.
+    assert evidence["fresh_avg_engagement"] is None
     assert evidence["last_measured_at"] is not None
     assert evidence["fresh_last_measured_at"] is None
     assert report["stale_after_days"] == STALE_AFTER_DAYS

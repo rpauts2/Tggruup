@@ -15,6 +15,12 @@ Honest limits, stated up front:
   block answers the second question — *is that measurement still live?* A
   snapshot older than ``FORMAT_EVIDENCE_STALE_AFTER_DAYS`` is history: it stays
   in the report and it never moves a planner decision;
+* a format that was never measured reports *no rate*, not a zero:
+  ``avg_engagement`` and the ``measurement`` block's ``fresh_avg_engagement`` are
+  ``None`` whenever their own denominator is empty, because «nothing was
+  measured» and «measured, and the audience engaged with nothing» are different
+  facts and a consumer that sorts on the number cannot be handed a fabricated
+  one. A row without a rate sorts last — it has no rank, not the worst one;
 * rows are per channel owner, not per crosspost destination;
 * a window with fewer than ``MIN_SAMPLE`` measured posts is reported with
   ``reliable: False`` instead of a confident number;
@@ -295,6 +301,17 @@ def format_performance(
     silently redefines ``measured`` would change what the panel shows even with
     the planner switched off.
 
+    The two averages in this report answer to ``_rate`` and to nothing else: a
+    format whose measured (or live) count is empty gets ``None`` for
+    ``avg_engagement`` (and for ``measurement[fmt]["fresh_avg_engagement"]``)
+    instead of a ``0.0`` it never earned, and such a format sorts last in
+    ``formats`` because a number that does not exist has no rank. A measured
+    average of zero — snapshots taken, engagement nil — is still a real ``0.0``.
+    Nothing else moves: `published`, `measured`, `n` and `reliable` in the row
+    keep counting and deciding what they always did, and so does the P73 gate
+    behind `publication.sample_size` and `publication.reliable` — this removes a
+    fabricated number, it does not redefine a denominator.
+
     The ``publication`` block asks the third question of the same rows: *did the
     publication happen at all*. Nothing is removed from ``published`` or
     ``measured``; instead each of them is joined by the evidenced subset and by
@@ -461,7 +478,11 @@ def format_performance(
     formats: dict[str, dict[str, Any]] = {}
     for fmt, item in rows.items():
         measured = int(item["measured"])
-        average = round(item["engagement_sum"] / measured, 4) if measured else 0.0
+        # The same guard the evidence block already uses: a format with no
+        # measurement has no average, and `0.0` here was a number the farm never
+        # took. `published`/`measured`/`reliable` keep counting what they always
+        # counted — only the fabricated rate is removed.
+        average = _rate(item["engagement_sum"], measured)
         formats[fmt] = {
             "format": fmt,
             "published": int(item["published"]),
@@ -470,7 +491,22 @@ def format_performance(
             "reliable": measured >= MIN_SAMPLE,
             "n": measured,
         }
-    ordered = dict(sorted(formats.items(), key=lambda pair: (-pair[1]["avg_engagement"], pair[0])))
+    ordered = dict(
+        sorted(
+            formats.items(),
+            # Unknown last, and that is the decision rather than an accident of
+            # Python: a rate that was never measured cannot be compared with one
+            # that was, so it gets no rank at all — and a format that once sat at
+            # the head of this list on a fabricated zero now cannot reach it.
+            # Measured formats keep the old order (best average first, ties by
+            # name), and the unmeasured tail is deterministic by name too.
+            key=lambda pair: (
+                pair[1]["avg_engagement"] is None,
+                -(pair[1]["avg_engagement"] or 0.0),
+                pair[0],
+            ),
+        )
+    )
     measurement: dict[str, dict[str, Any]] = {}
     # Same order as `formats`, so a reader can walk the two side by side.
     for fmt in ordered:
@@ -486,7 +522,10 @@ def format_performance(
             "avg_engagement": ordered[fmt]["avg_engagement"],
             # The live-only average: a mixed format's `avg_engagement` blends in
             # dead snapshots, and a decision must not be steered by that blend.
-            "fresh_avg_engagement": round(item["fresh_engagement_sum"] / fresh, 4) if fresh else 0.0,
+            # `None` when no snapshot is live — the format was measured, just not
+            # recently enough to have a live average, which is not the same claim
+            # as a live average of zero.
+            "fresh_avg_engagement": _rate(item["fresh_engagement_sum"], fresh),
             "fresh_reliable": fresh >= MIN_SAMPLE,
             "evidence_status": _evidence_status(fresh, stale),
             "last_measured_at": (
@@ -621,7 +660,9 @@ def best_format(days: int = 30, *, now: datetime | None = None) -> dict[str, Any
     Reports the whole window, live and dead together, evidenced publications and
     disproved ones together — it is a readout, not a planner input; the gated feed
     is `planner_history`, and `format_performance`'s ``publication`` block holds
-    the evidenced sample size and rate for anyone reading this number.
+    the evidenced sample size and rate for anyone reading this number. A format
+    nobody measured arrives with ``avg_engagement: None``, sorts last and fails the
+    `reliable` gate, so absence can never be the answer this returns.
     """
     report = format_performance(days, now=now)
     for item in report["formats"].values():
