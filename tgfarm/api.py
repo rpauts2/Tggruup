@@ -18,7 +18,8 @@ from typing import Any, Literal, TypeVar
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from tgfarm import pipeline
 from tgfarm.config import get_config
@@ -191,7 +192,7 @@ def _status_payload() -> dict:
         by_status = dict(
             session.execute(select(Post.status, func.count()).group_by(Post.status)).all()
         )
-        total_drafts = sum(by_status.values()) or 1
+        total_posts = sum(by_status.values())
         ready = session.execute(
             select(func.count()).select_from(Cluster).where(Cluster.status == "ready")
         ).scalar_one()
@@ -219,8 +220,13 @@ def _status_payload() -> dict:
         "scheduled": int(by_status.get("scheduled", 0)),
         "published": int(by_status.get("published", 0)),
         "rejected": int(by_status.get("rejected", 0)),
-        "reject_rate": round(by_status.get("rejected", 0) / total_drafts, 3),
-        "avg_er": round(float(avg_er or 0.0), 4),
+        # Neither rate may invent a zero. An empty `posts` table does not mean
+        # "nothing rejected", it means the ratio has no denominator, and
+        # `func.avg` over no rows (or over rows whose `err` is NULL) is the
+        # measurement that never happened — P34 says that is `None`, and the
+        # panel prints «нет отчёта».
+        "reject_rate": round(by_status.get("rejected", 0) / total_posts, 3) if total_posts else None,
+        "avg_er": round(float(avg_er), 4) if avg_er is not None else None,
         "covers": int(covers),
         "videos": int(videos),
         "crossposts": int(crossposts),
@@ -1426,6 +1432,251 @@ def _report(days: int) -> dict:
         "hours": s8_analytics.slot_performance(days),
         "portfolio": portfolio_report(max(30, days)),
         "dzen": metrics_status(),
+    }
+
+
+#: States in which a post still waits for something. `failed` belongs here because
+#: the farm does not retry it on its own — it waits for an operator, and how long
+#: it has been waiting is the whole question. `publish_unknown` waits harder: the
+#: heartbeat watchdog and the dead-driver branch both leave the post with no
+#: booking time and no publication stamp, so only a human can say whether the
+#: platform ever received it (live 2026-11-05: 51 such rows, the oldest 6 days).
+#: `tgfarm/s2_trends/explain.py` already calls both states in-flight; a card that
+#: counted one and not the other would be a second story to keep in sync.
+BACKLOG_WAITING = ("draft", "gated", "scheduled", "publishing", "publish_unknown", "failed")
+#: Age bucket edges in hours. Fixed, not percentile-based, so «leży 3 дня» means
+#: the same thing on every platform and between two refreshes.
+BACKLOG_AGE_EDGES_H = (24.0, 72.0, 168.0)
+BACKLOG_FLOW_HOURS = 24
+BACKLOG_COMPARE_DAYS = 7
+#: Which current statuses describe the fate of a post created in the window. A
+#: rejection overwrites the status, so «создано и отклонено» is only readable as a
+#: cohort outcome of `created_at`, never as an event clock of its own.
+BACKLOG_COHORT = {"rejected": "rejected", "gated": "gated", "draft": "draft"}
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """One clock for the stamps SQLite hands back as naive UTC text."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _age_hours(value: datetime | None, now: datetime) -> float | None:
+    """Hours between a stamp and `now`, or None when there is no stamp to read."""
+    stamp = _utc(value)
+    if stamp is None:
+        return None
+    return round(max(0.0, (now - stamp).total_seconds() / 3600.0), 2)
+
+
+def _backlog(*, now: datetime | None = None) -> dict:
+    """Flow and stock of the publication queue per platform.
+
+    Until now the only way to answer «что происходит с очередью» was SQL, and the
+    question was usually asked of the wrong column: the `scheduled` bucket counts
+    posts that are booked for the future, so a post scheduled and published the
+    same day never shows up in it and a full day of work reads as nothing moving.
+    The flow therefore rides on three clocks, each read over the same window —
+    `created_at` (intake, split into what those very posts became), `scheduled_at`
+    (bookings) and `published_at` (output) — and the stock is reported next to it
+    with ages, so VK's forward buffer and Дзен's overdue-and-retried pile cannot
+    look the same.
+
+    Nothing is invented: an age, a rate or a blocking reason that could not be
+    computed is `None`, which the panel prints as «нет отчёта» (P34). The blocking
+    reason is the very ledger `/api/status` shows — `pipeline.last_publish_decision`
+    reading `meta.decision` of the newest publish tick — because a second place
+    that decides why nothing went out is a second story to keep in sync.
+    """
+    current = _utc(now) or datetime.now(UTC)
+    flow_since = current - timedelta(hours=BACKLOG_FLOW_HOURS)
+    week_since = current - timedelta(days=BACKLOG_COMPARE_DAYS)
+    ages_since = [current - timedelta(hours=edge) for edge in BACKLOG_AGE_EDGES_H]
+    # Posts inherit their platform from the channel row. A channel that is no
+    # longer in the table is reported as `unknown`, never guessed as telegram.
+    platform_col = func.lower(func.coalesce(Channel.platform, "unknown"))
+    error: str | None = None
+    platforms: dict[str, dict[str, Any]] = {}
+
+    def entry(name: str) -> dict[str, Any]:
+        return platforms.setdefault(
+            name,
+            {
+                "platform": name,
+                "channels": 0,
+                "channels_enabled": 0,
+                "flow": {"created": 0, "rejected": 0, "gated": 0, "draft": 0,
+                         "booked": 0, "published": 0},
+                "week": {"created": 0, "rejected": 0, "booked": 0, "published": 0},
+                "rates": {"created_per_day": 0.0, "published_per_day": 0.0, "lead": None},
+                "stock": [],
+                "waiting": 0,
+                "oldest_age_hours": None,
+            },
+        )
+
+    try:
+        with session_scope() as session:
+            inventory = session.execute(
+                select(
+                    platform_col,
+                    func.count(),
+                    func.sum(case((Channel.enabled, 1), else_=0)),
+                ).group_by(platform_col)
+            ).all()
+            intake = session.execute(
+                select(
+                    platform_col,
+                    Post.status,
+                    func.count(),
+                    func.sum(case((Post.created_at >= flow_since, 1), else_=0)),
+                )
+                .select_from(Post)
+                .outerjoin(Channel, Post.channel_id == Channel.id)
+                .where(Post.created_at >= week_since)
+                .group_by(platform_col, Post.status)
+            ).all()
+            clocks = session.execute(
+                select(
+                    platform_col,
+                    # A booking counts as flow only once its time has arrived: an
+                    # open buffer booked for next week is stock, not a day's work,
+                    # and reading it as bookings "made today" is exactly how the
+                    # queue's 269 VK posts looked like four idle days.
+                    func.sum(case(
+                        (and_(Post.scheduled_at >= flow_since, Post.scheduled_at < current), 1),
+                        else_=0,
+                    )),
+                    func.sum(case(
+                        (and_(Post.scheduled_at >= week_since, Post.scheduled_at < current), 1),
+                        else_=0,
+                    )),
+                    func.sum(case((Post.published_at >= flow_since, 1), else_=0)),
+                    func.sum(case((Post.published_at >= week_since, 1), else_=0)),
+                )
+                .select_from(Post)
+                .outerjoin(Channel, Post.channel_id == Channel.id)
+                .where(or_(
+                    and_(Post.scheduled_at >= week_since, Post.scheduled_at < current),
+                    Post.published_at >= week_since,
+                ))
+                .group_by(platform_col)
+            ).all()
+            stock = session.execute(
+                select(
+                    platform_col,
+                    Post.status,
+                    func.count(),
+                    *[func.sum(case((Post.created_at >= since, 1), else_=0))
+                      for since in ages_since],
+                    func.min(Post.created_at),
+                    func.sum(case((Post.scheduled_at < current, 1), else_=0)),
+                    func.sum(case((Post.scheduled_at.is_(None), 1), else_=0)),
+                    func.coalesce(func.sum(Post.attempts), 0),
+                    func.sum(case((Post.attempts > 0, 1), else_=0)),
+                )
+                .select_from(Post)
+                .outerjoin(Channel, Post.channel_id == Channel.id)
+                .where(Post.status.in_(BACKLOG_WAITING))
+                .group_by(platform_col, Post.status)
+            ).all()
+    except SQLAlchemyError as exc:
+        error = redact_sensitive_text(exc, limit=200)
+        log.warning("api: backlog read failed: %s", error)
+        inventory = intake = clocks = stock = []
+
+    for name, channels, enabled in inventory:
+        item = entry(str(name or "unknown"))
+        item["channels"] = int(channels or 0)
+        item["channels_enabled"] = int(enabled or 0)
+
+    for name, status, week_count, flow_count in intake:
+        item = entry(str(name or "unknown"))
+        item["flow"]["created"] += int(flow_count or 0)
+        item["week"]["created"] += int(week_count or 0)
+        cohort = BACKLOG_COHORT.get(str(status or ""))
+        if cohort:
+            item["flow"][cohort] += int(flow_count or 0)
+            if cohort == "rejected":
+                item["week"]["rejected"] += int(week_count or 0)
+
+    for name, booked_flow, booked_week, published_flow, published_week in clocks:
+        item = entry(str(name or "unknown"))
+        item["flow"]["booked"] += int(booked_flow or 0)
+        item["week"]["booked"] += int(booked_week or 0)
+        item["flow"]["published"] += int(published_flow or 0)
+        item["week"]["published"] += int(published_week or 0)
+
+    edges = len(BACKLOG_AGE_EDGES_H)
+    for row in stock:
+        name, status, measured = str(row[0] or "unknown"), str(row[1] or "unknown"), int(row[2] or 0)
+        buckets = [int(value or 0) for value in row[3:3 + edges]]
+        oldest, overdue, unbooked, attempts, retrying = row[3 + edges:8 + edges]
+        item = entry(name)
+        # The thresholds nest, so each band is the difference between two
+        # cumulative counts instead of a fifth query per edge.
+        item["stock"].append({
+            "status": status,
+            "count": measured,
+            "ages": {
+                "lt_24h": buckets[0],
+                "lt_72h": buckets[1] - buckets[0],
+                "lt_168h": buckets[2] - buckets[1],
+                "ge_168h": measured - buckets[2],
+            },
+            "oldest_age_hours": _age_hours(oldest, current),
+            # Only a booking time can be late, and only when every row in the
+            # bucket has one; a bucket holding unbooked posts reports no count
+            # rather than a count that quietly omits them.
+            "overdue": int(overdue or 0) if status == "scheduled" and not int(unbooked or 0)
+            else None,
+            "unbooked": int(unbooked or 0),
+            "retries": int(attempts or 0),
+            "retrying": int(retrying or 0),
+        })
+
+    for item in platforms.values():
+        item["stock"].sort(key=lambda row: (-row["count"], row["status"]))
+        item["waiting"] = sum(row["count"] for row in item["stock"])
+        ages = [row["oldest_age_hours"] for row in item["stock"]
+                if row["oldest_age_hours"] is not None]
+        item["oldest_age_hours"] = max(ages) if ages else None
+        created_per_day = round(item["week"]["created"] / BACKLOG_COMPARE_DAYS, 2)
+        published_per_day = round(item["week"]["published"] / BACKLOG_COMPARE_DAYS, 2)
+        # A lead against zero published posts is not infinity and not zero, it is
+        # an unanswerable question, so it stays None and the panel says so.
+        item["rates"] = {
+            "created_per_day": created_per_day,
+            "published_per_day": published_per_day,
+            "lead": round(created_per_day / published_per_day, 1) if published_per_day else None,
+        }
+
+    scheduled_rows = [row for item in platforms.values() for row in item["stock"]
+                      if row["status"] == "scheduled"]
+    totals = {
+        "created": sum(item["flow"]["created"] for item in platforms.values()),
+        "rejected": sum(item["flow"]["rejected"] for item in platforms.values()),
+        "booked": sum(item["flow"]["booked"] for item in platforms.values()),
+        "published": sum(item["flow"]["published"] for item in platforms.values()),
+        "waiting": sum(item["waiting"] for item in platforms.values()),
+        # The sum stays None when any scheduled bucket could not be read, so a
+        # half-known queue is never printed as a smaller known one.
+        "overdue": None if any(row["overdue"] is None for row in scheduled_rows)
+        else sum(row["overdue"] or 0 for row in scheduled_rows),
+        "lead": None,
+    }
+    week_created = sum(item["week"]["created"] for item in platforms.values())
+    week_published = sum(item["week"]["published"] for item in platforms.values())
+    totals["lead"] = round(week_created / week_published, 1) if week_published else None
+    return {
+        "generated_at": current.isoformat(),
+        "flow_hours": BACKLOG_FLOW_HOURS,
+        "compare_days": BACKLOG_COMPARE_DAYS,
+        "publication": pipeline.last_publish_decision(),
+        "totals": totals,
+        "platforms": sorted(platforms.values(), key=lambda item: item["platform"]),
+        "error": error,
     }
 
 
@@ -4828,6 +5079,12 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.s8_analytics.coverage import measurement_coverage
 
         return await io(measurement_coverage)
+
+    @app.get("/api/backlog")
+    async def backlog_api() -> dict:
+        """Flow and stock of the publication queue per platform, with the reason
+        the newest publish tick journalled for what it sent."""
+        return await io(_backlog)
 
     @app.get("/api/metrics")
     async def metrics() -> dict:

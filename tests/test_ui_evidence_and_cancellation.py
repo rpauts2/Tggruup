@@ -109,7 +109,15 @@ def _slice(script: str, start_marker: str, end_marker: str) -> str:
 
 
 def _formats_body(script: str) -> str:
-    return _slice(script, "function renderMetricsFormats(payload)", "function renderDzenAttribution(")
+    # Ends at the *next* renderer in the file, not two below it: when the queue
+    # card was inserted between these two, a slice that ran to
+    # `renderDzenAttribution` scraped that card's `data.totals` too and the shape
+    # lock accused `/api/metrics/formats` of omitting a field it never claimed.
+    return _slice(
+        script,
+        "function renderMetricsFormats(payload)",
+        "function renderBacklog(payload, failure)",
+    )
 
 
 def _evidence_table(script: str) -> str:

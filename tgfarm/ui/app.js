@@ -49,6 +49,10 @@
   // fabricated zero back, which is the one thing the journal was fixed to remove.
   const items = (v, state) => (typeof v === "number" ? `${n(v)} шт`
     : `— (${state === "legacy" ? "до контракта" : "нет отчёта"})`);
+  // Same rule for ratios, which `pct()` cannot serve: it ends in `|| 0` too, so a
+  // rate the server could not compute (`null` from `func.avg` over no rows, a
+  // share with no denominator) would print "0,0%" and look like a measured quiet.
+  const rate = (v) => (typeof v === "number" ? pct(v) : "нет отчёта");
 
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -119,8 +123,8 @@
       { label: "Трендов", value: n(s.ready_clusters), hint: `из ${n(s.clusters)} кластеров` },
       { label: "Постов в очереди", value: n(s.scheduled), hint: `${n(s.gated)} прошли гейты` },
       { label: "Опубликовано", value: n(s.published), hint: `из ${n(s.posts)} всего` },
-      { label: "Отклонено", value: n(s.rejected), hint: pct(s.reject_rate) + " от черновиков", kind: s.reject_rate > 0.5 ? "warn" : "" },
-      { label: "ERR (средний)", value: pct(s.avg_er), hint: "вовлечённость", kind: s.avg_er >= 0.05 ? "ok" : "" },
+      { label: "Отклонено", value: n(s.rejected), hint: rate(s.reject_rate) + " от черновиков", kind: s.reject_rate > 0.5 ? "warn" : "" },
+      { label: "ERR (средний)", value: rate(s.avg_er), hint: s.avg_er === null || s.avg_er === undefined ? "замеров не было" : "вовлечённость", kind: s.avg_er >= 0.05 ? "ok" : "" },
       { label: "Обложек", value: n(s.covers), hint: s.videos ? `+ ${n(s.videos)} видео` : "отрисовано" },
       { label: "Кросспостов", value: n(s.crossposts), hint: "во внешние платформы" },
     ];
@@ -567,6 +571,168 @@
           + '<div class="item-side">' + evidenceChip + readiness + attention + "</div></div>";
       })
       .join("");
+  }
+
+  // «Что происходит с очередью» used to be answerable only by hand-written SQL,
+  // and the SQL was usually written against the wrong column: `scheduled` holds
+  // posts booked for the future, so a post booked and published the same day
+  // never appears in it and a full day of work looks like nothing moving. The
+  // card below therefore prints flow off `/api/backlog`'s three clocks
+  // (`created_at` intake + what those posts became, `scheduled_at` bookings,
+  // `published_at` output) and stock next to it with ages, so a forward buffer
+  // and an overdue-and-retried pile cannot share a line.
+  // These are the `posts.status` values that still wait for something — the same
+  // set the server puts in `BACKLOG_WAITING`, which a test keeps in step. An
+  // unrecognised one travels verbatim on the colourless chip like every other
+  // table here.
+  const BACKLOG_STATE = {
+    draft: { cls: "tag-none", label: "черновик, ждёт гейта" },
+    gated: { cls: "tag-warn", label: "гейты прошёл, ждёт окна" },
+    scheduled: { cls: "tag", label: "забронировано" },
+    publishing: { cls: "tag", label: "отправка идёт" },
+    publish_unknown: { cls: "tag-warn", label: "неизвестно, ушло ли — ждёт оператора" },
+    failed: { cls: "tag-err", label: "сорвалось, ждёт оператора" },
+  };
+
+  // Age is stated in hours because that is the unit the gates and the alerts
+  // speak; a missing stamp prints «нет отчёта» instead of a zero, exactly like
+  // `items()` does for counters.
+  const hrs = (v) => (typeof v === "number" ? `${Math.round(v)} ч` : "нет отчёта");
+  // The ratio that makes the problem visible: intake against output. A period
+  // with no published posts has no ratio at all — it is neither infinity nor 0×,
+  // so the server sends null and the panel says the relation is not computable.
+  const leadVs = (v) => (typeof v === "number"
+    ? `приток больше выпуска в ${v.toFixed(1).replace(".", ",")} раза`
+    : "выпуска за период не было — отношение притока к выпуску не вычисляется");
+
+  function renderBacklog(payload, failure) {
+    const root = $("#backlog-list");
+    if (!root) return;
+    const meta = $("#backlog-meta");
+    // The three silences stay three different wordings, as in the publication
+    // card: the network died, the server answered with an error, and there is
+    // simply nothing to show yet. None of them may print a zero.
+    if (failure) {
+      const message = String(failure.message || failure || "");
+      const httpError = /\s->\s\d/.test(message);
+      if (meta) meta.textContent = httpError ? "очередь не прочитана" : "сервер не ответил";
+      root.innerHTML = '<div class="alert alert-err">'
+        + (httpError
+          ? "<b>Состояние очереди не прочитано:</b> " + esc(message)
+          : "<b>Сеть не отвечает:</b> очередь публикации не получена — " + esc(message))
+        + "</div><div class=\"empty\">Ни одной цифры не показано: вместо них был бы ноль.</div>";
+      return;
+    }
+    const data = payload || {};
+    if (data.error) {
+      if (meta) meta.textContent = "очередь не свелась к цифрам";
+      root.innerHTML = '<div class="alert alert-err"><b>Чтение очереди не удалось:</b> '
+        + esc(data.error) + "</div>"
+        + '<div class="empty">Ни одной цифры не показано: вместо них был бы ноль.</div>';
+      return;
+    }
+    const totals = data.totals || {};
+    const platforms = data.platforms || [];
+    if (meta) {
+      meta.textContent = `за ${n(data.flow_hours)} ч: создано ${n(totals.created)}, `
+        + `опубликовано ${n(totals.published)} · ждут ${n(totals.waiting)} · `
+        + `снимок ${esc(dt(data.generated_at))}`;
+    }
+    // The blocking reason is the journal's own decision (`meta.decision` of the
+    // newest publish tick), never a second guess built from the counters above.
+    // The detailed counters and gates live on the card above; here the reason only
+    // labels what these numbers are the consequence of.
+    const decision = data.publication;
+    const known = decision && PUBLICATION_REASON[decision.reason];
+    const blockedLine = '<div class="item"><div class="item-main"><div class="item-title">'
+      + "Почему ничего не ушло последним тиком</div>"
+      + '<div class="item-meta">' + (decision
+        ? "код " + esc(decision.reason || "не записан")
+          + (decision.gates
+            ? ` · гейтов с удержанными: ${n(Object.keys(decision.gates).length)}` : "")
+        : "ни один publish-тик ещё не записал решение в журнал прогонов — это не "
+          + "«публикует ноль», это отсутствие ответа")
+      + '</div></div><div class="item-side">'
+      + (decision
+        ? `<span class="tag ${known ? known.cls : "tag-none"}">`
+          + esc(known ? known.label : (decision.reason || "причина не записана")) + "</span>"
+        : '<span class="tag tag-none">нет данных</span>')
+      + "</div></div>";
+    if (!platforms.length) {
+      root.innerHTML = blockedLine
+        + '<div class="empty">Ни на одной площадке нет постов: очередь пуста не потому, '
+        + "что ничего не выходит, а потому, что ей неоткуда наполняться.</div>";
+      return;
+    }
+    const lateTotal = typeof totals.overdue === "number"
+      ? ` <span class="tag ${totals.overdue ? "tag-err" : "tag-ok"}">просрочено ${n(totals.overdue)}</span>`
+      : "";
+    const summary = '<div class="item"><div class="item-main"><div class="item-title">Всего</div>'
+      + `<div class="item-meta">за ${n(data.flow_hours)} ч: создано ${n(totals.created)}`
+      + ` · отклонено ${n(totals.rejected)} · забронировано ${n(totals.booked)}`
+      + ` · опубликовано ${n(totals.published)}</div>`
+      + `<div class="item-meta">за ${n(data.compare_days)} дней: ${leadVs(totals.lead)}</div></div>`
+      + `<div class="item-side"><span class="tag">ждут ${n(totals.waiting)}</span>${lateTotal}</div></div>`;
+    root.innerHTML = blockedLine + summary
+      + platforms.map((item) => {
+        const flow = item.flow || {};
+        const week = item.week || {};
+        const rates = item.rates || {};
+        const stock = item.stock || [];
+        // A platform whose channels are switched off produces zeros that mean
+        // "the operator closed the tap", not "the farm is broken" — so how many
+        // channels are enabled rides on the line and cannot be missed.
+        const head = '<div class="item"><div class="item-main"><div class="item-title">'
+          + esc(item.platform || "unknown") + "</div>"
+          + '<div class="item-meta">за ' + n(data.flow_hours) + " ч: создано " + n(flow.created)
+          + " · из них отклонено " + n(flow.rejected)
+          + ", в гейте " + n(flow.gated)
+          + ", черновиком " + n(flow.draft)
+          + " · забронировано " + n(flow.booked)
+          + " · опубликовано " + n(flow.published) + "</div>"
+          + '<div class="item-meta">за ' + n(data.compare_days) + " дней: создано " + n(week.created)
+          + " · отклонено " + n(week.rejected)
+          + " · забронировано " + n(week.booked)
+          + " · опубликовано " + n(week.published) + "</div>"
+          + '<div class="item-meta">в день: ' + n(rates.created_per_day) + " создаём · "
+          + n(rates.published_per_day) + " публикуем · " + leadVs(rates.lead) + "</div>"
+          + '<div class="item-meta">ждут ' + n(item.waiting)
+          + " · старше всех " + hrs(item.oldest_age_hours) + "</div></div>"
+          + '<div class="item-side"><span class="tag '
+          + (item.channels_enabled ? "tag" : "tag-warn") + '">каналов '
+          + n(item.channels_enabled) + "/" + n(item.channels) + "</span></div></div>";
+        if (!stock.length) {
+          return head + '<div class="item"><div class="item-main">'
+            + '<div class="item-meta">в ожидании никого: очередь площадки пуста</div>'
+            + "</div></div>";
+        }
+        return head + stock.map((row) => {
+          const ages = row.ages || {};
+          const state = BACKLOG_STATE[row.status]
+            || { cls: "tag-none", label: "состояние не распознано" };
+          // `overdue` is a number only for a bucket of bookings that all carry a
+          // time. A booking bucket with unbooked posts says how many are missing
+          // instead of publishing a too-small count, and the states that precede
+          // booking get no chip at all: a draft cannot be late, and printing 0
+          // would claim a measurement nobody took.
+          const late = typeof row.overdue === "number"
+            ? `<span class="tag ${row.overdue ? "tag-err" : "tag-ok"}">просрочено ${n(row.overdue)}</span>`
+            : (row.status === "scheduled"
+              ? `<span class="tag tag-none">просрочено: ${row.unbooked
+                ? `${n(row.unbooked)} без времени брони` : "нет отчёта"}</span>`
+              : "");
+          return '<div class="item is-backlog-state"><div class="item-main">'
+            + '<div class="item-title">' + esc(row.status || "unknown") + "</div>"
+            + '<div class="item-meta">ждут ' + n(row.count) + " · возраст: до суток "
+            + n(ages.lt_24h) + ", до троих суток " + n(ages.lt_72h)
+            + ", до недели " + n(ages.lt_168h) + ", старше недели " + n(ages.ge_168h)
+            + " · самый старый " + hrs(row.oldest_age_hours) + "</div>"
+            + '<div class="item-meta">попыток ' + n(row.retries)
+            + (row.retrying ? " у " + n(row.retrying) + " постов" : "") + "</div>"
+            + '</div><div class="item-side"><span class="tag ' + state.cls + '">'
+            + esc(state.label) + "</span> " + late + "</div></div>";
+        }).join("");
+      }).join("");
   }
 
   // The Dzen attribution split — the number `f0c317a` produced and the operator
@@ -4013,6 +4179,7 @@
         aiUsage: "/api/ai/usage?days=7",
         metricsFreshness: "/api/metrics/freshness",
         metricsCoverage: "/api/metrics/coverage",
+        backlog: "/api/backlog",
         metricsFormats: "/api/metrics/formats?days=30",
         distributionPlan: "/api/distribution/plan",
         agentBenchmark: "/api/agents/benchmark",
@@ -4045,6 +4212,11 @@
       renderDzenAttribution(
         "report" in data ? (data.report || {}).dzen : null,
         "report" in data ? null : reasons.report || new Error("отчёт фермы не получен"));
+      // Same rule as the publication card above: the queue read is re-rendered on
+      // every pass, including the pass where it died. Leaving the previous run's
+      // backlog on screen would report a queue that has since moved.
+      renderBacklog("backlog" in data ? data.backlog : null,
+        "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
       if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
       if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
 
