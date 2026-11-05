@@ -447,6 +447,7 @@ def test_the_endpoint_serves_the_card():
         "publication",
         "totals",
         "platforms",
+        "unresolved",
         "error",
     }
     assert payload["error"] is None

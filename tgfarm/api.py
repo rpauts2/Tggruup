@@ -1557,6 +1557,20 @@ BACKLOG_COMPARE_DAYS = 7
 #: rejection overwrites the status, so «создано и отклонено» is only readable as a
 #: cohort outcome of `created_at`, never as an event clock of its own.
 BACKLOG_COHORT = {"rejected": "rejected", "gated": "gated", "draft": "draft"}
+#: The one waiting state a human alone can resolve, named here so the worklist and
+#: the stock table cannot drift into two spellings of it.
+BACKLOG_UNRESOLVED_STATUS = "publish_unknown"
+#: How many of those rows the queue card names at once, and how wide the excerpt
+#: beside each one may be. Both follow the discipline of
+#: `maintenance._JOURNAL_READ_CHUNK` (500): the list is capped by a SQL `LIMIT`
+#: and its denominator comes from a separate aggregate, so the card can say
+#: «показаны 10 из 51» instead of showing ten rows as if they were all of them.
+#: Ten is deliberately the *oldest* ten — age is the danger: an unknown outcome
+#: from last month is a retry that can double-post. 160 characters is the same
+#: slice `tgfarm/review.py::_item` shows on the review board, so the two readers
+#: of one row cannot print two different headlines for it.
+BACKLOG_UNRESOLVED_LIMIT = 10
+BACKLOG_UNRESOLVED_EXCERPT_CHARS = 160
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -1592,6 +1606,12 @@ def _backlog(*, now: datetime | None = None) -> dict:
     reason is the very ledger `/api/status` shows — `pipeline.last_publish_decision`
     reading `meta.decision` of the newest publish tick — because a second place
     that decides why nothing went out is a second story to keep in sync.
+
+    The stock is also named. `unresolved` lists the oldest rows whose publication
+    outcome nobody can prove, capped in SQL, beside a separate aggregate that says
+    how many exist: a count of them with no `public_id` in reach is an answer the
+    operator cannot act on, and acting on one means the reconcile route, never a
+    retry this card could start by itself.
     """
     current = _utc(now) or datetime.now(UTC)
     flow_since = current - timedelta(hours=BACKLOG_FLOW_HOURS)
@@ -1602,6 +1622,11 @@ def _backlog(*, now: datetime | None = None) -> dict:
     platform_col = func.lower(func.coalesce(Channel.platform, "unknown"))
     error: str | None = None
     platforms: dict[str, dict[str, Any]] = {}
+    # The named half of the `publish_unknown` count. Both stay unset until the read
+    # answers: `None` is «не прочитано», while `[]`/`0` would claim that nobody is
+    # waiting for a decision (P34).
+    unresolved_rows: list[Any] = []
+    unresolved_total: int | None = None
 
     def entry(name: str) -> dict[str, Any]:
         return platforms.setdefault(
@@ -1685,10 +1710,36 @@ def _backlog(*, now: datetime | None = None) -> dict:
                 .where(Post.status.in_(BACKLOG_WAITING))
                 .group_by(platform_col, Post.status)
             ).all()
+            unresolved_rows = session.execute(
+                select(
+                    Post.public_id,
+                    Post.hook,
+                    Post.channel_id,
+                    Channel.title,
+                    platform_col,
+                    Post.created_at,
+                    Post.attempts,
+                    Post.publish_error,
+                )
+                .select_from(Post)
+                .outerjoin(Channel, Post.channel_id == Channel.id)
+                .where(Post.status == BACKLOG_UNRESOLVED_STATUS)
+                # Oldest first: the row that has sat a week without a decision is
+                # the one a retry could double-post. `id` breaks a tie inside one
+                # timestamp so two refreshes name the same ten rows.
+                .order_by(Post.created_at.asc(), Post.id.asc())
+                .limit(BACKLOG_UNRESOLVED_LIMIT)
+            ).all()
+            unresolved_total = session.execute(
+                select(func.count())
+                .select_from(Post)
+                .where(Post.status == BACKLOG_UNRESOLVED_STATUS)
+            ).scalar_one()
     except SQLAlchemyError as exc:
         error = redact_sensitive_text(exc, limit=200)
         log.warning("api: backlog read failed: %s", error)
-        inventory = intake = clocks = stock = []
+        inventory = intake = clocks = stock = unresolved_rows = []
+        unresolved_total = None
 
     for name, channels, enabled in inventory:
         item = entry(str(name or "unknown"))
@@ -1773,6 +1824,43 @@ def _backlog(*, now: datetime | None = None) -> dict:
     week_created = sum(item["week"]["created"] for item in platforms.values())
     week_published = sum(item["week"]["published"] for item in platforms.values())
     totals["lead"] = round(week_created / week_published, 1) if week_published else None
+    # The named half of the same reading. A count of `publish_unknown` without a
+    # list beside it is the defect this block exists to close: on the live base
+    # (2026-11-05, mode=ro) 51 rows sit in that state and not one of them is
+    # inside the newest 500 posts by `created_at`, so `/api/posts?limit=40` — the
+    # payload the overview queue actually renders — cannot show a single one.
+    # `/api/review/queue` (`tgfarm/review.py`) already names the same population on
+    # its own tab; this is the card that carries the count giving the operator the
+    # ten oldest of them without leaving the overview, off the same snapshot.
+    unresolved = None
+    if error is None:
+        unresolved = {
+            "status": BACKLOG_UNRESOLVED_STATUS,
+            "total": unresolved_total,
+            "shown": len(unresolved_rows),
+            "limit": BACKLOG_UNRESOLVED_LIMIT,
+            "items": [
+                {
+                    "public_id": public_id,
+                    "hook": (hook or "")[:BACKLOG_UNRESOLVED_EXCERPT_CHARS] or None,
+                    "channel_id": channel_id,
+                    "channel_title": channel_title,
+                    "platform": str(platform or "unknown"),
+                    "created_at": _utc(created).isoformat() if created else None,
+                    "age_hours": _age_hours(created, current),
+                    "attempts": int(attempts or 0),
+                    # The same redactor the ledger rows above use: a publish error
+                    # is platform text that has been known to carry an access token,
+                    # and an operator token must never ride a dashboard.
+                    "error": (
+                        redact_sensitive_text(publish_error, limit=200) if publish_error else None
+                    ),
+                }
+                for public_id, hook, channel_id, channel_title, platform, created, attempts, (
+                    publish_error
+                ) in unresolved_rows
+            ],
+        }
     return {
         "generated_at": current.isoformat(),
         "flow_hours": BACKLOG_FLOW_HOURS,
@@ -1780,6 +1868,7 @@ def _backlog(*, now: datetime | None = None) -> dict:
         "publication": pipeline.last_publish_decision(),
         "totals": totals,
         "platforms": sorted(platforms.values(), key=lambda item: item["platform"]),
+        "unresolved": unresolved,
         "error": error,
     }
 
