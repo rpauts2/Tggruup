@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # `gated` until a human presses "Опубликовать" in the panel: the farm keeps
     # producing, the channel keeps a human in the loop.
     approval_required: bool = Field(default=False, alias="TGFARM_APPROVAL_REQUIRED")
+    # The editorial plan had a builder and three HTTP readers but no consumer: on
+    # a live database it held zero rows, and no `slot_at` decision ever reached a
+    # post. This switch gives it one — a plan refresh and an apply job on the
+    # scheduler's clock, which queue a qualifying `schedule` entry through the
+    # existing scheduling path. It never publishes and never generates: a
+    # handover only moves a post `gated` -> `scheduled`, which the publisher's
+    # own gates, mode and cadence still govern. See `tgfarm.plan_execution`.
+    plan_execution_enabled: bool = Field(default=False, alias="PLAN_EXECUTION_ENABLED")
 
     # --- telegram -----------------------------------------------------------
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
