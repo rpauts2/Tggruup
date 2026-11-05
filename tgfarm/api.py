@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,8 +46,6 @@ from tgfarm.db.models import (
     ChannelStat,
     Cluster,
     CrosspostLog,
-    EditorialPlan,
-    EditorialPlanEntry,
     Media,
     OperatorLog,
     PipelineRun,
@@ -58,6 +56,7 @@ from tgfarm.db.models import (
     Source,
 )
 from tgfarm.db.session import session_scope
+from tgfarm.editorial_plan import plan_provenance, resolve_plan_labels
 
 log = get_logger(__name__)
 
@@ -485,45 +484,6 @@ def _sources() -> list[dict]:
         ]
 
 
-def _plan_entry_reference(value: Any) -> int | None:
-    """The entry a plan ordered this post from, or `None` when there is nothing to say.
-
-    `posts.plan_entry_id` is a plain nullable integer, so the read has to decide
-    what a value that cannot name a row means. `0` is not an autoincrement id and
-    a negative one is not either: serving either as a reference would hand the
-    panel a provenance it would then render as "the plan decided this", which is a
-    claim nobody made. `_measured_int` is the same rule the plan-execution endpoint
-    applies to a journal counter — a number only survives when it is a number.
-    """
-    measured = _measured_int(value)
-    return measured if measured is not None and measured > 0 else None
-
-
-def _plan_snapshot_labels(session, entry_ids: Iterable[int]) -> dict[int, str]:
-    """Which plan snapshot owns each entry a post names, resolved in one read.
-
-    The reference is soft by design (`db/models.py` says why: plan snapshots are
-    append-only history a retention pass may prune), so an entry can be gone while
-    the post still names it. That case is a missing key here, and the caller serves
-    it as `plan_public_id: null` *with* the entry id kept: "a plan ordered this and
-    its words can no longer be read" is a different answer from "no plan ordered
-    this", and folding the two together is the failure this whole projection is
-    written to avoid.
-
-    Batched rather than per row because `GET /api/posts` serves up to 500 rows and
-    one lookup each is 500 statements against the shared database.
-    """
-    ids = {int(entry_id) for entry_id in entry_ids if entry_id}
-    if not ids:
-        return {}
-    rows = session.execute(
-        select(EditorialPlanEntry.id, EditorialPlan.public_id)
-        .join(EditorialPlan, EditorialPlanEntry.plan_id == EditorialPlan.id)
-        .where(EditorialPlanEntry.id.in_(ids))
-    ).all()
-    return {int(entry_id): str(public_id) for entry_id, public_id in rows if public_id}
-
-
 def _post_view(
     session,
     row: Post,
@@ -576,10 +536,10 @@ def _post_view(
     video = alive_videos[-1] if alive_videos else (video_rows[-1] if video_rows else None)
 
     platform = ((channel.platform if channel else None) or "telegram").lower()
-    plan_entry_id = _plan_entry_reference(row.plan_entry_id)
     if plan_labels is None:
-        named = () if plan_entry_id is None else (plan_entry_id,)
-        plan_labels = _plan_snapshot_labels(session, named)
+        # The one-row case, through the same owner: naming nothing costs no read,
+        # which is the state every row on the live base is in until a plan runs.
+        plan_labels = resolve_plan_labels(session, (row.plan_entry_id,))
     payload = {
         "id": row.public_id,
         "channel": row.channel_id,
@@ -592,18 +552,15 @@ def _post_view(
         "quality": row.quality,
         "excerpt": row.body[:220],
         "scheduled_at": row.scheduled_at,
-        # W19-C — the plan's own words about this post, in the states the two
-        # columns can be in. `null` is "there is nothing to say", never `0` and
-        # never an empty string: `plan_public_id` is null both for a post no plan
-        # ordered and for one whose entry row is gone, and the two are told apart
-        # by `plan_entry_id` being set. The slot goes through the same clock the
-        # plan-execution report uses, because SQLite hands the column back
-        # offset-less and a browser reads that as local wall-clock time.
-        "plan_entry_id": plan_entry_id,
-        "plan_slot_at": _iso_stamp(row.plan_slot_at),
-        "plan_public_id": (
-            plan_labels.get(plan_entry_id) if plan_entry_id is not None else None
-        ),
+        # W19-C put the plan's own words about this post on the card; W21-C moved
+        # the transition «row -> the three keys» into
+        # `tgfarm/editorial_plan.py::plan_provenance`, because the distribution
+        # queue preview answers the same question about the same row and a second
+        # hand-written dict is a second contract nothing guarded. The states — a
+        # null meaning "nothing to say" rather than 0 or "", a reference kept while
+        # its answer is unread, one clock for the booked minute — are documented on
+        # the owner, and this projection only forwards what it returns.
+        **plan_provenance(row, plan_labels),
         "published_at": row.published_at,
         "created_at": row.created_at,
         "hook": row.hook[:200],
@@ -684,9 +641,7 @@ def _posts(
         rows = session.execute(stmt.order_by(Post.created_at.desc()).limit(limit)).scalars().all()
         # One bounded read for the provenance of the whole window: only rows that
         # name an entry cost anything, and today no row on the live base does.
-        labels = _plan_snapshot_labels(
-            session, (r.plan_entry_id for r in rows if _plan_entry_reference(r.plan_entry_id))
-        )
+        labels = resolve_plan_labels(session, (r.plan_entry_id for r in rows))
         return [_post_view(session, r, detail=False, plan_labels=labels) for r in rows]
 
 

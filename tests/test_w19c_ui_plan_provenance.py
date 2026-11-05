@@ -429,6 +429,15 @@ def test_the_panel_only_dereferences_keys_the_server_sends(script, client, prove
 
     `tgfarm/api.py` and `tgfarm/ui/app.js` are edited in different worktrees, so
     the rename that survives review is the one each half's own test cannot see.
+
+    W21-C amendment, and it is a real change of assertion rather than a rewording:
+    the key literals are no longer written in `api.py` at all. `_post_view` forwards
+    the dict of `tgfarm/editorial_plan.py::plan_provenance`, because the distribution
+    queue preview answers the same question about the same row and a second copy of
+    the triple is what this wave was ordered to remove. The check therefore splits
+    in two halves the seam can actually fail — the owner really names each key, and
+    the card really goes through the owner — while the payload assertion above,
+    which is the half that catches a rename, is untouched.
     """
     reads = set(re.findall(r"(?<![A-Za-z0-9_$])p\.([a-z][a-z0-9_]*)", provenance))
     provenance_reads = {key for key in reads if key.startswith("plan_")}
@@ -439,8 +448,11 @@ def test_the_panel_only_dereferences_keys_the_server_sends(script, client, prove
     row = _row_with_its_own_provenance(client)
     for key in provenance_reads:
         assert key in row, f"the panel dereferences {key}, the payload never sends it"
+    owner = (ROOT / "tgfarm" / "editorial_plan.py").read_text(encoding="utf-8")
+    card = (ROOT / "tgfarm" / "api.py").read_text(encoding="utf-8")
     for key in PROVENANCE_KEYS:
-        assert f'"{key}"' in (ROOT / "tgfarm" / "api.py").read_text(encoding="utf-8"), key
+        assert f'"{key}"' in owner, f"the owner no longer names {key}"
+        assert "plan_provenance(" in card, f"{key} is served by a card that left the owner"
 
 
 def test_the_panel_app_still_parses() -> None:

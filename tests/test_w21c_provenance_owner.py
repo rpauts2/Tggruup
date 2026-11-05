@@ -223,6 +223,73 @@ def test_a_label_row_without_a_public_id_is_not_renamed_into_an_answer() -> None
 
 
 # ----------------------------------------------------------------- no second copy
+#: The services that answer «этот пост по плану или совпал?» about one post row.
+#: Every one of them must reach the payload through the owner, and the list has to
+#: name every one of them: a service that answers from its own dict is the drift
+#: this wave was ordered to close.
+PROVENANCE_SERVICES = ("api.py",)
+
+
+def _provenance_dicts(root: Path) -> list[str]:
+    """Every dict in `tgfarm/` assembling two of the provenance keys, by file.
+
+    A dict needs two of the three keys (`PROVENANCE_KEYS`) to count as the
+    provenance triple, which keeps `s4_generation`'s booking decision — a record
+    about a cluster that shares one key name — out of the net. `plan_slot_at`
+    alone cannot be the test: the booking reader (`api._booking_row_view`)
+    legitimately serves it as one of its six keys, because *there* it is the
+    reserved instant the queue is measured against, not a statement about an entry.
+    """
+    found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:  # pragma: no cover - a broken file fails elsewhere
+            raise AssertionError(f"{path.name} does not parse: {exc}") from exc
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            named = {
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if len(named & set(PROVENANCE_KEYS)) >= 2:
+                found.append(f"{path.relative_to(root)}:{node.lineno}")
+    return found
+
+
+def test_no_second_copy_of_the_provenance_keys_exists_anywhere() -> None:
+    """The class of defect this wave exists to close, pinned on the whole package.
+
+    Two hand-written dicts answering one question is how the post card and the
+    distribution queue preview drifted apart while each kept its own green test,
+    and no file-by-file list of suspects would catch the third one. So the rule is
+    stated over all of `tgfarm/`: exactly one dict in the tree assembles these
+    keys, and it is the owner's.
+
+    `ast` rather than text, because a docstring may quote a key and a payload may
+    not build one.
+    """
+    copies = _provenance_dicts(ROOT / "tgfarm")
+    owner = "editorial_plan.py"
+    assert all(owner in where for where in copies), f"a second copy: {copies}"
+    assert len(copies) == 1, f"the owner itself has {len(copies)} copies of the keys"
+
+
+@pytest.mark.parametrize("service", PROVENANCE_SERVICES)
+def test_every_service_that_answers_provenance_asks_the_owner(service: str) -> None:
+    """The same rule from the other side: a named service that stopped asking.
+
+    Dropping the owner's name from a caller is how a file goes back to answering
+    the question itself while its own tests stay green — they would be reading the
+    same dict they write.
+    """
+    text = (ROOT / "tgfarm" / service).read_text(encoding="utf-8")
+    assert "plan_provenance(" in text, f"{service} answers provenance without the owner"
+    assert "resolve_plan_labels(" in text, f"{service} resolves the snapshot without the owner"
+
+
 def test_the_owner_imports_neither_caller_module_at_module_level() -> None:
     """The import cycle the brief warns about, pinned rather than remembered.
 
