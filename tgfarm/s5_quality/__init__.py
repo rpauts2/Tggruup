@@ -11,6 +11,7 @@ drafts that already passed length and vocabulary.
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -37,8 +38,14 @@ log = get_logger(__name__)
 MAX_REWRITES = 2
 MIN_VERIFIED_RATIO = 0.6
 TONE_THRESHOLD = 7.5
-RELEVANCE_THRESHOLD = 7.0
-QUALITY_THRESHOLD = 7.5
+# Fallbacks only. The live numbers are Settings.ai_relevance_threshold /
+# Settings.ai_quality_threshold (env AI_RELEVANCE_THRESHOLD / AI_QUALITY_THRESHOLD),
+# read on every gate call by relevance_threshold() / quality_threshold(). These
+# literals apply only when a settings object cannot answer — a stubbed
+# get_settings in a test, or a value that is not a usable number. Read at call
+# time, never frozen at import, so a monkeypatched setting moves the next gate.
+DEFAULT_RELEVANCE_THRESHOLD = 7.0
+DEFAULT_QUALITY_THRESHOLD = 7.5
 PLATFORM_HARD_LIMITS = {"telegram": 4096, "dzen": 10_000, "vk": 15_000}
 TELEGRAM_HARD_LIMIT = PLATFORM_HARD_LIMITS["telegram"]
 # Dzen renders the hook as the article title; its editor caps titles at 140.
@@ -53,6 +60,39 @@ def _critic_model() -> str | None:
     """
     model = (get_settings().llm_critic_model or "").strip()
     return model or None
+
+
+def _threshold_or(value: object, fallback: float) -> float:
+    """A usable critic threshold, or the module fallback.
+
+    The critic scores on a 0-10 scale, so a non-finite value (NaN, inf) is not
+    an aggressive setting but a broken one: `score < nan` is always false, which
+    would silently turn the gate off. Anything else is taken as the operator
+    wrote it, including a value outside 0-10.
+    """
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(threshold):
+        return fallback
+    return threshold
+
+
+def relevance_threshold() -> float:
+    """Live relevance gate threshold, read from Settings on every call."""
+    try:
+        return _threshold_or(get_settings().ai_relevance_threshold, DEFAULT_RELEVANCE_THRESHOLD)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return DEFAULT_RELEVANCE_THRESHOLD
+
+
+def quality_threshold() -> float:
+    """Live quality gate threshold, read from Settings on every call."""
+    try:
+        return _threshold_or(get_settings().ai_quality_threshold, DEFAULT_QUALITY_THRESHOLD)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return DEFAULT_QUALITY_THRESHOLD
 
 TRUSTED_DOMAINS = {
     "t.me", "arxiv.org", "doi.org", "nature.com", "science.org", "nih.gov",
@@ -576,7 +616,7 @@ async def gate_relevance(
     except (TypeError, ValueError):
         score = AI_RELEVANCE_OFFLINE["score"]
     issues = payload.get("issues") or []
-    if score < RELEVANCE_THRESHOLD:
+    if score < relevance_threshold():
         return GateOutcome(False, "relevance", f"critic {score:.1f}/10: {issues[:3]}")
     return GateOutcome(True, scores={"relevance": round(score / 10.0, 3)})
 
@@ -635,7 +675,7 @@ async def gate_quality(
     except (TypeError, ValueError):
         score = AI_QUALITY_OFFLINE["score"]
     issues = payload.get("issues") or []
-    if score < QUALITY_THRESHOLD:
+    if score < quality_threshold():
         return GateOutcome(False, "quality", f"critic {score:.1f}/10: {issues[:3]}")
     return GateOutcome(True, scores={"quality": round(score / 10.0, 3)})
 

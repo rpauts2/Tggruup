@@ -439,8 +439,39 @@ def score_post_for_platform(
     }
 
 
+def channel_daily_ceiling() -> int:
+    """The operator's per-channel daily ceiling, read on every call.
+
+    Settings.max_posts_per_channel_day (env MAX_POSTS_PER_CHANNEL_DAY). The
+    value is a clamp, not a budget: it is only ever combined with min(), so it
+    can lower a cap and can never raise one. A missing, unreadable or
+    non-positive value means "no clamp" — until this knob was wired the number
+    had no effect at all, so a half-written .env line must not be able to
+    silently stop every crosspost delivery.
+    """
+    try:
+        ceiling = int(get_settings().max_posts_per_channel_day)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 0
+    return ceiling if ceiling > 0 else 0
+
+
+def clamp_channel_daily_cap(cap: int) -> int:
+    """Apply the operator ceiling to a computed cap; never increases it."""
+    ceiling = channel_daily_ceiling()
+    if ceiling <= 0:
+        return cap
+    return min(cap, ceiling)
+
+
 def effective_daily_cap(platform_id: str, recent_logs: list[Any]) -> int:
-    """Adjust a conservative starting cap by delivery reliability, never by luck."""
+    """Adjust a conservative starting cap by delivery reliability, never by luck.
+
+    The reliability-adjusted cap is then clamped by the operator's
+    MAX_POSTS_PER_CHANNEL_DAY ceiling. Every platform rule is a single-digit
+    literal (the largest `max_daily` in PLATFORM_RULES is 4), so at the code
+    default of 1000 the clamp is provably the identity for all 21 platforms.
+    """
     rule = PLATFORM_RULES[platform_id]
     base = int(rule["daily"])
     attempts = [
@@ -448,13 +479,13 @@ def effective_daily_cap(platform_id: str, recent_logs: list[Any]) -> int:
         if row.platform == platform_id and row.status in {"posted", "scheduled", "failed", "permanent"}
     ]
     if len(attempts) < 8:
-        return base
+        return clamp_channel_daily_cap(base)
     success_rate = sum(1 for row in attempts if row.status in {"posted", "scheduled"}) / len(attempts)
     if success_rate >= 0.95:
-        return min(int(rule["max_daily"]), base + 1)
+        return clamp_channel_daily_cap(min(int(rule["max_daily"]), base + 1))
     if success_rate < 0.70:
-        return max(1, base - 1)
-    return base
+        return clamp_channel_daily_cap(max(1, base - 1))
+    return clamp_channel_daily_cap(base)
 
 
 def _latest_logs(rows: list[Any]) -> dict[tuple[str, str], Any]:
