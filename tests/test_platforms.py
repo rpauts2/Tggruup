@@ -903,8 +903,8 @@ def test_x_requirements_name_only_credentials_the_code_reads():
     import re
     from pathlib import Path
 
-    from tgfarm.core.settings import Settings
     from tgfarm import platforms
+    from tgfarm.core.settings import Settings
     from tgfarm.platforms import CATALOG
 
     entry = next(item for item in CATALOG if item["id"] == "x")
