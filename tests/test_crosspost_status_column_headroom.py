@@ -9,13 +9,17 @@ would truncate-or-raise, and the declaration is the contract regardless of engin
 This file enumerates the vocabulary *from the code*, not from a list someone typed into
 a review, because a future writer that adds a token must trip the guard:
 
-* every string literal passed as `status=` to a `CrosspostLog(...)` constructor in
-  `tgfarm/**` (found by AST scan — today: `posted`, `retry_authorized`, `publishing`);
+* every value passed as `status=` to a `CrosspostLog(...)` constructor in `tgfarm/**`
+  that this file can resolve to one string — a bare literal or a `JOURNAL_STATUS_*`
+  name from the shared vocabulary, resolved through that module rather than re-typed
+  (found by AST scan — today: `posted`, `retry_authorized`, `publishing`);
 * every member of the `CrosspostResult.status` `Literal[...]` (pulled with
   `typing.get_args`, not re-typed), which is what `s9_growth/adapters.py` persists
   verbatim through `status=result.status`;
-* the reader-side reopen vocabulary `distribution.JOURNAL_REOPEN_STATUSES`, which is
-  only meaningful while every one of its values stays inside the same column domain.
+* the reader-side re-offer vocabulary `crosspost_journal.JOURNAL_KNOWN_STATUSES` — every
+  token both the planner and the claim gate understand, which is one frozenset in one
+  leaf module since the lock and the view were given a shared source, so a writer token
+  the readers do not know cannot hide from this guard.
 
 The scanner's own aim is pinned by a membership anchor (an AST scan that quietly found
 nothing would otherwise rubber-stamp any width), and the width itself is checked twice:
@@ -38,6 +42,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 
+from tgfarm import crosspost_journal
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.db import bootstrap
 from tgfarm.db.models import Base, CrosspostLog
@@ -46,11 +51,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "tgfarm"
 
 
-def _crosspost_log_literal_statuses() -> set[str]:
-    """Every string literal written as `status=` into a CrosspostLog(...) constructor.
+def _crosspost_log_written_statuses() -> set[str]:
+    """Every status string written as `status=` into a CrosspostLog(...) constructor.
 
     Matches both bare-name calls (`CrosspostLog(...)`) and attribute calls
-    (`models.CrosspostLog(...)`); a literal under any other name is out of scope by
+    (`models.CrosspostLog(...)`); a value under any other name is out of scope by
     construction, not by an allowlist.
     """
     found: set[str] = set()
@@ -68,16 +73,30 @@ def _crosspost_log_literal_statuses() -> set[str]:
                     continue
                 if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                     found.add(kw.value.value)
-                else:
-                    # `status=result.status` is the known dynamic channel, covered via
-                    # the CrosspostResult Literal below. Any *other* non-literal form
-                    # (f-string, concatenation, computed dict) must be surfaced, not
-                    # silently skipped, exactly like the env scanner's unresolved sites.
-                    rendered = ast.unparse(kw.value)
-                    assert isinstance(kw.value, ast.Attribute) and kw.value.attr == "status", (
-                        f"{path}:{node.lineno}: non-literal CrosspostLog status={rendered!r} "
-                        "is not covered by the CrosspostResult enumeration; extend this guard"
+                    continue
+                # A writer may spell its token with the shared vocabulary instead of a
+                # bare literal — `status=JOURNAL_STATUS_PUBLISHING`. That is the same
+                # string, so resolving it through the module it comes from keeps the
+                # scan honest; the name must exist there and be a str, or this guard
+                # would be inventing a token the writer never wrote.
+                symbol = getattr(kw.value, "id", None) or getattr(kw.value, "attr", None)
+                if isinstance(symbol, str) and symbol.startswith("JOURNAL_STATUS_"):
+                    resolved = getattr(crosspost_journal, symbol, None)
+                    assert isinstance(resolved, str), (
+                        f"{path}:{node.lineno}: CrosspostLog status={symbol} does not "
+                        "resolve to a string in tgfarm.crosspost_journal"
                     )
+                    found.add(resolved)
+                    continue
+                # `status=result.status` is the known dynamic channel, covered via the
+                # CrosspostResult Literal below. Any *other* non-literal form (f-string,
+                # concatenation, computed dict) must be surfaced, not silently skipped,
+                # exactly like the env scanner's unresolved sites.
+                rendered = ast.unparse(kw.value)
+                assert isinstance(kw.value, ast.Attribute) and kw.value.attr == "status", (
+                    f"{path}:{node.lineno}: non-literal CrosspostLog status={rendered!r} "
+                    "is not covered by the CrosspostResult enumeration; extend this guard"
+                )
     return found
 
 
@@ -90,20 +109,20 @@ def _crosspost_result_literal_statuses() -> set[str]:
 
 def producible_statuses() -> set[str]:
     """The full publishable vocabulary of crosspost_logs.status, enumerated from code."""
-    from tgfarm.distribution import JOURNAL_REOPEN_STATUSES
+    from tgfarm.crosspost_journal import JOURNAL_KNOWN_STATUSES
 
     return (
-        _crosspost_log_literal_statuses()
+        _crosspost_log_written_statuses()
         | _crosspost_result_literal_statuses()
-        | set(JOURNAL_REOPEN_STATUSES)
+        | set(JOURNAL_KNOWN_STATUSES)
     )
 
 
 # --- scanner aim -------------------------------------------------------------
 
 
-def test_constructor_scan_finds_the_known_literal_writers():
-    literals = _crosspost_log_literal_statuses()
+def test_constructor_scan_finds_the_known_writers():
+    literals = _crosspost_log_written_statuses()
     # api._reconcile_crosspost_outcome and adapters.claim_crosspost write these as
     # literals; if the scanner misses one, every width assertion below goes quiet.
     assert "retry_authorized" in literals
@@ -118,7 +137,7 @@ def test_result_literal_channel_is_enumerated():
 
 def test_full_vocabulary_is_superset_of_both_channels():
     vocab = producible_statuses()
-    assert vocab >= _crosspost_log_literal_statuses() | _crosspost_result_literal_statuses()
+    assert vocab >= _crosspost_log_written_statuses() | _crosspost_result_literal_statuses()
 
 
 # --- the width contract ------------------------------------------------------
