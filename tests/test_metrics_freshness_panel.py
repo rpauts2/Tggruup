@@ -175,20 +175,38 @@ def test_freshness_endpoint_reads_the_database_once_not_twice(monkeypatch):
 def test_freshness_summary_of_equals_the_module_that_owns_the_semantics():
     """The api-side counting must be `freshness.freshness_summary` on the same facts.
 
-    One fixed ``now`` for both sides, so the comparison is exact rather than a race:
-    if either side starts to mean something else by ``stale``, ``no_report`` or
+    One fixed ``now`` for both sides, so the comparison is exact rather than a race,
+    and the report is only compared when the two reads of the detail agree: if a
+    collector writes between them the facts changed underneath the test, and a
+    mismatch there would say nothing about either implementation. If either side
+    starts to mean something else by ``stale``, ``no_report`` or
     ``scheduled_but_silent``, this fails by name instead of the panel quietly
     showing a number the CLI does not produce.
     """
     from tgfarm.api import _freshness_summary_of
     from tgfarm.s8_analytics.freshness import freshness_summary, metrics_freshness
 
-    detail = metrics_freshness(now=NOW)
+    detail = reference = None
+    for _attempt in range(3):
+        before = metrics_freshness(now=NOW)
+        reference = freshness_summary(now=NOW)
+        after = metrics_freshness(now=NOW)
+        if before == after:
+            detail = before
+            break
+    if detail is None:
+        pytest.skip("между двумя чтениями в базу писали — сравнивать не с чем")
+
     derived = _freshness_summary_of(detail)
-    reference = freshness_summary(now=NOW)
-    assert derived == reference
-    assert set(derived) >= {"ok", "stale", "never", "blocked", "collectors", "silent_collectors"}
+    differing = {
+        key: (derived[key], reference[key])
+        for key in set(derived) | set(reference)
+        if derived.get(key) != reference.get(key)
+    }
+    assert differing == {}, f"расчёт api разошёлся с freshness_summary: {differing}"
+    assert set(derived) == set(reference), "ни один ключ summary не потерян"
     assert derived["platforms_total"] == len(detail["platforms"])
+    assert {"ok", "stale", "never", "blocked", "collectors", "silent_collectors"} <= set(derived)
 
 
 def test_endpoint_exposes_collectors_and_orphan_tables_at_the_top_level(client):
