@@ -7,6 +7,13 @@ is a production incident. The ceiling is therefore combined only with `min()`.
 The default is 1000 while every platform rule is a single-digit literal, so the
 identity at the default is not spot-checked, it is proven over all 21 platforms
 and all three reliability regimes.
+
+Only the *combination* is re-implemented below (the 8-attempt floor, the 0.95 and
+0.70 thresholds, the one-step raise and clamp, the `min()` against `max_daily`).
+The two status sets are read from the planner itself, so widening
+`JOURNAL_ATTEMPT_STATUSES` or `JOURNAL_DELIVERED_STATUSES` moves this file's
+expectations with it instead of leaving a fifth private vocabulary that keeps
+passing while a real cap changes underneath it.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ import pytest
 
 import tgfarm.distribution as distribution
 from tgfarm.core.settings import Settings
+from tgfarm.crosspost_journal import JOURNAL_STATUS_PERMANENT, JOURNAL_STATUS_POSTED
 from tgfarm.distribution import PLATFORM_RULES, channel_daily_ceiling, clamp_channel_daily_cap
 
 DEFAULT_CEILING = int(Settings.model_fields["max_posts_per_channel_day"].default)
@@ -27,12 +35,15 @@ def _cap_without_ceiling(platform_id: str, recent_logs) -> int:
     rule = PLATFORM_RULES[platform_id]
     base = int(rule["daily"])
     attempts = [
-        row for row in recent_logs
-        if row.platform == platform_id and row.status in {"posted", "scheduled", "failed", "permanent"}
+        row
+        for row in recent_logs
+        if row.platform == platform_id and row.status in distribution.JOURNAL_ATTEMPT_STATUSES
     ]
     if len(attempts) < 8:
         return base
-    success_rate = sum(1 for row in attempts if row.status in {"posted", "scheduled"}) / len(attempts)
+    success_rate = sum(
+        1 for row in attempts if row.status in distribution.JOURNAL_DELIVERED_STATUSES
+    ) / len(attempts)
     if success_rate >= 0.95:
         return min(int(rule["max_daily"]), base + 1)
     if success_rate < 0.70:
@@ -41,8 +52,11 @@ def _cap_without_ceiling(platform_id: str, recent_logs) -> int:
 
 
 def _logs(platform_id: str, *, ok: int, bad: int):
-    rows = [SimpleNamespace(platform=platform_id, status="posted") for _ in range(ok)]
-    rows += [SimpleNamespace(platform=platform_id, status="permanent") for _ in range(bad)]
+    """`posted` rows are an attempt that landed; `permanent` is an attempt that did not."""
+    rows = [SimpleNamespace(platform=platform_id, status=JOURNAL_STATUS_POSTED) for _ in range(ok)]
+    rows += [
+        SimpleNamespace(platform=platform_id, status=JOURNAL_STATUS_PERMANENT) for _ in range(bad)
+    ]
     return rows
 
 
