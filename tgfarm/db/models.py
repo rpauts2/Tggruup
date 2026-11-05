@@ -268,7 +268,7 @@ class CrosspostLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     post_public_id: Mapped[str] = mapped_column(String(32), index=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
-    status: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
     remote_id: Mapped[str | None] = mapped_column(String(128))
     url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
