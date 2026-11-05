@@ -1091,7 +1091,13 @@ def freshness_summary(now: datetime | None = None) -> dict[str, Any]:
     def _silent_entry(collector: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": collector["id"],
-            "kind": collector["kind"],
+            # `kind` is the only field here read with `.get()`, on purpose: every
+            # other key is produced by `_load_collectors` two lines above, while a
+            # row handed to this function by a caller that did not build it (an
+            # older payload, a report read back from storage) legitimately may not
+            # carry it. Absence then stays visible in the summary instead of
+            # raising through the endpoint that renders the operator's dashboard.
+            "kind": collector.get("kind"),
             "platform": collector["platform"],
             "job_id": collector["job_id"],
             "snapshot_table": collector["snapshot_table"],

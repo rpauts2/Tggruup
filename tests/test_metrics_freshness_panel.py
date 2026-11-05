@@ -77,6 +77,12 @@ COLLECTOR_KEYS = (
     "last_run_at",
     "last_run_status",
     "scheduled_but_silent",
+    # The bound this row was judged by, carried next to it: a panel that had to
+    # borrow a report-wide number would print the same threshold for an hourly and
+    # a six-hourly job, which is the defect the server closed.
+    "stale_after_hours",
+    "stale_bound_source",
+    "stale_bound_derivation",
 )
 
 
@@ -269,14 +275,52 @@ def _synthetic_report() -> dict:
                 "last_run_status": "ok" if runs else None,
                 "scheduled_but_silent": index in (2, 3, 4),
                 "reason": f"причина {index}",
+                # The bound this row was judged by, carried per row: one threshold
+                # for a whole report is the defect the server closed, and the
+                # module reads these three keys strictly.
+                "kind": "primary_reader",
+                "stale_after_hours": 18.0 if index != 1 else 24.0,
+                "stale_bound_source": (
+                    "cadence" if index != 1 else "unregistered_default"
+                ),
+                "stale_bound_derivation": (
+                    "3 интервала(ов) по 6.0 ч" if index != 1 else "по умолчанию"
+                ),
             }
         )
+    destinations = [
+        {
+            **collectors[0],
+            "id": "metrics-and-learning:channel_stats",
+            "kind": "secondary_destination",
+            "snapshot_table": "channel_stats",
+            "scheduled_but_silent": True,
+            "reason": "причина из второй таблицы",
+            # The hourly tick's own cadence, not the number its sibling row got: a
+            # destination that inherited the report-wide bound would make the new
+            # per-row key meaningless in the one list that mixes both scopes.
+            "interval_hours": 1.0,
+            "stale_after_hours": 3.0,
+            "stale_bound_source": "cadence",
+            "stale_bound_derivation": "3 интервала(ов) по 1.0 ч",
+        }
+    ]
     return {
         "generated_at": NOW.isoformat(),
-        "stale_after_hours": 24.0,
+        "platform_stale_after_hours": 24.0,
+        "stale_bound": {
+            "rule": "порог сборщика = 3 интервала его собственной задачи",
+            "cadences": 3,
+            "floor_hours": 2.0,
+            "unregistered_default_hours": 24.0,
+            "per_row": {
+                row["id"]: row["stale_after_hours"] for row in [*collectors, *destinations]
+            },
+        },
         "snapshots_total": 20,
         "platforms": platforms,
         "collectors": collectors,
+        "secondary_destinations": destinations,
         "tables_without_collector": [{"table": "stray_snapshots", "rows": 7}],
         "collectors_error": None,
         "error": None,
@@ -302,13 +346,34 @@ def test_freshness_summary_of_agrees_on_statuses_the_database_may_never_show(mon
     assert derived["collectors_no_report"] == 1
     assert derived["collectors_missing_table"] == 1
     assert derived["collectors_unreadable"] == 1
-    assert len(derived["silent_collectors"]) == 3, (
-        "три «по расписанию, данных нет» — и ни одной единицей больше"
+    assert len(derived["silent_collectors"]) == 4, (
+        "три «по расписанию, данных нет» у сборщиков плюс одна у вторичной "
+        "таблицы того же тика — и ни одной единицей больше"
     )
+    assert derived["secondary_destinations_total"] == 1
+    assert derived["secondary_destinations"] == [
+        row for row in reference["secondary_destinations"]
+    ], "вторая таблица доезжает до панели тем же списком, что посчитала модуль"
     silent = {row["id"]: row for row in derived["silent_collectors"]}
     assert silent["collector-2"]["rows"] is None, "отсутствие снимка не должно стать нулём"
     assert silent["collector-2"]["runs_recorded"] is None
     assert silent["collector-3"]["runs_recorded"] == 0, "пустой журнал — это ноль, а не отсутствие"
+    # A threshold is only meaningful next to the row it judged, so the summary has
+    # to carry the row's own bound and its derivation, not a report-wide number.
+    assert silent["collector-2"]["stale_after_hours"] == 18.0
+    assert silent["collector-2"]["stale_bound_source"] == "cadence"
+    stat = silent["metrics-and-learning:channel_stats"]
+    assert stat["kind"] == "secondary_destination"
+    assert stat["stale_after_hours"] == 3.0, (
+        "вторую таблицу часового тика судит её собственный интервал, а не порог отчёта"
+    )
+    assert stat["stale_bound_source"] == "cadence"
+    assert stat["stale_after_hours"] != silent["collector-2"]["stale_after_hours"], (
+        "в одном списке немолчащих строк две строки с двумя разными порогами"
+    )
+    assert stat["stale_after_hours"] != derived["platform_stale_after_hours"], (
+        "заимствовать константу площадок — это ровно тот дефект, который закрыт"
+    )
 
 
 def test_endpoint_exposes_collectors_and_orphan_tables_at_the_top_level(client):
@@ -323,7 +388,18 @@ def test_endpoint_exposes_collectors_and_orphan_tables_at_the_top_level(client):
     assert body["summary"]["collectors"] == body["collectors"], "collectors один раз, не дважды"
     # The platform half is untouched: the shape every older consumer already reads.
     assert body["summary"]["platforms_total"] == len(body["platforms"])
-    assert body["stale_after_hours"] == body["summary"]["stale_after_hours"]
+    assert body["stale_bound"] == body["summary"]["stale_bound"]
+    assert body["platform_stale_after_hours"] == body["summary"]["platform_stale_after_hours"]
+    assert "stale_after_hours" not in body, (
+        "один порог на весь отчёт — это ровно тот дефект, который сервер закрыл"
+    )
+    assert body["summary"]["secondary_destinations_total"] == len(
+        body["secondary_destinations"]
+    )
+    for row in [*body["collectors"], *body["secondary_destinations"]]:
+        # The number printed beside a row has to be the number that judged it.
+        assert row["stale_bound_derivation"], "порог обязан приходить со своим объяснением"
+        assert body["stale_bound"]["per_row"][row["id"]] == row["stale_after_hours"]
     assert body["snapshots_total"] == body["summary"]["snapshots_total"]
 
 
@@ -336,9 +412,14 @@ def test_silent_collector_is_named_as_scheduled_but_without_data(client):
     body = client.get("/api/metrics/freshness").json()
     silent = body["summary"]["silent_collectors"]
     assert silent, "на голой базе хоть один зарегистрированный сборщик немой"
+    known = {item["id"] for item in body["collectors"]} | {
+        item["id"] for item in body["secondary_destinations"]
+    }
     for row in silent:
         assert row["claim"], "немота обязана быть объяснена словами сервера"
-        assert row["id"] in {item["id"] for item in body["collectors"]}
+        assert row["id"] in known, (
+            "немаем строкой может быть и вторичная таблица того же тика"
+        )
         assert row["rows"] is None or isinstance(row["rows"], int)
 
 
@@ -346,13 +427,15 @@ def test_silent_collector_is_named_as_scheduled_but_without_data(client):
 
 
 def test_collector_block_prints_the_three_clauses_apart(collector_block, freshness_card):
-    """Job id, the table it reads, rows, age against its threshold, the journal, the claim."""
+    """Job id, the table it reads, rows, age against its OWN threshold, the journal, the claim."""
     for needle in (
         "data.job_id",
         "data.snapshot_table",
         "rowsCell(data.rows)",
         "hrs(data.age_hours)",
-        "thresholdCell(threshold)",
+        "data.stale_after_hours",
+        "data.stale_bound_derivation",
+        "thresholdCell(bound, boundNote)",
         "runsCell(data.runs_recorded)",
         "stampCell(data.last_run_at)",
         "esc(data.reason)",
@@ -371,9 +454,11 @@ def test_tables_without_collector_is_printed(freshness_card):
     assert "#metrics-freshness-tables" in freshness_card
     html = (UI_DIR / "index.html").read_text(encoding="utf-8")
     assert 'id="metrics-freshness-collectors"' in html
+    assert 'id="metrics-freshness-destinations"' in html
     assert 'id="metrics-freshness-tables"' in html
     assert html.index('id="metrics-freshness"') < html.index('id="metrics-freshness-collectors"')
-    assert html.index('id="metrics-freshness-collectors"') < html.index('id="metrics-freshness-tables"')
+    assert html.index('id="metrics-freshness-collectors"') < html.index('id="metrics-freshness-destinations"')
+    assert html.index('id="metrics-freshness-destinations"') < html.index('id="metrics-freshness-tables"')
 
 
 def test_scheduled_but_silent_state_is_neither_ok_nor_error(collector_block):
@@ -554,6 +639,7 @@ def _render_cases(tmp_path: Path, cases: list[dict]) -> dict[str, dict[str, str]
                     "#metrics-freshness",
                     "#metrics-freshness-meta",
                     "#metrics-freshness-collectors",
+                    "#metrics-freshness-destinations",
                     "#metrics-freshness-tables",
                 ],
                 "payload": case["payload"],
@@ -683,3 +769,113 @@ def test_rendered_card_names_a_stale_age_against_its_threshold(tmp_path):
     assert "нет отчёта" not in html.split("журнал запусков")[1].split("</div>")[0]
     tables = nodes["stale"]["#metrics-freshness-tables"]["innerHTML"]
     assert "channel_stats" in tables and "206 снимков" in tables
+
+
+def test_every_rendered_row_names_the_bound_that_judged_it(tmp_path):
+    """One payload, three different thresholds — and no number borrowed from the platforms.
+
+    The current server answers without a report-wide collector threshold, so a card
+    printing «порог 24 ч» beside an hourly tick would print a bound that judged
+    nothing: the hourly job is stale at 3 hours, the six-hourly at 18, and a
+    fifteen-minute job at the 2-hour floor. The destination block is rendered in the
+    same breath because `channel_stats` is that hourly tick's second table, and an
+    older payload that never mentions it must read as «нет отчёта», not as «пусто».
+    """
+    hourly = _collector(
+        id="metrics-and-learning:dzen",
+        job_id="metrics-and-learning",
+        platform="dzen",
+        interval_hours=1.0,
+        snapshot_table="post_stats",
+        rows=15,
+        age_hours=2.4,
+        data_status="stale",
+        stale=True,
+        scheduled_but_silent=False,
+        runs_recorded=2413,
+        last_run_at="2026-11-04T10:00:00+00:00",
+        last_run_status="ok",
+        reason="снимков 15, новый снимок позже порога этой задачи",
+        stale_after_hours=3.0,
+        stale_bound_source="cadence",
+        stale_bound_derivation="3 интервала(ов) по 1.0 ч",
+    )
+    six_hourly = _collector(
+        id="telegram-post-metrics:telegram",
+        interval_hours=6.0,
+        rows=None,
+        stale_after_hours=18.0,
+        stale_bound_source="cadence",
+        stale_bound_derivation="3 интервала(ов) по 6.0 ч",
+    )
+    floored = _collector(
+        id="fast-tick:vk",
+        job_id="fast-tick",
+        platform="vk",
+        interval_hours=0.5,
+        snapshot_table="vk_snapshots",
+        rows=44,
+        age_hours=1.2,
+        data_status="ok",
+        stale=False,
+        scheduled_but_silent=False,
+        runs_recorded=9,
+        last_run_at="2026-11-05T10:00:00+00:00",
+        last_run_status="ok",
+        reason="снимков 44, последний свежее порога",
+        stale_after_hours=2.0,
+        stale_bound_source="cadence",
+        stale_bound_derivation="3 интервала(ов) по 0.5 ч, но не меньше 2 ч",
+    )
+    destination = {
+        "id": "metrics-and-learning:channel_stats",
+        "kind": "secondary_destination",
+        "platform": "dzen",
+        "job_id": "metrics-and-learning",
+        "snapshot_table": "channel_stats",
+        "scheduled": True,
+        "interval_hours": 1.0,
+        "rows": 206,
+        "age_hours": 0.4,
+        "data_status": "ok",
+        "reason": "второй таблицей того же часового тика",
+        "runs_recorded": 2413,
+        "last_run_at": "2026-11-05T10:00:00+00:00",
+        "last_run_status": "ok",
+        "scheduled_but_silent": False,
+        "stale_after_hours": 3.0,
+        "stale_bound_source": "cadence",
+        "stale_bound_derivation": "3 интервала(ов) по 1.0 ч",
+    }
+    results = _render_cases(
+        tmp_path,
+        [
+            {
+                "name": "own_bounds",
+                "payload": {
+                    "collectors": [hourly, six_hourly, floored],
+                    "secondary_destinations": [destination],
+                    "tables_without_collector": [],
+                    "platform_stale_after_hours": 24.0,
+                },
+            },
+            {"name": "older_server", "payload": {"platforms": {}, "summary": {}}},
+        ],
+    )
+
+    html = results["own_bounds"]["#metrics-freshness-collectors"]["innerHTML"]
+    assert "порог 3 ч: 3 интервала(ов) по 1.0 ч" in html
+    assert "порог 18 ч: 3 интервала(ов) по 6.0 ч" in html
+    assert "порог 2 ч: 3 интервала(ов) по 0.5 ч, но не меньше 2 ч" in html
+    assert "порог 24 ч" not in html, "почасовая задача не имеет печатать порог площадок"
+
+    block = results["own_bounds"]["#metrics-freshness-destinations"]["innerHTML"]
+    assert "channel_stats" in block
+    assert "порог 3 ч" in block, "у второй таблицы — порог той же задачи, а не общий"
+    assert "Вторые таблицы тех же задач" in block
+
+    older = results["older_server"]["#metrics-freshness-destinations"]["innerHTML"]
+    assert "Сервер не вернул этот список" in older
+    assert "Ни одна зарегистрированная задача не пишет вторую" not in older, (
+        "отсутствие ключа — это не «пустого списка нет»"
+    )

@@ -2012,6 +2012,7 @@ def _freshness_summary_of(detail: dict) -> dict:
 
     platforms = detail.get("platforms") or {}
     collectors = detail.get("collectors") or []
+    destinations = detail.get("secondary_destinations") or []
     outside = detail.get("tables_without_collector") or []
 
     platform_counts = {status: 0 for status in STATUSES}
@@ -2040,32 +2041,54 @@ def _freshness_summary_of(detail: dict) -> dict:
                 "age_hours": age,
             }
 
+    def _silent_entry_of(collector: dict) -> dict:
+        # One builder for both scopes, because the module counts primary readers
+        # and secondary destinations into the same `silent_collectors` list; two
+        # copies of this shape is how the two halves start meaning different
+        # things in one list.
+        return {
+            "id": collector.get("id"),
+            "kind": collector.get("kind"),
+            "platform": collector.get("platform"),
+            "job_id": collector.get("job_id"),
+            "snapshot_table": collector.get("snapshot_table"),
+            "data_status": collector.get("data_status"),
+            "rows": collector.get("rows"),
+            "last_collected_at": collector.get("last_collected_at"),
+            "age_hours": collector.get("age_hours"),
+            # The bound each row was judged by, carried rather than re-derived:
+            # one threshold for the whole block is the defect the server just
+            # closed, and a panel that prints its own constant would reopen it.
+            "stale_after_hours": collector.get("stale_after_hours"),
+            "stale_bound_source": collector.get("stale_bound_source"),
+            "stale_bound_derivation": collector.get("stale_bound_derivation"),
+            "runs_recorded": collector.get("runs_recorded"),
+            "claim": collector.get("reason"),
+        }
+
+    def _count(rows: list[dict], into: dict) -> None:
+        for collector in rows:
+            data_status = collector.get("data_status")
+            if data_status in into:
+                into[data_status] += 1
+
     collector_counts = {status: 0 for status in COLLECTOR_STATUSES}
+    destination_counts = {status: 0 for status in COLLECTOR_STATUSES}
     silent: list[dict] = []
-    for collector in collectors:
-        data_status = collector.get("data_status")
-        if data_status in collector_counts:
-            collector_counts[data_status] += 1
-        if not collector.get("scheduled_but_silent"):
-            continue
-        silent.append(
-            {
-                "id": collector.get("id"),
-                "platform": collector.get("platform"),
-                "job_id": collector.get("job_id"),
-                "snapshot_table": collector.get("snapshot_table"),
-                "data_status": data_status,
-                "rows": collector.get("rows"),
-                "last_collected_at": collector.get("last_collected_at"),
-                "age_hours": collector.get("age_hours"),
-                "runs_recorded": collector.get("runs_recorded"),
-                "claim": collector.get("reason"),
-            }
-        )
+    _count(collectors, collector_counts)
+    _count(destinations, destination_counts)
+    for collector in [*collectors, *destinations]:
+        if collector.get("scheduled_but_silent"):
+            silent.append(_silent_entry_of(collector))
 
     return {
         "generated_at": detail.get("generated_at"),
-        "stale_after_hours": detail.get("stale_after_hours"),
+        # Not one `stale_after_hours` for the whole report: the platform rows are
+        # judged by `platform_stale_after_hours`, every collector and destination
+        # row by the bound its own registered cadence derives, and `stale_bound`
+        # states the rule plus those per-row numbers.
+        "platform_stale_after_hours": detail.get("platform_stale_after_hours"),
+        "stale_bound": detail.get("stale_bound"),
         "platforms_total": len(platforms),
         "ok": platform_counts["ok"],
         "stale": platform_counts["stale"],
@@ -2080,6 +2103,16 @@ def _freshness_summary_of(detail: dict) -> dict:
         "collectors_no_report": collector_counts["no_report"],
         "collectors_missing_table": collector_counts["missing_table"],
         "collectors_unreadable": collector_counts["unreadable"],
+        # Counted as its own scope, because `channel_stats` is not a collector:
+        # it is a second table the same registered tick writes, and folding it
+        # into the collector counts would let one job be counted twice.
+        "secondary_destinations": destinations,
+        "secondary_destinations_total": len(destinations),
+        "secondary_destinations_ok": destination_counts["ok"],
+        "secondary_destinations_stale": destination_counts["stale"],
+        "secondary_destinations_no_report": destination_counts["no_report"],
+        "secondary_destinations_missing_table": destination_counts["missing_table"],
+        "secondary_destinations_unreadable": destination_counts["unreadable"],
         "silent_collectors": silent,
         "tables_without_collector": outside,
         "collectors_error": detail.get("collectors_error"),
@@ -5265,10 +5298,11 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         (four sessions instead of two). The summary is now counted from the detail
         by ``_freshness_summary_of``, which reads nothing.
 
-        ``collectors`` and ``tables_without_collector`` are additionally exposed
-        once at the top level: ``tgfarm/ui/app.js`` renders the per-job answer
-        («задача стоит в расписании, но нового снимка не оставляла») beside the
-        platform numbers, and a scheduled job is never evidence of fresh data.
+        ``collectors``, ``secondary_destinations`` and ``tables_without_collector``
+        are additionally exposed once at the top level: ``tgfarm/ui/app.js`` renders
+        the per-job answer («задача стоит в расписании, но нового снимка не
+        оставляла») beside the platform numbers, and a scheduled job is never
+        evidence of fresh data.
         """
         from tgfarm.s8_analytics.freshness import metrics_freshness
 
@@ -5276,10 +5310,16 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         summary = _freshness_summary_of(detail)
         return {
             "generated_at": detail.get("generated_at"),
-            "stale_after_hours": detail.get("stale_after_hours"),
+            # Two bounds, deliberately not merged: the platform rows are judged by
+            # one constant, every collector and destination row by the cadence of
+            # its own registered job, and a report-wide `stale_after_hours` here is
+            # what let an hourly job look healthy for a day.
+            "platform_stale_after_hours": detail.get("platform_stale_after_hours"),
+            "stale_bound": detail.get("stale_bound"),
             "snapshots_total": detail.get("snapshots_total"),
             "platforms": detail.get("platforms") or {},
             "collectors": detail.get("collectors") or [],
+            "secondary_destinations": detail.get("secondary_destinations") or [],
             "tables_without_collector": detail.get("tables_without_collector") or [],
             "collectors_error": detail.get("collectors_error"),
             "error": detail.get("error"),

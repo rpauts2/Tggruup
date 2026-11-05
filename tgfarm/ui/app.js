@@ -163,7 +163,11 @@
     : NO_REPORT);
   const stampCell = (v) => (v ? dt(v) : NO_REPORT);
   const everyCell = (v) => (typeof v === "number" ? `каждые ${n(v)} ч` : `период ${NO_REPORT}`);
-  const thresholdCell = (v) => (typeof v === "number" ? `порог ${n(v)} ч` : `порог ${NO_REPORT}`);
+  // A threshold is printed with the rule that produced it: a bare number next to
+  // an hourly job is exactly how «24 ч» came to be read as that job's bound.
+  const thresholdCell = (v, derivation) => (typeof v === "number"
+    ? `порог ${n(v)} ч${derivation ? `: ${derivation}` : ""}`
+    : `порог ${NO_REPORT}`);
 
   // `data_status` values come from `COLLECTOR_*` in s8_analytics/freshness.py.
   // An unrecognised status keeps the server's own word on a colourless chip:
@@ -189,12 +193,20 @@
     const silent = data.scheduled_but_silent ? COLLECTOR_SILENT_CHIP : null;
     const title = esc(data.job_id || data.table || data.id || `сборщик ${NO_REPORT}`);
     const platform = data.platform ? " · " + esc(data.platform) : "";
+    // Each row carries the bound it was judged by. `threshold` is only a legacy
+    // fallback for an older payload that had no per-row number; the current
+    // server has no report-wide collector threshold at all, and borrowing
+    // `platform_stale_after_hours` here would put the 24-hour constant back
+    // beside an hourly job — the defect this block exists to show.
+    const bound = data.stale_after_hours !== undefined ? data.stale_after_hours : threshold;
+    const boundNote = typeof data.stale_bound_derivation === "string"
+      ? data.stale_bound_derivation : "";
     return '<div class="item freshness-collector' + (silent ? " is-silent" : "") + '">'
       + '<div class="item-main"><div class="item-title">' + title + platform + "</div>"
       + '<div class="item-meta">читает ' + esc(data.snapshot_table || NO_REPORT)
       + " · " + rowsCell(data.rows)
       + " · последний снимок " + hrs(data.age_hours)
-      + " (" + thresholdCell(threshold) + ")</div>"
+      + " (" + esc(thresholdCell(bound, boundNote)) + ")</div>"
       + '<div class="item-meta">' + esc(data.scheduled ? "задача в расписании" : "задачи в расписании нет")
       + " · " + everyCell(data.interval_hours)
       + " · журнал запусков: " + runsCell(data.runs_recorded)
@@ -273,6 +285,17 @@
       threshold,
       "Таблицы со снимками, за которыми не стоит ни одна задача",
       "Отдельных таблиц без сборщика нет.",
+    );
+    // The middle case the old report could not name: a dated table that IS filled
+    // by a registered tick, just not by its own row. `channel_stats` is that table,
+    // and an older payload that never mentions it must read as «нет отчёта», not as
+    // «вторичных таблиц нет».
+    freshnessListBlock(
+      $("#metrics-freshness-destinations"),
+      payload ? payload.secondary_destinations : undefined,
+      threshold,
+      "Вторые таблицы тех же задач: снимки пишет один тик, а порог у каждой строки свой",
+      "Ни одна зарегистрированная задача не пишет вторую датированную таблицу.",
     );
     const collectorsError = (payload && payload.collectors_error) || summary.collectors_error;
     const tablesRoot = $("#metrics-freshness-tables");
