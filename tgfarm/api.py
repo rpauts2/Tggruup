@@ -1040,24 +1040,121 @@ def _instagram_public_media_path(media_id: str) -> Path:
     return path
 
 
+#: The journal's counter columns are `INTEGER NOT NULL`, so a stage that never
+#: measured its work cannot say so in the column. The writer
+#: (`tgfarm.pipeline._record`) stores a placeholder 0 there and puts the truth
+#: beside it: `meta["counters"]` is `measured` / `partial` / `not_reported` and
+#: `meta["unmeasured"]` names the columns whose 0 is only a placeholder.
+#: A reader that hands the columns straight back re-invents a fabricated zero,
+#: and the operator can no longer tell "the stage handled nothing" from "nobody
+#: counted" — which is the only distinction the journal was fixed to make.
+#: Every reader of these two columns therefore goes through `_stage_counters`.
+COUNTER_STATES = ("measured", "partial", "not_reported")
+#: Rows written before the counters contract existed. Their zeros are
+#: unverifiable, which is a third thing and not either of the two claims it is
+#: usually collapsed into: naming it keeps the reader from promoting "we cannot
+#: tell" to "measured nothing" (a false zero) or to "never measured" (a false
+#: accusation against a stage that did report).
+LEGACY_COUNTER_STATE = "legacy"
+COUNTER_COLUMNS = ("items_in", "items_out")
+
+
+def _raw_count(row: PipelineRun, column: str) -> int | None:
+    """A counter column as an int, or None when the stored value is unusable."""
+    try:
+        return int(getattr(row, column))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _stage_counters(row: PipelineRun) -> tuple[int | None, int | None, str]:
+    """Read one journal row's counters as `(items_in, items_out, counters_state)`.
+
+    `None` means "nobody measured this"; `0` means "measured: nothing happened".
+    Collapsing the first into the second is the false report this function
+    exists to prevent, so the pair travels together with a state that names it.
+
+    Decoding rules, most-specific first:
+
+    * `meta["unmeasured"]` wins over `meta["counters"]` when both are present.
+      The list names the columns whose 0 is a placeholder; the marker only
+      counts how many are, so the list is the more precise statement.
+    * `counters == "not_reported"` marks both columns; `"partial"` without the
+      list marks the placeholder columns that hold a 0 — one of them is real but
+      the row does not say which, and guessing the wrong one would print a
+      count the stage never produced.
+    * A row whose marker is missing, or is not one of the three states, is
+      treated as having no marker at all: it predates the contract or its meta
+      is unreadable, and either way its zeros are unverifiable. A non-zero
+      column can only have come from a stage that actually counted (every
+      writer so far defaults to 0), while a 0 could be either a real nothing or
+      the old placeholder, so an unmarked 0 reads as unknown.
+
+    The state is finally recomputed from the values being returned, so a
+    response can never claim `measured` while handing back an unknown.
+    """
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    listed = {str(name) for name in (meta.get("unmeasured") or [])} & set(COUNTER_COLUMNS)
+    declared = str(meta.get("counters") or "")
+    contract = declared in COUNTER_STATES or bool(listed)
+
+    unknown = set(listed)
+    if not contract:
+        unknown = {column for column in COUNTER_COLUMNS if _raw_count(row, column) in (None, 0)}
+    elif declared == "not_reported":
+        unknown = set(COUNTER_COLUMNS)
+    elif declared == "partial" and not listed:
+        zeros = {column for column in COUNTER_COLUMNS if _raw_count(row, column) in (None, 0)}
+        unknown = set(COUNTER_COLUMNS) if len(zeros) == 2 else zeros
+
+    values = tuple(
+        None if column in unknown else _raw_count(row, column) for column in COUNTER_COLUMNS
+    )
+    # An unusable column value is unknown even when the row did not list it, so
+    # the state is derived from what is actually returned rather than trusted.
+    if contract:
+        state = {0: "not_reported", 1: "partial", 2: "measured"}[sum(v is not None for v in values)]
+    else:
+        state = LEGACY_COUNTER_STATE
+    return values[0], values[1], state
+
+
 def _runs(limit: int) -> list[dict]:
+    """The run journal as the API serves it: counters are nullable, state travels.
+
+    `in` / `out` are `int | None` on purpose even though the columns are NOT
+    NULL — the payload is where the placeholder stops being a number. Anything
+    that totals or charts these fields must treat `None` as absent, not as zero:
+    a sum over `out` that read unknown as 0 would silently understate a stage
+    that did work, which is the same bug one layer up. Report such an aggregate
+    as `(sum, measured_runs)`, or drop it; never as a bare total.
+
+    Aggregates over `ms` are unaffected: `duration_ms` is always measured, so
+    `/api/metrics`'s `slowest_stages` stays a real number.
+    """
     with session_scope() as session:
         rows = session.execute(
             select(PipelineRun).order_by(PipelineRun.id.desc()).limit(limit)
         ).scalars().all()
-        return [
-            {
-                "run_id": r.run_id,
-                "stage": r.stage,
-                "status": r.status,
-                "in": r.items_in,
-                "out": r.items_out,
-                "ms": r.duration_ms,
-                "error": (r.error or "")[:200] or None,
-                "at": r.created_at,
-            }
-            for r in rows
-        ]
+        result = []
+        for r in rows:
+            items_in, items_out, counters = _stage_counters(r)
+            result.append(
+                {
+                    "run_id": r.run_id,
+                    "stage": r.stage,
+                    "status": r.status,
+                    # `None` is "never measured", `0` is "measured: nothing".
+                    # Render the first as "—" and the second as "0".
+                    "in": items_in,
+                    "out": items_out,
+                    "counters_state": counters,
+                    "ms": r.duration_ms,
+                    "error": (r.error or "")[:200] or None,
+                    "at": r.created_at,
+                }
+            )
+        return result
 
 
 def _crosspost_status_message(status: str) -> str:
