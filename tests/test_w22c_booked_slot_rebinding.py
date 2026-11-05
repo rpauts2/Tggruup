@@ -90,6 +90,10 @@ TICK_1 = datetime(2026, 11, 4, 22, 0, tzinfo=UTC)
 #: still a tick where the corrected minute is the answer. 10:00 on the next day
 #: is the first one, and it corrects to the same 09:30 the queue writes.
 EXEC_TICK = datetime(2026, 11, 5, 10, 0, tzinfo=UTC)
+#: The minute the second of two same-channel bookings corrects to: 09:30 is
+#: already taken by the first, so the walk moves on to the next instant the grid
+#: and the window both admit.
+SECOND_CORRECTED_INSTANT = datetime(2026, 11, 5, 11, 0, tzinfo=UTC)
 TICK_STEP = timedelta(minutes=10)
 #: Older than anything the rest of the suite can leave behind, so `limit=1` is
 #: provably about the row seeded below.
@@ -323,7 +327,16 @@ def _channel(*, tz: str = "UTC", booked: datetime | None = None,
 
 
 def _plan_entry(channel_id: str, cluster_id: str, slot_at: datetime) -> str:
-    """An ACTIVE snapshot with one `schedule` entry for this topic."""
+    return _plan_multi([(channel_id, cluster_id, slot_at)])
+
+
+def _plan_multi(booked: list[tuple[str, str, datetime]]) -> str:
+    """One ACTIVE snapshot carrying exactly the `schedule` entries listed.
+
+    `_plan_entry` is the one-entry case of the same thing, and it delegates:
+    a second copy of the writer is how a cell ends up reading a plan it never
+    described.
+    """
     public_id = f"w22c-plan-{_slug()}"
     _seeded["plans"].append(public_id)
     with session_scope() as session:
@@ -332,28 +345,67 @@ def _plan_entry(channel_id: str, cluster_id: str, slot_at: datetime) -> str:
             created_at=datetime.now(UTC),
             horizon_days=7,
             status="active",
-            summary={"total": 1},
+            summary={"total": len(booked)},
         )
         session.add(plan)
         session.flush()
+        for channel_id, cluster_id, slot_at in booked:
+            session.add(
+                EditorialPlanEntry(
+                    plan_id=plan.id,
+                    cluster_public_id=cluster_id,
+                    title="Тема",
+                    niche="",
+                    action="schedule",
+                    platform="telegram",
+                    channel_id=channel_id,
+                    format="news",
+                    priority=1,
+                    confidence=0.5,
+                    reasons=["запись плана с нелегальной минутой"],
+                    slot_at=slot_at,
+                    payload={},
+                )
+            )
+    return public_id
+
+
+def _extra_post(channel_id: str, created_at: datetime, *, booked: datetime | None = None) -> tuple[str, str]:
+    """A second gated draft on a channel this file already owns.
+
+    One channel with two illegal bookings is the only way to ask whether a pass
+    reserves the minute it chose, so the channel is reused deliberately rather
+    than minted again.
+    """
+    public_id = f"w22c-post-{_slug()}"
+    cluster_id = f"w22c-cl-{_slug()}"
+    _seeded["posts"].append(public_id)
+    _seeded["clusters"].append(cluster_id)
+    with session_scope() as session:
         session.add(
-            EditorialPlanEntry(
-                plan_id=plan.id,
-                cluster_public_id=cluster_id,
-                title="Тема",
+            Cluster(
+                public_id=cluster_id,
+                label=f"Тема w22c {_slug()}",
                 niche="",
-                action="schedule",
-                platform="telegram",
-                channel_id=channel_id,
-                format="news",
-                priority=1,
-                confidence=0.5,
-                reasons=["запись плана с нелегальной минутой"],
-                slot_at=slot_at,
-                payload={},
+                status="ready",
+                heat=0.5,
+                last_seen_at=datetime.now(UTC) - timedelta(hours=1),
             )
         )
-    return public_id
+        session.add(
+            Post(
+                public_id=public_id,
+                channel_id=channel_id,
+                cluster_public_id=cluster_id,
+                hook="Заголовок второго поста того же канала.",
+                body="Тело второго поста; та же закрытая минута в плане.",
+                status="gated",
+                generation_provider="online-model",
+                plan_slot_at=booked,
+                created_at=created_at,
+            )
+        )
+    return public_id, cluster_id
 
 
 def _read(public_id: str) -> SimpleNamespace:
@@ -816,6 +868,146 @@ def test_a_legal_booking_is_still_honoured_exactly(hours, queue_clock, flag, swi
 
 
 # ------------------------------------------------- the two readings, decided once
+def test_one_post_one_tick_journals_one_rebind_whichever_consumer_got_there_first(
+    hours, queue_clock, flag, switches
+) -> None:
+    """The bound, stated where both consumers of one booking are in the room.
+
+    `test_a_rebind_writes_one_journal_entry_and_a_second_rebind_needs_a_new_one`
+    bounds one pass. The pass pair is the case an operator actually hits, because
+    a full cycle runs the plan consumer and the publish tick over the same row,
+    and a rebind journalled by both would turn "the plan could not keep this
+    minute" into a count nobody can add up. Two orders are measured: consumer
+    first, then queue — the released row leaves the queue's selection
+    (`gated AND scheduled_at IS NULL`), so the tick has nothing to correct; queue
+    first, then consumer — the entry arrives at a row that is no longer gated and
+    reports `already_scheduled`, which is the same race rule `_hand_over` already
+    uses for its own counters. Either order: one journal record, naming one
+    source, and one corrected instant on the row.
+    """
+    channel_id, public_id, cluster_id = _channel(booked=ILLEGAL_BOOKING)
+    _plan_entry(channel_id, cluster_id, ILLEGAL_BOOKING)
+    _CLOCK["now"] = EXEC_TICK
+
+    report = plan_execution.apply_plan(now=EXEC_TICK)
+    gates = _tick()
+
+    assert report["applied"] == 1, report
+    assert report["reasons"].get(plan_execution.REASON_SLOT_REBOUND) == 1, report["reasons"]
+    # The queue pass that follows has nothing to say: the row is no longer its.
+    assert {code: n for code, n in gates.items() if n} == {}, gates
+    entries = _rebind_journal()
+    assert len(entries) == 1, f"two consumers journalled one rebind twice: {entries}"
+    assert entries[0]["source"] == "plan_apply", entries
+    assert _read(public_id).scheduled_at == CORRECTED_INSTANT
+
+    # --- and the other order, on a fresh row.
+    channel_b, post_b, cluster_b = _channel(
+        booked=ILLEGAL_BOOKING, created_at=OLDEST + timedelta(minutes=1)
+    )
+    _plan_entry(channel_b, cluster_b, ILLEGAL_BOOKING)
+    _CLOCK["now"] = EXEC_TICK
+    queue_gates = _tick()
+    second = plan_execution.apply_plan(now=EXEC_TICK)
+
+    assert queue_gates[s7_publish.GATE_SLOT_BOOKING_REBOUNDED] == 1, queue_gates
+    assert second["applied"] == 0, second
+    assert second["reasons"].get("already_scheduled") == 1, second["reasons"]
+    mine = [
+        entry
+        for entry in _rebind_journal()
+        if any(str(r.get("post_public_id")) == post_b for r in entry["rebinds"])
+    ]
+    assert len(mine) == 1, f"the queue and the consumer each wrote a record: {mine}"
+    assert mine[0]["source"] == "publish_tick", mine
+    assert _read(post_b).scheduled_at == CORRECTED_INSTANT
+    assert len(_rebind_journal()) == 2, _rebind_journal()
+
+
+def test_two_illegal_bookings_on_one_channel_are_not_corrected_onto_one_minute(
+    hours, flag, switches
+) -> None:
+    """A pass reserves the minute it chose: `extra_taken` is not decoration.
+
+    `rebound_for_illegal_booking` is shown `state.pending_slot` — the instants
+    this run has already committed to but not yet written — beside the rows the
+    database holds. Without that widening the second entry on one channel would
+    be answered by the same walk from the same refused minute and land on the
+    same 09:30 the first entry just took: two posts, one slot, and a queue that
+    believes it scheduled both. The build path has always skipped occupied
+    minutes for exactly this reason; a correction is the same arithmetic and
+    therefore owes the same skip.
+
+    Measured, not assumed: the first refused booking corrects to 09:30, the
+    second to the next minute the grid and the window both admit (11:00), and
+    the pass writes ONE journal row carrying both records — the per-pass shape
+    `record_slot_rebinds` documents.
+    """
+    channel_id, post_a, cluster_a = _channel(booked=None)
+    post_b, cluster_b = _extra_post(channel_id, OLDEST + timedelta(minutes=1))
+    _plan_multi(
+        [
+            (channel_id, cluster_a, ILLEGAL_BOOKING),
+            (channel_id, cluster_b, ILLEGAL_BOOKING),
+        ]
+    )
+
+    report = plan_execution.apply_plan(now=EXEC_TICK)
+
+    assert report["applied"] == 2, report
+    assert report["reasons"].get(plan_execution.REASON_SLOT_REBOUND) == 2, report["reasons"]
+    first, second = _read(post_a), _read(post_b)
+    assert first.scheduled_at == CORRECTED_INSTANT, first
+    assert second.scheduled_at != first.scheduled_at, (
+        "one pass corrected two bookings onto one minute"
+    )
+    assert second.scheduled_at == SECOND_CORRECTED_INSTANT, second
+    for row in (first, second):
+        assert local_hours_allow(row.scheduled_at, "UTC", config=hours) is True, row
+        assert row.plan_slot_at is None, (
+            "the plan consumer wrote the booking column while correcting the slot"
+        )
+    entries = _rebind_journal()
+    assert len(entries) == 1, f"two corrections, two journal rows for one pass: {entries}"
+    assert len(entries[0]["rebinds"]) == 2, entries
+    assert {str(record["corrected_slot_at"]) for record in entries[0]["rebinds"]} == {
+        CORRECTED_INSTANT.isoformat(),
+        SECOND_CORRECTED_INSTANT.isoformat(),
+    }, entries
+
+
+def test_the_queue_also_never_corrects_two_bookings_onto_one_minute(
+    hours, queue_clock, flag, switches
+) -> None:
+    """The same skip on the other consumer, where the reservation is a write.
+
+    The plan consumer needs `extra_taken` because it batches its handovers; the
+    queue needs nothing, because it stamps `scheduled_at` as it walks the batch
+    and `occupied_slots` reads through the same session, so the minute the first
+    post took is already held when the second asks. That is a property of the
+    session's flush, not of intent, which is exactly why it is pinned: an
+    `autoflush=False` or a move of the occupancy read outside the pass turns two
+    repaired bookings into one slot and a queue that scheduled both. Both rows
+    keep the same refused booking, which is the fact the reader subtracts.
+    """
+    channel_id, post_a, _cluster_a = _channel(booked=ILLEGAL_BOOKING)
+    post_b, _cluster_b = _extra_post(channel_id, OLDEST, booked=ILLEGAL_BOOKING)
+
+    _CLOCK["now"] = TICK_1
+    gates = s7_publish.empty_gate_report()
+    scheduled = s7_publish.schedule_ready_posts(limit=2, blocked=gates)
+
+    first, second = _read(post_a), _read(post_b)
+    assert scheduled == 2, gates
+    assert gates[s7_publish.GATE_SLOT_BOOKING_REBOUNDED] == 2, gates
+    assert first.scheduled_at == CORRECTED_INSTANT, first
+    assert second.scheduled_at == SECOND_CORRECTED_INSTANT, second
+    assert first.scheduled_at != second.scheduled_at, (
+        "one queue pass corrected two bookings onto one minute"
+    )
+    assert first.plan_slot_at == second.plan_slot_at == ILLEGAL_BOOKING, (first, second)
+
+
 def test_the_ledger_counts_a_correction_as_an_outcome_and_the_post_is_scheduled(
     hours, queue_clock, flag, switches
 ) -> None:
