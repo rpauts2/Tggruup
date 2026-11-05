@@ -1590,6 +1590,75 @@ async def _guarded_cycle(
             _active_cycle_task = None
 
 
+def _publish_decision(value: object) -> dict:
+    """Reduce one `s7_publish` payload to the reason a tick published what it did.
+
+    `publish_tick: ok 0/0` used to be the whole story the journal told about
+    publication, and it was the same story whether the queue was empty, paused
+    behind a disabled platform, waiting for a human approval, or blocked on an
+    offline model. The reason is what an operator needs, so it is recorded next
+    to the counters instead of being inferred from them.
+    """
+    if value is None:
+        return {"reason": "stage_error", "measured": False}
+    payload = value if isinstance(value, dict) else {}
+    gates = {
+        str(reason): int(count)
+        for reason, count in (payload.get("gates") or {}).items()
+        if int(count)
+    }
+    published = int(payload.get("published") or 0)
+    failed = int(payload.get("failed") or 0)
+    due = int(payload.get("due") or 0)
+    if published:
+        reason = "published"
+    elif due and failed:
+        reason = "publish_failed"
+    elif gates:
+        # A named blocker outranks "nothing due": an empty delivery window whose
+        # posts are held by approval or a switched-off platform is a queue the
+        # operator can act on, while a genuinely empty queue is not.
+        reason = "gated"
+    elif due:
+        reason = "attempted_not_sent"
+    else:
+        reason = "nothing_due"
+    decision = {
+        "reason": reason,
+        "due": due,
+        "published": published,
+        "failed": failed,
+        "scheduled": int(payload.get("scheduled") or 0),
+    }
+    if gates:
+        decision["gates"] = gates
+    return decision
+
+
+def last_publish_decision() -> dict | None:
+    """The reason recorded by the most recent publish tick, straight from the journal.
+
+    Read from the run journal rather than kept in memory so the answer survives a
+    restart: "why did the farm publish nothing" is exactly the question an
+    operator asks after the process they would have asked it of has exited.
+    """
+    try:
+        with session_scope() as session:
+            meta = session.execute(
+                select(PipelineRun.meta)
+                .where(PipelineRun.stage == "publish_tick")
+                .order_by(PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - status must not fail because of telemetry
+        log.error("could not read the last publish decision")
+        return None
+    if not isinstance(meta, dict):
+        return None
+    decision = meta.get("decision")
+    return decision if isinstance(decision, dict) else None
+
+
 async def _publish_tick() -> dict:
     """Drain the publication queue without re-running expensive content stages.
 
@@ -1603,7 +1672,8 @@ async def _publish_tick() -> dict:
     result = CycleResult(run_id=run_id)
     started = time.perf_counter()
 
-    await _stage(result, "s7_publish", s7_publish.run)
+    stage_value = await _stage(result, "s7_publish", s7_publish.run)
+    decision = _publish_decision(stage_value)
 
     result.duration_ms = int((time.perf_counter() - started) * 1000)
     status = "ok" if not result.errors else "partial"
@@ -1614,13 +1684,14 @@ async def _publish_tick() -> dict:
         status,
         duration_ms=result.duration_ms,
         error="; ".join(result.errors) if result.errors else None,
-        meta={"errors": result.errors},
+        meta={"errors": result.errors, "decision": decision},
     )
     log.info(
-        "publish tick %s finished in %dms errors=%d",
+        "publish tick %s finished in %dms errors=%d reason=%s",
         result.run_id,
         result.duration_ms,
         len(result.errors),
+        decision.get("reason"),
     )
     return result.as_dict()
 
@@ -2264,6 +2335,7 @@ def status() -> dict:
         "can_publish": settings.can_publish(),
         "scheduler_running": _scheduler is not None and _scheduler.running,
         "cycle_health": cycle_health(),
+        "publication": last_publish_decision(),
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         **{k: int(v) for k, v in counts.items()},
     }

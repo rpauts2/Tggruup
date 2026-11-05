@@ -22,6 +22,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, select, update
 
@@ -190,16 +191,29 @@ def _interval_slot(
     return _inside_active_hours(base + timedelta(seconds=gap), cadence.get("active_hours"))
 
 
-def schedule_ready_posts(limit: int = 200) -> int:
+def schedule_ready_posts(
+    limit: int = 200,
+    blocked: dict[str, int] | None = None,
+) -> int:
     """Assign a slot to every quality-passed post that has none.
 
     Two modes come from config/slots.yaml: `interval` holds a 5-10 minute gap
     between posts of one channel, `weights` samples the peak-hour table.
+
+    `blocked` is an optional out-parameter naming the gates that returned a post
+    to the queue unscheduled. `scheduled 0` is legitimate most of the time, and
+    the operator can only tell that apart from a stall when the zero arrives with
+    its reason.
     """
     config = get_config()
     settings = get_settings()
     now = datetime.now(UTC)
     scheduled = 0
+
+    def _blocked(reason: str, count: int = 1) -> None:
+        if blocked is not None:
+            blocked[reason] = blocked.get(reason, 0) + count
+
     if settings.approval_required:
         # Human-in-the-loop mode: posts stay `gated` until approved from the
         # panel. The pipeline keeps generating; only the automatic hand to the
@@ -210,6 +224,7 @@ def schedule_ready_posts(limit: int = 200) -> int:
                     select(PostRow.public_id).where(PostRow.status == "gated")
                 ).scalars().all()
             )
+        _blocked(GATE_APPROVAL_REQUIRED, waiting)
         log.info("s7: approval mode — %d posts wait for a human", waiting)
         return 0
     cadence = config.schedule.cadence or {}
@@ -232,6 +247,7 @@ def schedule_ready_posts(limit: int = 200) -> int:
         for post in posts:
             persona = config.persona(post.channel_id)
             if persona is None or not persona.enabled:
+                _blocked(GATE_PERSONA_DISABLED)
                 continue
 
             channel = session.get(ChannelRow, post.channel_id)
@@ -256,6 +272,7 @@ def schedule_ready_posts(limit: int = 200) -> int:
                 today_count = _posts_today(session, post.channel_id, now)
                 daily_cap = max(1, int(persona.posts_per_day))
             if today_count >= daily_cap:
+                _blocked(GATE_DAILY_CAP)
                 continue
 
             if interval_mode:
@@ -1307,16 +1324,55 @@ async def _publish_one(
     return {"ok": True, "message_id": message_id, "post_id": post_id}
 
 
+DELIVERABLE_PLATFORMS = frozenset({"telegram", "dzen", "vk"})
+
+#: Every branch that can drop an otherwise-eligible post names itself here.
+#: "published 0" is only an actionable fact when it says which gate did it, so a
+#: new gate that returns nothing must add its reason or the journal goes blind.
+GATE_PLATFORM_DISABLED = "platform_disabled"
+GATE_PLATFORM_NOT_DELIVERABLE = "platform_not_deliverable"
+GATE_APPROVAL_REQUIRED = "approval_required"
+GATE_PERSONA_DISABLED = "persona_disabled"
+GATE_DAILY_CAP = "daily_cap"
+GATE_DZEN_QUEUE_GAP = "dzen_queue_gap"
+GATE_DZEN_NEEDS_ONLINE_MODEL = "dzen_needs_online_model"
+
+
+def empty_gate_report() -> dict[str, int]:
+    """Zero-filled ledger so a missing reason never reads as "gate absent"."""
+    return {
+        GATE_PLATFORM_DISABLED: 0,
+        GATE_PLATFORM_NOT_DELIVERABLE: 0,
+        GATE_APPROVAL_REQUIRED: 0,
+        GATE_PERSONA_DISABLED: 0,
+        GATE_DAILY_CAP: 0,
+        GATE_DZEN_QUEUE_GAP: 0,
+        GATE_DZEN_NEEDS_ONLINE_MODEL: 0,
+    }
+
+
 def due_posts(
     limit: int = 20,
     post_public_ids: list[str] | None = None,
+    blocked: dict[str, int] | None = None,
 ) -> list[tuple[int, str, int | str, str]]:
-    """Load due posts, optionally restricted to a specific operator selection."""
+    """Load due posts, optionally restricted to a specific operator selection.
+
+    `blocked` is an optional out-parameter: when given, the two gates that drop a
+    queued post without changing its state count themselves into it. Those posts
+    are the whole explanation for a tick that loads rows and still publishes
+    none, so the reason has to travel with the selection instead of vanishing
+    with the `continue`.
+    """
     if post_public_ids is not None and not post_public_ids:
         return []
     now = datetime.now(UTC)
     out: list[tuple[int, str, int | str, str]] = []
     from tgfarm.platforms import is_platform_enabled
+
+    def _blocked(reason: str) -> None:
+        if blocked is not None:
+            blocked[reason] = blocked.get(reason, 0) + 1
 
     with session_scope() as session:
         stmt = (
@@ -1333,9 +1389,11 @@ def due_posts(
             if not is_platform_enabled(platform):
                 # Pause delivery without changing the queued post's state.
                 # Re-enabling the platform makes the same queued post eligible again.
+                _blocked(GATE_PLATFORM_DISABLED)
                 continue
-            if platform not in {"telegram", "dzen", "vk"}:
+            if platform not in DELIVERABLE_PLATFORMS:
                 # Crosspost-only services must never be sent to the Telegram API.
+                _blocked(GATE_PLATFORM_NOT_DELIVERABLE)
                 continue
             if platform == "dzen":
                 target: int | str = channel.id if channel else "dzen"
@@ -1414,19 +1472,22 @@ def _last_dzen_publish_time() -> datetime | None:
 async def _publish_due_once(
     limit: int = 1000,
     post_public_ids: list[str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     get_settings()
+    gates = empty_gate_report()
     with StageTimer("s7_publish") as timer:
+        timer.items_in = 0
         requeued = await to_thread(_requeue_stuck)
         if requeued:
             log.warning(
                 "s7: moved %d interrupted posts to publish_unknown; reconcile before retry",
                 requeued,
             )
-        pending = await to_thread(due_posts, limit, post_public_ids)
+        pending = await to_thread(due_posts, limit, post_public_ids, gates)
+        timer.items_in = len(pending)
         if not pending:
             timer.items_out = 0
-            return {"published": 0, "failed": 0}
+            return {"published": 0, "failed": 0, "due": 0, "gates": gates}
 
         post_ids = [p[0] for p in pending]
         media = await to_thread(_media_for, post_ids)
@@ -1440,11 +1501,11 @@ async def _publish_due_once(
         publish_due._last_dzen = last_dzen
         dzen_gap_s = max(0, get_settings().dzen_min_gap_s)
         settings_now = get_settings()
-        skipped_llm = 0
         for post_id, text, target, platform in pending:
             if platform == "dzen":
                 now_dt = datetime.now(UTC)
                 if last_dzen is not None and (now_dt - last_dzen).total_seconds() < dzen_gap_s:
+                    gates[GATE_DZEN_QUEUE_GAP] += 1
                     continue
                 if settings_now.dzen_requires_llm and not await to_thread(
                 _llm_recently_working
@@ -1453,7 +1514,7 @@ async def _publish_due_once(
                     # the post waits while the last drafts are still coming
                     # from an online model. A health-flag cache lies in both
                     # directions — the actual output is the honest signal.
-                    skipped_llm += 1
+                    gates[GATE_DZEN_NEEDS_ONLINE_MODEL] += 1
                     continue
             try:
                 result = await _publish_one(
@@ -1489,13 +1550,18 @@ async def _publish_due_once(
                 if result.get("error"):
                     errors.append(str(result.get("error")))
 
-        timer.items_in = len(pending)
         timer.items_out = sent
         return {
             "published": sent,
             "failed": failed,
+            "due": len(pending),
             "errors": errors,
-            **({"skipped_llm": skipped_llm} if skipped_llm else {}),
+            # `gates` names every post that was eligible and still not sent.
+            # `skipped_llm` stays as the historical alias for the Dzen model
+            # gate so existing readers of the stage payload keep working.
+            "gates": gates,
+            **({"skipped_llm": gates[GATE_DZEN_NEEDS_ONLINE_MODEL]}
+               if gates[GATE_DZEN_NEEDS_ONLINE_MODEL] else {}),
             **({"skipped": skipped} if skipped else {}),
         }
 
@@ -1506,7 +1572,7 @@ _active_publish_task: asyncio.Task | None = None
 async def publish_due(
     limit: int = 1000,
     post_public_ids: list[str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Serialize publisher batches so platform-level spacing rules stay valid."""
     global _active_publish_task
 
@@ -1525,10 +1591,21 @@ async def publish_due(
             _active_publish_task = None
 
 
-async def run() -> dict[str, int]:
-    scheduled = await to_thread(schedule_ready_posts)
+async def run() -> dict[str, Any]:
+    """Schedule what is ready, then deliver what is due, and say why not.
+
+    The returned `gates` block is the only place the two halves of the stage meet:
+    a tick that publishes nothing has to be able to name the gate that held it,
+    because `published: 0` alone cannot tell a healthy queue from a stalled one.
+    """
+    gates = empty_gate_report()
+    scheduled = await to_thread(schedule_ready_posts, 200, gates)
     published = await publish_due()
-    return {"scheduled": scheduled, **published}
+    report = dict(gates)
+    for reason, count in (published.get("gates") or {}).items():
+        report[reason] = report.get(reason, 0) + int(count)
+    return {"scheduled": scheduled, **{k: v for k, v in published.items() if k != "gates"},
+            "gates": report}
 
 
 def unpublish(posts_public_ids: list[str]) -> int:
