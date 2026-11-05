@@ -28,6 +28,16 @@ from tgfarm.core.apiauth import ensure_token, is_authorised, is_public_path
 from tgfarm.core.logging import get_logger
 from tgfarm.core.settings import get_settings
 from tgfarm.core.security import redact_sensitive_text
+from tgfarm.crosspost_journal import (
+    JOURNAL_STATUS_DRY_RUN,
+    JOURNAL_STATUS_FAILED,
+    JOURNAL_STATUS_POSTED,
+    JOURNAL_STATUS_PUBLISHING,
+    JOURNAL_STATUS_RETRY_AUTHORIZED,
+    JournalStatusClass,
+    journal_status_class,
+    journal_status_of,
+)
 from tgfarm.db.bootstrap import ensure_bootstrapped
 from tgfarm.db.models import (
     Channel,
@@ -1262,13 +1272,53 @@ def _crossposts(limit: int) -> list[dict]:
         ]
 
 
+#: How long a `publishing` journal row still counts as "in flight" before both
+#: operator-facing readers agree it is stuck: the fleet/sources counter raises
+#: attention at this age, and the reconcile gate stops answering
+#: `still_in_flight` past it. One number for one question — a row must not read
+#: as stuck to one panel and as still running to the other.
+CROSSPOST_PUBLISHING_STALE_AFTER = timedelta(minutes=30)
+
+#: The journal statuses whose newest row means "the operator has to look at this
+#: destination": an outcome nobody can confirm (`unknown`) or a definite refusal
+#: of this exact content (`permanent`).
+#:
+#: Deliberately NOT `JOURNAL_SUPPRESSED_STATUSES`. The three sets in
+#: `tgfarm/crosspost_journal.py` answer the planner's question — «may this pair
+#: be delivered again?» — while this reader answers «does this need a human?».
+#: `posted`, `scheduled` and a fresh `publishing` are all suppressed for re-offer
+#: and perfectly ordinary to look at, so importing that set here would raise an
+#: alarm on every healthy destination. Only the vocabulary's UNKNOWN *class* is
+#: consulted below, and only in the fail-closed direction; the timing conditions
+#: (an attempt ceiling, a staleness bound) stay this reader's own.
+#:
+#: `unknown` and `permanent` are literals because the shared module declares
+#: single-status constants for six of its nine tokens and these are not among
+#: them; both are members of `JOURNAL_SUPPRESSED_STATUSES`, and
+#: `tests/test_journal_readers_shared.py` pins this membership against any change
+#: of that vocabulary.
+JOURNAL_OPERATOR_ATTENTION_STATUSES = frozenset({"unknown", "permanent"})
+
+#: The newest-row statuses the operator may reconcile at all: the three this code
+#: cannot resolve by itself — the request may have been accepted (`unknown`), a
+#: claim died before the answer (`publishing`, further gated by
+#: `CROSSPOST_PUBLISHING_STALE_AFTER`), or the destination definitely refused
+#: (`permanent`). Explicit rather than derived from `JOURNAL_SUPPRESSED_STATUSES`
+#: because this gate *authorises a re-send*: `posted`/`scheduled` are suppressed
+#: for re-offer precisely because the destination is believed to hold the post,
+#: and a token the vocabulary grows tomorrow must become reconcilable through a
+#: decision in this line, never by omission. `retry_exhausted` is the only other
+#: way in, and it is an attempt count, not a status.
+JOURNAL_RECONCILABLE_STATUSES = frozenset({"unknown", JOURNAL_STATUS_PUBLISHING, "permanent"})
+
+
 def _crosspost_health() -> dict:
     """Summarize the latest state of every material/platform delivery pair."""
     from tgfarm.db.models import CrosspostClaim
     from tgfarm.s9_growth.adapters import MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
 
     now = datetime.now(UTC)
-    stale_before = now - timedelta(minutes=30)
+    stale_before = now - CROSSPOST_PUBLISHING_STALE_AFTER
     latest_ids = (
         select(func.max(CrosspostLog.id).label("latest_id"))
         .group_by(CrosspostLog.post_public_id, CrosspostLog.platform)
@@ -1283,6 +1333,8 @@ def _crosspost_health() -> dict:
         claims = session.execute(select(CrosspostClaim)).scalars().all()
 
     by_platform: dict[str, dict[str, Any]] = {}
+    unexplained_tokens: dict[str, int] = {}
+    exhausted_rows: dict[str, int] = {}
     for row in rows:
         item = by_platform.setdefault(
             row.platform,
@@ -1305,24 +1357,54 @@ def _crosspost_health() -> dict:
             },
         )
         item["targets"] += 1
-        status = str(row.status or "unknown")
+        # One normalisation for every reader of this column, taken from the
+        # shared vocabulary: the raw token is what the writer stored, and a
+        # row stored as `"Posted "` or `"PUBLISHING"` used to be counted under
+        # a key nobody wrote and to miss the staleness bound below.
+        status = journal_status_of(row)
+        # The one place this reader does consult the classification, and only
+        # in the fail-closed direction: a token the vocabulary does not declare
+        # has no counter key here, so before this line such a row was counted
+        # as a target, put in no bucket, and reported as `state: not_tested`
+        # with `needs_attention` unchanged — a publication nobody can explain
+        # was the one kind the operator could not see. It is counted in
+        # `unknown` (the bucket that already means "we cannot explain this row")
+        # and its raw token is named in a warning below, so the report loses
+        # nothing and the pair cannot hide.
+        if journal_status_class(status) is JournalStatusClass.UNKNOWN:
+            unexplained_tokens[status] = unexplained_tokens.get(status, 0) + 1
+            status = "unknown"
         if status in item:
             item[status] += 1
 
         stamp = row.created_at
         if stamp is not None:
             stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
-        if status == "posted":
+        if status == JOURNAL_STATUS_POSTED:
             previous = item["last_success_at"]
             if previous is None or (stamp and stamp.isoformat() > previous):
                 item["last_success_at"] = stamp.isoformat() if stamp else None
 
-        is_stuck = status == "publishing" and stamp is not None and stamp <= stale_before
+        is_stuck = (
+            status == JOURNAL_STATUS_PUBLISHING
+            and stamp is not None
+            and stamp <= stale_before
+        )
         if is_stuck:
             item["stuck"] += 1
+        # A `failed` row needs a human only once the automatic retry budget is
+        # gone; the ceiling is the adapter's own constant, not a number typed
+        # here, and the count is kept for the platform state and the
+        # `needs_attention` total so both read one definition.
+        is_exhausted_failure = (
+            status == JOURNAL_STATUS_FAILED
+            and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+        )
+        if is_exhausted_failure:
+            exhausted_rows[row.platform] = exhausted_rows.get(row.platform, 0) + 1
         attention = (
-            status in {"unknown", "permanent"}
-            or (status == "failed" and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS)
+            status in JOURNAL_OPERATOR_ATTENTION_STATUSES
+            or is_exhausted_failure
             or is_stuck
         )
         if attention and stamp is not None:
@@ -1330,13 +1412,22 @@ def _crosspost_health() -> dict:
             if previous_attention is None or stamp.isoformat() < previous_attention:
                 item["oldest_attention_at"] = stamp.isoformat()
 
-    for item in by_platform.values():
-        exhausted = item["failed"] and any(
-            row.platform == item["platform"]
-            and row.status == "failed"
-            and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
-            for row in rows
+    for token, count in sorted(unexplained_tokens.items()):
+        log.warning(
+            "crosspost health: %d newest journal row(s) carry status %r, which the shared "
+            "vocabulary in tgfarm/crosspost_journal.py does not declare; counted as 'unknown' "
+            "and reported as needing attention, because the row may already be an accepted "
+            "publication",
+            count,
+            token,
         )
+
+    for item in by_platform.values():
+        # The ceiling test was made once per row above, so the platform state and
+        # the `needs_attention` total below cannot drift apart: a counted row is
+        # by construction also counted in `item["failed"]`, which is why the
+        # boolean needs no bucket conjunct of its own.
+        exhausted = bool(exhausted_rows.get(item["platform"]))
         if item["unknown"] or item["permanent"] or exhausted or item["stuck"]:
             item["state"] = "attention"
         elif item["publishing"] or item["retry_authorized"] or item["failed"]:
@@ -1377,12 +1468,7 @@ def _crosspost_health() -> dict:
         ),
         "needs_attention": sum(
             item["unknown"] + item["permanent"] + item["stuck"]
-            + sum(
-                1 for row in rows
-                if row.platform == item["platform"]
-                and row.status == "failed"
-                and int(row.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
-            )
+            + exhausted_rows.get(item["platform"], 0)
             for item in by_platform.values()
         ),
     }
@@ -1736,7 +1822,7 @@ def _journal_identity(
         .where(
             CrosspostLog.post_public_id == post_public_id,
             CrosspostLog.platform == platform,
-            CrosspostLog.status != "dry_run",
+            CrosspostLog.status != JOURNAL_STATUS_DRY_RUN,
         )
         .order_by(CrosspostLog.id.desc())
     ).scalars():
@@ -1779,24 +1865,27 @@ def _reconcile_crosspost_outcome(
         # Ambiguous outcomes require reconciliation; definite failed/permanent
         # outcomes may be retried only after an operator fixes the cause and
         # explicitly confirms that the destination does not already contain the post.
+        latest_status = journal_status_of(latest) if latest is not None else ""
         retry_exhausted = bool(
-            latest and latest.status == "failed"
+            latest is not None
+            and latest_status == JOURNAL_STATUS_FAILED
             and int(latest.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
         )
-        reconcilable_status = bool(
-            latest and latest.status in {"unknown", "publishing", "permanent"}
-        )
+        reconcilable_status = latest_status in JOURNAL_RECONCILABLE_STATUSES
         if latest is None or not (reconcilable_status or retry_exhausted):
+            # Fail closed, and loudly: the raw token is echoed and the endpoint
+            # turns it into a 409 that names it, so an unrecognised status is
+            # refused *and* shown rather than silently sent.
             return {
                 "ok": False,
                 "error": "not_reconcilable",
                 "status": latest.status if latest else None,
             }
-        if latest.status == "publishing":
+        if latest_status == JOURNAL_STATUS_PUBLISHING:
             created = latest.created_at
             if created.tzinfo is None:
                 created = created.replace(tzinfo=UTC)
-            if created > datetime.now(UTC) - timedelta(minutes=30):
+            if created > datetime.now(UTC) - CROSSPOST_PUBLISHING_STALE_AFTER:
                 return {"ok": False, "error": "still_in_flight"}
 
         if action not in {"confirm_posted", "retry_after_check"}:
@@ -1818,27 +1907,32 @@ def _reconcile_crosspost_outcome(
                 CrosspostLog(
                     post_public_id=post_public_id,
                     platform=platform,
-                    status="posted",
+                    status=JOURNAL_STATUS_POSTED,
                     remote_id=known_remote_id,
                     url=known_url,
                     error="confirmed by operator; destination ID may be unavailable",
                     attempt=attempt,
                 )
             )
-            return {"ok": True, "status": "posted", "post_id": post.id, "detail": "operator confirmed destination post"}
+            return {
+                "ok": True,
+                "status": JOURNAL_STATUS_POSTED,
+                "post_id": post.id,
+                "detail": "operator confirmed destination post",
+            }
 
         session.add(
             CrosspostLog(
                 post_public_id=post_public_id,
                 platform=platform,
-                status="retry_authorized",
+                status=JOURNAL_STATUS_RETRY_AUTHORIZED,
                 error="operator checked destination and authorized retry",
                 attempt=attempt,
             )
         )
         return {
             "ok": True,
-            "status": "retry_authorized",
+            "status": JOURNAL_STATUS_RETRY_AUTHORIZED,
             "post_id": post.id,
             "detail": "operator checked destination and authorized retry",
         }

@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from tgfarm import crosspost_journal
 from tgfarm.config import get_config
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import StageTimer, to_thread
@@ -97,6 +98,34 @@ def _crosspost_sampled(
     return bucket < rate
 
 
+def _retryable_journal_statuses() -> tuple[str, ...]:
+    """The journal statuses that leave a pair open for another delivery attempt.
+
+    Which posts growth may pick up as retryable is the *re-offer* question, and
+    the re-offer question has exactly one owner: `tgfarm/crosspost_journal.py`.
+    So this reads the declared classes through that module instead of spelling
+    the tokens a second time — `TIME_BOUNDED` (failed, skipped: open again once
+    their timing condition passed) union `REOPEN` (dry_run, retry_authorized:
+    re-opened outright). The lookup is through the module attribute and not a
+    name bound at import, so widening a class there moves this reader with it,
+    which is the coupling the vocabulary was made for — and the coupling
+    `tests/test_journal_readers_shared.py` pins to an explicit literal set so a
+    widened class cannot silently move an operator-facing gate.
+
+    Everything the vocabulary suppresses — `posted`, `scheduled`, `publishing`,
+    `unknown`, `permanent` — and every token it does not know stays out, so a
+    row nobody can explain is never handed to a blind retry. The failure mode of
+    this reader's half of that mistake is "growth offers nothing", never "growth
+    double-publishes".
+    """
+    return tuple(
+        sorted(
+            crosspost_journal.JOURNAL_TIME_BOUNDED_STATUSES
+            | crosspost_journal.JOURNAL_REOPEN_STATUSES
+        )
+    )
+
+
 def _pending_crossposts(
     sample_rate: float,
     window_minutes: int = 720,
@@ -130,7 +159,7 @@ def _pending_crossposts(
         retryable_public_ids = (
             select(CrosspostLog.post_public_id)
             .join(latest_ids, CrosspostLog.id == latest_ids.c.latest_id)
-            .where(CrosspostLog.status.in_(("failed", "retry_authorized", "skipped", "dry_run")))
+            .where(CrosspostLog.status.in_(_retryable_journal_statuses()))
         )
 
     with session_scope() as session:
