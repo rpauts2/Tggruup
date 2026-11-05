@@ -346,17 +346,21 @@ def test_the_endpoint_does_not_die_on_the_live_schema(store, monkeypatch):
 def test_the_window_is_the_same_rows_whether_the_columns_are_readable_or_not(
     store, monkeypatch
 ):
-    """The fallback may drop columns, never posts.
+    """The fallback may drop columns, never posts — and never a status.
 
     Same statuses, same order, same cap: if the two reads disagreed about *which*
     five posts are next, the card would change its queue depending on whether the
-    drift pass had run, and nothing downstream would say so.
+    drift pass had run, and nothing downstream would say so. The `gated` member is
+    in the expected window on purpose, because the tuple is passed to the fallback
+    by the caller and a dropped status would otherwise show up only as a quieter
+    card.
     """
     channel_id, persona = _channel(store, "telegram")
     start = datetime.now(UTC)
-    ids = [
+    gated = _post(store, channel_id, status="gated", scheduled_at=start)
+    ids = [gated] + [
         _post(store, channel_id, scheduled_at=start + timedelta(minutes=index))
-        for index in range(7)
+        for index in range(1, 8)
     ]
     # A disabled channel and a delivered status are outside the window in both reads.
     other_id, _ = _channel(store, "telegram", enabled=False)
@@ -367,8 +371,8 @@ def test_the_window_is_the_same_rows_whether_the_columns_are_readable_or_not(
     _drift(store)
     after = _primary_plan(monkeypatch, [persona])["telegram"]["queue_preview"]
 
-    assert [r["post_public_id"] for r in before] == [r["post_public_id"] for r in after]
     assert [r["post_public_id"] for r in before] == ids[:5]
+    assert [r["post_public_id"] for r in before] == [r["post_public_id"] for r in after]
 
 
 def test_every_platform_item_names_its_provenance_state(store, monkeypatch):
@@ -476,6 +480,40 @@ def test_the_preview_and_the_post_card_agree_on_the_same_post(store, monkeypatch
     assert shown["plan_entry_id"] == gone_entry_id
     assert shown["plan_public_id"] is None, "a deleted snapshot was renamed into an answer"
     assert _row(preview, unplanned)["plan_entry_id"] is None
+
+
+def test_the_five_legacy_keys_are_still_formed_the_way_the_panel_renders_them(
+    store, monkeypatch
+):
+    """The window's own formatting is a contract, and both shapes share it.
+
+    `_queue_preview_fields` exists because the truncation and the minute-precision
+    stamp would otherwise be written twice — once for the ORM row, once for the
+    drift fallback — and a post would render differently depending on whether the
+    migration had run. Pinned here on purpose: the mutation that moved
+    `timespec="minutes"` to `"seconds"` survived every other test in this file.
+    """
+    channel_id, persona = _channel(store, "telegram")
+    long_hook = "д" * 200
+    # Second-and-microsecond precision, so a truncation to minutes is observable
+    # rather than accidental.
+    at = datetime.now(UTC).replace(second=37, microsecond=500000)
+    public_id = _post(store, channel_id, hook=long_hook, scheduled_at=at)
+
+    stamps = {}
+    for drifted in (False, True):
+        if drifted:
+            _drift(store)
+        row = _row(
+            _primary_plan(monkeypatch, [persona])["telegram"]["queue_preview"], public_id
+        )
+        assert row["title"] == "д" * 160, len(row["title"])
+        assert row["scheduled_at"] == at.isoformat(timespec="minutes"), row["scheduled_at"]
+        assert row["scheduled_at"].endswith("+00:00")
+        assert row["scheduled_at"].split("+")[0].count(":") == 1, "seconds leaked into the stamp"
+        stamps[row["post_public_id"]] = row["scheduled_at"]
+
+    assert len(stamps) == 1, "the same post stamped differently in the two shapes"
 
 
 # ------------------------------------------------------------------- not swallowed
