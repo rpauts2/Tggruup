@@ -2336,7 +2336,7 @@
       const reason = typeof data.reason === "string" && data.reason ? data.reason : BOOKING_UNREAD;
       root.innerHTML = head
         + `<div class="plan-chips"><span class="plan-chip">${esc(`бронь: ${BOOKING_UNREAD}`)}</span>`
-        + `<span class="plan-chip">${esc(`причина: ${reason}`)}</span></div>`
+        + `<span class="plan-chip">причина: ${esc(reason)}</span></div>`
         + `<p class="plan-entry-reasons">${esc(typeof data.note === "string" && data.note
           ? data.note
           : "Состояние брони не измерено.")}</p>`;
