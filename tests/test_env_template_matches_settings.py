@@ -10,10 +10,16 @@ a promise. Three ways to break that promise, all of them silent:
 * the template's value differs from the code default — the operator gets a
   number nobody tested, and a reviewer cannot tell intent from accident.
 
-So compare the two directly, on every run. Only `.env.example` and
-`Settings.model_fields` are read: never the live `.env`, which holds real
-tokens and is operator-specific, and never a constructed `Settings`, which
-would fold those overrides into the comparison.
+So compare the two directly, on every run. A fourth shape exists and is not this
+file's to reject: a key the code reads straight from the environment with no
+`Settings` field at all. Those go in `DIRECT_ENV_KEYS` below, so the "code ignores
+it" test stays true for everything else, and
+`tests/test_consent_flags_are_documented.py` re-derives that list from the package
+by AST and fails any entry whose reader has disappeared.
+
+Only `.env.example` and `Settings.model_fields` are read: never the live `.env`,
+which holds real tokens and is operator-specific, and never a constructed
+`Settings`, which would fold those overrides into the comparison.
 """
 
 from __future__ import annotations
@@ -44,6 +50,20 @@ DELIBERATE_EXCEPTIONS: dict[str, str] = {
         "template ships `offline` so a fresh .env cannot spend on a provider; "
         "enforced by test_safe_defaults.py"
     ),
+}
+
+# Keys the template documents that are NOT `Settings` fields, because the code
+# reads them straight from the environment: §80 consent gates such as
+# `PUBLICATION_EVIDENCE_REPAIR_APPLY`, which `tgfarm/maintenance.py` reads through
+# `_truthy_env()` and deliberately does not add to `Settings` (`core/settings.py`
+# is another owner's contract, and the flag is a one-off operator decision, not a
+# tuned knob). Without this list the guard below would demand their deletion and
+# the operator would go back to having no way to discover the gate.
+# `tests/test_consent_flags_are_documented.py` owns this list's correctness: it
+# re-derives the direct environment reads from the package by AST and fails any
+# key that is claimed here but read nowhere, so an entry cannot outlive its reader.
+DIRECT_ENV_KEYS: dict[str, str] = {
+    "PUBLICATION_EVIDENCE_REPAIR_APPLY": "read by _truthy_env() in tgfarm/maintenance.py",
 }
 
 
@@ -125,12 +145,30 @@ def test_every_settings_knob_is_documented():
 def test_template_has_no_keys_that_code_ignores():
     values, _, duplicates = _parse_template()
     keys = _env_keys()
-    stale = sorted(k for k in values if k not in keys)
+    stale = sorted(k for k in values if k not in keys and k not in DIRECT_ENV_KEYS)
     assert not stale, (
-        ".env.example sets keys that are not Settings fields, and "
-        'extra="ignore" drops them silently, so the operator configures '
-        "nothing: " + ", ".join(stale)
+        ".env.example sets keys that are not Settings fields and are not read "
+        'straight from the environment either, so `extra="ignore"` drops them and '
+        "the operator configures nothing: " + ", ".join(stale)
     )
+
+
+def test_direct_env_exceptions_are_still_exceptions():
+    """A `DIRECT_ENV_KEYS` entry earns its place only while the template sets it.
+
+    Same rule as `DELIBERATE_EXCEPTIONS` above: an exemption that no longer exempts
+    anything is a stale claim about the code, and it would hide the next key that
+    `extra="ignore"` really does swallow.
+    """
+    values, _, _ = _parse_template()
+    keys = _env_keys()
+    for key, reason in DIRECT_ENV_KEYS.items():
+        assert len(reason) > 20, f"{key}: the exemption names no reader: {reason!r}"
+        assert key in values, f"{key} is exempted but the template no longer sets it"
+        assert key not in keys, (
+            f"{key} is now a Settings field, so this exemption must go and the "
+            "value check above starts applying to it"
+        )
 
 
 def test_template_never_defines_a_key_twice():
