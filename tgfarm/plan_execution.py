@@ -20,6 +20,30 @@ untouched) this module is the missing consumer:
   calls a model and never publishes: a handover only moves a post ``gated`` →
   ``scheduled``, which the publisher's own gates, mode and cadence still govern.
 
+The instant a handover writes, and why it is the plan's
+--------------------------------------------------------
+An entry is released only once its planned slot is due, and since W21-B it is
+released *at that slot*: ``unpublish`` takes the reserved minute as ``at`` and
+stamps it as ``scheduled_at``, so ``posts.scheduled_at`` equals ``posts.plan_slot_at``
+for a booked row and the booking-fidelity read has ``honoured`` to report instead
+of a shift nobody asked for. Before that, ``unpublish`` could only say ``now``,
+and the honest reading of the module's own design was that an entry's delivery
+minute was this loop's tick, plus up to ``APPLY_INTERVAL_MINUTES`` of it — the
+plan reserved a minute it never reached, and the panel said so.
+
+The one limit that follows the stamped instant rather than the tick is the
+channel's legal local hours: an entry whose reserved minute falls in an hour the
+channel may not post in is now held under ``REASON_LOCAL_HOURS`` instead of being
+queued at a later tick's hour. That is the same verdict ``schedule_ready_posts``
+already returns for the same minute under the registered gate
+``GATE_SLOT_OUTSIDE_LOCAL_HOURS``, through the same ``local_hours_allow`` — so the
+two consumers of a booked slot still cannot disagree about which hours mean
+anything, and a booking the cadence forbids stays a named refusal rather than
+becoming a shift the plan never ordered. The planner only books minutes this
+predicate admits (``editorial_plan`` asks it before reserving one), so the entries
+that reach that hold are the config-drift ones: a cadence window narrowed after
+the snapshot was built.
+
 Why ``schedule_ready_posts`` is not the handover function
 ---------------------------------------------------------
 It is the fleet scheduler: it selects the oldest gated posts across every channel
@@ -31,13 +55,6 @@ be enforced through a batch call that re-decides on its own terms: it would
 publish a post this module just reported as held. Enforcing the plan honestly
 needs a *per-post* transition, and ``s7_publish.unpublish`` is the only one at
 base that is not a hand-written column write.
-
-The trade-off is named plainly, because it is the whole design: ``unpublish``
-stamps ``scheduled_at = now``, so an entry is handed over only once its planned
-slot is due *and* ``now`` sits inside the channel's legal local hours. A slot in
-an illegal local hour is not rewritten — it waits for the window to open and is
-picked up by a later tick, which is the shift this module is allowed to make
-without touching the schema.
 
 Dry run: the same verdicts, none of the writes
 ----------------------------------------------
@@ -293,9 +310,10 @@ def local_hours_allow(
 
     One implementation of the window, deliberately reachable from outside this
     module: `schedule_ready_posts` has to judge a *booked* slot (`Post.plan_slot_at`)
-    against exactly the hours `_decide_schedule` already judges a handover moment
-    against, and a second copy of the cadence reading is how two schedulers start
-    disagreeing about one plan. `None` — 24/7 — allows every instant.
+    against exactly the hours `_decide_schedule` judges the very minute it stamps as
+    `scheduled_at` against, and a second copy of the cadence reading is how two
+    schedulers start disagreeing about one plan. `None` — 24/7 — allows every
+    instant.
     """
     allowed = _legal_local_hours(config if config is not None else get_config())
     if allowed is None:
@@ -520,8 +538,13 @@ class _RunState:
 
 def _decide_schedule(
     session, state: _RunState, entry: dict[str, Any], target: _Target
-) -> tuple[str, str]:
-    """One `schedule` entry → (outcome, reason code). Never writes anything.
+) -> tuple[str, str, datetime | None]:
+    """One `schedule` entry → (outcome, reason code, release instant). Never writes.
+
+    The third value is the minute this verdict would stamp, and it is returned
+    rather than re-derived by the caller so that the instant gated below and the
+    instant handed to `s7_publish.unpublish` cannot be two different numbers. It
+    is a `datetime` exactly when the outcome is `scheduled`, and `None` otherwise.
 
     The five limits the acceptance list names — channel limit, channel local
     time, platform capability, the provenance gate, the daily AI budget — each
@@ -530,51 +553,51 @@ def _decide_schedule(
     """
     if target.reason is not None:
         if target.reason == REASON_ALREADY_SCHEDULED:
-            return _OUTCOME_SKIPPED, REASON_ALREADY_SCHEDULED
-        return _OUTCOME_SKIPPED, target.reason
+            return _OUTCOME_SKIPPED, REASON_ALREADY_SCHEDULED, None
+        return _OUTCOME_SKIPPED, target.reason, None
 
     post, channel = target.post, target.channel
     if channel is None:
-        return _OUTCOME_SKIPPED, REASON_CHANNEL_MISSING
+        return _OUTCOME_SKIPPED, REASON_CHANNEL_MISSING, None
 
     platform = str(channel.platform or "telegram").lower()
     if not channel.enabled:
-        return _OUTCOME_HELD, REASON_CHANNEL_DISABLED
+        return _OUTCOME_HELD, REASON_CHANNEL_DISABLED, None
     if capability_of(platform) != "publish":
         # Named before the operator's switch on purpose: a destination the farm
         # cannot deliver without a human (`draft_only`, `manual_upload`) is the
         # harder fact, and switching it off would not make the queueing safe.
-        return _OUTCOME_HELD, REASON_CAPABILITY
+        return _OUTCOME_HELD, REASON_CAPABILITY, None
     if not state.platform_enabled(platform):
-        return _OUTCOME_HELD, s7_publish.GATE_PLATFORM_DISABLED
+        return _OUTCOME_HELD, s7_publish.GATE_PLATFORM_DISABLED, None
     if platform not in s7_publish.DELIVERABLE_PLATFORMS:
         # `due_posts` refuses it on every tick, so queueing it would be a rot
         # the plan caused; an adapter that crosspost owns is not the primary
         # queue, however capable the destination is.
-        return _OUTCOME_HELD, s7_publish.GATE_PLATFORM_NOT_DELIVERABLE
+        return _OUTCOME_HELD, s7_publish.GATE_PLATFORM_NOT_DELIVERABLE, None
     if state.settings.approval_required:
         # Human-in-the-loop mode: nothing may leave the gated state automatically,
         # whatever the plan decided.
-        return _OUTCOME_HELD, s7_publish.GATE_APPROVAL_REQUIRED
+        return _OUTCOME_HELD, s7_publish.GATE_APPROVAL_REQUIRED, None
     if (
         platform == "dzen"
         and getattr(state.settings, "dzen_requires_llm", False)
         and str(post.generation_provider or "") == "offline"
     ):
         # Same gate, same reason string as `schedule_ready_posts` and `review`.
-        return _OUTCOME_HELD, s7_publish.GATE_DZEN_NEEDS_ONLINE_MODEL
+        return _OUTCOME_HELD, s7_publish.GATE_DZEN_NEEDS_ONLINE_MODEL, None
 
     from tgfarm.distribution import clamp_channel_daily_cap
     from tgfarm.llm import policy
 
     budget = max(0, int(getattr(state.settings, "ai_daily_budget", 0) or 0))
     if policy.charged_today(state.moment) >= budget:
-        return _OUTCOME_HELD, REASON_BUDGET
+        return _OUTCOME_HELD, REASON_BUDGET, None
 
     cap = clamp_channel_daily_cap(max(1, int(channel.posts_per_day or 1)))
     used = state.channel_day_count(session, channel) + state.pending_channel.get(channel.id, 0)
     if used >= cap:
-        return _OUTCOME_HELD, REASON_DAILY_CAP
+        return _OUTCOME_HELD, REASON_DAILY_CAP, None
     if platform in s7_publish.PRIMARY_PLATFORM_DAILY_CAPS:
         platform_cap = clamp_channel_daily_cap(s7_publish.PRIMARY_PLATFORM_DAILY_CAPS[platform])
         platform_used = (
@@ -582,30 +605,41 @@ def _decide_schedule(
             + state.pending_platform.get(platform, 0)
         )
         if platform_used >= platform_cap:
-            return _OUTCOME_HELD, REASON_PLATFORM_CAP
+            return _OUTCOME_HELD, REASON_PLATFORM_CAP, None
 
     slot = _slot_at(entry.get("slot_at"))
     if slot is None:
         # The planner returned a `schedule` decision with an empty horizon: the
         # slot it meant does not exist, so there is nothing to queue against.
-        return _OUTCOME_HELD, REASON_NO_SLOT
+        return _OUTCOME_HELD, REASON_NO_SLOT, None
     if slot > state.moment:
-        return _OUTCOME_HELD, REASON_SLOT_NOT_DUE
-    # `unpublish` stamps `now`, so `now` is the hour this entry actually claims and
-    # the only one this check can honestly gate. A `slot_at` in an illegal local
-    # hour is not rewritten — that would be a column write — it waits for the
-    # window to open and a later tick hands it over, which is the shift this module
-    # is allowed to make. Checking the plan's own hour as well would stall such an
-    # entry forever instead. The window itself comes from `local_hours_allow`, the
-    # one place it is derived, so this executor and the scheduler that obeys a
-    # booked slot cannot disagree about which hours a channel may publish in.
-    if not local_hours_allow(state.moment, channel.timezone, config=state.config):
-        return _OUTCOME_HELD, REASON_LOCAL_HOURS
+        return _OUTCOME_HELD, REASON_SLOT_NOT_DUE, None
+    # Since W21-B the released row carries *this* instant: `_hand_over` passes
+    # `slot` to `unpublish`, which stamps it as `scheduled_at`. So the minute an
+    # entry claims is the minute the plan reserved, and the legal-local-hours
+    # limit — whose whole job is to refuse a publication in an hour the channel
+    # may not post in — has to be answered about the instant being stamped, not
+    # about the tick that got there first. That is also exactly what the other
+    # consumer of a booked minute does: `schedule_ready_posts` gates
+    # `plan_slot_at` itself through this same `local_hours_allow` and refuses it
+    # under `GATE_SLOT_OUTSIDE_LOCAL_HOURS` rather than moving it. One instant,
+    # one predicate, two schedulers that cannot disagree.
+    #
+    # The verdict this replaces was a workaround for a transition that could only
+    # say `now`: an entry whose reserved minute fell in an illegal hour was held
+    # until a legal tick came and then queued at that tick's hour, which is a
+    # shift the plan never ordered and W20-C had to report as `shifted`. Such an
+    # entry is now refused by name instead, and stays refused until the plan
+    # reserves it somewhere the channel may post — the config drift that produces
+    # one (a cadence window narrowed after the snapshot was built) is exactly the
+    # case the registered gate exists to make visible rather than deliver.
+    if not local_hours_allow(slot, channel.timezone, config=state.config):
+        return _OUTCOME_HELD, REASON_LOCAL_HOURS, None
 
     state.pending_channel[channel.id] = state.pending_channel.get(channel.id, 0) + 1
     if platform in s7_publish.PRIMARY_PLATFORM_DAILY_CAPS:
         state.pending_platform[platform] = state.pending_platform.get(platform, 0) + 1
-    return _OUTCOME_SCHEDULED, ""
+    return _OUTCOME_SCHEDULED, "", slot
 
 
 def apply_plan(
@@ -661,7 +695,7 @@ def apply_plan(
         day_cache={},
         platform_cache={},
     )
-    handovers: list[tuple[dict[str, Any], str]] = []
+    handovers: list[tuple[dict[str, Any], str, datetime]] = []
 
     with session_scope() as session:
         for entry in entries:
@@ -670,19 +704,23 @@ def apply_plan(
             target: _Target | None = None
             if action == "hold":
                 # The plan already decided; this module never touches the row.
-                outcome, reason = _OUTCOME_SKIPPED, REASON_PLAN_HOLD
+                outcome, reason, release = _OUTCOME_SKIPPED, REASON_PLAN_HOLD, None
             elif action == "produce":
                 # Writing the post is S4's job, not this loop's. The booking is
                 # read per topic by `generation_brief`, so the honest statement is
                 # "not generated here", not "nothing consumes this entry".
-                outcome, reason = _OUTCOME_SKIPPED, REASON_NO_GENERATION
+                outcome, reason, release = _OUTCOME_SKIPPED, REASON_NO_GENERATION, None
             elif action == "schedule":
                 target = _find_target(session, cluster_id)
-                outcome, reason = _decide_schedule(session, state, entry, target)
+                outcome, reason, release = _decide_schedule(session, state, entry, target)
                 if outcome == _OUTCOME_SCHEDULED and not dry_run:
-                    handovers.append((entry, str(target.post.public_id)))
+                    # `release` is the entry's own reserved minute, already gated
+                    # by `_decide_schedule` for due-ness and for the channel's
+                    # legal local hours: it travels to the transition instead of
+                    # the transition inventing a clock of its own.
+                    handovers.append((entry, str(target.post.public_id), release))
             else:
-                outcome, reason = _OUTCOME_SKIPPED, REASON_UNKNOWN_ACTION
+                outcome, reason, release = _OUTCOME_SKIPPED, REASON_UNKNOWN_ACTION, None
 
             if outcome != _OUTCOME_SCHEDULED:
                 _count(result["reasons"], reason)
@@ -740,18 +778,35 @@ def evaluate_plan(
     return apply_plan(now=now, limit=limit, dry_run=True)
 
 
-def _hand_over(result: dict[str, Any], handovers: list[tuple[dict[str, Any], str]]) -> None:
+def _hand_over(
+    result: dict[str, Any], handovers: list[tuple[dict[str, Any], str, datetime]]
+) -> None:
     """The one write this module makes, and it is not a column write.
 
-    `s7_publish.unpublish` is the scheduling path: one conditional UPDATE that
-    moves `gated` → `scheduled` with the same claim discipline the publish worker
-    relies on. Each entry is then reported from the row as it now reads, so a
-    handover that raced with another worker is counted as the other worker's,
-    not as ours.
+    `s7_publish.unpublish` is the scheduling path: one conditional UPDATE per
+    batch that moves `gated` → `scheduled` with the same claim discipline the
+    publish worker relies on. The reserved minute goes to it as `at`, so what the
+    row reads as `scheduled_at` is the instant the plan booked rather than the
+    instant this loop happened to run — the difference between the two used to be
+    one tick interval on every entry, which is what made `plan_execution` the one
+    consumer that could never produce an honoured booking.
+
+    Entries are batched by instant because each one carries its own: one UPDATE
+    per distinct reserved minute keeps the conditional-UPDATE discipline intact
+    instead of trading it for a hand-written column, which is the guarantee
+    `tests/test_plan_execution_flag.py::test_the_module_never_writes_a_post_state_by_hand`
+    pins.
+
+    Each entry is then reported from the row as it now reads, so a handover that
+    raced with another worker is counted as the other worker's, not as ours.
     """
-    s7_publish.unpublish([public_id for _, public_id in handovers])
+    batches: dict[datetime, list[str]] = {}
+    for _entry, public_id, release in handovers:
+        batches.setdefault(release, []).append(public_id)
+    for release, public_ids in batches.items():
+        s7_publish.unpublish(public_ids, at=release)
     with session_scope() as session:
-        for entry, public_id in handovers:
+        for entry, public_id, _release in handovers:
             status = session.execute(
                 select(Post.status).where(Post.public_id == public_id)
             ).scalar_one_or_none()

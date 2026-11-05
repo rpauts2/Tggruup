@@ -275,6 +275,16 @@ def _status(public_id: str) -> tuple[str, datetime | None, int]:
     return str(row[0]), row[1], int(row[2] or 0)
 
 
+def _aware(moment: datetime | None) -> datetime | None:
+    """A stored stamp as an aware UTC instant, or `None`.
+
+    SQLite hands `DateTime(timezone=True)` back naive, so a row written by the
+    scheduling path and the plan's own aware `slot_at` are not comparable until
+    the naive one is read as what the column means: UTC.
+    """
+    return None if moment is None else (moment if moment.tzinfo else moment.replace(tzinfo=UTC))
+
+
 def _outcome(report: dict, cluster_id: str) -> dict:
     matches = [e for e in report["entries"] if e["cluster_public_id"] == cluster_id]
     assert len(matches) == 1, f"запись плана должна отчитаться одна: {cluster_id}"
@@ -335,15 +345,21 @@ def test_a_qualifying_draft_becomes_a_queued_post(flag_on, rows, quiet_budget):
     assert scheduled_at_before is None
 
 
-def test_the_slot_is_stamped_by_the_existing_path_not_by_this_module(
+def test_the_slot_is_stamped_by_the_existing_path_with_the_plans_instant(
     flag_on, rows, quiet_budget, monkeypatch
 ):
-    """`unpublish` owns the write; the plan's `slot_at` is only a release time.
+    """`unpublish` owns the write; the instant it writes is the plan's `slot_at`.
 
-    Proved by the shape of the result: the post's `scheduled_at` is the instant
-    `unpublish` stamped (test clock `now`), never the `slot_at` the planner put
-    in the plan table — so a hand-written column would show up here as a slot
-    that equals the plan's.
+    Two claims, and W21-B changed only the second one. The first still holds:
+    the write is the scheduling path's conditional UPDATE, not a column this
+    module touches — proved by the spy seeing the call, and by
+    `test_plan_execution_flag.py::test_the_module_never_writes_a_post_state_by_hand`.
+    The second is what this package exists for: the released row carries the
+    minute the entry reserved, not the tick that happened to reach it. At base
+    `unpublish` could only stamp `now`, so the assertion here was that the slot
+    differed from the plan; that difference was one tick interval on every entry
+    and it is the reason `/api/editorial/plan/booking` had nothing to report but
+    `shifted` on the executor's path.
     """
     channel_id = _channel(rows)
     slot = MORNING_UTC - timedelta(minutes=7)
@@ -351,20 +367,23 @@ def test_the_slot_is_stamped_by_the_existing_path_not_by_this_module(
     post_id = _post(rows, channel_id, entry["cluster_public_id"])
     _plan(rows, [entry])
 
-    seen: list[list[str]] = []
+    seen: list[tuple[list[str], datetime | None]] = []
     real_unpublish = s7_publish.unpublish
 
-    def spy(public_ids):
-        seen.append(list(public_ids))
-        return real_unpublish(public_ids)
+    def spy(public_ids, *, at=None):
+        seen.append((list(public_ids), at))
+        return real_unpublish(public_ids, at=at)
 
     monkeypatch.setattr(s7_publish, "unpublish", spy)
     report = plan_execution.apply_plan(now=MORNING_UTC)
 
     assert report["applied"] == 1
-    assert seen == [[post_id]], "отдать пост должен существующий путь планирования"
+    assert seen == [([post_id], slot)], "отдать пост должен существующий путь планирования"
     _, scheduled_at, _ = _status(post_id)
-    assert scheduled_at.replace(microsecond=0) != slot.replace(microsecond=0)
+    assert _aware(scheduled_at).replace(microsecond=0) == slot.replace(microsecond=0), (
+        "забронированная минута должна доехать до строки"
+    )
+    assert _aware(scheduled_at) <= MORNING_UTC, "исполнитель не ставит пост в будущее"
 
 
 def test_a_future_slot_waits_instead_of_jumping_the_queue(flag_on, rows, quiet_budget):
@@ -503,32 +522,57 @@ def test_the_legal_local_hours_are_read_in_the_channels_zone(
     assert _status(outside_post)[0] == "gated", "нелегальный местный час не получает поста"
 
 
-def test_an_illegal_slot_opens_later_instead_of_being_rewritten(
+def test_an_illegal_booked_minute_is_refused_at_every_tick(
     flag_on, rows, quiet_budget, monkeypatch
 ):
-    """No column write means no re-stamping: the entry waits for the window.
+    """The hours gate judges the instant the row will carry, not the tick.
 
-    One entry, two ticks. At 04:30 UTC São Paulo is 01:30 — outside [9,18), so
-    the entry is held and the post stays gated. At 14:30 UTC the same local hour
-    is 11:30, inside the window, and the same untouched row goes through. The
-    shift is a later tick, never a rewrite of `scheduled_at`.
+    One entry, two ticks, and this is where W21-B changed the verdict, so the
+    change is stated rather than hidden: at 04:30 UTC São Paulo is 01:29, the
+    entry's reserved minute, so the entry is held; at 14:30 UTC the local hour is
+    11:30 — a legal tick — and the entry is *still* held, because the minute it
+    would stamp is still 01:29.
+
+    At base the second tick released it, because `unpublish` stamped the tick's
+    own instant and that instant was the only one the hour gate could honestly be
+    asked about. Now the plan's minute reaches the row, so asking the row's hour
+    is what the gate is for — and it is the identical answer
+    `schedule_ready_posts` gives the very same booking under the registered gate
+    `GATE_SLOT_OUTSIDE_LOCAL_HOURS`, through the identical
+    `plan_execution.local_hours_allow`. A minute the cadence forbids is refused
+    by both consumers or by neither; the entry below is refused by both.
+
+    What has *not* changed is the other half of the old test's point: nothing is
+    re-stamped by hand and the refused post stays `gated` with no slot. The
+    release on the right-hand side is the positive control — a legal booked
+    minute still goes through on the same tick, with that minute on the row.
     """
     monkeypatch.setattr(plan_execution, "get_config", lambda: _fake_config(LEGAL_WINDOW))
     channel_id = _channel(rows, timezone="America/Sao_Paulo")
-    entry = _entry(rows, channel_id, slot_at=MORNING_UTC - timedelta(minutes=1))
-    post_id = _post(rows, channel_id, entry["cluster_public_id"])
-    _plan(rows, [entry])
+    illegal = _entry(rows, channel_id, slot_at=MORNING_UTC - timedelta(minutes=1))
+    illegal_post = _post(rows, channel_id, illegal["cluster_public_id"])
+    later = MORNING_UTC + timedelta(hours=10)  # 14:30 UTC = 11:30 in São Paulo
+    legal = _entry(rows, channel_id, slot_at=later - timedelta(minutes=1))
+    legal_post = _post(rows, channel_id, legal["cluster_public_id"])
+    _plan(rows, [illegal, legal])
 
     held = plan_execution.apply_plan(now=MORNING_UTC)
-    assert _outcome(held, entry["cluster_public_id"])["reason"] == (
+    assert _outcome(held, illegal["cluster_public_id"])["reason"] == (
         plan_execution.REASON_LOCAL_HOURS
     )
-    assert _status(post_id)[0] == "gated"
+    assert _status(illegal_post)[0] == "gated"
 
-    later = MORNING_UTC + timedelta(hours=10)  # 14:30 UTC = 11:30 local
     moved = plan_execution.apply_plan(now=later)
-    assert _outcome(moved, entry["cluster_public_id"])["outcome"] == "scheduled"
-    assert _status(post_id)[0] == "scheduled"
+    assert _outcome(moved, illegal["cluster_public_id"])["reason"] == (
+        plan_execution.REASON_LOCAL_HOURS
+    ), "нелегальная забронированная минута не выезжает на легальном тике"
+    assert _status(illegal_post)[0] == "gated"
+    assert _status(illegal_post)[1] is None, "отказ не должен оставить слота"
+
+    assert _outcome(moved, legal["cluster_public_id"])["outcome"] == "scheduled"
+    status, slot, _ = _status(legal_post)
+    assert status == "scheduled"
+    assert _aware(slot) == legal["slot_at"]
 
 
 def test_the_provenance_gate_holds_an_offline_draft(
@@ -760,9 +804,11 @@ def test_a_second_run_reports_the_post_the_first_one_queued(
     calls: list[list[str]] = []
     real_unpublish = s7_publish.unpublish
 
-    def spy(public_ids):
+    def spy(public_ids, *, at=None):
+        # W21-B widened the transition with the instant to stamp; the spy forwards
+        # it unchanged so the write below is still `unpublish`'s own.
         calls.append(list(public_ids))
-        return real_unpublish(public_ids)
+        return real_unpublish(public_ids, at=at)
 
     monkeypatch.setattr(s7_publish, "unpublish", spy)
 

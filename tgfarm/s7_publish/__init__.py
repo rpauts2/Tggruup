@@ -2073,13 +2073,31 @@ async def run() -> dict[str, Any]:
             "gates": report}
 
 
-def unpublish(posts_public_ids: list[str]) -> int:
-    """Schedule eligible posts immediately without overwriting concurrent claims.
+def unpublish(posts_public_ids: list[str], *, at: datetime | None = None) -> int:
+    """Schedule eligible posts, optionally at an instant the caller was given.
 
     A single conditional UPDATE is important here: selecting ORM objects and
     saving them later can overwrite a worker's concurrent transition to
     `publishing`, reopening a duplicate-send race.
+
+    `at` exists for one caller: the plan's consumer. `plan_execution` judges a
+    `schedule` entry against the minute the plan reserved (`slot_at`) — it holds
+    the entry until that minute arrives — so the instant the handover has to
+    stamp is the reserved minute, not the executor's own clock. Without it the
+    reservation never reaches the row, and `posts.scheduled_at` can then only
+    disagree with `posts.plan_slot_at`, which is the disagreement W20-C reads as
+    `shifted` and nothing else in the store can undo.
+
+    Naming an instant is the scheduler's own rule, not a new one:
+    `schedule_ready_posts` already writes `scheduled_at = booked` for a post the
+    plan reserved, an overdue booking included, so a past `at` makes the post due
+    on the next publish tick instead of re-slotting the plan.
+
+    `at=None` is the base behaviour and the one every other caller relies on —
+    the panel's requeue (`tgfarm/api.py`), the CLI, the state-machine matrix:
+    `scheduled_at = datetime.now(UTC)`.
     """
+    moment = _as_utc(at) if at is not None else datetime.now(UTC)
     with session_scope() as session:
         result = session.execute(
             update(PostRow)
@@ -2087,7 +2105,7 @@ def unpublish(posts_public_ids: list[str]) -> int:
                 PostRow.public_id.in_(posts_public_ids),
                 PostRow.status.in_(("scheduled", "gated")),
             )
-            .values(status=canonical_post_status(STATUS_SCHEDULED), scheduled_at=datetime.now(UTC))
+            .values(status=canonical_post_status(STATUS_SCHEDULED), scheduled_at=moment)
         )
         return result.rowcount or 0
 
