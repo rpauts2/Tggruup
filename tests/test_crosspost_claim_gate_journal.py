@@ -507,5 +507,9 @@ def test_a_declared_status_with_no_dispatch_branch_fails_closed(
     assert entry["reason"] == crosspost_journal.JOURNAL_UNKNOWN_STATUS_REASON
 
     gate_id = gate.journal(drift_token)
+    # The lock *alone*: the gate in front of it also refuses, and a test that
+    # only measured the composite path would pass with the lock's own guard
+    # deleted.
+    assert gate.claim(gate_id) is None
     assert gate.deliverable(gate_id, mode="live") is False
     assert gate.claim_rows(gate_id) == 0
