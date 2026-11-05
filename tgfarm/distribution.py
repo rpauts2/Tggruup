@@ -658,6 +658,55 @@ def published_candidates(session, cutoff: datetime) -> list[tuple[Any, Any]]:
     )
 
 
+# The re-offer rule for one already-journalled (post, platform) pair.
+#
+# `crosspost_logs` is append-only history, and `build_distribution_plan` reads the
+# newest row per pair; what that row's `status` says decides whether the pair is
+# offered to the platform again. The vocabulary below is not aspirational: every
+# string is a status a writer in this repository can actually put in the column.
+# Two writers exist — `s9_growth.adapters.log_result`, whose status comes from the
+# `CrosspostResult` model and is validated against
+# `posted | scheduled | skipped | failed | permanent | unknown | dry_run`, and
+# direct row inserts: `adapters.claim_crosspost` writes `publishing` before any
+# network call, and `api._reconcile_crosspost_outcome` writes `posted`
+# (operator confirmed) or `retry_authorized` (operator inspected the destination
+# and authorized a retry). A status outside that set therefore means a row written
+# by something this planner has never met, not a typo in a test.
+#
+#   SUPPRESSED  — the pair stays out of the queue indefinitely, until an operator
+#       reconciles it. `posted`/`scheduled` mean the destination has it or will
+#       have it; `publishing` means a claim is in flight (a crash leaves this row
+#       as the newest one, and re-offering would double-send); `unknown` means the
+#       request may have been accepted before the answer was lost; `permanent`
+#       means the destination refused this exact content.
+#   TIME-BOUNDED  — `failed` re-opens once its cooldown passed *and* the attempt
+#       ceiling is not reached; `skipped` re-opens once `retry_after_at` passed.
+#       A skipped row with no `retry_after_at` is unmeasured, not immediate: the
+#       journal never promised a moment, so the pair is offered again.
+#   RE-OPEN  — `dry_run` re-opens when the operator switches to LIVE (a dry-run
+#       row was never sent anywhere); `retry_authorized` re-opens immediately
+#       because re-opening *is* the action the operator authorized.
+#
+# Anything else is suppressed. A row whose meaning the planner does not know may
+# already be an accepted publication — silently offering it again is exactly the
+# duplicate send the journal exists to prevent — so the default fails closed and
+# says so in the queue reason instead of pretending the pair is fresh.
+JOURNAL_SUPPRESSED_STATUSES = frozenset(
+    {"posted", "scheduled", "unknown", "publishing", "permanent"}
+)
+JOURNAL_TIME_BOUNDED_STATUSES = frozenset({"failed", "skipped"})
+JOURNAL_REOPEN_STATUSES = frozenset({"dry_run", "retry_authorized"})
+JOURNAL_UNKNOWN_STATUS_REASON = (
+    "В журнале есть запись со статусом, который планировщик не распознаёт; "
+    "материал не предлагается повторно, чтобы не опубликовать дубль."
+)
+
+
+def _journal_status_of(latest_log: Any) -> str:
+    """The status token of a journal row, normalised for the re-offer decision."""
+    return str(latest_log.status or "").strip().lower()
+
+
 def build_distribution_plan(
     *,
     now: datetime | None = None,
@@ -666,7 +715,7 @@ def build_distribution_plan(
 ) -> dict[str, Any]:
     """Build a live view of eligible platform deliveries and their daily budgets."""
     from tgfarm import platforms
-    from tgfarm.s9_growth.adapters import ADAPTERS
+    from tgfarm.s9_growth.adapters import ADAPTERS, MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
 
     current = _utc(now or datetime.now(UTC))
     assert current is not None
@@ -777,6 +826,7 @@ def build_distribution_plan(
         elif not allowed_now:
             reason = f"Пауза между публикациями до {next_allowed.isoformat(timespec='minutes')}."
         eligible: list[dict[str, Any]] = []
+        unrecognised_journal_status = False
         can_prepare = (
             enabled
             and automation in {"automatic", "manual"}
@@ -806,21 +856,39 @@ def build_distribution_plan(
                         continue
                     latest_log = latest.get((post.public_id, platform_id))
                     if latest_log is not None:
-                        if latest_log.status in {"posted", "scheduled", "unknown", "publishing", "permanent"}:
+                        journal_status = _journal_status_of(latest_log)
+                        if journal_status in JOURNAL_SUPPRESSED_STATUSES:
                             continue
-                        if latest_log.status == "failed":
+                        if journal_status == "failed":
                             retry_at = _utc(latest_log.retry_after_at)
-                            if int(latest_log.attempt or 1) >= 5 or (retry_at and retry_at > current):
+                            if (
+                                int(latest_log.attempt or 1) >= MAX_AUTOMATIC_CROSSPOST_ATTEMPTS
+                                or (retry_at and retry_at > current)
+                            ):
                                 continue
-                        if latest_log.status == "skipped" and configured:
+                        elif journal_status == "skipped":
+                            # Deliberately no adapter-configuration conjunct here.
+                            # The only gate that reaches this line is `can_prepare`
+                            # above, and `can_prepare` already conjoins `configured`
+                            # (assigned once per platform from `adapter.configured()`
+                            # and never reassigned), so `and configured` was a
+                            # tautology that could never be false where it ran. The
+                            # timestamp below is the whole decision; a future reader
+                            # must not read adapter configuration back into it.
                             retry_at = _utc(latest_log.retry_after_at)
                             if retry_at and retry_at > current:
                                 continue
-                        if latest_log.status == "dry_run":
+                        elif journal_status == "dry_run":
                             # A dry-run is journalled once, but must become
                             # eligible again when the operator switches to LIVE.
                             if not settings.live:
                                 continue
+                        elif journal_status not in JOURNAL_REOPEN_STATUSES:
+                            # Fail closed on a status this planner does not know:
+                            # it may already mean "sent", and re-offering would be
+                            # a duplicate publication rather than a fresh delivery.
+                            unrecognised_journal_status = True
+                            continue
                     # Reddit target communities are selected dynamically by the S9 scout.
                     if rules_requires_video(platform_id) and not settings.video_enabled:
                         continue
@@ -894,6 +962,10 @@ def build_distribution_plan(
                 f"Подобраны {len(manual_suggestions)} материала для ручной подготовки. "
                 "Фоновая отправка отключена; каждый ролик требует отдельного подтверждения."
             )
+        elif unrecognised_journal_status:
+            # The queue is empty because a journal row spoke a status this
+            # planner does not recognise, not because there was no material.
+            reason = JOURNAL_UNKNOWN_STATUS_REASON
         elif not reason:
             reason = "Пока нет свежих материалов, подходящих аудитории этой площадки."
         selected_by_platform[platform_id] = selected
