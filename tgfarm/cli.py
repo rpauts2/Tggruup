@@ -988,7 +988,13 @@ def cmd_doctor(_args) -> int:
 def cmd_demo(args) -> int:
     from tgfarm.demo import run_demo
 
-    result = asyncio.run(run_demo(cycles=args.cycles, offline=True))
+    result = asyncio.run(
+        run_demo(
+            cycles=args.cycles,
+            offline=True,
+            isolated=not args.configured_store,
+        )
+    )
     _print(result)
     return 0
 
@@ -1351,6 +1357,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_demo = sub.add_parser("demo", help="offline end-to-end demo with synthetic data")
     p_demo.add_argument("--cycles", type=int, default=1)
+    p_demo.add_argument(
+        "--configured-store",
+        action="store_true",
+        help="run against DATABASE_URL instead of a throwaway database; "
+        "a repeat run on the same store has no new demo material to judge",
+    )
     p_demo.set_defaults(func=cmd_demo)
 
     p_dzen = sub.add_parser(

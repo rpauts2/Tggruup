@@ -259,6 +259,85 @@ def test_w17demo_cycle_without_a_draft_raises_the_named_gate_error(
     assert report["cycle0_stages"]["seeded_items"] == 0
 
 
+def test_w17demo_second_run_reports_the_corpus_it_read_from(w17demo_db) -> None:
+    """Idempotent seeding must not read as an empty store.
+
+    `seeded_items` counts documents this run wrote, so a second run on the same
+    database writes 0. With only that number in the trail, `seeded=0` next to
+    `drafts=0` is how a healthy repeat run looks like a broken corpus — the
+    stored count is what the gate actually had to work from.
+    """
+    from tgfarm import demo
+
+    first = asyncio.run(demo.run_demo(cycles=1, offline=True, strict=False))
+    second = asyncio.run(demo.run_demo(cycles=1, offline=True, strict=False))
+
+    corpus = first["cycle0_stages"]["stored_items"]
+    assert corpus > 0, "nothing was seeded, so this run proves nothing"
+    assert first["cycle0_stages"]["fresh_items"] == corpus, first["cycle0_stages"]
+    assert first["cycle0_stages"]["seeded_items"] == corpus, first["cycle0_stages"]
+
+    stages = second["cycle0_stages"]
+    assert stages["seeded_items"] == 0, stages
+    assert stages["stored_items"] == corpus, stages
+    # clustering only takes items with no cluster_id, so the spent corpus leaves
+    # this cycle with nothing to be judged on — and that is what it has to say.
+    assert stages["fresh_items"] == 0, stages
+    assert stages["drafts"] == 0, stages
+    # strict=False is the caller's way to read a failing verdict itself instead
+    # of catching it: the report comes back, with the failure named in it.
+    assert second["verdict"]["ok"] is False, second["verdict"]
+    assert "NOT PROVEN" in second["verdict"]["reason"], second["verdict"]
+
+
+def test_w17demo_spent_corpus_is_not_proven_rather_than_failed(w17demo_db) -> None:
+    """A run with no new material names itself, instead of crying broken chain."""
+    from tgfarm import demo
+
+    asyncio.run(demo.run_demo(cycles=1, offline=True, strict=False))
+
+    with pytest.raises(demo.DemoGateError) as excinfo:
+        asyncio.run(demo.run_demo(cycles=1, offline=True))
+
+    message = str(excinfo.value)
+    assert "DEMO GATE NOT PROVEN" in message, message
+    assert "no draft was generated" not in message, message
+    assert excinfo.value.report["verdict"]["ok"] is False
+
+
+def test_w17demo_isolated_runs_are_repeatable_and_leave_the_configured_store_alone(
+    w17demo_db,
+) -> None:
+    """The point of the throwaway store: `tgfarm demo` twice is two real runs.
+
+    Without isolation the second invocation has a spent corpus and can judge
+    nothing; with it each run seeds its own material, and the operator's
+    `DATABASE_URL` keeps the row count it had before.
+    """
+    from sqlalchemy import func, select
+
+    from tgfarm import demo
+    from tgfarm.db.models import RawItem
+    from tgfarm.db.session import session_scope
+
+    def _configured_count() -> int:
+        demo.ensure_bootstrapped()
+        with session_scope() as session:
+            return int(session.execute(select(func.count()).select_from(RawItem)).scalar_one())
+
+    before = _configured_count()
+    first = asyncio.run(demo.run_demo(cycles=1, offline=True, isolated=True))
+    second = asyncio.run(demo.run_demo(cycles=1, offline=True, isolated=True))
+
+    for report in (first, second):
+        stages = report["cycle0_stages"]
+        assert report["verdict"]["ok"] is True, report["verdict"]["reason"]
+        assert stages["drafts"] > 0, stages
+        assert stages["seeded_items"] == stages["stored_items"], stages
+    assert first["store"]["path"] != second["store"]["path"], (first["store"], second["store"])
+    assert _configured_count() == before, "the isolated demo wrote into the configured store"
+
+
 def test_w17demo_cli_gate_exits_nonzero_when_nothing_was_generated(
     w17demo_db, monkeypatch, capsys
 ) -> None:
@@ -273,6 +352,23 @@ def test_w17demo_cli_gate_exits_nonzero_when_nothing_was_generated(
     printed = capsys.readouterr().out
     assert "DemoGateError" in printed
     assert "no draft was generated" in printed
+
+
+def test_w17demo_cli_default_run_passes_on_its_own_store(w17demo_db, capsys) -> None:
+    """The checklist step has to pass when run twice in a row.
+
+    `tgfarm demo --cycles 1` is documented as a release-gate step, so its default
+    must be a run that can actually judge something: a throwaway store, a path
+    reported back, and exit 0 — while `--configured-store` still runs the demo on
+    the farm's own database for whoever wants the rows there.
+    """
+    from tgfarm import cli
+
+    assert cli.main(["demo", "--cycles", "1"]) == 0
+    printed = capsys.readouterr().out
+    assert "throwaway" in printed, printed
+
+    assert cli.main(["demo", "--cycles", "1", "--configured-store"]) == 0
 
 
 def test_w17demo_stage_counts_are_identical_on_repeated_runs(tmp_path, monkeypatch) -> None:

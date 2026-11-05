@@ -8,7 +8,11 @@ gates, cover rendering, scheduling and crosspost logging.
 
 The demo is a release gate (`docs/AUTONOMY_ACCEPTANCE.md`), so it has to fail
 like one: `DemoGateError` is raised when a requested cycle reaches zero drafts,
-and every stage reports the counts it actually reached instead of an `ok`.
+and every stage reports the counts it actually reached instead of an `ok`. A
+cycle that found no new material is reported as *not proven* rather than
+*failed*, because the two zeroes mean different things — and the CLI runs each
+invocation against a throwaway store so a repeat `tgfarm demo` is a real run
+rather than a judgement of nothing.
 
 What is deterministic is the stage trail — items, duplicates, clusters,
 promoted, drafts, gated, covers, scheduled and the named holds. It is identical
@@ -20,7 +24,12 @@ read, never something the gate asserts on.
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -388,6 +397,48 @@ def _seed_items() -> int:
     return written
 
 
+def _stored_demo_items() -> int:
+    """How many synthetic documents the store holds, seeded now or earlier.
+
+    `seeded_items` alone cannot tell an operator what the gate had to read from:
+    a second run on the same database seeds 0 because seeding is idempotent, and
+    `seeded=0` next to `drafts=0` reads like an empty store.
+    """
+    from sqlalchemy import func
+
+    with session_scope() as session:
+        return int(
+            session.execute(
+                select(func.count()).select_from(RawItemRow).where(
+                    RawItemRow.external_id.like("demo-%")
+                )
+            ).scalar_one()
+        )
+
+
+def _fresh_demo_items() -> int:
+    """Demo documents S2 can still act on, before this cycle runs.
+
+    `drafts=0` has two causes that look identical from the outside and mean
+    opposite things: the chain is broken, or the store holds a demo corpus an
+    earlier run already consumed. Clustering only takes items with no
+    `cluster_id` and no `duplicate_of`, and seeding is idempotent, so a repeat
+    run on the same database has nothing to work on. This count tells them apart.
+    """
+    from sqlalchemy import func
+
+    with session_scope() as session:
+        return int(
+            session.execute(
+                select(func.count()).select_from(RawItemRow).where(
+                    RawItemRow.external_id.like("demo-%"),
+                    RawItemRow.cluster_id.is_(None),
+                    RawItemRow.duplicate_of.is_(None),
+                )
+            ).scalar_one()
+        )
+
+
 class DemoGateError(RuntimeError):
     """A requested demo cycle did not reach a draft, a gate verdict and a slot.
 
@@ -406,6 +457,8 @@ class DemoGateError(RuntimeError):
 def _stage_counts(
     *,
     seeded: int,
+    stored: int,
+    fresh: int,
     trends: dict,
     ready_clusters: int,
     drafts: int,
@@ -419,6 +472,8 @@ def _stage_counts(
     """The numbers each stage really reached; none of them is a default."""
     return {
         "seeded_items": seeded,
+        "stored_items": stored,
+        "fresh_items": fresh,
         "duplicates": int(trends.get("duplicates") or 0),
         "clusters": int(trends.get("clusters") or 0),
         "promoted": int(trends.get("promoted") or 0),
@@ -462,6 +517,12 @@ def _log_stages(cycle: int, stages: dict) -> None:
     publish_holds = _named_holds(stages["publish_holds"])
     publish_detail = f"dry_run={stages['dry_run']} {_hold_note(stages['publish_holds'])}"
     rows = (
+        (
+            "corpus",
+            stages["stored_items"],
+            f"{stages['seeded_items']} seeded this run, {stages['fresh_items']} new for S2",
+            False,
+        ),
         ("s2 reprints", stages["duplicates"], "documents excluded as copies", True),
         ("s2 clusters", stages["clusters"], "stories grouped", False),
         ("s2 promoted", stages["promoted"], "clusters above the heat threshold", False),
@@ -493,7 +554,8 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
     healthy queue from the outside.
     """
     trail = (
-        f"cycle {cycle}: items={stages['seeded_items']} dup={stages['duplicates']} "
+        f"cycle {cycle}: seeded={stages['seeded_items']} stored={stages['stored_items']} "
+        f"fresh={stages['fresh_items']} dup={stages['duplicates']} "
         f"clusters={stages['clusters']} promoted={stages['promoted']} "
         f"ready={stages['ready_clusters']} drafts={stages['drafts']} "
         f"gated={stages['gated']} covers={stages['covers']} "
@@ -501,7 +563,16 @@ def _gate_failures(cycle: int, stages: dict) -> list[str]:
     )
     failures: list[str] = []
     if not stages["drafts"]:
-        return [f"{trail} -> DEMO GATE FAILED: no draft was generated"]
+        # Two different zeroes. Material to work on and no draft is a broken
+        # chain; so is a store that holds no demo corpus at all. A spent corpus
+        # (stored but nothing new for S2) is not a failure — it is a run that
+        # judged nothing, and it must be named as that rather than as a break.
+        if stages["fresh_items"] or not stages["stored_items"]:
+            return [f"{trail} -> DEMO GATE FAILED: no draft was generated"]
+        return [
+            f"{trail} -> DEMO GATE NOT PROVEN: the store held no new demo material "
+            "for S2, so this cycle had nothing to judge (run against an empty store)"
+        ]
     if not stages["gated"]:
         failures.append(f"{trail} -> DEMO GATE FAILED: no draft passed the quality gate")
     if not stages["scheduled"] and not _named_holds(stages["schedule_holds"]):
@@ -520,7 +591,51 @@ def _enforce_gate(report: dict) -> dict:
     return report
 
 
-async def run_demo(cycles: int = 1, offline: bool = True, strict: bool = True) -> dict:
+@contextmanager
+def _throwaway_store() -> Iterator[Path]:
+    """Point the engine at a private SQLite file for the duration of the run.
+
+    Only `DATABASE_URL` moves: everything else (including a live `.env` next to
+    the working directory) is read exactly as the farm reads it, which is what
+    the acceptance row "offline demo in a live-configured environment" asks for.
+    The store itself has to move, because seeding is idempotent and a repeat run
+    on the same file has no material left — a gate that judges nothing must not
+    be run against a spent corpus.
+
+    The vector index is one process-wide object keyed by row id, and demo ids
+    collide with the real store's, so it is emptied on the way in and on the way
+    out. That is what a CLI process wants; a test that needs the shared index
+    should point at its own database instead of isolating here.
+    """
+    from tgfarm.core import settings as settings_mod
+    from tgfarm.db import session as session_mod
+    from tgfarm.llm import embedding as embedding_mod
+
+    def _swap(url: str | None) -> None:
+        if url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = url
+        settings_mod.reset_settings_cache()
+        session_mod.dispose_engine()
+        embedding_mod.reset_embedder()
+        get_index().clear()
+
+    directory = Path(tempfile.mkdtemp(prefix="tgfarm-demo-"))
+    previous_url = os.environ.get("DATABASE_URL")
+    _swap(f"sqlite:///{(directory / 'tgfarm-demo.db').as_posix()}")
+    try:
+        yield directory
+    finally:
+        _swap(previous_url)
+
+
+async def run_demo(
+    cycles: int = 1,
+    offline: bool = True,
+    strict: bool = True,
+    isolated: bool = False,
+) -> dict:
     """Run the synthetic end-to-end demo without publishing when offline=True.
 
     The offline guard temporarily overrides the cached Settings instance, so
@@ -531,20 +646,43 @@ async def run_demo(cycles: int = 1, offline: bool = True, strict: bool = True) -
     `DemoGateError`, so the release gate cannot exit 0 while having produced
     nothing. `strict=False` returns the same honest report for callers that want
     to read the stage counts themselves.
+
+    `isolated=True` (also what the CLI uses by default) runs against a throwaway
+    database under the system temp dir and reports where it lives as
+    `report["store"]`, so an invocation is repeatable and synthetic rows never
+    enter the operator's store. `--configured-store` on the CLI opts out.
     """
-    if not offline:
-        return _enforce_gate(await _run_demo_workflow(cycles=cycles))
 
-    from tgfarm.core.settings import get_settings
+    async def _workflow() -> dict:
+        def _judge(report: dict) -> dict:
+            return _enforce_gate(report) if strict else report
 
-    settings = get_settings()
-    previous_mode = settings.mode
-    settings.mode = "off"
-    try:
-        report = await _run_demo_workflow(cycles=cycles)
-    finally:
-        settings.mode = previous_mode
-    return _enforce_gate(report)
+        if not offline:
+            return _judge(await _run_demo_workflow(cycles=cycles))
+
+        from tgfarm.core.settings import get_settings
+
+        settings = get_settings()
+        previous_mode = settings.mode
+        settings.mode = "off"
+        try:
+            report = await _run_demo_workflow(cycles=cycles)
+        finally:
+            settings.mode = previous_mode
+        return _judge(report)
+
+    if not isolated:
+        return await _workflow()
+
+    with _throwaway_store() as directory:
+        store = {"kind": "throwaway", "path": str(directory)}
+        try:
+            report = await _workflow()
+        except DemoGateError as exc:
+            exc.report["store"] = store
+            raise
+    report["store"] = store
+    return report
 
 
 async def _run_demo_workflow(cycles: int = 1) -> dict:
@@ -566,6 +704,9 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
     failures: list[str] = []
 
     for cycle in range(cycles):
+        # measured before S2 runs: this is the material the chain is being
+        # judged on, and after the pass it is gone (items get a cluster_id).
+        fresh = await asyncio.to_thread(_fresh_demo_items)
         # --- S2: trends
         trends = await s2_trends.run()
         report[f"cycle{cycle}_trends"] = trends
@@ -611,6 +752,8 @@ async def _run_demo_workflow(cycles: int = 1) -> dict:
 
         stages = _stage_counts(
             seeded=seeded,
+            stored=await asyncio.to_thread(_stored_demo_items),
+            fresh=fresh,
             trends=trends,
             ready_clusters=len(clusters),
             drafts=len(drafts),
