@@ -264,7 +264,10 @@ def schedule_ready_posts(
             ):
                 # An offline Dzen draft can never ship: the publisher holds
                 # template text back (DZEN_REQUIRES_LLM). Scheduling it would
-                # rot in the queue and be skipped on every tick.
+                # rot in the queue and be skipped on every tick. It is the same
+                # fact the tick reports, so it names itself the same way — this
+                # was the one gate in S7 that dropped a post silently.
+                _blocked(GATE_DZEN_NEEDS_ONLINE_MODEL)
                 continue
             if platform in PRIMARY_PLATFORM_DAILY_CAPS:
                 if platform not in platform_daily_counts:
@@ -1241,7 +1244,10 @@ async def _publish_one(
         return {"ok": True, "skipped": True, "reason": GATE_PLATFORM_DISABLED}
     if platform not in {"telegram", "dzen", "vk"}:
         # Reddit/MAX/X are crosspost-only here; never fall through to Telegram.
-        return {"ok": True, "skipped": True, "reason": "unsupported_primary_platform"}
+        # The code must be one the tick can ledger: a reason outside
+        # `empty_gate_report()` is a post that vanished without a trace, which is
+        # how the dry-run fall-through stayed invisible for as long as it did.
+        return {"ok": True, "skipped": True, "reason": GATE_PLATFORM_NOT_DELIVERABLE}
     settings = get_settings()
 
     if platform == "telegram" and real_tg_chat_id(target) is None:
@@ -1278,6 +1284,18 @@ async def _publish_one(
     budget = publish_timeout_seconds(platform, settings)
     message_id = None
     try:
+        if not settings.live:
+            # Unreachable by construction, and stated as the raw fact rather than
+            # as a call to `_dry_run_reason`, so a mutation that disables that
+            # predicate cannot disable this guard. `_publish_dzen` and `_publish_vk`
+            # log a dry run of their own and hand back `{"ok": True,
+            # "message_id": None}`; before this line existed, a `dzen`/`vk`
+            # dispatch reached with the farm off stamped `published` with no
+            # message id — the exact shape of the 15 rows measured on 2026-10-26.
+            # The telegram branch already refuses on its own below.
+            raise PublishError(
+                f"{platform} send branch reached while the farm is not live"
+            )
         if platform == "dzen" and not media:
             media = await to_thread(_ensure_cover_for_post, post_id)
             if not media:

@@ -435,21 +435,50 @@ def _publish_only(public_id: str, limit: int = 200):
     return _scoped
 
 
-def test_publish_tick_journal_carries_the_reason(monkeypatch, _no_dzen_spacing, _offline_generation):
+def _tick_meta(monkeypatch, public_id: str) -> dict:
+    """Run one publish tick and return the journal meta it wrote.
+
+    The tick is the one caller that reaches `schedule_ready_posts` with no
+    per-post filter, so its ledger counts every gated draft the other test files
+    left in the session database this suite shares. Read it as a baseline and
+    assert a delta: an absolute number here measures the suite's residue rather
+    than the behaviour under test — that is how this file failed as written
+    (`assert 8 == 1`) once the offline-Dzen gate started naming itself instead of
+    dropping the post in silence.
+    """
     from tgfarm import s7_publish
     from tgfarm.pipeline import _publish_tick
+
+    monkeypatch.setattr(s7_publish, "publish_due", _publish_only(public_id))
+    asyncio.run(_publish_tick())
+    return _latest_publish_tick()
+
+
+def _gate_delta(before: dict, after: dict) -> dict:
+    """The gates this tick moved, and by how much. Empty means it explained nothing."""
+    codes = set(before) | set(after)
+    return {
+        code: after.get(code, 0) - before.get(code, 0)
+        for code in sorted(codes)
+        if after.get(code, 0) != before.get(code, 0)
+    }
+
+
+def test_publish_tick_journal_carries_the_reason(monkeypatch, _no_dzen_spacing, _offline_generation):
     from tgfarm.s7_publish import GATE_DZEN_NEEDS_ONLINE_MODEL
 
+    # Baseline before seeding: the tick's scheduling half has no per-post filter,
+    # so the absolute ledger it reports belongs to the whole shared database.
+    baseline = _tick_meta(monkeypatch, "gate_tick_dzen")["decision"].get("gates", {})
     _channel("gate_tick_channel", "dzen")
     _due_post("gate_tick_dzen", "gate_tick_channel")
-    monkeypatch.setattr(s7_publish, "publish_due", _publish_only("gate_tick_dzen"))
 
-    asyncio.run(_publish_tick())
-
-    meta = _latest_publish_tick()
+    meta = _tick_meta(monkeypatch, "gate_tick_dzen")
     decision = meta["decision"]
     assert decision["reason"] == "gated"
-    assert decision["gates"][GATE_DZEN_NEEDS_ONLINE_MODEL] == 1
+    assert _gate_delta(baseline, decision["gates"]) == {GATE_DZEN_NEEDS_ONLINE_MODEL: 1}, (
+        f"seeding this one post must move exactly this one gate: {baseline} -> {decision['gates']}"
+    )
     assert decision["due"] == 1
     assert decision["published"] == 0
     assert "errors" in meta, "the existing meta shape must keep working"
@@ -501,17 +530,21 @@ def test_status_exposes_the_last_publish_decision(
     monkeypatch, _no_dzen_spacing, _offline_generation
 ):
     from tgfarm import pipeline, s7_publish
-    from tgfarm.pipeline import _publish_tick
 
+    baseline = _tick_meta(monkeypatch, "gate_status_dzen")["decision"].get("gates", {})
     _channel("gate_status_channel", "dzen")
     _due_post("gate_status_dzen", "gate_status_channel")
-    monkeypatch.setattr(s7_publish, "publish_due", _publish_only("gate_status_dzen"))
 
-    asyncio.run(_publish_tick())
+    decision = _tick_meta(monkeypatch, "gate_status_dzen")["decision"]
 
     status = pipeline.status()
     assert status["publication"]["reason"] == "gated"
-    assert status["publication"]["gates"][s7_publish.GATE_DZEN_NEEDS_ONLINE_MODEL] == 1
+    assert _gate_delta(baseline, status["publication"]["gates"]) == {
+        s7_publish.GATE_DZEN_NEEDS_ONLINE_MODEL: 1
+    }, f"the card must show this post, not the suite: {baseline} -> {decision['gates']}"
+    assert status["publication"]["gates"] == decision["gates"], (
+        "`/api/status` must carry the same ledger the tick journalled"
+    )
 
 
 def test_last_publish_decision_survives_without_any_journal(monkeypatch):
