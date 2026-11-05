@@ -23,6 +23,16 @@ Contract decisions (2026-11-04)
   the candidate dict omits it.
 * ``assess_policy`` returns ``allow_publish`` explicitly; callers must gate on
   that boolean instead of re-deriving the status themselves.
+* Every gate input is a *structured* field.  Free text never becomes a permission:
+  ``rules_available``/``auto_publish_supported`` are accepted only as real booleans
+  (:func:`_as_flag`), and a policy flagged "rules available" without a single
+  stored rule line is an explicit ``unknown``, not a pass.
+* All destination-authored strings (rules, excerpts, descriptions, tags, notes)
+  leave this module inert: control/bidi characters flattened, credential-shaped
+  substrings removed via :func:`tgfarm.core.security.redact_sensitive_text`, and
+  length bounded per line and per field.  The stored ``rules_hash`` is the only
+  fingerprint of the *raw* page, so a change below the visible excerpt still shows
+  up in the history.
 """
 from __future__ import annotations
 
@@ -30,7 +40,10 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
+import re
 from typing import Any, Mapping
+
+from tgfarm.core.security import redact_sensitive_text
 
 log = logging.getLogger(__name__)
 
@@ -43,33 +56,118 @@ DEFAULT_MAX_AGE_HOURS = 24.0
 #: How much raw rule text is kept in the contract for audit/UI purposes.
 RULES_EXCERPT_LIMIT = 400
 
+#: Cap of one stored rule/requirement line.  A destination can pad a page with an
+#: arbitrarily long "rule"; the contract keeps a bounded inert fragment instead.
+RULES_LINE_LIMIT = 200
+
+#: Cap of how many lines of one untrusted field the contract keeps.
+RULES_FIELD_LIMIT = 12
+
+#: Cap of one topic/tag/media-limit line coming from a destination page.
+TOPIC_LINE_LIMIT = 120
+
+#: Cap of the destination description kept as ``audience``.
+AUDIENCE_LIMIT = 500
+
+#: Cap of one risk/blocker note (selector text about an external page).
+NOTE_LINE_LIMIT = 200
+
+#: Cap of ``link_rules`` and of the source URL carried with the policy.
+LINK_RULES_LIMIT = 400
+URL_LIMIT = 500
+
+#: Cap of the destination name/id stored in the history row.
+TARGET_NAME_LIMIT = 160
+TARGET_ID_LIMIT = 200
+
+#: How many requirement lines one history row keeps (the panel shows six).
+SNAPSHOT_REQUIREMENT_LIMIT = 40
+
+#: Verdict statuses are a closed vocabulary; a hostile page must not invent one.
+VERDICT_STATUSES = ("ok", "stale", "unknown", "no_target")
+
+#: Zero-width, bidi, control and line-separator characters are the classic way to
+#: smuggle an instruction past a length check or to spoof reading order in the UI.
+_INERT_CHARS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]"
+)
+_INERT_SPACE_RE = re.compile(r"\s+")
+
+#: Values that mean "this flag is on" when a flag arrives as a short token.
+_TRUTHY_FLAGS = frozenset({"1", "true", "yes", "on", "y", "да", "истина"})
+
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _lines(value: Any) -> tuple[str, ...]:
+def _inert_text(value: Any, limit: int) -> str:
+    """Flatten external text into one bounded, credential-free inert fragment.
+
+    Order matters: invisible characters are removed *before* redaction so a token
+    split by a zero-width character is reassembled and then removed, and the
+    length bound is applied *after* redaction so a cut cannot leave half a
+    credential behind.
+    """
+    bound = max(0, int(limit))
+    if bound == 0:
+        return ""
+    text = _INERT_CHARS_RE.sub(" ", str(value if value is not None else ""))
+    text = _INERT_SPACE_RE.sub(" ", text).strip()
+    if not text:
+        return ""
+    text = redact_sensitive_text(text, limit=max(len(text), bound))
+    if len(text) > bound:
+        text = f"{text[: max(1, bound - 1)].rstrip()}\u2026"
+    return text
+
+
+def _as_flag(value: Any, *, default: bool = False) -> bool:
+    """Coerce a gate flag without ever turning free text into a permission.
+
+    ``bool("нет")`` and ``bool("ignore previous instructions")`` are both ``True``,
+    so a truthiness test on a field that came from a page would hand out publish
+    rights.  Only real booleans, 0/1 numbers and a short closed vocabulary count.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().casefold() in _TRUTHY_FLAGS
+
+
+def _lines(value: Any, *, limit: int = RULES_LINE_LIMIT) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        text = value.strip()
+        text = _inert_text(value, limit)
         return (text,) if text else ()
     if isinstance(value, Mapping):
-        return tuple(f"{k}: {v}" for k, v in value.items() if str(v).strip())
-    return tuple(str(item).strip() for item in value if str(item).strip())
+        raw = (f"{k}: {v}" for k, v in value.items() if str(v).strip())
+    else:
+        raw = (str(item) for item in value)
+    return tuple(line for line in (_inert_text(item, limit) for item in raw) if line)[
+        :RULES_FIELD_LIMIT
+    ]
 
 
 def _rule_line(item: Any) -> str:
     """Render one Reddit rule object (or plain string) as an inert line."""
     if isinstance(item, Mapping):
-        name = str(
-            item.get("short_name") or item.get("name") or item.get("title") or ""
-        ).strip()
-        body = str(item.get("description") or item.get("violation_reason") or "").strip()
+        name = _inert_text(
+            item.get("short_name") or item.get("name") or item.get("title") or "",
+            RULES_LINE_LIMIT,
+        )
+        body = _inert_text(
+            item.get("description") or item.get("violation_reason") or "",
+            RULES_LINE_LIMIT,
+        )
         if name and body:
-            return f"{name} — {body}"
+            return _inert_text(f"{name} — {body}", RULES_LINE_LIMIT)
         return name or body
-    return str(item).strip()
+    return _inert_text(item, RULES_LINE_LIMIT)
 
 
 def _rules_lines(value: Any) -> tuple[str, ...]:
@@ -79,15 +177,15 @@ def _rules_lines(value: Any) -> tuple[str, ...]:
         return _lines(value)
     if isinstance(value, Mapping):
         return _lines(value)
-    return tuple(line for line in (_rule_line(item) for item in value) if line)
+    return tuple(line for line in (_rule_line(item) for item in value) if line)[:RULES_FIELD_LIMIT]
 
 
 def _combined_rules_available(candidate: Mapping[str, Any]) -> bool:
     if "rules_available" in candidate:
-        return bool(candidate["rules_available"])
+        return _as_flag(candidate["rules_available"])
     if "topic_rules_available" in candidate:
-        global_ok = candidate.get("global_rules_available", True)
-        return bool(candidate["topic_rules_available"]) and bool(global_ok)
+        global_ok = _as_flag(candidate.get("global_rules_available"), default=True)
+        return _as_flag(candidate["topic_rules_available"]) and global_ok
     return False
 
 
@@ -151,39 +249,44 @@ def policy_from_candidate(
 ) -> CommunityPolicy:
     """Build the contract from a Pikabu/vc.ru selector candidate."""
     candidate = candidate or {}
-    notes = [str(x) for x in (candidate.get("risks") or ())]
-    notes += [str(x) for x in (candidate.get("blockers") or ())]
+    notes = [
+        _inert_text(item, NOTE_LINE_LIMIT)
+        for item in [*(candidate.get("risks") or ()), *(candidate.get("blockers") or ())]
+    ]
+    notes = [note for note in notes if note]
     raw_rules = str(candidate.get("rules") or "").strip()
     requirements = _rules_lines(raw_rules) + _lines(candidate.get("editorial_brief"))
     available = _combined_rules_available(candidate)
-    source = str(candidate.get("rules_source") or rules_source or "").strip()
+    source = _inert_text(candidate.get("rules_source") or rules_source or "", URL_LIMIT)
     if not source:
         source = SELECTOR_RULES_SOURCE
+    auto_flag = (
+        _as_flag(candidate.get("auto_publish_supported"), default=False)
+        if auto_publish_supported is None
+        else bool(auto_publish_supported)
+    )
     return CommunityPolicy(
-        platform=platform,
-        target_type=str(candidate.get("target_type") or "community"),
-        target_id=str(
-            candidate.get("slug") or candidate.get("path") or candidate.get("name") or ""
+        platform=_inert_text(platform, 32),
+        target_type=_inert_text(candidate.get("target_type") or "community", 32),
+        target_id=_inert_text(
+            candidate.get("slug") or candidate.get("path") or candidate.get("name") or "",
+            TARGET_ID_LIMIT,
         ),
-        name=str(candidate.get("name") or candidate.get("title") or ""),
-        url=str(candidate.get("url") or ""),
-        audience=str(candidate.get("description") or ""),
-        allowed_topics=_lines(candidate.get("matches")),
+        name=_inert_text(candidate.get("name") or candidate.get("title") or "", TARGET_NAME_LIMIT),
+        url=_inert_text(candidate.get("url") or "", URL_LIMIT),
+        audience=_inert_text(candidate.get("description") or "", AUDIENCE_LIMIT),
+        allowed_topics=_lines(candidate.get("matches"), limit=TOPIC_LINE_LIMIT),
         requirements=requirements,
-        media_limits=_lines(candidate.get("media_limits")),
-        link_rules=str(candidate.get("link_rules") or ""),
-        tag_requirements=_lines(candidate.get("suggested_tags")),
+        media_limits=_lines(candidate.get("media_limits"), limit=TOPIC_LINE_LIMIT),
+        link_rules=_inert_text(candidate.get("link_rules") or "", LINK_RULES_LIMIT),
+        tag_requirements=_lines(candidate.get("suggested_tags"), limit=TOPIC_LINE_LIMIT),
         checked_at=_utcnow_iso(),
         rules_source=source,
         rules_available=available,
-        auto_publish_supported=bool(
-            candidate.get("auto_publish_supported", False)
-            if auto_publish_supported is None
-            else auto_publish_supported
-        ),
+        auto_publish_supported=auto_flag,
         confidence=_clamp01(candidate.get("score")),
-        notes=tuple(notes),
-        rules_excerpt=raw_rules[:RULES_EXCERPT_LIMIT],
+        notes=tuple(notes)[:RULES_FIELD_LIMIT],
+        rules_excerpt=_inert_text(raw_rules, RULES_EXCERPT_LIMIT),
         rules_hash=_digest(raw_rules) if raw_rules else "",
     )
 
@@ -210,47 +313,71 @@ def policy_from_reddit(
     community = community or {}
     about = _reddit_about(community)
     name = (
-        str(subreddit or community.get("name") or "").strip()
-        or str(community.get("title") or "").strip().removeprefix("r/")
-        or str(about.get("display_name") or "").strip()
+        _inert_text(subreddit or community.get("name") or "", TARGET_ID_LIMIT)
+        or _inert_text(str(community.get("title") or "").strip().removeprefix("r/"), TARGET_ID_LIMIT)
+        or _inert_text(about.get("display_name") or "", TARGET_ID_LIMIT)
     )
     if not name:
         url = str(community.get("url") or about.get("url") or "")
-        name = url.rstrip("/").rsplit("/", 1)[-1]
+        name = _inert_text(url.rstrip("/").rsplit("/", 1)[-1], TARGET_ID_LIMIT)
     rules_value = rules if rules is not None else community.get("rules")
     rule_lines = _rules_lines(rules_value)
     extra = _lines(requirements)
-    raw_rules = "\n".join(rule_lines)
+    raw_rules = "\n".join(str(item) for item in (rules_value or ()) if item) if not isinstance(
+        rules_value, (str, Mapping)
+    ) else str(rules_value or "")
     source = str(rules_source or "")
     if "{subreddit}" in source:
         source = source.format(subreddit=name)
     elif "{}" in source:
         source = source.format(name)
-    title = str(community.get("title") or about.get("title") or name)
-    audience = str(
+    source = _inert_text(source, URL_LIMIT)
+    title = _inert_text(community.get("title") or about.get("title") or name, TARGET_NAME_LIMIT)
+    audience = _inert_text(
         community.get("description")
         or about.get("public_description")
         or about.get("description")
-        or ""
+        or "",
+        AUDIENCE_LIMIT,
+    )
+    def _measured(*values: Any) -> str | None:
+        """First *measured* number, keeping a real 0 as 0 and nothing as ``None``."""
+        for value in values:
+            if value is not None:
+                return _inert_text(value, 40)
+        return None
+
+    subscribers = _measured(community.get("subscribers"), about.get("subscribers"))
+    active_users = _measured(
+        community.get("active_user_count"), about.get("active_user_count")
     )
     return CommunityPolicy(
         platform="reddit",
         target_type="subreddit",
         target_id=name,
-        name=title if title.lower().startswith("r/") else f"r/{name}",
-        url=str(community.get("url") or about.get("url") or f"https://www.reddit.com/r/{name}/"),
+        name=title if title.casefold().startswith("r/") else f"r/{name}",
+        url=_inert_text(
+            community.get("url") or about.get("url") or f"https://www.reddit.com/r/{name}/",
+            URL_LIMIT,
+        ),
         audience=audience,
-        requirements=rule_lines + extra,
+        requirements=(rule_lines + extra)[:RULES_FIELD_LIMIT],
         checked_at=_utcnow_iso(),
         rules_source=source,
         rules_available=bool(rule_lines),
-        auto_publish_supported=bool(community.get("auto_publish_supported", True)),
+        auto_publish_supported=_as_flag(community.get("auto_publish_supported"), default=True),
         confidence=_clamp01(community.get("score")),
         notes=(
-            f"subscribers: {community.get('subscribers') or about.get('subscribers') or 0}",
-            f"active: {community.get('active_user_count') or about.get('active_user_count') or 0}",
+            _inert_text(
+                f"subscribers: {subscribers if subscribers is not None else 'нет данных'}",
+                NOTE_LINE_LIMIT,
+            ),
+            _inert_text(
+                f"active: {active_users if active_users is not None else 'нет данных'}",
+                NOTE_LINE_LIMIT,
+            ),
         ),
-        rules_excerpt=raw_rules[:RULES_EXCERPT_LIMIT],
+        rules_excerpt=_inert_text(raw_rules, RULES_EXCERPT_LIMIT),
         rules_hash=_digest(raw_rules) if raw_rules else "",
     )
 
@@ -282,7 +409,7 @@ def policy_for_plan(
         platform,
         selected,
         rules_source=source,
-        auto_publish_supported=None if auto is None else bool(auto),
+        auto_publish_supported=None if auto is None else _as_flag(auto),
     )
 
 
@@ -309,11 +436,25 @@ def assess_policy(
         "auto_publish": False,
         "target_key": policy.target_key(),
     }
-    if not policy.rules_available or not policy.target_id:
+    if not _as_flag(policy.rules_available) or not str(policy.target_id or "").strip():
         return {
             **base,
             "reason": "rules of the destination are unknown — publishing is forbidden",
             "blockers": ["rules_unavailable"],
+        }
+    # A bare "the rules were read" flag with nothing stored behind it is not
+    # knowledge: the flag may have been set by a page that returned no rule text
+    # at all.  Absence stays an explicit unknown instead of becoming a pass.
+    if not "".join(str(line) for line in policy.requirements).strip() and not str(
+        policy.rules_excerpt or ""
+    ).strip():
+        return {
+            **base,
+            "reason": (
+                "rules are flagged as available but no rule text is stored — "
+                "publishing is forbidden"
+            ),
+            "blockers": ["rules_evidence_missing"],
         }
     try:
         checked = datetime.fromisoformat(policy.checked_at)
@@ -348,7 +489,7 @@ def assess_policy(
         "reason": "rules are fresh enough",
         "blockers": [],
         "age_hours": age_hours,
-        "auto_publish": bool(policy.auto_publish_supported),
+        "auto_publish": _as_flag(policy.auto_publish_supported),
     }
 
 
@@ -359,8 +500,16 @@ def gate_plan(
     max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
     now: datetime | None = None,
     subreddit: str | None = None,
+    record: bool = False,
 ) -> dict[str, Any]:
-    """Assess a selector plan in one call; safe for API responses."""
+    """Assess a selector plan in one call; safe for API responses.
+
+    ``record=True`` additionally writes the assessed policy to the rules history
+    (:func:`record_policy_snapshot`), so a rules check that the operator actually
+    ran is auditable instead of living only in the panel's memory.  The recorded
+    row is the *same* policy object the verdict was derived from, so the stored
+    ``checked_at`` and ``rules_hash`` describe exactly what was judged.
+    """
     policy = policy_for_plan(platform, plan, subreddit=subreddit)
     if policy is None:
         return {
@@ -374,6 +523,8 @@ def gate_plan(
             "policy": None,
         }
     verdict = assess_policy(policy, max_age_hours=max_age_hours, now=now)
+    if record:
+        record_policy_snapshot(policy, verdict, now=now)
     return {**verdict, "policy": policy.to_dict()}
 
 
@@ -415,6 +566,10 @@ def record_policy_snapshot(
                 .limit(1)
             ).first()
             status = str(verdict.get("status") or "unknown")
+            # The verdict vocabulary is closed: a page cannot invent a status that
+            # the UI would print as if it were a real gate outcome.
+            if status not in VERDICT_STATUSES:
+                status = "unknown"
             changed = last is None or last.rules_hash != policy.rules_hash
             if last is not None and not changed and last.verdict_status == status:
                 recorded_at = last.recorded_at
@@ -431,17 +586,21 @@ def record_policy_snapshot(
                             "status": status,
                         }
             row = CommunityPolicySnapshot(
-                platform=policy.platform,
-                target_type=policy.target_type,
-                target_id=policy.target_id,
-                target_name=policy.name[:200],
-                rules_source=policy.rules_source[:500],
-                rules_hash=policy.rules_hash,
-                rules_available=bool(policy.rules_available),
-                rules_excerpt=policy.rules_excerpt,
-                verdict_status=status,
+                platform=_inert_text(policy.platform, 32) or "unknown",
+                target_type=_inert_text(policy.target_type, 32) or "community",
+                target_id=_inert_text(policy.target_id, TARGET_ID_LIMIT) or "—",
+                target_name=_inert_text(policy.name, TARGET_NAME_LIMIT)[:200] or "—",
+                rules_source=_inert_text(policy.rules_source, URL_LIMIT)[:500],
+                rules_hash=_inert_text(policy.rules_hash, 64),
+                rules_available=_as_flag(policy.rules_available),
+                rules_excerpt=_inert_text(policy.rules_excerpt, RULES_EXCERPT_LIMIT),
+                verdict_status=status[:16],
                 confidence=float(policy.confidence),
-                requirements_json=list(policy.requirements)[:40],
+                requirements_json=[
+                    _inert_text(line, RULES_LINE_LIMIT)
+                    for line in list(policy.requirements or ())[:SNAPSHOT_REQUIREMENT_LIMIT]
+                    if str(line).strip()
+                ],
                 checked_at=_parse_iso(policy.checked_at) or moment,
                 recorded_at=moment,
             )
@@ -496,17 +655,23 @@ def policy_history(
             return [
                 {
                     "id": row.id,
-                    "platform": row.platform,
-                    "target_type": row.target_type,
-                    "target_id": row.target_id,
-                    "target_name": row.target_name,
-                    "rules_source": row.rules_source,
-                    "rules_hash": row.rules_hash,
-                    "rules_available": bool(row.rules_available),
-                    "rules_excerpt": row.rules_excerpt,
-                    "verdict_status": row.verdict_status,
-                    "confidence": row.confidence,
-                    "requirements": list(row.requirements_json or []),
+                    "platform": _inert_text(row.platform, 32),
+                    "target_type": _inert_text(row.target_type, 32),
+                    "target_id": _inert_text(row.target_id, TARGET_ID_LIMIT),
+                    "target_name": _inert_text(row.target_name, TARGET_NAME_LIMIT),
+                    "rules_source": _inert_text(row.rules_source, URL_LIMIT),
+                    "rules_hash": _inert_text(row.rules_hash, 64),
+                    "rules_available": _as_flag(row.rules_available),
+                    # A row written before the contract bounded its text still has
+                    # to leave this function inert, bounded and credential-free.
+                    "rules_excerpt": _inert_text(row.rules_excerpt, RULES_EXCERPT_LIMIT),
+                    "verdict_status": _inert_text(row.verdict_status, 16) or "unknown",
+                    "confidence": float(row.confidence or 0.0),
+                    "requirements": [
+                        _inert_text(line, RULES_LINE_LIMIT)
+                        for line in list(row.requirements_json or ())[:SNAPSHOT_REQUIREMENT_LIMIT]
+                        if str(line).strip()
+                    ],
                     "checked_at": row.checked_at.isoformat() if row.checked_at else "",
                     "recorded_at": row.recorded_at.isoformat() if row.recorded_at else "",
                 }

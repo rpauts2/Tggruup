@@ -639,7 +639,10 @@ async def recommend_community_target(platform_id: str, post_public_id: str) -> d
     plan = await (_vc(post) if platform_id == "vc_ru" else _pikabu(post))
     # One auditable contract for every destination: the panel and the publish
     # gate read the same verdict instead of re-deriving freshness themselves.
-    plan["policy_verdict"] = gate_plan(platform_id, plan)
+    # ``record=True`` puts the check in ``community_policy_snapshots``: this is the
+    # only rules read an operator actually triggers, and an unrecorded check is an
+    # unauditable one — the history card would otherwise always be empty.
+    plan["policy_verdict"] = await asyncio.to_thread(gate_plan, platform_id, plan, record=True)
     return plan
 
 
