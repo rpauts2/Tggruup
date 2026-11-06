@@ -1,0 +1,519 @@
+# docs/orchestration/queue.yaml — активная инженерная очередь TgFarm
+#
+# Это НЕ вторая дорожная карта. Продуктовый статус блоков живёт только в
+# `docs/EXECUTION_PLAN.md` (реестр P1…P108); здесь — выполняемые задания, ссылки
+# на P-пункты (`p_refs`) и то, что диспетчер обязан знать, чтобы не устроить
+# конфликт: владелец, база, разрешённые пути, зависимости и состояние.
+#
+# Проверяльщик: `python tools/queue_check.py` (0 = очередь согласована,
+# 1 = найдено нарушение, 2 = файл нечитаем). Он ничего не запускает и не
+# интегрирует: только читает и объясняет.
+#
+# Состояния: BACKLOG READY ASSIGNED RUNNING REVIEW ACCEPTED INTEGRATED VERIFIED
+#             BLOCKED FAILED RECOVERY_REQUIRED CANCELLED DEFERRED
+# Правило one-state: запись не может быть одновременно RUNNING и INTEGRATED;
+# проверяльщик на это смотрит отдельно (см. `history`).
+
+meta:
+  schema_version: 1
+  registry: docs/EXECUTION_PLAN.md
+  coordinator: "Qoder Desktop session 241fe48c (chief architect / integrating engineer)"
+  measured_at: "2026-11-06T14:20:00+03:00"
+  base_observation: >
+    HEAD of main at the moment of writing is 7e58455; `github/main` equals it.
+    Executor outcomes below were taken from `git worktree list --porcelain`,
+    `git rev-list --count` and the branch trees, not from agent reports.
+
+tasks:
+
+  # ------------------------------------------------------------- wave 23 (started before the directive)
+  - id: W23-A
+    title: "Читатель перепривязки: /api/editorial/plan/booking объясняет slot_booking_rebounded"
+    description: >
+      После W22-C исправленная тиком бронь читается как `shifted` без ссылки на
+      стадию журнала `plan_slot_rebind`. Задача — научить читателя различать
+      «сдвинул без объяснения» и «исправлен по правилу локальных часов».
+    priority: high
+    category: product
+    status: RUNNING
+    owner_role: "Backend Engineer"
+    owner_agent: "ageneral-purpose-79248e6927f3beb8"
+    base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
+    worktree: .qoder/worktrees/w23a-rebind-attribution
+    branch: w23a-rebind-attribution
+    allowed_paths:
+      - tgfarm/api.py
+      - tgfarm/ui/app.js
+      - tests/test_w23a_rebind_attribution.py
+      - tests/test_w20c_api_booking_fidelity.py
+      - tests/test_w20c_ui_booking_fidelity.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P107, P108]
+    acceptance: >
+      Состояние брони, исправленное правилом локальных часов, отличается от
+      просто сдвинутого; неизмеренное остаётся null; при выключенном флаге
+      payload байт-в-байт как раньше; read не пишет; тесты фальсифицированы.
+    test_commands:
+      - "python -m pytest -q tests/test_w23a_rebind_attribution.py"
+      - "python -m pytest -q --tb=line -k booking or fidelity"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T09:55:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: ветка существует на 7e58455, `commits=0`, `dirty=0` — 4,5 часа после запуска артефактов нет"
+    next_action: >
+      Дождаться уведомления харнесса. Если агент мёртв — пакет переходит к
+      координатору (attempt_limit ещё не исчерпан, но файлы остаются за ним,
+      пока статус не изменён).
+
+  - id: W23-B
+    title: "Разделение REASON_NO_SLOT: горизонт занят / легальных часов нет"
+    description: >
+      Одна причина на две разные отказы построителя плана; оператор не различает
+      «поставить позже» и «настроить часы канала».
+    priority: medium
+    category: product
+    status: RECOVERY_REQUIRED
+    owner_role: "Backend Engineer"
+    owner_agent: "ageneral-purpose-1d7a01a772b88582"
+    base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
+    worktree: null
+    branch: null
+    allowed_paths:
+      - tgfarm/editorial_plan.py
+      - tgfarm/plan_execution.py
+      - tests/test_w23b_no_slot_reasons.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P108]
+    acceptance: >
+      Две причины различимы в отчёте прохода; выборка слотов не изменилась;
+      при выключенном флаге поведение прежнее; тесты краснеют на мутантах.
+    test_commands:
+      - "python -m pytest -q tests/test_w23b_no_slot_reasons.py"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T09:57:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: ни ветки, ни worktree (`no branch`), ни одной строки в `git status` основного дерева — 4 часа после запуска"
+    next_action: >
+      Спасать нечего; при подтверждённой смерти — перезначить (attempt+1) или
+      взять координатору. Файлы помечены занятыми, чтобы параллельный запуск не
+      сел на plan_execution.py вторым владельцем.
+
+  - id: W23-C
+    description: "lru_cache get_config перезагружается в conftest, но не очищается: режим каденции наследуется от соседа по прогону"
+    title: "Кэш конфига не должен пережидать границу тестового файла"
+    priority: medium
+    category: harness
+    status: VERIFIED
+    owner_role: "Coordinator"
+    owner_agent: "coordinator"
+    base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
+    worktree: null
+    branch: main
+    allowed_paths:
+      - tests/conftest.py
+      - tests/test_conftest_config_cache_hygiene.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P108]
+    acceptance: "Парный полный прогон + фальсификация в обе стороны"
+    test_commands:
+      - "python -m pytest -q --tb=line"
+      - "python -m pytest -q tests/test_conftest_config_cache_hygiene.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: VERIFIED
+    retry_count: 0
+    attempt_limit: 1
+    tool_calls_used: null
+    started_at: "2026-11-06T11:40:00+03:00"
+    updated_at: "2026-11-06T12:05:00+03:00"
+    completed_at: "2026-11-06T12:05:00+03:00"
+    evidence:
+      - "OBSERVED: 3a47858; 3019 passed → 3019 passed (+1,98 s); без хука hits=87 misses=1, с хуком hits=0"
+    next_action: null
+
+  # ------------------------------------------------------------- wave 24 (P0 security + build identity)
+  - id: W24-A
+    description: "cmd_serve печатал админский токен в stdout, а живой ферм перенаправляет stdout в farm_serve*.log внутри репозитория"
+    title: "P0: админский токен не должен попадать в stdout и логи"
+    priority: critical
+    category: security
+    status: VERIFIED
+    owner_role: "Security Engineer"
+    owner_agent: "ageneral-purpose-e0078278df123a38 (умер) → координатор"
+    base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
+    worktree: null
+    branch: main
+    allowed_paths:
+      - tgfarm/cli.py
+      - tgfarm/core/apiauth.py
+      - tests/test_w24a_sentinel_no_secret_leaks.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Сентинел-токен не встречается ни в одном выводе; состояние и путь остаются; явный глагол чтения и ротации"
+    test_commands:
+      - "python -m pytest -q tests/test_w24a_sentinel_no_secret_leaks.py"
+      - "python -m pytest -q --tb=line -k 'cli or serve or token or apiauth or desktop'"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: VERIFIED
+    retry_count: 1
+    attempt_limit: 3
+    tool_calls_used: 42
+    started_at: "2026-11-06T11:27:00+03:00"
+    updated_at: "2026-11-06T14:12:00+03:00"
+    completed_at: "2026-11-06T14:12:00+03:00"
+    evidence:
+      - "OBSERVED: запуск агента умер (42 tool calls, 2 164 461 subagent tokens, 40 min, `commits=0`, дерево чистое)"
+      - "OBSERVED: 7e58455 — 3029 passed, 4 xfailed, 17 passed chain, demo exit 0; мутанты M1/M2/M3 убиты"
+      - "OBSERVED: первая версия теста имела дыру — M1 переживал, потому что ветка 'generated' печатала случайный токен, которого тест не знал"
+    next_action: >
+      Остаток назван и не сделан: `tgfarm/desktop.py:419` и `:519` кладут токен в
+      `?token=` URL браузера (значения вырезаются из логов `api.py:3152`). Отдельный
+      пакет, требует согласия оператора на смену механизма десктопа.
+
+  - id: W24-B
+    description: "О процесс, который может назвать свою сборку: 582 ленивых импорта в 66 модулях означают, что git rev-parse HEAD не описывает запущенный код"
+    title: "Сборка должна уметь назвать себя сама"
+    priority: high
+    category: release
+    status: FAILED
+    owner_role: "DevOps / Release Engineer"
+    owner_agent: "ageneral-purpose-93a90529ccdc2ee5"
+    base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
+    worktree: .qoder/worktrees/w24b-build-identity
+    branch: w24b-build-identity
+    allowed_paths: []
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: >
+      Build-time metadata отличается от runtime-гадания; отсутствующая метаданная
+      не превращается в «чистую сборку»; секретов в идентификаторе нет
+    test_commands:
+      - "python -m pytest -q tests/test_w24b_buildinfo.py"
+    review_status: RETURNED_TO_AUTHOR
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    tool_calls_used: 30
+    started_at: "2026-11-06T11:29:00+03:00"
+    updated_at: "2026-11-06T14:35:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: смерть на credit limit; 718 строк незакоммиченными во вложенном дереве; спасено как 14c165a (buildinfo.py 535, stamp_build_info.py 183, ci.yml +25, spec +12)"
+      - "OBSERVED: тестов — ноль"
+    next_action: >
+      Исполнитель мёртв (credit limit), артефакты спасены в 14c165a. Пути больше не
+      заняты: их ведёт W24-BR, иначе очередь утверждала бы двух владельцев одного файла.
+
+  - id: W24-BR
+    description: "Спасённый W24-B без единого теста: ревью 718 строк и проверка, что build-time SHA неотличим от runtime-догадки"
+    title: "Независимое ревью спасённой build-identity + тесты, которых не было"
+    priority: high
+    category: review
+    status: REVIEW
+    owner_role: "Code Reviewer + Test Engineer"
+    owner_agent: "ageneral-purpose-ee7f9d4f9378d86d"
+    base_sha: 14c165a
+    worktree: .qoder/worktrees/w24br-build-review
+    branch: w24br-build-review
+    allowed_paths:
+      - tests/test_w24b_buildinfo.py
+      - tgfarm/buildinfo.py
+      - packaging/stamp_build_info.py
+      - packaging/tgfarm.spec
+      - .github/workflows/ci.yml
+    depends_on: [W24-B]
+    blocked_by: []
+    p_refs: []
+    acceptance: "Вердикт accept / accept-with-fixes / rework с file:line по каждому пункту"
+    test_commands:
+      - "python -m pytest -q tests/test_w24b_buildinfo.py"
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T14:05:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: вердикт accept-with-fixes; 4 коммита на w24br-build-review, HEAD 015305e; 33 теста, 6/6 мутантов"
+      - "CODE_VERIFIED: BLOCKER №1 — packaging/tgfarm.spec:37 незакрытая строка → SyntaxError, то есть PyInstaller падал и артефакта не было"
+      - "CODE_VERIFIED: BLOCKER №3 — значения artifact_name/source_branch пропускали формы секретов (sk-live…, телеграм-токен) прямо в лог CI"
+      - "OBSERVED: ветка базирована на 91029a3+14c165a, не на 7e58455 — переносить с пересчётом"
+      - "DEFER, не моё решение: .gitignore не скрывает build_identity.json; после gc проверка SHA в очереди слепа к упakованным объектам"
+    next_action: "Приёмка: черри-пик 14c165a+5d689d5+d3a1323+93259a0+015305e на main, затем wiring версии в cli.py"
+
+  # ------------------------------------------------------------- wave 25 (orchestration foundation)
+  - id: W25-A
+    description: "Машиночитаемая очередь активных инженерных заданий с состояниями, зависимостями и детектором пересечения владельцев файлов"
+    title: "Машиночитаемая очередь и проверяльщик владельцев"
+    priority: high
+    category: orchestration
+    status: RUNNING
+    owner_role: "Backend / Tooling Engineer"
+    owner_agent: "coordinator"
+    base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
+    worktree: null
+    branch: main
+    allowed_paths:
+      - docs/orchestration/queue.yaml
+      - docs/orchestration/README.md
+      - tools/queue_check.py
+      - tests/test_w25a_queue.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: >
+      Проверяльщик ловит: незаконный переход состояний, задачу READY с
+      незакрытой зависимостью, пересечение allowed_paths у двух активных задач,
+      цикл зависимостей, дубль активной задачи, неизвестное поле; и структурно
+      не умеет запускать агентов
+    test_commands:
+      - "python tools/queue_check.py"
+      - "python -m pytest -q tests/test_w25a_queue.py"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    tool_calls_used: 23
+    started_at: "2026-11-06T13:58:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: `Sorry, something went wrong` после 23 tool calls / 740 380 subagent tokens / 294 s; `commits=0`, `dirty=0`"
+    next_action: >
+      Ведётся координатором. Плюс исправление самого процесса: брифы велели
+      `git worktree add <путь> main`, а git это запрещает («main is already used by
+      worktree»); рабочая форма — `git worktree add -b <ветка> <путь> main`. Два
+      агента споткнулись, один обошёл это сам. Исправить в следующем наборе брифов.
+
+  - id: W26-T
+    title: "Пакет для приёмки + телеметрия исполнителей"
+    description: "Пакет для приёмки (ancestry, diff, детектор ослабленных тестов, ruff-паритет) иappend-only телеметрия исполнителей, где неизвестное остаётся null"
+    priority: medium
+    category: orchestration
+    status: RUNNING
+    owner_role: "Tooling / QA infrastructure"
+    owner_agent: "ageneral-purpose-b32e3fa0d7f6b31c"
+    base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
+    worktree: .qoder/worktrees/w26t-review-telemetry
+    branch: w26t-review-telemetry
+    allowed_paths:
+      - tools/review_packet.py
+      - tools/agent_record.py
+      - docs/orchestration/telemetry
+      - tests/test_w26t_review_packet.py
+      - tests/test_w26t_agent_record.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: >
+      review_packet всегда заканчивается NEEDS_HUMAN и не может менять состояние
+      репозитория; телеметрия различает null и 0; hand-edit записи ловится
+      --verify
+    test_commands:
+      - "python -m pytest -q tests/test_w26t_review_packet.py tests/test_w26t_agent_record.py"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T14:12:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: dirty=1 — работа пошла"
+    next_action: null
+
+  # ------------------------------------------------------------- wave 28 (product reliability)
+  - id: W28-A
+    title: "LLM reliability: Retry-After, backoff, circuit breaker, честный fallback"
+    description: "503-шторм бесплатного тира: Retry-After, ограниченный backoff с jitter, бюджет времени вызова, circuit breaker и честный provenance offline-fallback"
+    priority: critical
+    category: product
+    status: RUNNING
+    owner_role: "AI / LLM Engineer"
+    owner_agent: "ageneral-purpose-43372317f891f137"
+    base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
+    worktree: .qoder/worktrees/w28a-llm-reliability
+    branch: w28a-llm-reliability
+    allowed_paths:
+      - tgfarm/llm/client.py
+      - tgfarm/llm/resilience.py
+      - tests/test_w28a_llm_backoff.py
+      - tests/test_w28a_circuit_breaker.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P5]
+    acceptance: >
+      Ограниченные попытки с jitter и Budget времени на вызов; breaker открывается
+      и восстанавливается; offline никогда не подписан именем модели; бюджет
+      этапа не спорит с ai_daily_budget
+    test_commands:
+      - "python -m pytest -q tests/test_w28a_llm_backoff.py tests/test_w28a_circuit_breaker.py"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T13:48:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: dirty=2 — работа пошла"
+      - "LOG_VERIFIED: farm_serve25.log — 503 ×5512, offline fallback ×7591, s4_generate 2 552 107 ms"
+    next_action: >
+      Seam, который не его: вызов budget-функции из pipeline.py (файл
+      координатора) — агент обязан сообщить точную строку.
+
+  - id: W28-K
+    title: "Восстановление из бэкапа, которое что-то доказывает"
+    description: "Проверка бэкапа по числам строк в таблицах и осознание WAL-партнёров: плоский cp живой базы давал копию с 0 постов"
+    priority: high
+    category: product
+    status: RUNNING
+    owner_role: "Database Engineer / DevOps"
+    owner_agent: "ageneral-purpose-d7712debb3e8bfaf"
+    base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
+    worktree: .qoder/worktrees/w28k-restore-proof
+    branch: w28k-restore-proof
+    allowed_paths:
+      - tgfarm/db/recovery.py
+      - tests/test_w28k_restore_proof.py
+      - tests/test_backup.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P8]
+    acceptance: >
+      Connection.backup вместо плоского копирования; сверка чисел строк по
+      таблицам; осознание -wal/-shm; повреждённый файл ≠ ok; недоступный источник
+      = UNKNOWN, не match
+    test_commands:
+      - "python -m pytest -q tests/test_w28k_restore_proof.py tests/test_backup.py"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T14:10:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence: []
+    next_action: null
+
+  - id: W29-C
+    title: "Почему community_policy_snapshots пуст, и как это чинится вызываемым кодом"
+    description: "Почему живые community_policy_snapshots = 0 при 514 публикациях: диагноз по вызовному графу и вызываемый, протестированный писатель"
+    priority: high
+    category: product
+    status: REVIEW
+    owner_role: "Platform Integration Engineer"
+    owner_agent: "ageneral-purpose-c8dc44d33988923c"
+    base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
+    worktree: .qoder/worktrees/w29c-community-policy
+    branch: w29c-community-policy
+    allowed_paths:
+      - tgfarm/community_policy.py
+      - tgfarm/community_targets.py
+      - tgfarm/community_drafts.py
+      - tests/test_w29c_policy_snapshots.py
+    depends_on: []
+    blocked_by: []
+    p_refs: [P3, P5]
+    acceptance: >
+      Диагноз с вызовным графом по file:line; писатель не пишет пустой снимок при
+      сбое загрузки; свежесть fresh/stale/missing/unread; текст правил — данные,
+      не инструкции
+    test_commands:
+      - "python -m pytest -q tests/test_w29c_policy_snapshots.py"
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-06T14:08:00+03:00"
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: mode=ro — community_policy_snapshots = 0; в channels нет ни одной площадки правил (pikabu/vc_ru/reddit = 0)"
+      - "CODE_VERIFIED: 3 коммита на w29c-community-policy, HEAD b894107; 881 вставка; 23 своих теста; 8/8 мутантов убито"
+      - "LOG_VERIFIED: писатель достижим из 4 графов вызова; ни одной строки 'snapshot was not stored' в 25 логах"
+      - "OBSERVED: maintenance-наблюдатель сеет список из самой пустой таблицы — bootstrap-тупик, а не баг записи"
+    next_action: "Приёмка: cherry-pick 4f10ab8 26373bf b894107 + три шва (api.py:3706, maintenance.py:1333, cli.py:1061)"
+
+  # ------------------------------------------------------------- операторские блокеры (не код)
+  - id: OPS-1
+    title: "Перезапуск serve с PLAN_EXECUTION_ENABLED=true в окне между publish_tick"
+    description: "Исполнитель плана ни разу не работал на живых данных: флаг выключен, процесса с этим кодом нет, 6 аддитивных операторов не применены"
+    priority: critical
+    category: operations
+    status: BLOCKED
+    owner_role: "Operator"
+    owner_agent: null
+    base_sha: null
+    worktree: null
+    branch: null
+    allowed_paths: []
+    depends_on: []
+    blocked_by: []
+    p_refs: [P107, P108]
+    acceptance: >
+      /api/editorial/plan/execution даёт registered:true и ненулевой next_run_at у
+      трёх задач; /api/editorial/plan/booking впервые ненуллевой
+    test_commands: []
+    review_status: NOT_APPLICABLE
+    integration_status: NOT_APPLICABLE
+    retry_count: 0
+    attempt_limit: 1
+    tool_calls_used: null
+    started_at: null
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: процесс 5000→23880 с 2026-11-04 22:25:57; 0 упоминаний plan_execution в 8,6 МБ лога; 6 отложенных аддитивных операторов"
+    next_action: "Действие оператора. Код не запускается без его согласия (§0.3 директивы)."
+
+  - id: OPS-2
+    title: "VK_USER_TOKEN и согласие на онлайн-LLM"
+    description: "Внешние разрешения, без которых метрики ВК и онлайн-генерация недоступны; значения переменных не читаются и не раскрываются"
+    priority: high
+    category: operations
+    status: BLOCKED
+    owner_role: "Operator"
+    owner_agent: null
+    base_sha: null
+    worktree: null
+    branch: null
+    allowed_paths: []
+    depends_on: []
+    blocked_by: []
+    p_refs: [P6, P7]
+    acceptance: "Метрики ВК читаются; provenance-гейт черновиков снимается; Дзен разблокирован"
+    test_commands: []
+    review_status: NOT_APPLICABLE
+    integration_status: NOT_APPLICABLE
+    retry_count: 0
+    attempt_limit: 1
+    tool_calls_used: null
+    started_at: null
+    updated_at: "2026-11-06T14:20:00+03:00"
+    completed_at: null
+    evidence:
+      - "OBSERVED: .env содержит только имя LLM_API_KEY; VK_USER_TOKEN, TG_BOT_TOKEN, DZEN_TOKEN, ONLINE_LLM_CONSENT, PLAN_EXECUTION_ENABLED — отсутствуют (значения не читались)"
+    next_action: "Действие оператора"
