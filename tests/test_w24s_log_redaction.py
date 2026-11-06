@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
 
 import pytest
 
@@ -36,11 +37,12 @@ def capture_root_logs():
     core_logging.setup_logging("DEBUG")
     probe = logging.StreamHandler(stream)
     probe.setLevel(logging.DEBUG)
-    # same choke point as production: the record text goes through
-    # RedactingFormatter before reaching the stream.
-    probe.setFormatter(
-        redact.RedactingFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-    )
+    # reuse the formatter production just installed on the console handler, so
+    # the tests measure the real wiring, not a private copy of it.
+    console = [h for h in logging.root.handlers if isinstance(h, logging.StreamHandler)
+               and getattr(h, "stream", None) is sys.stdout]
+    assert console, "setup_logging must install a console handler"
+    probe.setFormatter(console[0].formatter)
     logging.root.addHandler(probe)
     try:
         yield stream
