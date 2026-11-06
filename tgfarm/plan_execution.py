@@ -102,7 +102,7 @@ from tgfarm.core.run import ensure_utc, to_thread
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Channel, EditorialPlan, EditorialPlanEntry, Post
 from tgfarm.db.session import session_scope
-from tgfarm.editorial_plan import build_editorial_plan, get_active_plan
+from tgfarm.editorial_plan import MAX_ENTRIES, build_editorial_plan, get_active_plan
 from tgfarm.platform_capability import capability_of
 
 log = get_logger(__name__)
@@ -123,9 +123,12 @@ STAGE_SLOT_REBIND = "plan_slot_rebind"
 BUILD_INTERVAL_HOURS = 6
 APPLY_INTERVAL_MINUTES = 10
 
-#: Entries inspected per run. A plan snapshot holds at most `MAX_ENTRIES`
-#: (40) rows, so this is the whole plan, not a slice of it.
-MAX_ENTRIES_PER_RUN = 40
+#: Entries inspected per run. A plan snapshot holds at most `MAX_ENTRIES` rows,
+#: so this is the whole plan, not a slice of it — and it is the owner's number
+#: rather than a third copy of it, because a bound edited in three places gets
+#: edited in one. `s4_generation.MAX_BOOKINGS_PER_RUN` and
+#: `editorial.open_order_cluster_ids` carry the same derivation.
+MAX_ENTRIES_PER_RUN = MAX_ENTRIES
 
 # ------------------------------------------------------------------ reason codes
 #: Every refusal names itself, because `applied: 0` cannot tell a healthy queue

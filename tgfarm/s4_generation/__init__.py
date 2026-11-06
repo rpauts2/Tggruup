@@ -37,6 +37,7 @@ from tgfarm.db.models import Post as PostRow
 from tgfarm.db.models import RawItem as RawItemRow
 from tgfarm.db.session import session_scope
 from tgfarm.db.vector import pack
+from tgfarm.editorial_plan import MAX_ENTRIES
 from tgfarm.llm import policy
 from tgfarm.llm.client import LLMResponse, compose_offline_post, get_llm
 from tgfarm.llm.embedding import get_embedder
@@ -994,9 +995,11 @@ def persist_draft(
 
 
 # ------------------------------------------------- the plan's booking on the row
-#: Open orders carried per call. One plan snapshot holds at most 40 entries
-#: (`editorial_plan.MAX_ENTRIES`), so this is the whole ledger, not a slice.
-MAX_BOOKINGS_PER_RUN = 40
+#: Open orders carried per call. One plan snapshot holds at most `MAX_ENTRIES`
+#: entries, so this is the whole ledger, not a slice — read from the owner
+#: instead of copied, because `MAX_OPEN_ORDERS`, `MAX_ENTRIES_PER_RUN` and this
+#: bound are one fact about one snapshot and used to agree only by luck.
+MAX_BOOKINGS_PER_RUN = MAX_ENTRIES
 
 #: The named outcomes of one booking attempt. A booking that did not happen has
 #: to say why, the same rule `plan_execution`'s reason codes and

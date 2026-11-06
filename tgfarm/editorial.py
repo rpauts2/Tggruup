@@ -38,9 +38,23 @@ NEWS_PRIORITY_BOOST = 0.2
 #: quality gate's own word for "ready to ship"; a draft is not one yet, because
 #: nothing has decided the topic may go out at all.
 OPEN_ORDER_POST_STATUSES = ("gated",)
-#: Open orders read per queue call. One plan snapshot holds at most 40 entries
-#: (`editorial_plan.MAX_ENTRIES`), so this is the whole ledger and not a slice.
-MAX_OPEN_ORDERS = 40
+
+
+def snapshot_bound() -> int:
+    """How many open orders one read carries: the whole snapshot, not a slice.
+
+    One plan snapshot holds at most `editorial_plan.MAX_ENTRIES` entries, so a
+    reader that asks for that many cannot miss one. The number lives with the
+    builder and is read here through a local import — `editorial_plan` imports
+    this module at its own top level, so a module-level import would close the
+    cycle and this bound could not be an assignment the way
+    `plan_execution.MAX_ENTRIES_PER_RUN` and `s4_generation.MAX_BOOKINGS_PER_RUN`
+    are. All three are one fact about one snapshot and used to agree only by
+    carrying the same literal.
+    """
+    from tgfarm.editorial_plan import MAX_ENTRIES
+
+    return int(MAX_ENTRIES)
 
 
 def _open_order_conditions() -> tuple:
@@ -74,12 +88,14 @@ def _plan_consumer_enabled() -> bool:
     return bool(getattr(get_settings(), "plan_execution_enabled", False))
 
 
-def open_order_cluster_ids(limit: int = MAX_OPEN_ORDERS) -> list[str]:
+def open_order_cluster_ids(limit: int | None = None) -> list[str]:
     """Topics whose plan-ordered draft is still waiting for a booked slot.
 
     Newest draft first: an open order is a decision the farm is late with, and
     the freshest one is the one a plan tick can still put inside the horizon.
+    With no limit the read covers one whole plan snapshot (`snapshot_bound`).
     """
+    cap = snapshot_bound() if limit is None else limit
     with session_scope() as session:
         rows = (
             session.execute(
@@ -87,7 +103,7 @@ def open_order_cluster_ids(limit: int = MAX_OPEN_ORDERS) -> list[str]:
                 .where(*_open_order_conditions())
                 .group_by(PostRow.cluster_public_id)
                 .order_by(func.max(PostRow.created_at).desc())
-                .limit(max(1, limit))
+                .limit(max(1, cap))
             )
             .scalars()
             .all()

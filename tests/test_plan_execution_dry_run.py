@@ -32,7 +32,7 @@ import pytest
 from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.engine import Connection
 
-from tgfarm import cli, plan_execution, s7_publish
+from tgfarm import cli, editorial_plan, plan_execution, s7_publish
 from tgfarm.core.settings import reset_settings_cache
 from tgfarm.db.models import Channel, Cluster, EditorialPlan, EditorialPlanEntry, PipelineRun, Post
 from tgfarm.db.session import get_engine, session_scope
@@ -707,7 +707,24 @@ def test_the_parser_wires_the_command_and_its_limit():
 
     assert args.func is cli.cmd_plan_dry_run
     assert args.limit == plan_execution.MAX_ENTRIES_PER_RUN == cli.plan_entry_limit()
+    # The bound is the snapshot owner's number, not a copy of it: an entry walk
+    # that read more rows than a snapshot can hold would be a silent slice.
+    assert plan_execution.MAX_ENTRIES_PER_RUN == editorial_plan.MAX_ENTRIES
     assert parser.parse_args(["plan-dry-run", "--limit", "5"]).limit == 5
+
+
+def test_the_bound_follows_the_owner_when_the_owner_moves(monkeypatch):
+    """The equality above cannot tell a read from a copy — moving the owner can.
+
+    `return int(MAX_ENTRIES_PER_RUN)` and `return 40` agree at rest, and a copy
+    in this file is exactly the second number the dry run promises it did not
+    introduce: an operator who raised the snapshot cap would get a judgement
+    over the old, smaller ledger.
+    """
+    monkeypatch.setattr(plan_execution, "MAX_ENTRIES_PER_RUN", 7)
+
+    assert cli.plan_entry_limit() == 7
+    assert cli.build_parser().parse_args(["plan-dry-run"]).limit == 7
 
 
 def test_the_new_command_is_documented_where_the_cli_documents_itself():

@@ -16,7 +16,7 @@
     tgfarm report [--days 7]    performance report
     tgfarm editorial            ranked queue of ready clusters
     tgfarm plan-dry-run [--limit N]  what the plan executor would do; writes nothing
-    tgfarm plan-book [--limit N] [--apply]  what one booking pass would reserve; writes only with --apply
+    tgfarm plan-book [--limit N] [--apply]  what one booking pass would reserve; writes rows only with --apply
     tgfarm audit [--days 7]     content, source and AI usage audit
     tgfarm agent-benchmark --cluster ID  compare writer vs writer + strategist (never publishes)
     tgfarm agent-benchmark --report      summarize paired benchmark history
@@ -742,6 +742,14 @@ def cmd_plan_book(args) -> int:
     column is still NULL and stops; scheduling, publishing and crossposting belong
     to other jobs, and this command does not reach them — no transport is even
     imported on this path.
+
+    Neither is read-only against the store, and an operator rehearsing before the
+    `PLAN_EXECUTION_ENABLED` restart should know it: `_bootstrap()` runs first,
+    which applies the additive schema pass (`tgfarm/db/bootstrap.py`), so on the
+    live database this command creates the pending `posts.plan_entry_id` /
+    `posts.plan_slot_at` columns even when it books nothing. "Writes only with
+    `--apply`" is a statement about rows, not about schema — the same is true of
+    `plan-dry-run`, which bootstraps exactly the way this verb does.
     """
     from tgfarm import s4_generation
 
@@ -1606,6 +1614,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan_book = sub.add_parser(
         "plan-book",
         help="what one plan booking pass would reserve and why it would not (writes only with --apply)",
+        description=(
+            "Rehearse one booking pass (the default) or run it (--apply). Neither is a pure "
+            "read of the store: both first run the same bootstrap every other verb runs, so "
+            "against a database whose schema lags the code the pending additive columns are "
+            "applied here even when nothing is booked. 'writes only with --apply' describes "
+            "rows, not schema."
+        ),
     )
     p_plan_book.add_argument(
         "--limit",

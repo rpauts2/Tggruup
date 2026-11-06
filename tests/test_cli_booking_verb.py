@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, func, select
 
-from tgfarm import cli, s4_generation
+from tgfarm import cli, editorial_plan, s4_generation
 from tgfarm.core.settings import reset_settings_cache
 from tgfarm.db.models import Channel, Cluster, EditorialPlan, EditorialPlanEntry, PipelineRun, Post
 from tgfarm.db.session import session_scope
@@ -319,6 +319,9 @@ def test_the_parser_wires_the_verb_and_borrows_the_pass_limit():
     assert args.func is cli.cmd_plan_book
     assert args.apply is False
     assert args.limit == s4_generation.MAX_BOOKINGS_PER_RUN == cli.booking_pass_limit()
+    # One bound, one owner: the booking pass carries the snapshot's own number
+    # rather than a literal that has to be remembered in a second file.
+    assert s4_generation.MAX_BOOKINGS_PER_RUN == editorial_plan.MAX_ENTRIES
     assert parser.parse_args(["plan-book", "--limit", "5"]).limit == 5
     assert parser.parse_args(["plan-book", "--apply"]).apply is True
 
@@ -340,6 +343,36 @@ def test_the_bound_follows_the_owner_when_the_owner_moves(monkeypatch):
 
 def test_the_new_verb_is_documented_where_the_cli_documents_itself():
     assert "plan-book" in cli.__doc__
+
+
+def test_the_verb_says_it_bootstraps_the_store_before_it_rehearses():
+    """"Writes only with --apply" is about rows, and an operator needs both halves.
+
+    `cmd_plan_book` calls `_bootstrap()` first, which is `ensure_bootstrapped()` →
+    `init_db()` → `apply_additive_migrations()` — measured on the tree, not
+    recalled. So on the live database the rehearsal is exactly the moment the six
+    pending additive statements (including `posts.plan_slot_at`) appear, which is
+    what an operator rehearsing before the `PLAN_EXECUTION_ENABLED` restart has to
+    know. `argparse` shows the description on `--help`, where the operator reads.
+    """
+    import argparse
+
+    parser = cli.build_parser()
+    verb = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    description = verb.choices["plan-book"].description or ""
+
+    assert "bootstrap" in description, description
+    assert "schema" in description, description
+    assert "rows, not schema" in description, description
+    assert "--apply" in description, description
+
+
+def test_the_docstring_names_the_migration_the_rehearsal_applies():
+    doc = cli.cmd_plan_book.__doc__ or ""
+
+    assert "apply" in doc
+    assert "posts.plan_slot_at" in doc, "the column the pass reserves is not named"
+    assert "additive" in doc, doc
 
 
 def test_the_glossary_only_names_states_the_pass_can_return():
