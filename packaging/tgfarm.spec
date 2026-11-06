@@ -34,8 +34,8 @@ _build_identity = ROOT / "tgfarm" / "build_identity.json"
 if _build_identity.exists():
     datas.append((str(_build_identity), "tgfarm"))
 else:
-    print("tgfarm.spec: tg
-farm/build_identity.json is absent - this bundle will report no build identity")
+    print("tgfarm.spec: tgfarm/build_identity.json is absent - "
+          "this bundle will report no build identity")
 
 # These are imported lazily or by name at runtime, so the dependency walker does
 # not see them: uvicorn's protocol/loop implementations, apscheduler's triggers,
