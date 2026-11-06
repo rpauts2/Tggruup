@@ -37,6 +37,8 @@ jobs:
       - name: Check dashboard JavaScript syntax
         run: node --check tgfarm/ui/app.js
 
+      - name: Check platform delivery regressions without external services
+        run: python tools/check_platform_increment.py
       - name: Run test suite
         env:
           TGFARM_MODE: off
@@ -84,6 +86,8 @@ jobs:
       - name: Check dashboard JavaScript syntax
         run: node --check tgfarm/ui/app.js
 
+      - name: Check platform delivery regressions without external services
+        run: python tools/check_platform_increment.py
       - name: Run test suite
         env:
           TGFARM_MODE: off
