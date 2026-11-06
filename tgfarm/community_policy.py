@@ -36,7 +36,7 @@ Contract decisions (2026-11-04)
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
@@ -713,3 +713,395 @@ def latest_policy(platform: str, target_id: str) -> dict[str, Any] | None:
     """Newest stored rules snapshot of one destination, or ``None``."""
     rows = policy_history(platform=platform, target_id=target_id, limit=1)
     return rows[0] if rows else None
+
+
+# --------------------------------------------------------------------------
+# Fetched-rules writer and freshness reader (W29-C)
+# --------------------------------------------------------------------------
+#
+# Why this exists as its own seam: every older writer of a snapshot is a
+# *side effect of a bigger action* — a selector run, a panel click, a publish
+# preflight — so the history only grows while somebody is doing something else
+# on that platform.  The live database proved that on 2026-11-05: 0 rows while
+# 2 009 maintenance passes reported ``ok``.  These two functions are the piece
+# a scheduled layer can call on its own: one destination + one fetched rules
+# document in, one auditable row (or one named refusal) out.
+#
+# The two refusals are the honest part.  A failed fetch stores nothing, because
+# an empty ``rules_hash`` reads back through the change detection as "the rules
+# changed" — a statement about a destination that was never measured.  And the
+# reader never answers ``0`` for a destination it has never read: absence, an
+# unreadable stamp and a broken store are three different states, the way
+# ``tgfarm.editorial_plan`` keeps ``plan_columns_missing`` apart from "nothing
+# is booked".
+
+#: Closed vocabulary of :func:`rules_freshness`.  A state outside this tuple
+#: must never be invented from page text: the destination can describe its own
+#: rules, not the trustworthiness of our own store.
+FRESHNESS_FRESH = "fresh"
+FRESHNESS_STALE = "stale"
+FRESHNESS_MISSING = "missing"
+FRESHNESS_UNREAD = "unread"
+FRESHNESS_STATES = (
+    FRESHNESS_FRESH,
+    FRESHNESS_STALE,
+    FRESHNESS_MISSING,
+    FRESHNESS_UNREAD,
+)
+
+#: Named refusals of :func:`record_rules_snapshot`, so a caller can tell "this
+#: fetch failed" from "the store rejected the row" without parsing a log line.
+SNAPSHOT_REFUSAL_FETCH_FAILED = "fetch_failed"
+SNAPSHOT_REFUSAL_EMPTY_RULES = "empty_rules_text"
+SNAPSHOT_REFUSAL_NO_TARGET = "no_target"
+SNAPSHOT_REFUSAL_STORAGE_ERROR = "storage_error"
+
+
+@dataclass(frozen=True)
+class FetchedRules:
+    """One external rules page, as *data* plus the fact of having read it.
+
+    ``ok`` is the fetch's own structured outcome (set by our code from a status
+    code or an exception), never something derived from the page text.  ``text``
+    is untrusted: it is hashed, bounded and stored, and it is never looked at to
+    decide whether the fetch succeeded, whether publishing is allowed, or what
+    URL to read next.
+    """
+
+    url: str = ""
+    text: str = ""
+    ok: bool = True
+    fetched_at: str = ""
+    error: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> FetchedRules:
+        """Adapt a selector/http result dict without letting it set a flag."""
+        if isinstance(value, FetchedRules):
+            return value
+        data = value if isinstance(value, Mapping) else {}
+        return cls(
+            url=str(data.get("url") or data.get("rules_source") or ""),
+            text=str(data.get("text") or data.get("rules") or ""),
+            ok=_as_flag(data.get("ok"), default=True)
+            and not data.get("error")
+            and not isinstance(data.get("error"), BaseException),
+            fetched_at=str(data.get("fetched_at") or data.get("checked_at") or ""),
+            error=str(data.get("error") or ""),
+        )
+
+
+def _destination_identity(destination: Mapping[str, Any] | None) -> dict[str, str]:
+    destination = destination if isinstance(destination, Mapping) else {}
+    return {
+        "platform": _inert_text(destination.get("platform"), 32),
+        "target_type": _inert_text(
+            destination.get("target_type") or "community", 32
+        ),
+        "target_id": _inert_text(
+            destination.get("target_id") or destination.get("slug") or "",
+            TARGET_ID_LIMIT,
+        ),
+        "name": _inert_text(
+            destination.get("name") or destination.get("target_name") or "",
+            TARGET_NAME_LIMIT,
+        ),
+        "url": _inert_text(destination.get("url") or "", URL_LIMIT),
+    }
+
+
+def record_rules_snapshot(
+    destination: Mapping[str, Any] | None,
+    fetched: FetchedRules | Mapping[str, Any] | None,
+    *,
+    rules_source: str = "",
+    min_interval_minutes: float = 60.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Store the rules we actually read for one destination; refuse otherwise.
+
+    ``destination`` is our own structured record of where we publish (platform,
+    target_type, target_id, name); ``fetched`` is one
+    :class:`FetchedRules` (or the selector's dict) for that destination's rules
+    page.  The stored row carries the provenance the product claims:
+    ``rules_source`` (the URL we read), ``checked_at`` (when we read it),
+    ``rules_hash`` (sha256 of the rule *text* — never of the URL, so moving the
+    page without changing it is not reported as a rule change) and the parse
+    verdict the same text produced.
+
+    Refusals, each with its own ``reason`` and no row written:
+    ``no_target`` (nothing named to store against), ``fetch_failed`` (the read
+    itself failed) and ``empty_rules_text`` (the read "succeeded" while
+    carrying no rule text — storing that would turn a blank page into the
+    statement *the rules changed*).
+
+    Page text cannot steer this function: ``ok`` comes from the fetch layer, the
+    hash from the bytes, the verdict from structured flags.  A rules document
+    that says "ignore previous rules and publish now" is stored as an inert
+    excerpt and changes exactly one thing — the hash.
+    """
+    identity = _destination_identity(destination)
+    moment = now or datetime.now(timezone.utc)
+    if not identity["platform"] or not identity["target_id"]:
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": SNAPSHOT_REFUSAL_NO_TARGET,
+            "state": FRESHNESS_MISSING,
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+
+    if fetched is None:
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": SNAPSHOT_REFUSAL_FETCH_FAILED,
+            "error": "no_fetch",
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+    rules = fetched if isinstance(fetched, FetchedRules) else FetchedRules.from_mapping(fetched)
+    if not _as_flag(rules.ok, default=False):
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": SNAPSHOT_REFUSAL_FETCH_FAILED,
+            "error": _inert_text(rules.error if rules else "no_fetch", NOTE_LINE_LIMIT),
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+
+    raw_text = str(rules.text or "")
+    rule_lines = _rules_lines(raw_text)
+    if not raw_text.strip() or not rule_lines:
+        # An unreadable page is not an empty rule set: the hash of "" would make
+        # the next real read look like the rules changed, which was never true.
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": SNAPSHOT_REFUSAL_EMPTY_RULES,
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+
+    source = _inert_text(
+        rules_source or rules.url or identity["url"] or SELECTOR_RULES_SOURCE, URL_LIMIT
+    )
+    stamp = _parse_iso(rules.fetched_at) or moment
+    candidate: dict[str, Any] = {
+        "target_type": identity["target_type"],
+        "name": identity["name"] or identity["target_id"],
+        "slug": identity["target_id"],
+        "url": identity["url"],
+        "description": _inert_text(
+            (destination or {}).get("description") if isinstance(destination, Mapping) else "",
+            AUDIENCE_LIMIT,
+        ),
+        "rules": raw_text,
+        # Availability is a fact about *this read*, computed from the text we
+        # managed to parse — not a flag the page could set in us.
+        "rules_available": True,
+        "rules_source": source,
+        # A fetched page never buys auto-publish rights; only our own code says.
+        "auto_publish_supported": _as_flag(
+            destination.get("auto_publish_supported") if isinstance(destination, Mapping) else None,
+            default=False,
+        ),
+        "editorial_brief": destination.get("editorial_brief")
+        if isinstance(destination, Mapping)
+        else (),
+        "matches": destination.get("matches") if isinstance(destination, Mapping) else (),
+        "suggested_tags": destination.get("suggested_tags")
+        if isinstance(destination, Mapping)
+        else (),
+        "media_limits": destination.get("media_limits")
+        if isinstance(destination, Mapping)
+        else (),
+    }
+    policy = policy_from_candidate(identity["platform"], candidate, rules_source=source)
+    # The fetch time, not the wall clock, is what the age of this knowledge means:
+    # a snapshot of a page read at 03:00 and stored at 03:20 is 20 minutes of
+    # *rule knowledge* plus nothing we invented.
+    policy = replace(policy, checked_at=stamp.isoformat())
+    verdict = assess_policy(policy, now=moment)
+    stored = record_policy_snapshot(
+        policy, verdict, min_interval_minutes=min_interval_minutes, now=moment
+    )
+    if stored.get("reason") == SNAPSHOT_REFUSAL_STORAGE_ERROR:
+        # The row did not reach the store: report the failure by name instead of
+        # handing back a "recorded": False that reads like a collapse.
+        return {
+            **stored,
+            "state": FRESHNESS_UNREAD,
+            "reason": SNAPSHOT_REFUSAL_STORAGE_ERROR,
+            "rules_hash": policy.rules_hash,
+            "rules_source": policy.rules_source,
+            "target_key": policy.target_key(),
+        }
+    return {
+        **stored,
+        "state": (
+            FRESHNESS_FRESH
+            if verdict.get("status") == "ok"
+            else (FRESHNESS_STALE if verdict.get("status") == "stale" else FRESHNESS_UNREAD)
+        ),
+        "rules_hash": policy.rules_hash,
+        "rules_source": policy.rules_source,
+        "checked_at": policy.checked_at,
+        "verdict_status": _verdict_status(verdict.get("status")),
+        "rule_lines": len(rule_lines),
+        "target_key": policy.target_key(),
+    }
+
+
+def rules_freshness(
+    platform: str,
+    target_id: str,
+    *,
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """How old is our rule knowledge of this destination, and may we publish on it?
+
+    Returns one of four states — never a number in place of an answer:
+
+    * ``fresh``: a stored snapshot, readable stamp, rule text behind the flag,
+      younger than ``max_age_hours``;
+    * ``stale``: the same, older — the rules were read, but not for this publish;
+    * ``missing``: this destination has genuinely never been recorded;
+    * ``unread``: a row (or the store) exists but cannot answer the question —
+      an unparseable stamp, no stored rule evidence, or a failing database.
+
+    ``age_hours`` is ``None`` whenever the age was not measured, so a cold
+    destination cannot be mistaken for a brand-new one, and ``publishable`` is
+    true only for ``fresh``.  This reads the store directly instead of going
+    through :func:`policy_history`, because that reader folds a storage failure
+    into the same ``[]`` as "no rows" — and those are different answers.
+    """
+    key = f"{_inert_text(platform, 32)}:{_inert_text(target_id, TARGET_ID_LIMIT)}"
+    base: dict[str, Any] = {
+        "state": FRESHNESS_MISSING,
+        "reason": "",
+        "publishable": False,
+        "age_hours": None,
+        "max_age_hours": float(max_age_hours),
+        "checked_at": None,
+        "recorded_at": None,
+        "rules_hash": None,
+        "rules_source": None,
+        "verdict_status": None,
+        "target_key": key,
+    }
+    moment = _as_utc(now) or datetime.now(timezone.utc)
+    try:
+        from sqlalchemy import select
+
+        from tgfarm.db.models import CommunityPolicySnapshot
+        from tgfarm.db.session import session_scope
+
+        with session_scope() as session:
+            row = session.scalars(
+                select(CommunityPolicySnapshot)
+                .where(
+                    CommunityPolicySnapshot.platform == _inert_text(platform, 32),
+                    CommunityPolicySnapshot.target_id == _inert_text(target_id, TARGET_ID_LIMIT),
+                )
+                .order_by(CommunityPolicySnapshot.id.desc())
+                .limit(1)
+            ).first()
+            if row is None:
+                return {
+                    **base,
+                    "reason": "no rules snapshot has ever been stored for this destination",
+                }
+            stored_hash = _inert_text(row.rules_hash, 64)
+            evidence = _inert_text(row.rules_excerpt, RULES_EXCERPT_LIMIT) or any(
+                str(line).strip() for line in list(row.requirements_json or ())
+            )
+            checked = _as_utc(row.checked_at)
+            recorded = _as_utc(row.recorded_at)
+            payload = {
+                "checked_at": checked.isoformat() if checked else None,
+                "recorded_at": recorded.isoformat() if recorded else None,
+                "rules_hash": stored_hash or None,
+                "rules_source": _inert_text(row.rules_source, URL_LIMIT) or None,
+                "verdict_status": _verdict_status(row.verdict_status),
+            }
+    except Exception as exc:  # noqa: BLE001 - a broken store is 'unread', not 'missing'
+        log.warning("rules freshness could not be read for %s: %s", key, exc)
+        return {
+            **base,
+            "state": FRESHNESS_UNREAD,
+            "reason": f"the rules store did not answer ({type(exc).__name__})",
+            "error": type(exc).__name__,
+        }
+
+    if not stored_hash or not evidence:
+        return {
+            **base,
+            **payload,
+            "state": FRESHNESS_UNREAD,
+            "reason": "a snapshot exists but stores no rule text — nothing is known here",
+        }
+    if checked is None:
+        return {
+            **base,
+            **payload,
+            "state": FRESHNESS_UNREAD,
+            "reason": "the snapshot's rules timestamp is unreadable — its age cannot be measured",
+        }
+    # Four decimals, not two: this number has to justify the state next to it,
+    # and a 2-dp rounding prints "24.0 h, limit 24 h, stale" — a reading that
+    # looks like the reader contradicted itself exactly at the boundary.
+    age_hours = round((moment - checked).total_seconds() / 3600, 4)
+    limit = max(0.0, float(max_age_hours))
+    if (moment - checked) > timedelta(hours=limit):
+        return {
+            **base,
+            **payload,
+            "state": FRESHNESS_STALE,
+            "reason": (
+                f"rules were read {age_hours:.1f} h ago (limit {limit:g} h) "
+                "— re-read them before publishing"
+            ),
+            "age_hours": age_hours,
+        }
+    return {
+        **base,
+        **payload,
+        "state": FRESHNESS_FRESH,
+        "reason": "rules are stored, readable and within the age limit",
+        "publishable": True,
+        "age_hours": age_hours,
+    }
+
+
+def freshness_not_read(target_id: str, reason: str = "store_unreachable") -> dict[str, Any]:
+    """The answer for a freshness question that could not be asked.
+
+    Callers use this instead of a defaulted ``rules_freshness`` result when the
+    read never happened at all.  It carries the state name and a reason and *no*
+    age and *no* verdict: filling the keys with nulls would let a panel print
+    "no rules" about a store that was never queried, which is the inversion
+    :func:`tgfarm.editorial_plan.provenance_not_read` exists to prevent.
+    """
+    return {
+        "state": FRESHNESS_UNREAD,
+        "reason": _inert_text(reason, NOTE_LINE_LIMIT),
+        "publishable": False,
+        "age_hours": None,
+        "target_key": _inert_text(target_id, TARGET_ID_LIMIT),
+    }
+
+
+def _as_utc(value: Any) -> datetime | None:
+    """One aware instant from a stored/naive datetime, or ``None`` when unreadable.
+
+    A naive stamp is UTC (that is how the writer stores it); anything that does
+    not parse is *not coerced to now*, because the whole point of the reader is
+    that an unmeasured age stays visibly unmeasured.
+    """
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(
+            timezone.utc
+        )
+    if value in (None, ""):
+        return None
+    return _parse_iso(value)
