@@ -341,6 +341,27 @@ async def _noop_heartbeat(*_args, **_kwargs) -> None:
     return None
 
 
+class _CadencePinned:
+    """The real schedule with one cadence mode named out loud.
+
+    Which branch `schedule_ready_posts` takes is decided by
+    `config.schedule.cadence["mode"]`, and the mode reaching the tick comes from a
+    process-wide `lru_cache` that `tests/conftest.py:257` reloads rather than
+    clears. A test that must run the interval branch therefore has to say so
+    itself; inheriting it from the neighbour that cached last is how the same
+    file passes alone and fails in a full run. Everything else — hours, day
+    parts — is delegated to the real object, so this pins one key and not a
+    fixture-wide fiction.
+    """
+
+    def __init__(self, inner: object, cadence: dict) -> None:
+        self._inner = inner
+        self.cadence = cadence
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
 def _world(monkeypatch) -> None:
     """Pin the two facts `_publish_one` asks about; stub the persona lookup."""
     from tgfarm import s7_publish
@@ -352,6 +373,8 @@ def _world(monkeypatch) -> None:
         dzen_requires_llm=True,
         primary_publish_max_attempts=5,
         dzen_min_gap_s=0,
+        vk_prime_hours="",
+        vk_prime_share=0.0,
     )
     monkeypatch.setattr(s7_publish, "get_settings", lambda: settings)
     monkeypatch.setattr("tgfarm.platforms.is_platform_enabled", lambda _platform: True)
@@ -554,6 +577,52 @@ def test_transition_matrix(cell, monkeypatch):
     # `publish_error` still records a verdict on an attempt it did not make.
     assert _read(subject_id) == subject_before, (
         f"{cell.id} wrote to a row it never claimed: {_read(subject_id)}"
+    )
+
+
+def test_the_matrix_survives_a_neighbours_vk_row_in_the_shared_store(monkeypatch):
+    """The settings stub must answer the whole tick, not only the rows this file seeds.
+
+    Measured, not guessed. On 2026-11-06 a whole-suite run lost eight
+    `first_slot` cells to `AttributeError: 'types.SimpleNamespace' object has no
+    attribute 'vk_prime_hours'` at `tgfarm/s7_publish/__init__.py:251`, and the
+    same file run alone passed. Neither the cadence nor the matrix changed:
+    `schedule_ready_posts` selects `status='gated' AND scheduled_at IS NULL` with
+    no channel filter (`tgfarm/s7_publish/__init__.py:395`–`:400`), so in the
+    shared session store (`tests/conftest.py:242`) the tick also picks up a
+    neighbour's gated row — and on a VK channel the interval branch calls
+    `_maybe_prime_slot`, which asks for `vk_prime_hours` and `vk_prime_share`.
+    `_world` pinned the six fields the send path reads, so it was the fake, not
+    the product, that crashed. Two sibling files already carry both fields for
+    exactly this reason (`tests/test_w19d_booked_slot.py:187`,
+    `tests/test_w22c_booked_slot_rebinding.py:191`); this pins the third, and
+    pins it through the call that actually failed rather than by hoping the
+    neighbour stays quiet.
+    """
+    from tgfarm import s7_publish
+
+    _seed_post(STATUS_GATED, platform="vk")
+    subject_id, _public = _seed_post(STATUS_GATED)
+    before = _status(subject_id)
+    _world(monkeypatch)
+    world = s7_publish.get_config()
+    monkeypatch.setattr(
+        s7_publish,
+        "get_config",
+        lambda: SimpleNamespace(
+            persona=world.persona,
+            personas=world.personas,
+            schedule=_CadencePinned(
+                world.schedule, {"mode": "interval", "min_gap_s": 300, "max_gap_s": 620}
+            ),
+        ),
+    )
+
+    gates = s7_publish.schedule_ready_posts(limit=5, blocked=s7_publish.empty_gate_report())
+
+    assert before == STATUS_GATED, before
+    assert _status(subject_id) == STATUS_SCHEDULED, (
+        f"a row this file seeded was left gated by a tick that also saw a neighbour: {gates}"
     )
 
 
