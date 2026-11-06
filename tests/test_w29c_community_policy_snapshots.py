@@ -52,9 +52,15 @@ ADVERSARIAL_TEXT = (
 
 @pytest.fixture(autouse=True)
 def _clean_seeded_snapshots():
-    """Delete exactly the rows this file seeds, whatever else is in the shared DB."""
+    """Delete exactly the rows this file seeds, whatever else is in the shared DB.
+
+    The teardown verifies its own deletion: leaving rows behind would not break a
+    counter assertion here (this file never counts the shared table), it would
+    break the *next* file that reads the rules history, and that failure would
+    look like somebody else's defect.
+    """
     yield
-    from sqlalchemy import delete
+    from sqlalchemy import delete, func, select
 
     from tgfarm.db.models import CommunityPolicySnapshot
     from tgfarm.db.session import session_scope
@@ -65,6 +71,13 @@ def _clean_seeded_snapshots():
                 CommunityPolicySnapshot.target_id.like(f"{GROUP}%")
             )
         )
+        session.flush()
+        residue = session.scalar(
+            select(func.count()).select_from(CommunityPolicySnapshot).where(
+                CommunityPolicySnapshot.target_id.like(f"{GROUP}%")
+            )
+        )
+    assert not residue, f"{residue} w29c rows survived cleanup"
 
 
 def _destination(suffix: str, **overrides) -> dict:
