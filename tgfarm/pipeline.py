@@ -33,6 +33,7 @@ from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
 from tgfarm.db.models import Cluster, CrosspostLog, PipelineRun, Post, RawItem, Source
 from tgfarm.db.session import session_scope
+from tgfarm.llm.client import stage_scope
 
 log = get_logger(__name__)
 
@@ -211,10 +212,15 @@ async def _stage(result: CycleResult, name: str, coro, *, meta: dict | None = No
     Isolation means a failed stage does not stop the other stages; it does not
     mean the cycle is unkillable. A cancellation is journalled on the way out and
     then passed back up.
+
+    The name is also the LLM budget's account. `stage_scope` is what lets the
+    per-stage call budget see who is spending; work that never passes through
+    here lands in the `unknown` bucket, which still bounds the caller but stops
+    one stage's spending from being charged to another's.
     """
     timer = StageTimer(name)
     try:
-        with timer:
+        with timer, stage_scope(name):
             value = await coro()
         payload = value if isinstance(value, dict) else {"value": value}
         result.stages[name] = {

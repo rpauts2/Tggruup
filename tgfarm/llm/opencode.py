@@ -21,7 +21,8 @@ from tgfarm.core.errors import ProviderRateLimited, ProviderUnavailable
 from tgfarm.core.logging import get_logger
 from tgfarm.core.ratelimit import RATE
 from tgfarm.core.settings import get_settings
-from tgfarm.llm.client import _Provider, record_stat
+from tgfarm.llm import resilience as res
+from tgfarm.llm.client import _Provider, _request_timeout, record_stat
 from tgfarm.llm.extract import extract_json
 
 log = get_logger(__name__)
@@ -79,6 +80,7 @@ def free_only_setting(fallback: bool = False) -> bool:
 
 class OpenCodeZen(_Provider):
     name = "opencode-zen"
+    supports_deadline = True
 
     def __init__(self, token: str, model: str, timeout: float, free_only: bool = False) -> None:
         self._token = token.strip()
@@ -145,8 +147,16 @@ class OpenCodeZen(_Provider):
         json_mode: bool,
         max_tokens: int,
         model: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         import httpx
+
+        if deadline is not None and res.now() >= deadline:
+            # The budget was already spent by the attempts that came before this
+            # provider. Opening a request nobody is left to read the answer of is
+            # how one slow gateway turns into a stage that outlives its cycle.
+            record_stat(self.name, "deadline_skipped")
+            raise ProviderUnavailable(f"zen call budget spent before {self.name} was reached")
 
         free_only = free_only_setting(self._free_only)
         model = model or await self.resolve_model(free_only)
@@ -208,7 +218,7 @@ class OpenCodeZen(_Provider):
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=_request_timeout(self._timeout, deadline)) as client:
             resp = await client.post(url, headers=headers, json=body)
 
         if resp.status_code == 429:

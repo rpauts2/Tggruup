@@ -5,6 +5,7 @@
     tgfarm cycle                one full pipeline cycle
     tgfarm serve                start the scheduler (long-running)
     tgfarm status               fleet state at a glance
+    tgfarm version              which build this process is, as stamped; never guessed
     tgfarm trends               hot clusters right now
     tgfarm posts [--status X]   list generated posts
     tgfarm show <post_id>       print one post with its quality report
@@ -162,6 +163,13 @@ def cmd_serve(args) -> int:
     host = args.host or settings.api_host
     port = args.port or settings.api_port
 
+    # The first line of a serve log should answer "which build is this" instead
+    # of making someone deduce it from a process list. Nothing here is inferred:
+    # an unstamped source tree says so, and a stamped artifact names its commit.
+    from tgfarm import buildinfo
+
+    log.info("%s", buildinfo.log_line())
+
     if host not in ("127.0.0.1", "localhost", "::1"):
         # The API can force-publish. Exposing it is a deliberate act, and the
         # token is then the only thing standing between the network and that.
@@ -280,6 +288,22 @@ def cmd_status(_args) -> int:
 
     _bootstrap()
     _print(pipeline.status())
+    return 0
+
+
+def cmd_version(_args) -> int:
+    """Name the build this process is running from.
+
+    `build_identity.json` is written by `packaging/stamp_build_info.py` at build
+    time, so a frozen artifact can report the commit it was made from. Run from
+    a source tree there is no stamp, and the honest answer is `unstamped` with
+    the tree's declared version next to it — not a SHA inferred from whatever
+    `git` happens to answer. An identity that imitates the build of a running
+    process is worse than no identity at all.
+    """
+    from tgfarm import buildinfo
+
+    _print(buildinfo.describe())
     return 0
 
 
@@ -1524,6 +1548,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_api_token.set_defaults(func=cmd_api_token)
     sub.add_parser("status", help="fleet status").set_defaults(func=cmd_status)
+    sub.add_parser("version", help="which build this process is").set_defaults(func=cmd_version)
 
     p_trends = sub.add_parser("trends", help="hot clusters")
     p_trends.add_argument("--limit", type=int, default=20)

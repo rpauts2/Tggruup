@@ -499,6 +499,14 @@ class Settings(BaseSettings):
         default="selective", alias="AI_POLICY"
     )
     ai_daily_budget: int = Field(default=30, alias="AI_DAILY_BUDGET")
+    # Wall clock one online LLM call may use in total — across every model in
+    # the chain and every retry inside it. This is not the per-request timeout:
+    # 60 s per request inside a call that has 20 s left is a permission slip for
+    # a stage that outlived its cycle window. The library default lives in
+    # `llm/resilience.CALL_BUDGET_S`; keeping the two numbers equal is what
+    # makes the fallback in `client._call_budget_s()` a no-op rather than a
+    # second, undocumented authority.
+    llm_call_budget_s: float = Field(default=20.0, alias="LLM_CALL_BUDGET_S")
 
     # AI thresholds for S5 gates
     ai_relevance_threshold: float = Field(default=7.0, alias="AI_RELEVANCE_THRESHOLD")

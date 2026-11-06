@@ -49,3 +49,6 @@ review/
 .zwork/
 *.specstory
 farm_serve*.log
+
+# --- build stamp (a build fact written by packaging/stamp_build_info.py, never source)
+/tgfarm/build_identity.json

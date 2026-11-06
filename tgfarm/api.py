@@ -6292,6 +6292,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     @app.get("/api/metrics")
     async def metrics() -> dict:
         """Counters the operator (or a dashboard) can watch over time."""
+        from tgfarm.llm import resilience as res
         from tgfarm.llm.client import get_stats
 
         def _load() -> dict:
@@ -6316,10 +6317,31 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                     {"stage": stage, "ms": int(ms)} for stage, ms in slowest
                 ],
                 "llm": get_stats(),
+                # Two numbers the failover rewrite made observable: which
+                # providers the breaker is currently refusing to call, and how
+                # many attempts each pipeline stage has spent today. Without
+                # them a healthy-looking `llm` block can hide a stage that has
+                # been offline for hours on a budget it never reached.
+                "resilience": {
+                    "breaker": res.BREAKER.snapshot(),
+                    "stage_budget": res.BUDGET.snapshot(),
+                },
                 "alerts": pipeline.collect_alerts(),
             }
 
         return await io(_load)
+
+    @app.get("/api/build")
+    async def build_api() -> dict:
+        """Which build this process is running from.
+
+        `unstamped` is a legitimate answer and is reported as one; this endpoint
+        never guesses a commit to look more certain than the artifact actually
+        is, which is the whole point of stamping it at build time.
+        """
+        from tgfarm import buildinfo
+
+        return await io(buildinfo.describe)
 
     # --------------------------------------------------------------- telegram
     @app.get("/api/telegram")

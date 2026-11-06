@@ -39,7 +39,13 @@ from tgfarm.db.session import session_scope
 from tgfarm.db.vector import pack
 from tgfarm.editorial_plan import MAX_ENTRIES
 from tgfarm.llm import policy
-from tgfarm.llm.client import LLMResponse, compose_offline_post, get_llm
+from tgfarm.llm.client import (
+    OFFLINE_MODEL,
+    OFFLINE_PROVIDER,
+    LLMResponse,
+    compose_offline_post,
+    get_llm,
+)
 from tgfarm.llm.embedding import get_embedder
 from tgfarm.s3_router import ChannelPlan
 from tgfarm.s4_generation.memory import DEFAULT_DUPLICATE_SIMILARITY, duplicate_threshold
@@ -493,20 +499,20 @@ async def generate(
             used=response.provider != "offline",
         )
     else:
-        payload, response = offline, LLMResponse("", "offline", "none", 0)
+        payload, response = offline, LLMResponse("", OFFLINE_PROVIDER, OFFLINE_MODEL, 0)
 
-    if response.provider == "offline" and not payload.get("hook"):
+    if response.provider == OFFLINE_PROVIDER and not payload.get("hook"):
         raise ProviderUnavailable(
             f"offline composer has no {persona.language} source for "
             f"{plan.cluster_public_id}"
         )
     draft = normalise(payload, persona, plan.angle, items)
-    draft.generation_provider = (
-        response.provider if response.provider != "offline" else "offline"
-    )
-    draft.generation_model = response.model or (
-        "offline" if response.provider == "offline" else ""
-    )
+    # `LLMResponse` already guarantees the pair: an offline result carries
+    # provider `offline` and model `none`, corrected in its constructor. Copying
+    # it again here with a conditional was how two spellings for the same
+    # unpublished fact could survive side by side.
+    draft.generation_provider = response.provider
+    draft.generation_model = response.model
     draft.hook_style = classify_hook_style(draft.hook)
     draft.variant = "holdout" if holdout else "a"
     draft.post_format = fmt
