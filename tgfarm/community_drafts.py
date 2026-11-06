@@ -1011,6 +1011,20 @@ async def publish_pikabu_scheduled(
         "reason": "destination policy is missing",
         "blockers": ["rules_unavailable"],
     }
+    # W29-B: the verdict above re-stamps checked_at as now, so it can never be
+    # stale; the publish must additionally stand on the *stored* proof that the
+    # rules were checked for this destination (a selector run or the maintenance
+    # rules watch wrote it).  The proof is read before this publish records its
+    # own snapshot, so the gate judges the existing history, not a row written
+    # seconds ago by the very call that asks about it.
+    from tgfarm.community_targets import check_destination_rules_proof
+
+    rules_proof = await asyncio.to_thread(
+        check_destination_rules_proof,
+        "pikabu",
+        target,
+        rules_source=str(selection.get("rules_source") or ""),
+    )
     if policy is not None:
         await asyncio.to_thread(record_policy_snapshot, policy, verdict)
     if not verdict.get("allow_publish"):
@@ -1022,6 +1036,21 @@ async def publish_pikabu_scheduled(
                 f"({verdict.get('reason') or 'unknown'})."
             ),
             "policy_verdict": verdict,
+        }
+    if not rules_proof.get("publishable"):
+        rejection = rules_proof.get("rejection") or {}
+        return {
+            "ok": False,
+            "status": "skipped",
+            "detail": (
+                "Публикация в сообщество Пикабу пропущена: проверка правил не "
+                "подтверждена сохранённым снимком "
+                f"({rejection.get('reason_code') or 'unknown'}: "
+                f"{rejection.get('reason') or 'нет подробности'})."
+            ),
+            "policy_verdict": verdict,
+            "rules_proof": rules_proof,
+            "rejected": [rejection] if rejection else [],
         }
     # Carried into every durable state below, so the queue file always says which
     # rules verdict the publisher acted on — and, after the final re-read, which

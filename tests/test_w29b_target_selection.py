@@ -23,6 +23,8 @@ selector scraping — the gate itself is the subject.
 """
 from __future__ import annotations
 
+import asyncio
+
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -260,3 +262,64 @@ def test_revalidate_style_candidate_without_history_is_refused_by_the_gate(db) -
         PLATFORM, [_candidate("w29b_newest")], now=NOW
     )
     assert result["selected"] is not None
+
+
+def _publish_selection(target: dict):
+    from tgfarm import community_drafts
+
+    async def fake_selection(_post_id, *, post_override=None):
+        return {
+            "ok": True,
+            "platform": "pikabu",
+            "selected": target,
+            "tags": ["python", "наука"],
+            "rules_source": community_targets.PIKABU_RULES,
+            "auto_publish_supported": True,
+        }
+
+    async def run():
+        return await community_drafts.publish_pikabu_scheduled(
+            "w29b_publish_gate", title="Заголовок поста", body="Текст материала для сообщества."
+        )
+
+    return fake_selection, run
+
+
+def test_publish_pikabu_refuses_destination_without_stored_rules_proof(monkeypatch) -> None:
+    """The in-memory verdict alone cannot authorise the click; history must agree."""
+    from tgfarm import community_targets as ct
+    from tgfarm.community_policy import policy_history
+
+    target = _candidate("w29b_publish_unproved")
+    fake_selection, run = _publish_selection(target)
+    monkeypatch.setattr(ct, "recommend_automatic_pikabu_target", fake_selection)
+    result = asyncio.run(run())
+    assert result["ok"] is False
+    assert result["status"] == "skipped"
+    # the freshly-assessed in-memory verdict alone WOULD have allowed publishing:
+    assert result["policy_verdict"]["allow_publish"] is True
+    # the stored proof is what refuses, visibly and with a pinned code:
+    assert [item["reason_code"] for item in result["rejected"]] == ["no_rules_snapshot"]
+    assert result["rules_proof"]["proof"]["state"] == "missing"
+    assert "no_rules_snapshot" in result["detail"]
+    # a refusal records its own check: the next attempt stands on stored history
+    assert policy_history(platform=PLATFORM, target_id="w29b_publish_unproved")
+
+
+def test_publish_pikabu_does_not_refuse_a_fresh_permitted_snapshot(monkeypatch) -> None:
+    """With a fresh stored proof the gate opens: the stop now comes from the browser stage."""
+    import pytest
+
+    from tgfarm import community_targets as ct
+
+    _record_snapshot("w29b_publish_ok")
+    target = _candidate("w29b_publish_ok")
+    fake_selection, run = _publish_selection(target)
+    monkeypatch.setattr(ct, "recommend_automatic_pikabu_target", fake_selection)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("reached-the-browser-stage")
+
+    monkeypatch.setattr("tgfarm.browser_auth.browser_session_status", boom)
+    with pytest.raises(RuntimeError, match="reached-the-browser-stage"):
+        asyncio.run(run())
