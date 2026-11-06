@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Validator for `docs/orchestration/queue.yaml`.
 
-What this tool is: a reader. It answers four questions an orchestrator otherwise
+What this tool is: a reader. It answers five questions an orchestrator otherwise
 answers from memory — is the queue internally consistent, which tasks can start
-now, who would collide if two of them started, and why is this one blocked.
+now, who would collide if two of them started, why is this one blocked, and does
+a tree outside the queue already hold bytes an active task claims.
 
 What this tool is NOT: a dispatcher. It must never launch an agent, never change
 repository state, never decide that a package is accepted. The honesty rule of the
@@ -11,7 +12,10 @@ directive is that a Python file in the product must not pretend to be an Agent
 Dispatcher, and the cheap way to keep that promise is to make it structurally
 impossible: no subprocess, no sockets, no writes. `tests/test_w25a_queue.py` asserts
 that on this module's own source, so the day someone adds `subprocess.run` here the
-queue tool stops being a lie rather than becoming one quietly.
+queue tool stops being a lie rather than becoming one quietly. The outside-tree
+claims are therefore handed IN, not probed: the caller runs `git status --porcelain`
+and passes its output (or a JSON/YAML claim file) through `--foreign-claims`; this
+module never spawns git and never reads the index itself.
 
 Exit codes: 0 consistent, 1 violations found, 2 the queue could not be read.
 """
@@ -265,8 +269,9 @@ def _check_sha_claims(tasks: list[dict[str, Any]]) -> list[Problem]:
     An audit of this project found executors naming SHAs that do not exist, so the
     queue is not allowed to be a place where that becomes an accepted fact. The check
     is deliberately file-system only (`git` is not invoked from here): the repo's own
-    object list is read through the refs file when available, and when it is not we
-    report `UNKNOWN` rather than pretending.
+    object list is read through the refs files when available — following the
+    `gitdir:` pointer so linked worktrees see the common refs too — and when it is
+    not we report `UNKNOWN` rather than pretending.
     """
     problems: list[Problem] = []
     refs = _known_shas()
@@ -282,16 +287,48 @@ def _check_sha_claims(tasks: list[dict[str, Any]]) -> list[Problem]:
     return problems
 
 
+def _git_dirs(root: Path) -> tuple[Path | None, Path | None]:
+    """Resolve (gitdir, commondir) for a plain checkout or a linked worktree.
+
+    Every executor in this project lives in a linked worktree, where `.git` is a
+    *file* holding `gitdir: …`, and the refs the SHA rule needs are under the
+    common dir. A previous version only looked at `<root>/.git/…` as a directory,
+    so inside a worktree `_known_shas` silently returned None and the unknown-sha
+    rule went blind in exactly the trees where fabricated SHAs are written.
+    """
+    git = root / ".git"
+    if git.is_dir():
+        return git, git
+    if git.is_file():
+        pointer = None
+        for line in git.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("gitdir:"):
+                pointer = line.split(":", 1)[1].strip()
+                break
+        if not pointer:
+            return None, None
+        gitdir = Path(pointer) if pointer.startswith(("/", "\\")) else (root / pointer).resolve()
+        common = gitdir
+        commondir_file = gitdir / "commondir"
+        if commondir_file.is_file():
+            rel = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+            common = (gitdir / rel).resolve()
+        return gitdir, common
+    return None, None
+
+
 def _known_shas() -> set[str] | None:
-    git_dir = REPO_ROOT / ".git"
-    packed = git_dir / "packed-refs"
+    git_dir, common_dir = _git_dirs(REPO_ROOT)
+    if git_dir is None or common_dir is None:
+        return None
+    packed = common_dir / "packed-refs"
     found: set[str] = set()
     if packed.exists():
         for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
             parts = line.split()
             if len(parts) >= 2 and len(parts[0]) == 40:
                 found.add(parts[0])
-    refs_dir = git_dir / "refs"
+    refs_dir = common_dir / "refs"
     if refs_dir.exists():
         for path in refs_dir.rglob("*"):
             if path.is_file():
@@ -304,7 +341,155 @@ def _known_shas() -> set[str] | None:
     return found | {sha[:7] for sha in found}
 
 
-def validate(tasks: list[dict[str, Any]]) -> tuple[list[Problem], list[dict[str, Any]]]:
+#: States that no longer hold files: two owners may collide only over work still open.
+RELEASED = ("INTEGRATED", "VERIFIED", "FAILED", "CANCELLED")
+
+#: Owner shown for unstructured foreign claims when the caller names none.
+DEFAULT_FOREIGN_OWNER = "working-tree"
+
+#: The XY columns `git status --porcelain` may print; anything else cannot start
+#: a porcelain line, which is what keeps YAML and status dumps apart.
+_PORCELAIN_XY = set("MADRCU?!T ")
+
+
+def _porcelain_path(token: str) -> str:
+    """Extract the touched path from one `git status --porcelain` field.
+
+    Handles the XY-prefix columns and the rename form `old -> new`; a rename
+    claims the NEW side, because that is where the bytes move to.
+    """
+    text = token.strip()
+    if not text:
+        return ""
+    if "->" in text:
+        text = text.split("->", 1)[1].strip()
+    parts = text.split(None, 1)
+    if len(parts) == 2 and len(parts[0]) <= 2 and not parts[0].endswith(("/", ".py")):
+        text = parts[1]
+    return text.strip().strip('"').replace("\\", "/")
+
+
+def _looks_porcelain(text: str) -> bool:
+    """True when any line carries the `XY␠path` shape of `git status --porcelain`.
+
+    Checked before the structured parse on purpose: `?? path` is a legal YAML
+    explicit-key document, so a porcelain dump fed through `safe_load` first
+    returns plausible-looking nonsense instead of failing — the worst kind of
+    input mishandling for a detector whose job is precisely to see the claim.
+    """
+    for line in text.splitlines():
+        if len(line) > 3 and line[2] == " " and line[3] != " ":
+            xy = line[:2]
+            if all(c in _PORCELAIN_XY for c in xy) and any(c != " " for c in xy):
+                return True
+    return False
+
+
+def _load_foreign_claims(spec: str, default_owner: str) -> list[dict[str, Any]]:
+    """Normalize a caller-supplied claim source into [{owner, paths}, …].
+
+    Accepted shapes, tried in this order: a path to a file (JSON/YAML list of
+    `{owner, paths}` mappings, JSON/YAML list of path strings, or a plain-text
+    `git status --porcelain` dump), or the same shapes inline as the argument.
+    Nothing here shells out to git — the read-only guarantee means the data is
+    handed in, never probed.
+    """
+    candidate = Path(spec)
+    text = (candidate.read_text(encoding="utf-8", errors="replace")
+            if candidate.is_file() else spec)
+    records: list[dict[str, Any]] = []
+    loaded: Any = None
+    if not _looks_porcelain(text):
+        try:
+            import yaml  # noqa: PLC0415 - same optional dependency as the queue itself
+            loaded = yaml.safe_load(text)
+        except ModuleNotFoundError:  # pragma: no cover - depends on the interpreter
+            loaded = None
+        except Exception:
+            loaded = None
+    if isinstance(loaded, dict):
+        loaded = [loaded]
+    if isinstance(loaded, list) and loaded and all(isinstance(item, dict) for item in loaded):
+        for item in loaded:
+            paths = item.get("paths") or item.get("allowed_paths") or []
+            records.append({"owner": str(item.get("owner") or default_owner),
+                            "paths": [str(p) for p in paths if str(p).strip()]})
+        return records
+    if isinstance(loaded, list) and loaded and all(isinstance(item, str) for item in loaded):
+        lines = [str(item) for item in loaded]
+    elif isinstance(loaded, str):
+        lines = [line for chunk in loaded.split(",") for line in chunk.splitlines()]
+    else:
+        lines = text.splitlines()
+    paths = [p for p in (_porcelain_path(line) for line in lines) if p]
+    if paths:
+        records.append({"owner": default_owner, "paths": paths})
+    return records
+
+
+def _check_foreign_claims(tasks: list[dict[str, Any]], claims: list[dict[str, Any]]) -> list[Problem]:
+    """Collisions between the queue and dirty paths that come from OUTSIDE it.
+
+    Two rule ids, split by what they prove:
+
+    * `foreign-claim` — the path is dirty in a foreign tree while a queue record
+      that is not live-claiming it (BLOCKED, RECOVERY_REQUIRED, …) still reserves
+      it for an owner. Nobody is running twice, but the reservation is being
+      walked over.
+    * `duplicate-active` — a CLAIMING queue record and a foreign owner hold the
+      same bytes at the same time. This is the W28-A / missions-`tgfarm/llm/client.py`
+      shape: two live owners, one file, and the collision is invisible until the
+      two trees merge.
+    """
+    problems: list[Problem] = []
+    for claim in claims:
+        owner = str(claim.get("owner") or DEFAULT_FOREIGN_OWNER)
+        for path in claim.get("paths") or []:
+            path_s = str(path)
+            for task in tasks:
+                status = str(task.get("status"))
+                if status in RELEASED:
+                    continue
+                claimed = [str(p) for p in (task.get("allowed_paths") or [])]
+                if not any(_path_overlap(p, path_s) for p in claimed):
+                    continue
+                task_owner = str(task.get("owner_agent") or "")
+                if task_owner == owner:
+                    continue  # the foreign session registered its claim; known reality
+                tid = str(task.get("id"))
+                if status in CLAIMING:
+                    problems.append(Problem(
+                        tid, "duplicate-active",
+                        f"owners `{owner}` (outside the queue) and `{task_owner}` "
+                        f"({tid}, `{status}`) both hold `{path_s}`"))
+                else:
+                    problems.append(Problem(
+                        tid, "foreign-claim",
+                        f"`{path_s}` is dirty for `{owner}` while `{tid}` "
+                        f"(`{status}`, owner `{task_owner}`) still reserves it"))
+    for i, a in enumerate(claims):
+        for b in claims[i + 1:]:
+            owner_a, owner_b = str(a.get("owner")), str(b.get("owner"))
+            if owner_a == owner_b:
+                continue
+            hits = sorted({str(p) for p in (a.get("paths") or [])
+                           for q in (b.get("paths") or []) if _path_overlap(str(p), str(q))})
+            if hits:
+                problems.append(Problem(
+                    f"{owner_a}+{owner_b}", "duplicate-active",
+                    f"foreign owners `{owner_a}` and `{owner_b}` both claim {hits}"))
+    return problems
+
+
+def validate(
+    tasks: list[dict[str, Any]],
+    foreign_claims: list[dict[str, Any]] | None = None,
+) -> tuple[list[Problem], list[dict[str, Any]]]:
+    """Every rule that needs only the queue, plus the outside-tree rules when fed.
+
+    `foreign_claims` defaults to None so every existing caller keeps the exact
+    old behaviour: the cross-tree checks are additive, never a silent requirement.
+    """
     problems: list[Problem] = []
     for task in tasks:
         problems += _check_fields(task)
@@ -314,6 +499,8 @@ def validate(tasks: list[dict[str, Any]]) -> tuple[list[Problem], list[dict[str,
     problems += _check_cycles(tasks)
     problems += _check_duplicates(tasks)
     problems += _check_sha_claims(tasks)
+    if foreign_claims:
+        problems += _check_foreign_claims(tasks, foreign_claims)
 
     by_id = {str(t.get("id")): t for t in tasks}
     for task in tasks:
@@ -366,13 +553,30 @@ def main(argv: list[str] | None = None) -> int:
     _configure_streams()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--queue", default=str(QUEUE_PATH), help="path to queue.yaml")
+    parser.add_argument(
+        "queue_path", nargs="?", default=None,
+        help="queue.yaml as a positional argument (alternative to --queue)",
+    )
     parser.add_argument("--explain", metavar="ID", help="why this task cannot move")
     parser.add_argument("--ready", action="store_true", help="list BACKLOG tasks whose dependencies are met")
     parser.add_argument("--owners", action="store_true", help="list every file claimed by an active task")
+    parser.add_argument(
+        "--foreign-claims",
+        metavar="SPEC",
+        action="append",
+        default=[],
+        help="claims from outside the queue: inline paths (e.g. `git status --porcelain` "
+             "output), a path to such a dump, or a JSON/YAML list of {owner, paths}",
+    )
+    parser.add_argument(
+        "--foreign-owner",
+        default=DEFAULT_FOREIGN_OWNER,
+        help="owner name for unstructured foreign claims (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        loaded = _load_raw(Path(args.queue))
+        loaded = _load_raw(Path(args.queue_path or args.queue))
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         print(f"queue unreadable: {exc}", file=sys.stderr)
         return 2
@@ -390,7 +594,15 @@ def main(argv: list[str] | None = None) -> int:
               + ("; ".join(reasons) if reasons else "nothing in the queue blocks it"))
         return 0
 
-    problems, _ = validate(tasks)
+    try:
+        foreign: list[dict[str, Any]] = []
+        for spec in args.foreign_claims:
+            foreign += _load_foreign_claims(spec, args.foreign_owner)
+    except OSError as exc:
+        print(f"foreign claims unreadable: {exc}", file=sys.stderr)
+        return 2
+
+    problems, _ = validate(tasks, foreign_claims=foreign)
 
     if args.owners:
         for task in tasks:

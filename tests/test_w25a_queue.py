@@ -241,6 +241,96 @@ def test_the_same_goal_may_not_be_active_twice() -> None:
     assert "duplicate-active" in _rules(problems)
 
 
+# ------------------------------------------------------------- foreign (outside-queue) claims
+# The real W25-B collision, stated once for the whole file: while W28-A delivered
+# LLM reliability as a reviewed package on its branch, a second session was editing
+# the same `tgfarm/llm/client.py` bytes, uncommitted, in the shared main tree. The
+# queue alone cannot see that; a caller-fed `git status` input can.
+
+_MISSIONS_OWNER = "missions/t1-t4 session"
+_W28A_OWNER = "ageneral-purpose-43372317f891f137"
+
+
+def test_a_foreign_live_claim_on_a_queue_file_is_duplicate_active_naming_both_owners() -> None:
+    """Regression of the client.py collision: two owners, one file, one problem."""
+    w28a = _task(id="W28-A", owner_agent=_W28A_OWNER, allowed_paths=["tgfarm/llm/client.py"])
+    claims = [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/llm/client.py"]}]
+    problems, _ = qc.validate([w28a], foreign_claims=claims)
+    hits = [p for p in problems if p.rule == "duplicate-active"]
+    assert hits, problems
+    detail = hits[0].detail
+    assert _MISSIONS_OWNER in detail and _W28A_OWNER in detail, detail
+    assert "tgfarm/llm/client.py" in detail, detail
+
+
+def test_a_foreign_claim_on_a_reserved_but_idle_file_is_foreign_claim() -> None:
+    reserved = _task(id="T-9", status="BLOCKED", owner_agent="someone-else",
+                     allowed_paths=["tgfarm/editorial_plan.py"],
+                     worktree=None, branch=None)
+    claims = [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/editorial_plan.py"]}]
+    problems, _ = qc.validate([reserved], foreign_claims=claims)
+    assert "foreign-claim" in _rules(problems)
+
+
+def test_a_registered_foreign_owner_produces_no_problem() -> None:
+    """When the session writes its own claim into the queue, reality is known."""
+    registered = _task(id="MS-T1", status="BLOCKED", owner_agent=_MISSIONS_OWNER,
+                       allowed_paths=["tgfarm/llm/client.py"], worktree=None, branch=None)
+    claims = [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/llm/client.py"]}]
+    problems, _ = qc.validate([registered], foreign_claims=claims)
+    assert not [p for p in problems if p.rule in ("foreign-claim", "duplicate-active")], problems
+
+
+def test_two_foreign_owners_overlapping_each_other_are_duplicate_active() -> None:
+    claims = [
+        {"owner": _MISSIONS_OWNER, "paths": ["tgfarm/llm/reliability.py"]},
+        {"owner": "another-session", "paths": ["tgfarm/llm/reliability.py"]},
+    ]
+    problems, _ = qc.validate([_task(id="T-0", status="BACKLOG", allowed_paths=[])],
+                              foreign_claims=claims)
+    hits = [p for p in problems if p.rule == "duplicate-active"]
+    assert hits and _MISSIONS_OWNER in hits[0].detail and "another-session" in hits[0].detail
+
+
+def test_porcelain_status_output_is_accepted_as_inline_claims() -> None:
+    porcelain = (" M tgfarm/llm/client.py\n"
+                 "?? tgfarm/llm/reliability.py\n"
+                 "R  tgfarm/old.py -> tgfarm/new.py\n")
+    claims = qc._load_foreign_claims(porcelain, _MISSIONS_OWNER)
+    assert claims == [{"owner": _MISSIONS_OWNER,
+                       "paths": ["tgfarm/llm/client.py", "tgfarm/llm/reliability.py",
+                                 "tgfarm/new.py"]}], claims
+
+
+def test_a_json_claim_file_is_accepted(tmp_path) -> None:
+    import json
+
+    claim_file = tmp_path / "claims.json"
+    claim_file.write_text(json.dumps(
+        [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/cli.py"]}]), encoding="utf-8")
+    claims = qc._load_foreign_claims(str(claim_file), qc.DEFAULT_FOREIGN_OWNER)
+    assert claims == [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/cli.py"]}]
+
+
+def test_validate_without_foreign_claims_keeps_the_old_ruleset(tmp_path) -> None:
+    head = _real_sha()
+    task = _task(base_sha=head)
+    old, _ = qc.validate([task])
+    new, _ = qc.validate([task], foreign_claims=[])
+    assert [str(p) for p in old] == [str(p) for p in new]
+
+
+def test_main_reports_foreign_problems_with_exit_one(tmp_path) -> None:
+    queue = _write(tmp_path, _task(id="W28-A", owner_agent=_W28A_OWNER,
+                                   allowed_paths=["tgfarm/llm/client.py"],
+                                   base_sha=_real_sha()))
+    assert qc.main(["--queue", str(queue)]) == 0
+    claims_file = tmp_path / "claims.yaml"
+    claims_file.write_text(
+        f"- owner: {_MISSIONS_OWNER}\n  paths: [tgfarm/llm/client.py]\n", encoding="utf-8")
+    assert qc.main(["--queue", str(queue), "--foreign-claims", str(claims_file)]) == 1
+
+
 # ---------------------------------------------------------------- sha honesty
 def test_a_base_sha_that_the_repo_does_not_advertise_is_flagged() -> None:
     problems, _ = qc.validate([_task(base_sha="f" * 40)])
@@ -260,15 +350,21 @@ def _real_sha() -> str:
     A bare `refs/heads/main` lookup skips silently on any repository that has been
     packed, and a skipped guard is how the encoding mutant survived its first run:
     the test that was supposed to prove it never executed at all.
+
+    HEAD is resolved through `qc._git_dirs`, so this works in the main checkout and
+    in a linked executor worktree alike, where `.git` is a `gitdir:` pointer file;
+    branch refs live under the common dir, HEAD lives under the worktree's own dir.
     """
-    head = (REPO_ROOT / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    gitdir, common = qc._git_dirs(REPO_ROOT)
+    assert gitdir is not None and common is not None, f"{REPO_ROOT} is not a git checkout"
+    head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
     if not head.startswith("ref:"):
         return head[5:] if len(head) == 40 else head
     ref_name = head[5:]
-    loose = REPO_ROOT / ".git" / ref_name
+    loose = common / ref_name
     if loose.exists():
         return loose.read_text(encoding="utf-8").strip()
-    packed = REPO_ROOT / ".git" / "packed-refs"
+    packed = common / "packed-refs"
     if packed.exists():
         for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("#") or not line.strip():
