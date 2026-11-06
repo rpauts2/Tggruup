@@ -670,23 +670,27 @@ class LLMClient:
             budget = res.CALL_BUDGET_S
         return max(1.0, budget)
 
-    def _daily_attempts(self) -> int:
-        """Remaining online-call attempts for today, from the one real budget.
+    def _daily_budget(self) -> int:
+        """The operator's own daily figure, passed through untouched.
 
-        `ai_daily_budget` is the operator's single number for "how many online
-        calls per day". `llm/policy.py` spends it on calls that produced text;
-        this spends it on calls that were *attempted*. Taking the smaller of
-        the two views means a doomed retry storm, which `policy` never charges,
-        cannot buy more attempts than the operator allowed — and neither path
-        can exceed the figure an operator set.
+        `ai_daily_budget` is the single number for "how many online calls per
+        day". `llm/policy.py` charges it only for calls that produced text;
+        `resilience.AttemptBudget` also counts the attempts that never did,
+        which is the half the live log proved is unbounded (8 506 doomed calls
+        against a 2 000/day budget that never filled). One budget, two views:
+        the subtraction of what is already spent lives in the budget object,
+        so this cannot double-charge.
         """
         try:
-            budget = int(getattr(self._settings, "ai_daily_budget", 0) or 0)
+            return max(0, int(getattr(self._settings, "ai_daily_budget", 0) or 0))
         except (TypeError, ValueError):
-            budget = 0
-        return max(0, budget - res.BUDGET.spent_all())
+            return 0
 
-    async def _resolve(self, blocked: list[str] | None = None) -> _Provider | None:
+    async def _resolve(
+        self,
+        blocked: list[str] | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> _Provider | None:
         """First provider that is configured, not parked and not breaker-open.
 
         `blocked` collects *why* a provider was skipped, so the operator who
@@ -694,7 +698,7 @@ class LLMClient:
         stopped asking". Skipping a breaker-open provider is not a failure: it
         is the refusal to keep hammering a thing that already said no.
         """
-        if self._resolved is not None:
+        if self._resolved is not None and self._resolved.name not in exclude:
             provider = self._resolved
             if not res.BREAKER.allow(provider.name):
                 if blocked is not None:
@@ -709,6 +713,11 @@ class LLMClient:
                     log.debug("provider %s re-probe failed: %s", provider.name, exc)
                 self._resolved = None
         for provider in self._providers:
+            if provider.name in exclude:
+                # Already refused inside this call: retrying it would spend the
+                # attempt on the provider that just said no, which is why the
+                # old chain never reached a healthy second gateway.
+                continue
             if not res.BREAKER.allow(provider.name):
                 if blocked is not None:
                     blocked.append(
@@ -727,6 +736,8 @@ class LLMClient:
             # the slot back, or the breaker would stay locked on a probe that
             # was never made.
             res.BREAKER.release_probe(provider.name)
+        if exclude and blocked is not None:
+            blocked.append(f"excluded_this_call:{'|'.join(sorted(exclude))}")
         return None
 
     async def ensure_available(self) -> bool:
@@ -823,13 +834,25 @@ class LLMClient:
         attempts = max(1, int(self._settings.llm_max_retries or 1))
         tried: list[str] = []
         blocked: list[str] = []
+        # Providers that refused inside this call. Without the exclusion the
+        # retry loop re-resolved to provider[0] every attempt — `_down` on a
+        # 429 or a breaker trip was the only thing that ever moved a call to
+        # the next gateway, so a three-attempt call could spend all three on
+        # the same refusing provider and never fail over.
+        refused: set[str] = set()
         spent = 0
         reason = "no provider configured"
         last_error: Exception | None = None
 
         for attempt in range(attempts):
             blocked.clear()
-            provider = await self._resolve(blocked)
+            provider = await self._resolve(blocked, exclude=frozenset(refused))
+            if provider is None and refused:
+                # The whole chain refused: start the round again, otherwise a
+                # single-provider farm would get one attempt per call instead
+                # of `llm_max_retries`.
+                refused.clear()
+                provider = await self._resolve(blocked)
             if provider is None:
                 if blocked:
                     # The breaker is the whole answer: we are not calling
@@ -841,7 +864,7 @@ class LLMClient:
                     reason = "no provider available"
                 break
             if not res.BUDGET.try_spend(
-                stage, daily_budget=self._daily_attempts(), model_count=self._model_count()
+                stage, daily_budget=self._daily_budget(), model_count=self._model_count()
             ):
                 reason = f"stage budget spent ({stage})"
                 record_stat("resilience", "stage_budget_denied")
@@ -859,11 +882,22 @@ class LLMClient:
                     provider, system, prompt, json_mode=json_mode, max_tokens=max_tokens,
                     model=model, deadline=budget.started_at + budget.limit_s,
                 )
+                parsed: Any = None
+                if json_mode:
+                    # Inside the try on purpose: `extract_json` raises when the
+                    # body holds no object at all, and that must go down the
+                    # same ladder as a refused call — a prose answer from a
+                    # live model is a failed generation, not a crash in S4.
+                    parsed = extract_json(text)
+                    if not isinstance(parsed, dict):
+                        record_stat(provider.name, "json_unparsable")
+                        raise ProviderUnavailable("expected a JSON object")
             except ProviderRateLimited as exc:
                 last_error = exc
                 tripped = res.BREAKER.on_failure(provider.name)
                 record_stat(provider.name, "rate_limited_call")
                 self._resolved = None
+                refused.add(provider.name)
                 told = max(0.0, float(getattr(exc, "retry_after", 0.0) or 0.0))
                 wait = min(told, res.MAX_WAIT_S, budget.remaining())
                 if told > res.MAX_WAIT_S:
@@ -900,6 +934,7 @@ class LLMClient:
                 tripped = res.BREAKER.on_failure(provider.name)
                 record_stat(provider.name, "errors")
                 self._resolved = None
+                refused.add(provider.name)
                 remaining = budget.remaining()
                 wait = res.backoff_delay(attempt, ceiling=min(res.BACKOFF_CAP_S, remaining))
                 if remaining <= wait + 0.5:
@@ -917,18 +952,6 @@ class LLMClient:
                         res.BREAKER.retry_in(provider.name),
                     )
                 continue
-            parsed: Any = None
-            if json_mode:
-                parsed = extract_json(text)
-                if not isinstance(parsed, dict):
-                    # A malformed body is a failed generation, not a generated
-                    # one: same retry ladder as a refused call, same honest
-                    # offline ending if the ladder runs out.
-                    last_error = ProviderUnavailable("expected a JSON object")
-                    res.BREAKER.on_failure(provider.name)
-                    record_stat(provider.name, "json_unparsable")
-                    self._resolved = None
-                    continue
             res.BREAKER.on_success(provider.name)
             record_stat(provider.name, "calls")
             record_stat(provider.name, "retries", float(attempt))

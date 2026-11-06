@@ -210,8 +210,16 @@ async def test_an_open_breaker_shortcuts_without_a_single_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_next_provider_in_the_chain_still_gets_traffic(monkeypatch):
-    """A breaker is per provider, so one dead gateway must not offline the farm."""
+async def test_a_second_provider_answers_without_waiting_for_the_first_to_trip(monkeypatch):
+    """Failover inside one call: one refusal moves to the next gateway.
+
+    This expectation *changed*. Before W28-A `_resolve()` restarted from
+    provider[0] on every attempt, so a chain of [dead, alive] spent all three
+    retries on the dead one and only ever reached `alive` once `_down` was set
+    by a 429 or a 401 — a 503 chain never failed over, which is the outage the
+    live log shows. The old expectation ("the breaker must reach its threshold
+    before the neighbour is used") was the defect.
+    """
     clock = _Clock()
     _install(clock)
     monkeypatch.setattr(LLMClient, "_call_budget_s", lambda self: 600.0)
@@ -227,7 +235,8 @@ async def test_the_next_provider_in_the_chain_still_gets_traffic(monkeypatch):
     assert response.provider == "alive"
     assert response.model == "alive-model"
     assert response.is_model_generation is True
-    assert dead.calls == res.BREAKER.threshold
+    assert dead.calls == 1, f"the chain re-asked the refused gateway {dead.calls} times"
+    assert alive.calls == 1
 
 
 @pytest.mark.asyncio

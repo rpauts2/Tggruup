@@ -347,15 +347,18 @@ class AttemptBudget:
             self._stage_denied = 0
 
     def stage_allowance(self, stage: str, *, daily_budget: int, model_count: int = 12) -> int:
-        """Attempts this stage may still spend right now."""
+        """Attempts this stage may still spend right now.
+
+        Two ceilings compose, and the smaller wins: this stage's own headroom
+        and the operator's `ai_daily_budget` minus everything already spent
+        today. Same unit for both — one online call attempt — so there is one
+        ledger with two views, not a second budget an operator has to remember.
+        """
         self._roll()
         cap = min(MAX_STAGE_ATTEMPTS, max(STAGE_ATTEMPT_FLOOR, int(model_count)))
-        # The daily budget is in the same unit here: online call attempts.
-        # Fail-safe on disagreement — whichever authority is smaller wins, so a
-        # stalled counter can never buy more calls than the ledger allows.
-        allowance = min(cap, max(0, int(daily_budget)))
-        used = self._spent.get(_stage_key(stage), 0)
-        return max(0, allowance - used)
+        stage_left = cap - self._spent.get(_stage_key(stage), 0)
+        day_left = max(0, int(daily_budget)) - sum(self._spent.values())
+        return max(0, min(stage_left, day_left))
 
     def try_spend(self, stage: str, *, daily_budget: int, model_count: int = 12) -> bool:
         """Consume one attempt. False means the caller must take the honest path."""
