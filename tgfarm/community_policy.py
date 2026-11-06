@@ -37,7 +37,7 @@ Contract decisions (2026-11-04)
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 import hashlib
 import logging
 import re
@@ -841,7 +841,7 @@ def record_rules_snapshot(
     excerpt and changes exactly one thing — the hash.
     """
     identity = _destination_identity(destination)
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     if not identity["platform"] or not identity["target_id"]:
         return {
             "recorded": False,
@@ -993,7 +993,7 @@ def rules_freshness(
         "verdict_status": None,
         "target_key": key,
     }
-    moment = _as_utc(now) or datetime.now(timezone.utc)
+    moment = _as_utc(now) or datetime.now(UTC)
     try:
         from sqlalchemy import select
 
@@ -1103,8 +1103,8 @@ def _as_utc(value: Any) -> datetime | None:
     that an unmeasured age stays visibly unmeasured.
     """
     if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(
-            timezone.utc
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(
+            UTC
         )
     if value in (None, ""):
         return None
