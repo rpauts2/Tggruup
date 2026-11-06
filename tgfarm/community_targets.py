@@ -3,11 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from tgfarm.community_policy import inert_external_text
+from tgfarm.community_policy import (
+    DEFAULT_MAX_AGE_HOURS,
+    FRESHNESS_FRESH,
+    FRESHNESS_MISSING,
+    FRESHNESS_STALE,
+    FRESHNESS_UNREAD,
+    assess_policy,
+    inert_external_text,
+    policy_from_candidate,
+    rules_freshness,
+)
 from tgfarm.core.text import content_tokens, normalize
 
 PIKABU_DIRECTORY = "https://pikabu.ru/communities/all"
@@ -824,3 +835,212 @@ async def recommend_automatic_pikabu_target(
         ),
         "candidates": result.get("candidates", []),
     }
+
+
+# --------------------------------------------------------------------------
+# Destination selection with stored rules proof (W29-B)
+# --------------------------------------------------------------------------
+#
+# Why this exists: `recommend_automatic_pikabu_target` chooses the first
+# candidate whose *in-memory* flags say `recommended` / `rules_available` /
+# "no blockers", and `publish_pikabu_scheduled` re-assesses a policy that
+# :func:`tgfarm.community_policy.policy_from_candidate` has just stamped with
+# ``checked_at = now`` — an in-memory re-assessment can therefore never be
+# stale by construction, and neither path ever asks the
+# ``community_policy_snapshots`` table what was actually proven and when.
+# A rules verdict that was never stored cannot justify a publish, so this
+# module refuses, by measurement, the three states the live farm allowed:
+# no snapshot ever stored, a snapshot older than the freshness window, and a
+# verdict that does not permit publishing.  Every refusal is returned in
+# ``rejected`` with a reason code from the closed vocabulary below plus a
+# short human reason; a refusal is never a silent skip.
+
+#: Closed vocabulary of rejection reason codes.  A code outside this tuple
+#: must never be invented from page text or from a stored row: the reason
+#: describes *our* gate outcome, not the destination's opinion about itself.
+REJECT_UNIDENTIFIABLE = "unidentifiable_destination"
+REJECT_NO_SNAPSHOT = "no_rules_snapshot"
+REJECT_SNAPSHOT_UNREAD = "rules_snapshot_unread"
+REJECT_SNAPSHOT_STALE = "rules_snapshot_stale"
+REJECT_VERDICT_DENIES = "verdict_denies_publish"
+TARGET_REJECTION_CODES = (
+    REJECT_UNIDENTIFIABLE,
+    REJECT_NO_SNAPSHOT,
+    REJECT_SNAPSHOT_UNREAD,
+    REJECT_SNAPSHOT_STALE,
+    REJECT_VERDICT_DENIES,
+)
+
+
+def _destination_proof_id(candidate: dict[str, Any]) -> str:
+    """Stored destination id of one selector candidate.
+
+    Same fallback chain :func:`tgfarm.community_policy.policy_from_candidate`
+    uses for ``target_id`` (slug, then path, then name), so the key asked of
+    the rules history is the key the snapshot writer wrote.
+    """
+    return str(
+        candidate.get("slug") or candidate.get("path") or candidate.get("target_id") or ""
+    ).strip()
+
+
+def check_destination_rules_proof(
+    platform: str,
+    candidate: dict[str, Any] | None,
+    *,
+    rules_source: str = "",
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Ask the two questions a publish must answer about one destination.
+
+    1. does the destination's *live* policy verdict allow publishing —
+       :func:`tgfarm.community_policy.assess_policy` on the candidate's own
+       structured fields; page text is data and never a permission;
+    2. does the stored rules history prove that check —
+       :func:`tgfarm.community_policy.rules_freshness` must answer ``fresh``
+       *and* carry a stored ``verdict_status`` of ``ok``.
+
+    Returns ``{"publishable": bool, "proof": freshness dict, "verdict": dict,
+    "rejection": None or a rejected-list entry}``.  A broken or empty store is
+    a refusal in the return value, never an exception the caller might
+    mistake for a skip.
+    """
+    candidate = candidate if isinstance(candidate, dict) else {}
+    target_id = _destination_proof_id(candidate)
+    if not target_id:
+        return {
+            "publishable": False,
+            "proof": {},
+            "verdict": {},
+            "rejection": {
+                "destination_id": "",
+                "platform": platform,
+                "reason_code": REJECT_UNIDENTIFIABLE,
+                "reason": (
+                    "the candidate carries no slug/path/target_id, so no stored "
+                    "rules check can even be looked up for it"
+                ),
+            },
+        }
+
+    policy = policy_from_candidate(platform, candidate, rules_source=rules_source)
+    verdict = assess_policy(policy, max_age_hours=max_age_hours, now=now)
+    if not verdict.get("allow_publish"):
+        blockers = ", ".join(str(item) for item in (verdict.get("blockers") or ()))
+        return {
+            "publishable": False,
+            "proof": {},
+            "verdict": verdict,
+            "rejection": {
+                "destination_id": target_id,
+                "platform": platform,
+                "reason_code": REJECT_VERDICT_DENIES,
+                "reason": (
+                    "the destination's own rules verdict does not allow "
+                    f"publishing: {verdict.get('reason') or blockers or 'no reason given'}"
+                ),
+                "blockers": list(verdict.get("blockers") or ()),
+            },
+        }
+
+    proof = rules_freshness(platform, target_id, max_age_hours=max_age_hours, now=now)
+    state = str(proof.get("state") or "")
+    if state == FRESHNESS_MISSING:
+        code = REJECT_NO_SNAPSHOT
+        text = (
+            "no rules snapshot has ever been stored for this destination; the "
+            "check exists only in memory and cannot justify a publish"
+        )
+    elif state == FRESHNESS_STALE:
+        code = REJECT_SNAPSHOT_STALE
+        text = (
+            "the stored rules snapshot is older than the freshness window: "
+            f"{proof.get('reason') or 're-read the rules before publishing'}"
+        )
+    elif state == FRESHNESS_FRESH:
+        stored_verdict = str(proof.get("verdict_status") or "")
+        if stored_verdict == "ok":
+            return {"publishable": True, "proof": proof, "verdict": verdict, "rejection": None}
+        code = REJECT_VERDICT_DENIES
+        text = (
+            f"the stored snapshot's verdict was {stored_verdict or 'unknown'!r}; "
+            "only a fresh snapshot whose verdict allowed publishing justifies a publish"
+        )
+    elif state == FRESHNESS_UNREAD:
+        code = REJECT_SNAPSHOT_UNREAD
+        text = (
+            "a rules snapshot row exists but proves nothing: "
+            + str(proof.get('reason') or 'unreadable rules history')
+        )
+    else:
+        code = REJECT_SNAPSHOT_UNREAD
+        text = (
+            "the rules store answered with an unknown state "
+            + repr(state or 'empty')
+            + "; treated as unproven"
+        )
+    return {
+        "publishable": False,
+        "proof": proof,
+        "verdict": verdict,
+        "rejection": {
+            "destination_id": target_id,
+            "platform": platform,
+            "reason_code": code,
+            "reason": text,
+        },
+    }
+
+
+def select_destination_with_rules_proof(
+    platform: str,
+    candidates: list[dict[str, Any]] | None,
+    *,
+    rules_source: str = "",
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Choose the first candidate that can prove its rules were checked.
+
+    Input order is the selection priority (the live selectors already sort by
+    ``recommended`` then score).  Returns ``{"selected": candidate | None,
+    "rejected": [entry, ...], "proof": freshness-of-selected, "detail": str}``.
+    Every candidate examined before the winner — or every candidate, when
+    none wins — appears in ``rejected`` with ``destination_id``, a
+    ``reason_code`` from :data:`TARGET_REJECTION_CODES` and a short human
+    ``reason``.  An empty candidate list selects nothing and refuses nothing:
+    there was no destination to evaluate, which is a different answer from
+    refusing every one of them.
+    """
+    rejected: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
+    selected_proof: dict[str, Any] = {}
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        outcome = check_destination_rules_proof(
+            platform,
+            candidate,
+            rules_source=rules_source,
+            max_age_hours=max_age_hours,
+            now=now,
+        )
+        if outcome["publishable"]:
+            selected = candidate
+            selected_proof = outcome["proof"]
+            break
+        rejected.append(outcome["rejection"])
+    if selected is not None:
+        detail = (
+            f"selected {_destination_proof_id(selected)}: its rules snapshot is "
+            "stored, fresh, and its verdict allowed publishing"
+        )
+    elif rejected:
+        detail = (
+            f"no destination passed the stored-rules gate "
+            f"({len(rejected)} refused, each with its reason)"
+        )
+    else:
+        detail = "no candidates were offered, so nothing was selected or refused"
+    return {"selected": selected, "rejected": rejected, "proof": selected_proof, "detail": detail}
