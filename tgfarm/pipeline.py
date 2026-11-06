@@ -2323,6 +2323,20 @@ async def _channel_sync_tick() -> dict:
         report = await tg_sync.sync_channels()
         matched = int(report.get("matched", 0) or 0)
         configured = report.get("configured")
+        # The job's own contract is older than the structured failure list: a
+        # consumer reads `errors` as a count and `error` as the first named
+        # reason. `sync_channels` now returns failures as data instead of raising,
+        # which is what the except branch below used to be the only way to see, so
+        # the two shapes are normalised here — the sync keeps owning the detail,
+        # the scheduler keeps the shape its journal and its tests already promise.
+        failed = list(report.get("failed") or ())
+        if failed:
+            first = failed[0]
+            report = {
+                **report,
+                "errors": len(failed),
+                "error": f"{first.get('reason_code') or 'failed'}: {first.get('detail') or ''}".strip(),
+            }
         await to_thread(
             _record,
             run_id,

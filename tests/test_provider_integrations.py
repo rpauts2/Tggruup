@@ -36,6 +36,18 @@ class _Recorder:
                 headers={"content-type": "image/jpeg"},
                 request=httpx.Request("GET", url),
             )
+    async def request(self, method, url, headers=None, json=None, **_kwargs):
+        """httpx.AsyncClient has `request`; this fake did not.
+
+        The image providers now share one request helper that calls
+        `client.request(method, url, ...)`, so the fake has to answer the same way
+        the real client does. Delegating keeps every recorded call byte-identical
+        to the `get`/`post` shape the assertions below already read.
+        """
+        if str(method).upper() == "GET":
+            return await self.get(url, headers=headers)
+        return await self.post(url, headers=headers, json=json)
+
     async def post(self, url, headers=None, json=None):
         self.calls.append({"url": url, "headers": headers or {}, "json": json or {}})
         if self.content is not None:
