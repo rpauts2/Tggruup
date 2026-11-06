@@ -390,3 +390,48 @@ def test_the_validator_cannot_dispatch_or_mutate_the_repository() -> None:
 
     assert "subprocess" not in imported
     assert "socket" not in imported
+
+# ------------------------------------------------------------- cross-package contract
+def test_the_two_state_vocabularies_are_pinned_apart() -> None:
+    """`state` in telemetry is an outcome; `status` in the queue is a lifecycle.
+
+    They share three spellings (RUNNING, BLOCKED, FAILED), which is exactly how a
+    reader starts treating two different axes as one fact: an executor recording
+    `DONE` has said nothing at all about verification, and a queue row saying
+    `RUNNING` has said nothing about cost. The mapping is total in one direction and
+    deliberately lossy in the other, and that is asserted here rather than assumed.
+    """
+    import importlib.util
+
+    def _load(name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        # @dataclass inside agent_record.py resolves its own module through
+        # sys.modules during exec_module, so registering it is not optional.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    record = _load("agent_record_under_test", REPO_ROOT / "tools" / "agent_record.py")
+
+    assert set(record.STATES).isdisjoint(set(qc.STATES) - {"RUNNING", "BLOCKED", "FAILED"}), (
+        "the two vocabularies drifted from 'different axes, three shared words' into "
+        "a partial copy, which is worse than either")
+    assert set(record.STATES) != set(qc.STATES)
+    assert {w for w in record.STATES if w in qc.STATES} == {"RUNNING", "BLOCKED", "FAILED"}
+
+    # total on the outcome side, and honest about the one outcome that implies nothing
+    assert set(record.OUTCOME_TO_LIFECYCLE) == set(record.STATES)
+    assert record.OUTCOME_TO_LIFECYCLE["UNKNOWN"] is None
+    assert record.OUTCOME_TO_LIFECYCLE["DONE"] == "ACCEPTED"
+    assert record.OUTCOME_TO_LIFECYCLE["DONE"] != "VERIFIED", (
+        "an executor self-declaring DONE must never map onto a verified queue row")
+
+    mapped = {v for v in record.OUTCOME_TO_LIFECYCLE.values() if v is not None}
+    assert mapped <= set(qc.STATES), f"the map points at states the queue does not know: {mapped}"
+    assert set(record.FAILURE_STATES) == {
+        key for key, value in record.OUTCOME_TO_LIFECYCLE.items()
+        if value in {"BLOCKED", "FAILED", "CANCELLED"}
+    }, "a failure outcome that maps to a non-failure lifecycle state would hide the reason"
+    assert "DONE" not in record.FAILURE_STATES and "UNKNOWN" not in record.FAILURE_STATES

@@ -101,12 +101,29 @@ HASHED_KEYS = (
 )
 INTEGRITY_KEYS = ("seq", "prev_hash", "hash")
 
-#: The lifecycle states a task record may carry. `UNKNOWN` is a state, not a
-#: number: a task whose outcome nobody observed is recorded as UNKNOWN, and no
-#: field is invented to make it look measured.
+#: The OUTCOME of an attempt. This is not the queue's lifecycle axis: a task can be
+#: `RUNNING` in `docs/orchestration/queue.yaml` and still have no outcome to record,
+#: and a `DONE` outcome is only trustworthy once the queue says `VERIFIED`. Three
+#: words — RUNNING, BLOCKED, FAILED — appear in both vocabularies with different
+#: meanings, so the axes are named apart here and pinned apart in
+#: `tests/test_w25a_queue.py::test_the_two_state_vocabularies_are_pinned_apart`.
+#: `UNKNOWN` is an outcome, not a number: a task whose end nobody observed is
+#: recorded as UNKNOWN, and no field is invented to make it look measured.
 STATES = ("DONE", "PARTIAL", "BLOCKED", "FAILED", "SUPERSEDED", "RUNNING", "UNKNOWN")
 #: States that only make sense with a stated reason.
 FAILURE_STATES = ("FAILED", "BLOCKED", "SUPERSEDED")
+#: How an outcome reads on the queue's lifecycle axis, for anyone joining the two
+#: files. `None` means the outcome says nothing about lifecycle — which is itself
+#: the point: "the executor thinks it is done" is not "the coordinator verified it".
+OUTCOME_TO_LIFECYCLE = {
+    "DONE": "ACCEPTED",
+    "PARTIAL": "REVIEW",
+    "BLOCKED": "BLOCKED",
+    "FAILED": "FAILED",
+    "SUPERSEDED": "CANCELLED",
+    "RUNNING": "RUNNING",
+    "UNKNOWN": None,
+}
 
 SAFE_TASK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DB_SUFFIXES = {".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3"}
