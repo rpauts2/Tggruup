@@ -35,12 +35,23 @@ what a human must look at — it does not replace the look.
 Usage:
     python tools/review_packet.py --base 91029a3 --head 7e58455 [--branch main]
                                   [--against main] [--out packet.txt] [--repo PATH]
+                                  [--task W28-A] [--queue docs/orchestration/queue.yaml]
+
+W25-B addition: the packet is owner-aware. A reviewed package can be perfectly
+clean and still collide, because the queue holds a different live owner for the
+same bytes (the W28-A / missions `tgfarm/llm/client.py` shape: two trees, one
+file, neither visible to the other's diff). Section `3c` therefore lists every
+queue record whose `allowed_paths` overlap a changed path, naming that record's
+status and owner, so the reviewer sees the collision before approving — it is
+information for the human, never an automatic veto, and the verdict line stays
+`NEEDS_HUMAN` either way.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import re
 import subprocess
 import sys
@@ -53,6 +64,91 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: Loaded lazily; the collision rule must have ONE owner, and it lives in the
+#: validator, not here. Copying `_path_overlap` into this file would let the two
+#: tools disagree about what a collision is — the exact failure the queue exists
+#: to prevent (W25-B design decision).
+_queue_check_module: Any = None
+
+
+def _queue_check() -> Any:
+    global _queue_check_module
+    if _queue_check_module is None:
+        path = Path(__file__).with_name("queue_check.py")
+        spec = importlib.util.spec_from_file_location("queue_check_for_packet", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load the queue validator from {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault(spec.name, module)
+        spec.loader.exec_module(module)
+        _queue_check_module = module
+    return _queue_check_module
+
+
+def _load_queue_tasks(queue_file: Path) -> list[dict[str, Any]]:
+    """Read queue.yaml strictly as data; PyYAML missing is the caller's NOT_MEASURED."""
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to read the queue") from exc
+    loaded = yaml.safe_load(queue_file.read_text(encoding="utf-8", errors="replace"))
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("tasks"), list):
+        raise ValueError("queue must be a mapping with a `tasks` list")
+    return [task for task in loaded["tasks"] if isinstance(task, dict)]
+
+
+def _claim_overlaps(
+    tasks: list[dict[str, Any]],
+    changed_paths: list[str],
+    *,
+    exclude_task_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Queue records that hold some of the paths this diff touches."""
+    qc = _queue_check()
+    overlaps: list[dict[str, Any]] = []
+    for task in tasks:
+        tid = str(task.get("id"))
+        if exclude_task_id is not None and tid == str(exclude_task_id):
+            continue
+        claimed = [str(p) for p in (task.get("allowed_paths") or [])]
+        hits = sorted({path for path in changed_paths for q in claimed if qc._path_overlap(path, q)})
+        if hits:
+            overlaps.append({
+                "id": tid,
+                "status": str(task.get("status")),
+                "owner": str(task.get("owner_agent") or "<no owner>"),
+                "live": str(task.get("status")) in set(qc.CLAIMING) | set(qc.RESERVING),
+                "paths": hits,
+            })
+    return overlaps
+
+
+def _owner_header_lines(overlaps: list[dict[str, Any]], own: str) -> list[str]:
+    """The owner-aware header lines, including the diff's own queue record.
+
+    Returned, not printed, on purpose: `--out` writes wherever the caller says,
+    so the only safe way to hand the same facts to a human without any file
+    write is via the caller's own stream — `main` prints them before the packet.
+    """
+    live = [entry for entry in overlaps if entry["live"]]
+    released = [entry for entry in overlaps if not entry["live"]]
+    lines = [
+        "OWNER HEADER (W25-B): who the queue says holds these bytes",
+        f"  this package: {own}",
+    ]
+    if live:
+        lines.append(f"  {len(live)} OTHER LIVE/RESERVED CLAIM(S) OVERLAP — reconcile before accepting:")
+        for entry in live:
+            lines.append(
+                f"  - {entry['id']} [{entry['status']}] owner `{entry['owner']}` holds {entry['paths']}")
+    else:
+        lines.append("  no other queue record claims a changed path")
+    for entry in released:
+        lines.append(
+            f"  - (released) {entry['id']} [{entry['status']}] owner `{entry['owner']}`"
+            f" overlaps {entry['paths']}")
+    return lines
 
 #: The only git subcommands this module will ever spawn. Every one of them reads
 #: and none of them move HEAD, the index or the working tree. Widening this set
@@ -481,6 +577,8 @@ def build_packet(
     branch: str | None = None,
     against: str | None = None,
     with_ruff: bool = True,
+    queue_path: Path | None = None,
+    task_id: str | None = None,
 ) -> Packet:
     """Run every read-only check and return the facts plus their rendering."""
     packet = Packet()
@@ -594,6 +692,45 @@ def build_packet(
     for entry in files:
         marker = "binary" if entry.added < 0 else f"+{entry.added}/-{entry.removed}"
         packet.raw(f"{entry.category:<10} {marker:<14} {entry.path}")
+
+    # -- 3c. claim owners (W25-B: the reviewer sees collisions before approving) --
+    packet.section("3c claim owners from the queue")
+    queue_file = queue_path or (repo / "docs" / "orchestration" / "queue.yaml")
+    overlaps: list[dict[str, Any]] | None = None
+    if not Path(queue_file).exists():
+        packet.item(
+            "queue.yaml",
+            STATUS_NOT_MEASURED,
+            f"not found at {queue_file} — other owners of these paths cannot be shown",
+        )
+    else:
+        try:
+            tasks = _load_queue_tasks(Path(queue_file))
+        except (RuntimeError, ValueError) as exc:
+            packet.item("queue.yaml", STATUS_NOT_MEASURED, f"unreadable: {exc}")
+            tasks = None
+        if tasks is not None:
+            overlaps = _claim_overlaps(tasks, [entry.path for entry in files], exclude_task_id=task_id)
+            if not overlaps:
+                packet.item("other queue owners", STATUS_OK, "no other record claims a changed path")
+            for other in overlaps:
+                status = STATUS_WARN if other["live"] else STATUS_OK
+                packet.item(
+                    f"other owner {other['id']} [{other['status']}]",
+                    status,
+                    f"`{other['owner']}` claims {other['paths']}",
+                )
+            if any(other["live"] for other in overlaps):
+                packet.raw(
+                    "  at least one overlapping record is live or reserved in the queue: accepting"
+                    " this packet without reconciling owners recreates the W28-A/missions shape —"
+                    " two owners, one file, two trees."
+                )
+    packet.facts["claim_overlaps"] = overlaps
+    header: list[str] | None = None
+    if overlaps is not None:
+        header = _owner_header_lines(overlaps, task_id or branch or "not given")
+    packet.facts["owner_header_lines"] = header
 
     # -- 4. test-weakening detector ------------------------------------------
     packet.section("4 test-weakening detector")
@@ -716,6 +853,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=str(REPO_ROOT), help="repository to inspect")
     parser.add_argument("--out", default=None, help="also write the packet text here")
     parser.add_argument("--no-ruff", action="store_true", help="skip the ruff comparison")
+    parser.add_argument(
+        "--queue",
+        default=None,
+        help="queue.yaml for the owner header (default: <repo>/docs/orchestration/queue.yaml)",
+    )
+    parser.add_argument(
+        "--task",
+        default=None,
+        help="queue id of THIS package, so the header excludes itself from 'other owners'",
+    )
     args = parser.parse_args(argv)
 
     force_utf8_streams()
@@ -731,10 +878,15 @@ def main(argv: list[str] | None = None) -> int:
             branch=args.branch,
             against=args.against,
             with_ruff=not args.no_ruff,
+            queue_path=Path(args.queue) if args.queue else None,
+            task_id=args.task,
         )
     except GitCommandNotAllowed as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    header = packet.facts.get("owner_header_lines")
+    if header:
+        print("\n".join(header))
     text = render(packet)
     print(text)
     if args.out:
