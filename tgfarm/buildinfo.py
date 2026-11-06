@@ -15,8 +15,11 @@ commit ``8ac968c``". That claim is undefendable, for two independent reasons:
 Consequence, and the rule this module enforces: ``git rev-parse HEAD`` of the
 checkout is **not** evidence about a running process. So this module never
 shells out to git. There is no code path here that can produce a SHA at call
-time and dress it up as a build SHA — a structural test asserts that
-``subprocess`` and ``rev-parse`` do not appear in this file at all.
+time and dress it up as a build SHA — ``tests/test_w24b_buildinfo.py`` asserts
+it two ways: on the executable tokens of this file (comments and docstrings
+stripped, because this paragraph is full of the words the code must not use),
+and by booby-trapping ``subprocess``, ``os.system``, ``shutil.which`` and
+``PATH`` before calling ``describe()``.
 
 What *is* knowable is the identity the build stamped into itself, so the only
 SHA this module can ever report is one it read from a build-time metadata file.
@@ -57,11 +60,14 @@ identity can ever be built on it.
 
 Secrets
 -------
-The payload is assembled from one whitelisted key set with pattern-validated
-values. Extra keys in a metadata file — including credential-bearing names —
-are ignored rather than echoed, so the identity can be logged at startup
-without becoming an exfiltration path. Nothing here reads ``.env``, the
-database, or the settings object.
+Two halves, both enforced. Keys: the payload is assembled from one whitelisted
+key set, so extra keys in a metadata file — including credential-bearing names —
+are ignored rather than echoed. Values: every whitelisted string also goes
+through ``looks_like_credential``, so a token pasted into a field the build is
+allowed to carry refuses the stamp instead of being baked into the artifact and
+printed at every start. Nothing here reads ``.env``, the database, or the
+settings object, and a test asserts the module imports only the standard
+library.
 """
 
 from __future__ import annotations
@@ -105,6 +111,26 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-.+_a-zA-Z0-9]{0,32})?$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._/@:+-]{0,128}$")
 _ASCII_ALLOWED_RE = re.compile(r"[^ -~]")
+
+#: Credential-shaped *values*, applied to every whitelisted field. The key
+#: whitelist keeps unknown keys out; on its own that is only half the defence,
+#: because a token pasted into `--artifact-name` by whoever ran the build is a
+#: whitelisted value, and the pattern the field accepts admits it. Refusing the
+#: payload turns that mistake into a failed build instead of a secret printed at
+#: every start and baked into every artifact the runner then uploads.
+_CREDENTIAL_VALUE_RES = (
+    re.compile(r"\b(?:sk|pk|ghp|gho|ghu|ghs|github_pat|xox[abprs]?|ya29|AIza|glpat|hf)-[A-Za-z0-9_/.+-]{8,}"),
+    re.compile(r"\b[0-9]{8,12}:AA[A-Za-z0-9_-]{20,}"),
+    re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"(?i)(?:token|secret|password|passwd|api.?key)[=:]"),
+    re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/-]{16,}"),
+)
+
+
+def looks_like_credential(value: str) -> bool:
+    """True when a string is shaped like a secret, whatever field carried it."""
+    return any(pattern.search(value) for pattern in _CREDENTIAL_VALUE_RES)
+
 
 #: The exact key set ``describe()`` may return. Anything else — however it got
 #: into a metadata file — is dropped, which is what keeps the payload secret-free
@@ -210,7 +236,7 @@ def _candidate_metadata_files(explicit: Path | None) -> list[Path]:
     return candidates
 
 
-def _clean_scalar(value: Any, *, pattern: re.Pattern[str] | None, field: str) -> str | None:
+def _clean_scalar(value: Any, *, pattern: re.Pattern[str] | None) -> str | None:
     """Validate one string field; return None rather than an untrusted echo."""
     if not isinstance(value, str):
         return None
@@ -219,11 +245,13 @@ def _clean_scalar(value: Any, *, pattern: re.Pattern[str] | None, field: str) ->
         return None
     if pattern is not None and not pattern.match(text):
         return None
+    if looks_like_credential(text):
+        return None
     return text
 
 
 def _valid_timestamp(value: Any) -> str | None:
-    text = _clean_scalar(value, pattern=None, field="build_timestamp")
+    text = _clean_scalar(value, pattern=None)
     if text is None or len(text) > 40:
         return None
     try:
@@ -273,11 +301,11 @@ def validate_metadata(
         # clean.
         return None, REASON_BAD_FIELDS, found_at
 
-    sha = _clean_scalar(data.get("source_sha"), pattern=_SHA_RE, field="source_sha")
-    version = _clean_scalar(data.get("app_version"), pattern=_VERSION_RE, field="app_version")
+    sha = _clean_scalar(data.get("source_sha"), pattern=_SHA_RE)
+    version = _clean_scalar(data.get("app_version"), pattern=_VERSION_RE)
     built = _valid_timestamp(data.get("build_timestamp"))
-    python = _clean_scalar(data.get("build_python_version"), pattern=_TOKEN_RE, field="build_python_version")
-    artifact = _clean_scalar(data.get("artifact_name"), pattern=_TOKEN_RE, field="artifact_name")
+    python = _clean_scalar(data.get("build_python_version"), pattern=_TOKEN_RE)
+    artifact = _clean_scalar(data.get("artifact_name"), pattern=_TOKEN_RE)
     if sha is None or version is None or built is None or python is None or artifact is None:
         return None, REASON_BAD_FIELDS, found_at
 
@@ -291,16 +319,23 @@ def validate_metadata(
         "build_python_version": python,
         "artifact_name": artifact,
     }
+    # Optional fields are where a builder's mistake would otherwise go quiet: a
+    # credential-shaped value is dropped by the validators, and an identity that
+    # simply stops mentioning the branch reads like nothing happened. Refuse the
+    # stamp instead — a contaminated build is a finding, not a missing key.
+    for optional_key in ("source_sha_short", "source_branch", "artifact_path"):
+        raw_optional = data.get(optional_key)
+        if isinstance(raw_optional, str) and looks_like_credential(raw_optional.strip()):
+            return None, REASON_BAD_FIELDS, found_at
+
     # Optional extras, same allowlist discipline: known keys only, validated.
-    short = _clean_scalar(data.get("source_sha_short"), pattern=re.compile(r"^[0-9a-f]{7,12}$"),
-                          field="source_sha_short")
+    short = _clean_scalar(data.get("source_sha_short"), pattern=re.compile(r"^[0-9a-f]{7,12}$"))
     if short:
         clean["source_sha_short"] = short
-    branch = _clean_scalar(data.get("source_branch"), pattern=_TOKEN_RE, field="source_branch")
+    branch = _clean_scalar(data.get("source_branch"), pattern=_TOKEN_RE)
     if branch:
         clean["source_branch"] = branch
-    art_path = _clean_scalar(data.get("artifact_path"), pattern=re.compile(r"^[A-Za-z0-9._/+-]{0,128}$"),
-                             field="artifact_path")
+    art_path = _clean_scalar(data.get("artifact_path"), pattern=re.compile(r"^[A-Za-z0-9._/+-]{0,128}$"))
     if art_path:
         clean["artifact_path"] = art_path
     return clean, "", found_at
@@ -328,13 +363,12 @@ def declared_version(root: Path | None = None) -> str | None:
             import tomllib
         except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 only
             match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-            return _clean_scalar(match.group(1), pattern=_VERSION_RE, field="app_version") if match else None
+            return _clean_scalar(match.group(1), pattern=_VERSION_RE) if match else None
         try:
             data = tomllib.loads(text)
         except Exception:  # noqa: BLE001 - a broken pyproject is "unknown", never a crash
             return None
-        return _clean_scalar(data.get("project", {}).get("version"), pattern=_VERSION_RE,
-                             field="app_version")
+        return _clean_scalar(data.get("project", {}).get("version"), pattern=_VERSION_RE)
     return None
 
 
@@ -362,11 +396,7 @@ def _assurance(mode: str, frozen: bool) -> tuple[str, bool, str]:
     if mode == PACKAGING_PYINSTALLER:
         if frozen:
             return ASSURANCE_ARTIFACT, True, ""
-        return (
-            ASSURANCE_NONE,
-            False,
-            REASON_MODE_MISMATCH,
-        )
+        return ASSURANCE_NONE, False, REASON_MODE_MISMATCH
     # A source stamp can describe the tree it was taken from. It cannot describe
     # a process that imports modules lazily from that same, still-editable tree.
     return ASSURANCE_STAMP, False, ""
@@ -461,6 +491,8 @@ def _build_line(identity: dict[str, Any]) -> str:
     parts = ["tgfarm build identity"]
     parts.append(f"mode={identity['packaging_mode']}")
     parts.append(f"state={identity['state']}")
+    if identity.get("source_branch"):
+        parts.append(f"branch={identity['source_branch']}")
     version = identity["app_version"]
     if version:
         parts.append(f"app={version}")
@@ -542,6 +574,7 @@ __all__ = [
     "declared_version",
     "describe",
     "log_line",
+    "looks_like_credential",
     "metadata_is_current",
     "metadata_path",
     "render_metadata",
