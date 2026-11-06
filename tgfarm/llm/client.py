@@ -8,9 +8,9 @@ so the whole farm stays runnable (and testable) with an empty .env.
 
 from __future__ import annotations
 
-import asyncio
 import re
-import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -26,11 +26,29 @@ from tgfarm.core.text import (
     strip_html,
     truncate,
 )
+from tgfarm.llm import resilience as res
 from tgfarm.llm.extract import extract_json
 
 log = get_logger(__name__)
 
 _STATS: dict[str, dict[str, float]] = {}
+
+#: Which stage is paying for the calls right now. `pipeline.py` owns the stage
+#: loop, so this is ambient rather than a new required argument: `stage_scope()`
+#: wraps a stage and a caller that never wraps one lands in the `unknown`
+#: bucket, which still bounds the calls — it just bounds the cycle instead of
+#: the stage. Fail-safe in the direction of spending less.
+CURRENT_STAGE: ContextVar[str] = ContextVar("llm_current_stage", default="unknown")
+
+
+@contextmanager
+def stage_scope(name: str):
+    """Ambient stage name for the per-stage call budget."""
+    token = CURRENT_STAGE.set(name or "unknown")
+    try:
+        yield
+    finally:
+        CURRENT_STAGE.reset(token)
 
 
 def record_stat(provider: str, key: str, value: float = 1.0) -> None:
@@ -43,6 +61,11 @@ def get_stats() -> dict[str, dict[str, float]]:
     return {k: dict(v) for k, v in _STATS.items()}
 
 
+#: The only two spellings of "this text did not come from a model".
+OFFLINE_PROVIDER = "offline"
+OFFLINE_MODEL = "none"
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -51,22 +74,67 @@ class LLMResponse:
     latency_ms: int
     usage: dict[str, int] = field(default_factory=dict)
     raw: Any = None
+    #: Provenance of the *decision*, not just of the answer. `provider` and
+    #: `model` already name who answered; these say who was asked and refused,
+    #: how many tries it took, and — when nobody answered — which guard sent us
+    #: to the deterministic composer. An operator cannot audit a fallback they
+    #: cannot distinguish from a generation.
+    attempts: int = 0
+    tried: tuple[str, ...] = ()
+    offline_reason: str = ""
+
+    def __post_init__(self) -> None:
+        # An offline draft must never carry a model name. Not cosmetic:
+        # `s4_generation` writes `generation_model = response.model or ...`,
+        # and a draft stored as `gemini-...:free` when the composer wrote it is
+        # an unmeasured thing reported as a measured one. Corrected loudly.
+        if self.provider == OFFLINE_PROVIDER:
+            if self.model and self.model != OFFLINE_MODEL:
+                log.warning(
+                    "provenance: offline result carrying model=%s corrected to %s",
+                    self.model,
+                    OFFLINE_MODEL,
+                )
+                record_stat("provenance", "offline_model_corrected")
+            self.model = OFFLINE_MODEL
+
+    @property
+    def is_model_generation(self) -> bool:
+        """True only when a real provider produced `text`.
+
+        The existing contract across the pipeline is
+        `used = response.provider != "offline"`; this is the same rule with a
+        name, so a caller cannot half-implement it.
+        """
+        return self.provider != OFFLINE_PROVIDER
 
 
 class _Provider:
     name = "base"
+    #: Whether this provider accepts the `deadline` keyword. The client only
+    #: passes a deadline to providers that say they handle it, so a provider
+    #: owned by another work package cannot be broken by the call budget.
+    supports_deadline = False
 
     async def available(self) -> bool:
         raise NotImplementedError
 
     async def complete(
-        self, system: str, prompt: str, *, json_mode: bool, max_tokens: int, model: str | None = None
+        self,
+        system: str,
+        prompt: str,
+        *,
+        json_mode: bool,
+        max_tokens: int,
+        model: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         raise NotImplementedError
 
 
 class _Anthropic(_Provider):
     name = "anthropic"
+    supports_deadline = True
 
     def __init__(self, api_key: str, model: str, timeout: float, proxy: str = "") -> None:
         self._key = api_key
@@ -76,10 +144,17 @@ class _Anthropic(_Provider):
         self._down = 0.0
 
     async def available(self) -> bool:
-        return bool(self._key) and time.monotonic() > self._down
+        return bool(self._key) and res.now() > self._down
 
     async def complete(
-        self, system: str, prompt: str, *, json_mode: bool, max_tokens: int, model: str | None = None
+        self,
+        system: str,
+        prompt: str,
+        *,
+        json_mode: bool,
+        max_tokens: int,
+        model: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         import httpx
 
@@ -95,7 +170,9 @@ class _Anthropic(_Provider):
                 "\n\nRespond with a single valid JSON object and nothing else. "
                 "No prose, no markdown fences."
             )
-        async with httpx.AsyncClient(timeout=self._timeout, proxy=self._proxy or None) as client:
+        async with httpx.AsyncClient(
+            timeout=_request_timeout(self._timeout, deadline), proxy=self._proxy or None
+        ) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -106,17 +183,61 @@ class _Anthropic(_Provider):
                 json=body,
             )
         if resp.status_code == 429:
-            self._down = time.monotonic() + 60
-            raise ProviderRateLimited("anthropic 429", retry_after=60)
+            wait = _retry_after(resp, default=60.0)
+            self._down = res.now() + wait
+            raise ProviderRateLimited("anthropic 429", retry_after=wait)
         if resp.status_code >= 500:
-            self._down = time.monotonic() + 30
-            raise ProviderUnavailable(f"anthropic {resp.status_code}")
+            wait = _retry_after(resp, default=None)
+            self._down = res.now() + (wait if wait is not None else 30)
+            raise _server_error(f"anthropic {resp.status_code}", wait)
         if resp.status_code != 200:
             raise ProviderUnavailable(f"anthropic {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         chunks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
         record_stat(self.name, "tokens_out", float(data.get("usage", {}).get("output_tokens", 0)))
         return "\n".join(chunks)
+
+
+def _request_timeout(timeout_s: float, deadline: float | None) -> float:
+    """The httpx timeout for one request given the call's remaining budget.
+
+    `deadline` is an absolute monotonic instant. A 60 s request timeout inside a
+    20 s call budget is not a timeout, it is an permission slip for the stage
+    that outlived its cycle window: the live `stage s4_generate failed after
+    2 815 575ms` is what that reads like. The 0.5 s floor keeps the value
+    usable — httpx rejects a non-positive timeout.
+    """
+    if deadline is None:
+        return float(timeout_s)
+    remaining = float(deadline) - res.now()
+    return max(0.5, min(float(timeout_s), remaining))
+
+
+def _retry_after(resp: Any, *, default: float | None) -> float | None:
+    """`Retry-After` from a response, or `default` when it says nothing."""
+    header = ""
+    try:
+        header = resp.headers.get("Retry-After") or ""
+    except Exception:  # noqa: BLE001 - a malformed header is "no instruction"
+        header = ""
+    parsed = res.parse_retry_after(header)
+    if parsed is not None:
+        record_stat("resilience", "retry_after_honoured")
+        return parsed
+    return default
+
+
+def _server_error(detail: str, wait: float | None) -> Exception:
+    """A 5xx as the exception it actually is.
+
+    503 with a `Retry-After` is a scheduling instruction, which is what
+    `ProviderRateLimited` means; without one it is plain unavailability. The
+    distinction is what lets the retry loop wait the told amount instead of
+    inventing one.
+    """
+    if wait is None:
+        return ProviderUnavailable(detail)
+    return ProviderRateLimited(detail, retry_after=wait)
 
 
 def _is_loopback(base_url: str) -> bool:
@@ -146,6 +267,7 @@ class _OpenAI(_Provider):
     """
 
     name = "openai"
+    supports_deadline = True
 
     def __init__(
         self,
@@ -177,14 +299,21 @@ class _OpenAI(_Provider):
             self.name = name
 
     async def available(self) -> bool:
-        if time.monotonic() <= self._down:
+        if res.now() <= self._down:
             return False
         # Hosted providers reject an unauthenticated call, but a local server
         # (vLLM, llama.cpp, LM Studio) needs no key at all.
         return bool(self._key) or _is_loopback(self._base)
 
     async def complete(
-        self, system: str, prompt: str, *, json_mode: bool, max_tokens: int, model: str | None = None
+        self,
+        system: str,
+        prompt: str,
+        *,
+        json_mode: bool,
+        max_tokens: int,
+        model: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         """One call, rotating through the candidate models.
 
@@ -194,6 +323,12 @@ class _OpenAI(_Provider):
         JSON extractor handles prose anyway; 401/402/403 are key-level and take
         the whole provider down, because trying another model with a dead key is
         waste. The model that answered is remembered for the next calls.
+
+        `deadline` is an absolute monotonic instant the walk must not pass. With
+        a twelve-model catalogue the walk is twelve sequential requests, each
+        carrying the full `llm_timeout_s` (60 by default): that is how one
+        generation reached 42 minutes in the live log. Without a deadline the
+        walk behaves exactly as before.
         """
         import httpx
 
@@ -202,7 +337,7 @@ class _OpenAI(_Provider):
             candidates = [model]
         else:
             rotated = self._models[self._model_index :] + self._models[: self._model_index]
-            now = time.monotonic()
+            now = res.now()
             candidates = [
                 m
                 for m in rotated
@@ -214,10 +349,20 @@ class _OpenAI(_Provider):
 
         last_error: Exception | None = None
         for candidate in candidates:
+            if deadline is not None and res.now() >= deadline:
+                # Out of budget. Starting a request the cycle cannot wait for
+                # is not patience, it is the next stage going hungry.
+                if last_error is None:
+                    last_error = ProviderUnavailable(
+                        f"{self.name}: call budget spent before {candidate}"
+                    )
+                break
             # attempt_json only controls the response_format flag: gateways that
             # do not advertise it (LongCat) get a single plain attempt.
             json_attempts = (True, False) if (json_mode and self._send_json_mode) else (False,)
             for attempt_json in json_attempts:
+                if deadline is not None and res.now() >= deadline:
+                    break
                 body: dict[str, Any] = {
                     "model": candidate,
                     "messages": [
@@ -230,7 +375,9 @@ class _OpenAI(_Provider):
                 body.update(self._extra_body)
                 if attempt_json:
                     body["response_format"] = {"type": "json_object"}
-                async with httpx.AsyncClient(timeout=self._timeout, proxy=self._proxy or None) as client:
+                async with httpx.AsyncClient(
+                    timeout=_request_timeout(self._timeout, deadline), proxy=self._proxy or None
+                ) as client:
                     resp = await client.post(
                         f"{self._base}/chat/completions",
                         headers=headers,
@@ -239,11 +386,12 @@ class _OpenAI(_Provider):
                 if resp.status_code == 429:
                     record_stat(self.name, "rate_limited")
                     record_stat(f"{self.name}:{candidate}", "rate_limited")
-                    # One request per minute per model on the free tier: park
-                    # this candidate and let the rotation move on.
-                    self._model_cooldown[candidate] = time.monotonic() + 60
+                    # One request per minute per model on the free tier — but
+                    # when the gateway says when, its number beats our guess.
+                    wait = _retry_after(resp, default=60.0)
+                    self._model_cooldown[candidate] = res.now() + wait
                     last_error = ProviderRateLimited(
-                        f"{self.name} 429 on {candidate}", retry_after=60
+                        f"{self.name} 429 on {candidate}", retry_after=wait
                     )
                     break  # next candidate; this one is out of quota
                 if resp.status_code in (401, 402, 403):
@@ -264,7 +412,7 @@ class _OpenAI(_Provider):
                         # candidate for an hour and keep walking: taking the
                         # whole gateway down here is what turned every draft
                         # into offline text for days.
-                        self._model_cooldown[candidate] = time.monotonic() + 3600
+                        self._model_cooldown[candidate] = res.now() + 3600
                         record_stat(f"{self.name}:{candidate}", "consent_required")
                         last_error = ProviderUnavailable(
                             f"{self.name} 403 for {candidate}: {resp.text[:160]}"
@@ -272,14 +420,23 @@ class _OpenAI(_Provider):
                         break
                     # Bad key, revoked access, or an exhausted prepaid quota:
                     # retrying this provider in the same process will not help.
-                    self._down = time.monotonic() + 3600
+                    self._down = res.now() + 3600
                     raise ProviderUnavailable(f"{self.name} {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code >= 500:
                     # An overloaded model (503 "providers busy") is not a dead
                     # provider: rotate to the next candidate instead of parking
                     # the whole gateway for 30 seconds.
                     record_stat(self.name, "provider_busy")
-                    last_error = ProviderUnavailable(f"{self.name} {resp.status_code} on {candidate}")
+                    wait = _retry_after(resp, default=None)
+                    if wait is not None:
+                        # "come back in N seconds" applies to this candidate, so
+                        # the rotation skips it for exactly that long — this is
+                        # the only way a 503 with a header changes behaviour
+                        # while we are still walking the catalogue.
+                        self._model_cooldown[candidate] = res.now() + wait
+                    last_error = _server_error(
+                        f"{self.name} {resp.status_code} on {candidate}", wait
+                    )
                     break  # next candidate
                 if resp.status_code == 400 and attempt_json and "response_format" in body:
                     record_stat(self.name, "json_mode_rejected")
@@ -304,7 +461,7 @@ class _OpenAI(_Provider):
             if isinstance(last_error, ProviderRateLimited):
                 # Every candidate is out of quota: park the provider for a
                 # minute so the client loop does not hammer it immediately.
-                self._down = time.monotonic() + 60
+                self._down = res.now() + 60
             raise last_error
         raise ProviderUnavailable(f"{self.name}: no usable model in the list")
 
@@ -343,6 +500,7 @@ class _LongCat(_OpenAI):
 
 class _Ollama(_Provider):
     name = "ollama"
+    supports_deadline = True
 
     def __init__(self, url: str, model: str, timeout: float, proxy: str = "") -> None:
         self._url = url.rstrip("/")
@@ -365,7 +523,14 @@ class _Ollama(_Provider):
         return bool(self._ready)
 
     async def complete(
-        self, system: str, prompt: str, *, json_mode: bool, max_tokens: int, model: str | None = None
+        self,
+        system: str,
+        prompt: str,
+        *,
+        json_mode: bool,
+        max_tokens: int,
+        model: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         import httpx
 
@@ -380,8 +545,14 @@ class _Ollama(_Provider):
                 {"role": "user", "content": prompt},
             ],
         }
-        async with httpx.AsyncClient(timeout=self._timeout, proxy=self._proxy or None) as client:
+        async with httpx.AsyncClient(
+            timeout=_request_timeout(self._timeout, deadline), proxy=self._proxy or None
+        ) as client:
             resp = await client.post(f"{self._url}/api/chat", json=body)
+        if resp.status_code == 429:
+            raise ProviderRateLimited("ollama 429", retry_after=_retry_after(resp, default=60.0))
+        if resp.status_code >= 500:
+            raise _server_error(f"ollama {resp.status_code}", _retry_after(resp, default=None))
         if resp.status_code != 200:
             raise ProviderUnavailable(f"ollama {resp.status_code}: {resp.text[:200]}")
         return resp.json()["message"]["content"]
@@ -476,15 +647,75 @@ class LLMClient:
     def offline(self) -> bool:
         return self._resolved is None
 
-    async def _resolve(self) -> _Provider | None:
+    def _model_count(self) -> int:
+        """How many model candidates the chain actually holds.
+
+        The per-stage budget is expressed in units of one catalogue sweep, so
+        it needs the sweep size. Providers that do not rotate report one.
+        """
+        counts = [len(prov._models) for prov in self._providers if getattr(prov, "_models", None)]
+        return max(counts) if counts else 1
+
+    def _call_budget_s(self) -> float:
+        """Wall-clock allowance for one logical generation call.
+
+        Read from settings when an operator adds the knob, otherwise the
+        module default. It can never exceed `llm_timeout_s` by more than the
+        ladder allows, and it is what makes a 42-minute stage impossible.
+        """
+        value = getattr(self._settings, "llm_call_budget_s", None)
+        try:
+            budget = float(value) if value else res.CALL_BUDGET_S
+        except (TypeError, ValueError):
+            budget = res.CALL_BUDGET_S
+        return max(1.0, budget)
+
+    def _daily_attempts(self) -> int:
+        """Remaining online-call attempts for today, from the one real budget.
+
+        `ai_daily_budget` is the operator's single number for "how many online
+        calls per day". `llm/policy.py` spends it on calls that produced text;
+        this spends it on calls that were *attempted*. Taking the smaller of
+        the two views means a doomed retry storm, which `policy` never charges,
+        cannot buy more attempts than the operator allowed — and neither path
+        can exceed the figure an operator set.
+        """
+        try:
+            budget = int(getattr(self._settings, "ai_daily_budget", 0) or 0)
+        except (TypeError, ValueError):
+            budget = 0
+        return max(0, budget - res.BUDGET.spent_all())
+
+    async def _resolve(self, blocked: list[str] | None = None) -> _Provider | None:
+        """First provider that is configured, not parked and not breaker-open.
+
+        `blocked` collects *why* a provider was skipped, so the operator who
+        reads `provider=offline` can tell "the gateway refused" from "we
+        stopped asking". Skipping a breaker-open provider is not a failure: it
+        is the refusal to keep hammering a thing that already said no.
+        """
         if self._resolved is not None:
-            try:
-                if await self._resolved.available():
-                    return self._resolved
-            except Exception as exc:  # noqa: BLE001 - a probe must never raise
-                log.debug("provider %s re-probe failed: %s", self._resolved.name, exc)
-            self._resolved = None
+            provider = self._resolved
+            if not res.BREAKER.allow(provider.name):
+                if blocked is not None:
+                    blocked.append(f"breaker_open:{provider.name}")
+                record_stat(provider.name, "breaker_blocked")
+                self._resolved = None
+            else:
+                try:
+                    if await provider.available():
+                        return provider
+                except Exception as exc:  # noqa: BLE001 - a probe must never raise
+                    log.debug("provider %s re-probe failed: %s", provider.name, exc)
+                self._resolved = None
         for provider in self._providers:
+            if not res.BREAKER.allow(provider.name):
+                if blocked is not None:
+                    blocked.append(
+                        f"breaker_open:{provider.name}:{res.BREAKER.retry_in(provider.name):.0f}s"
+                    )
+                record_stat(provider.name, "breaker_blocked")
+                continue
             try:
                 if await provider.available():
                     self._resolved = provider
@@ -511,19 +742,21 @@ class LLMClient:
         doctor that reports "ok" because the key is non-empty is worse than no
         doctor at all.
         """
-        provider = await self._resolve()
+        blocked: list[str] = []
+        provider = await self._resolve(blocked)
         if provider is None:
             return {
                 "ok": False,
                 "provider": None,
                 "detail": "offline (deterministic composer)",
+                "blocked": blocked,
             }
         try:
-            started = time.monotonic()
+            started = res.now()
             text = await provider.complete(
                 "Отвечай одним словом.", "ping", json_mode=False, max_tokens=8
             )
-            latency = int((time.monotonic() - started) * 1000)
+            latency = int((res.now() - started) * 1000)
             return {
                 "ok": True,
                 "provider": provider.name,
@@ -538,6 +771,175 @@ class LLMClient:
                 "detail": f"{provider.name}: {exc}"[:220],
             }
 
+    async def _call_provider(
+        self, provider: _Provider, system: str, prompt: str, *, json_mode: bool, max_tokens: int,
+        model: str | None, deadline: float,
+    ) -> str:
+        """One provider call, deadline-clamped for providers that opt in.
+
+        Providers outside this work package (currently `OpenCodeZen`) do not
+        accept `deadline`; they are called exactly as before rather than being
+        edited into the new signature, and the seam is reported instead.
+        """
+        if provider.supports_deadline:
+            return await provider.complete(
+                system, prompt, json_mode=json_mode, max_tokens=max_tokens, model=model,
+                deadline=deadline,
+            )
+        record_stat(provider.name, "deadline_not_supported")
+        return await provider.complete(
+            system, prompt, json_mode=json_mode, max_tokens=max_tokens, model=model
+        )
+
+    async def _obtain(
+        self,
+        system: str,
+        prompt: str,
+        *,
+        json_mode: bool,
+        max_tokens: int,
+        model: str | None,
+    ) -> dict[str, Any]:
+        """Bounded, backed-off, breaker-guarded attempt loop. Shared by text/json.
+
+        Every `complete_*` call used to run its own three-try loop with a
+        hardcoded sleep; the two loops drifted. One loop means one set of
+        guarantees, and the guarantees are:
+          * at most `llm_max_retries` provider calls,
+          * at most `llm_call_budget_s` seconds of wall clock, in total,
+          * a `Retry-After` is honoured up to `MAX_WAIT_S` and only if the
+            remaining budget covers it — otherwise we stop rather than wait,
+          * a provider that failed `BREAKER_FAILURE_THRESHOLD` calls in a row
+            is not called again until its cool-off ends,
+          * the stage may not spend more attempts than its budget allows.
+        Failure is reported as a reason; nothing in here returns success.
+        """
+        stage = CURRENT_STAGE.get()
+        budget = res.TimeBudget.start(self._call_budget_s())
+        attempts = max(1, int(self._settings.llm_max_retries or 1))
+        tried: list[str] = []
+        blocked: list[str] = []
+        spent = 0
+        reason = "no provider configured"
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            blocked.clear()
+            provider = await self._resolve(blocked)
+            if provider is None:
+                if blocked:
+                    # The breaker is the whole answer: we are not calling
+                    # anyone, and the operator must see that in the metadata.
+                    reason = ";".join(blocked)
+                    if spent == 0:
+                        record_stat("resilience", "breaker_shortcut")
+                else:
+                    reason = "no provider available"
+                break
+            if not res.BUDGET.try_spend(
+                stage, daily_budget=self._daily_attempts(), model_count=self._model_count()
+            ):
+                reason = f"stage budget spent ({stage})"
+                record_stat("resilience", "stage_budget_denied")
+                log.warning(
+                    "llm stage budget spent for %s after %d attempt(s); going offline",
+                    stage,
+                    spent,
+                )
+                break
+            spent += 1
+            tried.append(f"{provider.name}:{getattr(provider, '_model', '?')}")
+            try:
+                started = res.now()
+                text = await self._call_provider(
+                    provider, system, prompt, json_mode=json_mode, max_tokens=max_tokens,
+                    model=model, deadline=budget.started_at + budget.limit_s,
+                )
+            except ProviderRateLimited as exc:
+                last_error = exc
+                res.BREAKER.on_failure(provider.name)
+                record_stat(provider.name, "rate_limited_call")
+                self._resolved = None
+                told = max(0.0, float(getattr(exc, "retry_after", 0.0) or 0.0))
+                wait = min(told, res.MAX_WAIT_S, budget.remaining())
+                if told > res.MAX_WAIT_S:
+                    # The provider asked for more than we are ever willing to
+                    # give inside one call. Honouring it *is* refusing to retry
+                    # now — say which, instead of sleeping the difference.
+                    reason = f"retry_after {told:.0f}s exceeds cap {res.MAX_WAIT_S:.0f}s"
+                    log.warning(
+                        "llm %s asked for %ss, capped at %ss: giving up this call",
+                        provider.name, told, res.MAX_WAIT_S,
+                    )
+                    break
+                if wait >= budget.remaining() and budget.remaining() <= 1.0:
+                    reason = f"call budget spent before retry_after {told:.0f}s"
+                    break
+                if attempt + 1 < attempts:
+                    await res.sleep(wait)
+                continue
+            except Exception as exc:  # noqa: BLE001 - failover is the point
+                last_error = exc
+                tripped = res.BREAKER.on_failure(provider.name)
+                record_stat(provider.name, "errors")
+                self._resolved = None
+                remaining = budget.remaining()
+                wait = res.backoff_delay(attempt, ceiling=min(res.BACKOFF_CAP_S, remaining))
+                if remaining <= wait + 0.5:
+                    reason = f"call budget spent ({exc})"
+                    break
+                if attempt + 1 < attempts:
+                    await res.sleep(wait)
+                if tripped:
+                    reason = f"breaker open for {provider.name}"
+                    log.warning(
+                        "circuit breaker open for %s after %d consecutive failures; "
+                        "cooling off %.0fs",
+                        provider.name,
+                        res.BREAKER.threshold,
+                        res.BREAKER.retry_in(provider.name),
+                    )
+                    break
+                continue
+            parsed: Any = None
+            if json_mode:
+                parsed = extract_json(text)
+                if not isinstance(parsed, dict):
+                    # A malformed body is a failed generation, not a generated
+                    # one: same retry ladder as a refused call, same honest
+                    # offline ending if the ladder runs out.
+                    last_error = ProviderUnavailable("expected a JSON object")
+                    res.BREAKER.on_failure(provider.name)
+                    record_stat(provider.name, "json_unparsable")
+                    self._resolved = None
+                    continue
+            res.BREAKER.on_success(provider.name)
+            record_stat(provider.name, "calls")
+            record_stat(provider.name, "retries", float(attempt))
+            answered = model or getattr(provider, "_model", "") or "?"
+            return {
+                "ok": True,
+                "text": text,
+                "parsed": parsed,
+                "provider": provider.name,
+                "model": answered,
+                "latency_ms": int((res.now() - started) * 1000),
+                "attempts": spent,
+                "tried": tuple(tried),
+            }
+
+        if last_error is not None and reason == "no provider configured":
+            reason = str(last_error)
+        return {
+            "ok": False,
+            "provider": OFFLINE_PROVIDER,
+            "model": OFFLINE_MODEL,
+            "attempts": spent,
+            "tried": tuple(tried),
+            "reason": reason,
+            "error": last_error,
+        }
+
     async def complete_text(
         self,
         system: str,
@@ -547,39 +949,21 @@ class LLMClient:
         offline_fallback: str | None = None,
         model: str | None = None,
     ) -> LLMResponse:
-        last_error: Exception | None = None
-        for attempt in range(self._settings.llm_max_retries):
-            provider = await self._resolve()
-            if provider is None:
-                break
-            try:
-                started = time.monotonic()
-                text = await provider.complete(
-                    system, prompt, json_mode=False, max_tokens=max_tokens, model=model
-                )
-                record_stat(provider.name, "calls")
-                record_stat(provider.name, "retries", float(attempt))
-                return LLMResponse(
-                    text,
-                    provider.name,
-                    model or getattr(provider, "_model", "?"),
-                    int((time.monotonic() - started) * 1000),
-                )
-            except ProviderRateLimited as exc:
-                last_error = exc
-                self._resolved = None
-                await asyncio.sleep(min(exc.retry_after, 20))
-            except Exception as exc:  # noqa: BLE001 - failover is the point
-                last_error = exc
-                record_stat(provider.name, "errors")
-                self._resolved = None
-                await asyncio.sleep(0.5 * (2**attempt))
-
-        if offline_fallback is not None:
-            log.warning("llm failed (%s), using offline fallback", last_error)
-            record_stat("offline", "calls")
-            return LLMResponse(offline_fallback, "offline", "none", 0)
-        raise ProviderUnavailable(f"all llm providers failed: {last_error}")
+        outcome = await self._obtain(
+            system, prompt, json_mode=False, max_tokens=max_tokens, model=model
+        )
+        if outcome["ok"]:
+            return LLMResponse(
+                outcome["text"],
+                outcome["provider"],
+                outcome["model"],
+                outcome["latency_ms"],
+                attempts=outcome["attempts"],
+                tried=outcome["tried"],
+            )
+        return self._offline_response(
+            outcome, offline_fallback, kind="text", max_tokens=max_tokens
+        )
 
     async def complete_json(
         self,
@@ -590,42 +974,62 @@ class LLMClient:
         offline_fallback: dict | None = None,
         model: str | None = None,
     ) -> tuple[dict, LLMResponse]:
-        last_error: Exception | None = None
-        for attempt in range(self._settings.llm_max_retries):
-            provider = await self._resolve()
-            if provider is None:
-                break
-            try:
-                started = time.monotonic()
-                raw = await provider.complete(
-                    system, prompt, json_mode=True, max_tokens=max_tokens, model=model
-                )
-                parsed = extract_json(raw)
-                if not isinstance(parsed, dict):
-                    raise ProviderUnavailable("expected a JSON object")
-                record_stat(provider.name, "calls")
-                return parsed, LLMResponse(
-                    raw,
-                    provider.name,
-                    model or getattr(provider, "_model", "?"),
-                    int((time.monotonic() - started) * 1000),
-                )
-            except ProviderRateLimited as exc:
-                last_error = exc
-                self._resolved = None
-                await asyncio.sleep(min(exc.retry_after, 20))
-            except Exception as exc:  # noqa: BLE001 - retry then failover
-                last_error = exc
-                record_stat(provider.name, "errors")
-                self._resolved = None
-                await asyncio.sleep(0.5 * (2**attempt))
+        outcome = await self._obtain(
+            system, prompt, json_mode=True, max_tokens=max_tokens, model=model
+        )
+        if outcome["ok"]:
+            return outcome["parsed"], LLMResponse(
+                outcome["text"],
+                outcome["provider"],
+                outcome["model"],
+                outcome["latency_ms"],
+                attempts=outcome["attempts"],
+                tried=outcome["tried"],
+            )
+        response = self._offline_response(
+            outcome, offline_fallback, kind="json", max_tokens=max_tokens
+        )
+        # The pair contract is the offline payload plus the honest provenance of
+        # how it was reached; callers unpack it, so returning the bare response
+        # here is a TypeError in every stage that fell back.
+        return (offline_fallback if isinstance(offline_fallback, dict) else {}), response
 
-        if offline_fallback is not None:
-            log.warning("llm json failed (%s), using offline fallback", last_error)
-            record_stat("offline", "calls")
-            return offline_fallback, LLMResponse("", "offline", "none", 0)
-        raise ProviderUnavailable(f"all llm providers failed: {last_error}")
+    def _offline_response(
+        self, outcome: dict[str, Any], fallback: Any, *, kind: str, max_tokens: int
+    ) -> LLMResponse:
+        """The one way a call ends without a model, said out loud.
 
+        `provider=offline` and `model=none` are the same values the old code
+        used, so nothing downstream changes — what is added is the reason and
+        the attempt count, because 8 506 offline fallbacks against a
+        `provider=compatible` line that said nothing is how an unmeasured thing
+        got reported as a measured one for 36 hours.
+        """
+        reason = str(outcome.get("reason") or "all llm providers failed")
+        attempts = int(outcome.get("attempts") or 0)
+        label = "llm json failed" if kind == "json" else "llm failed"
+        log.warning(
+            "%s (%s) after %d attempt(s), using offline fallback",
+            label,
+            str(outcome.get("error") or reason)[:200],
+            attempts,
+        )
+        if fallback is None:
+            raise ProviderUnavailable(f"all llm providers failed: {reason}")
+        record_stat("offline", "calls")
+        text = "" if kind == "json" else (fallback if isinstance(fallback, str) else "")
+        response = LLMResponse(
+            text,
+            OFFLINE_PROVIDER,
+            OFFLINE_MODEL,
+            0,
+            attempts=attempts,
+            tried=tuple(outcome.get("tried") or ()),
+            offline_reason=reason[:300],
+        )
+        response.usage = {"attempts": attempts, "max_tokens": max_tokens}
+        response.raw = {"offline_reason": response.offline_reason, "tried": list(response.tried)}
+        return response
 
 _CLIENT: LLMClient | None = None
 
