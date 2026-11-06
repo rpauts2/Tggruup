@@ -280,11 +280,15 @@ class _ScriptedProvider:
 
 
 class _SlowFailingProvider(_ScriptedProvider):
-    """Each attempt eats two seconds of the fake clock, then refuses."""
+    """Each attempt eats `seconds` of the fake clock, then refuses."""
+
+    def __init__(self, results, model="scripted-model", seconds: float = 2.0) -> None:
+        super().__init__(results, model)
+        self.seconds = seconds
 
     async def complete(self, system, prompt, *, json_mode, max_tokens, model=None, deadline=None):
         self.calls.append({"deadline": deadline})
-        await res.sleep(2.0)
+        await res.sleep(self.seconds)
         raise ProviderUnavailable("still busy")
 
 
@@ -396,6 +400,51 @@ async def test_the_provider_is_handed_the_call_deadline(monkeypatch):
     await client.complete_text("s", "p", offline_fallback="x")
 
     assert provider.calls[0]["deadline"] == pytest.approx(1_000.0 + 20.0)
+
+
+# ------------------------------------------------------ the default, unpumped
+@pytest.mark.asyncio
+async def test_the_unpatched_client_carries_the_documented_call_budget(monkeypatch):
+    """Mutant (f): `_call_budget_s` returning a huge number.
+
+    Every other test in this file patches `_call_budget_s`, which would make
+    that mutant invisible, so this one patches nothing: it asserts the default
+    the production client actually uses, and that the default is what makes a
+    42-minute stage impossible rather than what a test decided it should be.
+    """
+    from tgfarm.llm import resilience as resilience_mod
+
+    client = _client_with(_ScriptedProvider(["текст"]))
+    assert client._call_budget_s() == pytest.approx(resilience_mod.CALL_BUDGET_S)
+    # Below the 45-minute stale window by orders of magnitude, and below one
+    # catalogue sweep at the configured per-request timeout.
+    assert resilience_mod.CALL_BUDGET_S <= 30.0
+    assert resilience_mod.MAX_WAIT_S <= resilience_mod.CALL_BUDGET_S
+
+
+@pytest.mark.asyncio
+async def test_a_slow_provider_is_cut_off_at_the_default_budget(monkeypatch):
+    """Behaviourally, without patching the budget method itself."""
+    clock = _Clock()
+    _install(clock)
+    provider = _SlowFailingProvider([ProviderUnavailable("busy")], seconds=4.0)
+    client = _client_with(provider)
+    monkeypatch.setattr(client._settings, "llm_max_retries", 9, raising=False)
+    # The breaker and the stage budget must be taken out of the picture, or
+    # they stop the ladder first and this test proves nothing about the time
+    # budget. Without these two lines the test passes with the budget removed
+    # entirely — found by mutating `_call_budget_s` to 1e9.
+    monkeypatch.setattr(res.BREAKER, "threshold", 10_000)
+    monkeypatch.setattr(client, "_daily_budget", lambda: 10_000)
+    monkeypatch.setattr(client, "_model_count", lambda: 10_000)
+
+    started = clock.now()
+    response = await client.complete_text("s", "p", offline_fallback="offline text")
+
+    spent = clock.now() - started
+    assert response.provider == "offline"
+    assert spent <= res.CALL_BUDGET_S + 4.0, f"a call outlived the default budget: {spent}s"
+    assert response.attempts <= 6, f"the budget did not stop the ladder: {response.attempts}"
 
 
 @pytest.mark.asyncio
