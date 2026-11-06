@@ -35,6 +35,7 @@ from tgfarm.buildinfo import (  # noqa: E402
     METADATA_FILENAME,
     PACKAGING_MODES,
     SCHEMA,
+    declared_version,
     metadata_is_current,
     render_metadata,
     utc_now_stamp,
@@ -113,9 +114,9 @@ def collect(
     sha = source_sha(root)
     declared = app_version
     if declared is None:
-        from tgfarm.buildinfo import declared_version
-
-        declared = declared_version()
+        # Honour ``root``: a stamp taken for another work tree must read that
+        # tree's version, not the one this checkout happens to declare.
+        declared = declared_version(root)
     if not declared:
         raise RuntimeError("cannot stamp: no readable version in pyproject.toml")
 

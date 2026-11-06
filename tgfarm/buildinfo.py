@@ -70,7 +70,7 @@ import json
 import platform
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -255,7 +255,9 @@ def load_metadata(paths: list[Path]) -> tuple[dict[str, Any] | None, str, Path |
     return None, REASON_NO_METADATA, None
 
 
-def validate_metadata(data: Any, found_at: Path | None = None) -> tuple[dict[str, Any] | None, str, Path | None]:
+def validate_metadata(
+    data: Any, found_at: Path | None = None
+) -> tuple[dict[str, Any] | None, str, Path | None]:
     """Enforce the metadata contract; nothing unvalidated leaves this function."""
     if not isinstance(data, dict):
         return None, REASON_BAD_FIELDS, found_at
@@ -304,15 +306,18 @@ def validate_metadata(data: Any, found_at: Path | None = None) -> tuple[dict[str
     return clean, "", found_at
 
 
-def declared_version() -> str | None:
+def declared_version(root: Path | None = None) -> str | None:
     """The version the *tree* declares in ``pyproject.toml``.
 
     Labelled "declared" on purpose: for an unstamped run this is the only
     version available, it belongs to the checkout the caller happens to be
     standing in, and it is not a claim about a build or a process.
+
+    ``root`` exists so a test (or the stamper, pointed at another work tree) can
+    say which tree it means; production callers pass nothing and get this one.
     """
-    for root in _project_roots():
-        pyproject = root / "pyproject.toml"
+    for project_root in _project_roots(root):
+        pyproject = project_root / "pyproject.toml"
         if not pyproject.is_file():
             continue
         try:
@@ -333,7 +338,9 @@ def declared_version() -> str | None:
     return None
 
 
-def _project_roots() -> list[Path]:
+def _project_roots(root: Path | None = None) -> list[Path]:
+    if root is not None:
+        return [Path(root)]
     here = Path(__file__).resolve().parent
     roots = [here.parent]
     if getattr(sys, "frozen", False):
@@ -413,8 +420,9 @@ def describe(
     }
 
     if payload is None:
-        if found_at is not None and reason == REASON_NO_METADATA:
-            reason = REASON_UNREADABLE
+        # ``load_metadata`` returns ``REASON_NO_METADATA`` only together with
+        # ``found_at is None``; every other refusal already names its reason.
+        # There is no fourth case, so no reason rewriting happens here.
         identity["state"] = STATE_UNSTAMPED if reason == REASON_NO_METADATA else STATE_INVALID
         identity["reason"] = reason
         identity["declared_app_version"] = declared_version()
@@ -454,7 +462,14 @@ def _build_line(identity: dict[str, Any]) -> str:
     parts.append(f"mode={identity['packaging_mode']}")
     parts.append(f"state={identity['state']}")
     version = identity["app_version"]
-    parts.append(f"app={version}" if version else "app=unstamped")
+    if version:
+        parts.append(f"app={version}")
+    else:
+        # Bare "unstamped" reads as "nobody knows the version". The tree does
+        # declare one, and printing it under a name that cannot be mistaken for
+        # a stamped value is the difference between under-reporting and lying.
+        declared = identity.get("declared_app_version")
+        parts.append(f"app=unstamped declared={declared}" if declared else "app=unstamped")
     sha = identity["source_sha"]
     parts.append(f"sha={sha}" if sha else "sha=absent")
     dirty = identity["dirty"]
@@ -483,7 +498,7 @@ def log_line(**kwargs: Any) -> str:
 
 def utc_now_stamp() -> str:
     """Build-time timestamp in the one format the contract accepts."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def metadata_is_current(payload: dict[str, Any]) -> bool:
