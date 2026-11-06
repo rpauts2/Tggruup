@@ -24,7 +24,6 @@ selector scraping — the gate itself is the subject.
 from __future__ import annotations
 
 import asyncio
-
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
