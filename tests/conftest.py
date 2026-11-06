@@ -218,6 +218,34 @@ def _offline_env():
     _reset_caches()
 
 
+_CONFIG_CACHE_FILE: str | None = None
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Re-read the config at every test-file boundary, so no neighbour lends it.
+
+    `tgfarm.config.get_config` is a process-wide `lru_cache(maxsize=1)` that
+    `_reset_caches()` did not clear, so the first caller in a run decided the
+    cadence for everyone after it. That is not a style complaint: on 2026-11-06 a
+    whole-suite run lost eight `first_slot` cells of
+    `tests/test_publishing_state_machine.py` because a file that had run earlier
+    cached an interval cadence, and the publisher's interval branch asks for
+    settings the stub of that file does not carry — the same file passed alone.
+    Clearing per file costs three YAML reads per module and turns "which branch
+    this test runs in" back into a property of the test.
+    """
+    global _CONFIG_CACHE_FILE
+
+    path = str(item.path)
+    if path == _CONFIG_CACHE_FILE:
+        return
+    _CONFIG_CACHE_FILE = path
+
+    from tgfarm.config import get_config
+
+    get_config.cache_clear()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_network(monkeypatch_session=None):
     """Make a real outbound connection a test failure, not a side effect."""
