@@ -1,4 +1,9 @@
-"""Structured logging with one-line console format and optional file sink."""
+"""Structured logging with one-line console format and optional file sink.
+
+Every handler's output passes through the W24-S RedactingFormatter, so secret
+values and credential-shaped text cannot reach consoles or farm_serve*.log
+regardless of which call site emitted the record.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,8 @@ import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+from tgfarm.core.redact import RedactingFormatter
 
 _CONFIGURED = False
 
@@ -37,15 +44,15 @@ def setup_logging(level: str = "INFO", json_out: bool = False, log_file: Path | 
     root.setLevel(level.upper())
 
     console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(_JsonFormatter() if json_out else logging.Formatter(
+    console.setFormatter(RedactingFormatter(_JsonFormatter() if json_out else logging.Formatter(
         "%(asctime)s %(levelname)-7s %(name)-22s %(message)s", "%H:%M:%S"
-    ))
+    )))
     root.addHandler(console)
 
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(_JsonFormatter())
+        fh.setFormatter(RedactingFormatter(_JsonFormatter()))
         root.addHandler(fh)
 
     # third-party noise
