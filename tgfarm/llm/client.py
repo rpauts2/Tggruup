@@ -723,6 +723,10 @@ class LLMClient:
                     return provider
             except Exception as exc:  # noqa: BLE001 - probing must never raise
                 log.debug("provider %s probe failed: %s", provider.name, exc)
+            # Chosen by `allow()` as the half-open probe but never used: give
+            # the slot back, or the breaker would stay locked on a probe that
+            # was never made.
+            res.BREAKER.release_probe(provider.name)
         return None
 
     async def ensure_available(self) -> bool:
@@ -857,7 +861,7 @@ class LLMClient:
                 )
             except ProviderRateLimited as exc:
                 last_error = exc
-                res.BREAKER.on_failure(provider.name)
+                tripped = res.BREAKER.on_failure(provider.name)
                 record_stat(provider.name, "rate_limited_call")
                 self._resolved = None
                 told = max(0.0, float(getattr(exc, "retry_after", 0.0) or 0.0))
@@ -875,6 +879,19 @@ class LLMClient:
                 if wait >= budget.remaining() and budget.remaining() <= 1.0:
                     reason = f"call budget spent before retry_after {told:.0f}s"
                     break
+                if tripped:
+                    reason = f"breaker_open:{provider.name}"
+                    log.warning(
+                        "circuit breaker open for %s after %d consecutive failures; "
+                        "cooling off %.0fs",
+                        provider.name,
+                        res.BREAKER.threshold,
+                        res.BREAKER.retry_in(provider.name),
+                    )
+                    # Do not end the call: the next attempt re-resolves, skips
+                    # the now-open provider and tries the rest of the chain.
+                    # Ending here is how one dead gateway offlined a healthy
+                    # second one.
                 if attempt + 1 < attempts:
                     await res.sleep(wait)
                 continue
@@ -891,7 +908,7 @@ class LLMClient:
                 if attempt + 1 < attempts:
                     await res.sleep(wait)
                 if tripped:
-                    reason = f"breaker open for {provider.name}"
+                    reason = f"breaker_open:{provider.name}"
                     log.warning(
                         "circuit breaker open for %s after %d consecutive failures; "
                         "cooling off %.0fs",
@@ -899,7 +916,6 @@ class LLMClient:
                         res.BREAKER.threshold,
                         res.BREAKER.retry_in(provider.name),
                     )
-                    break
                 continue
             parsed: Any = None
             if json_mode:

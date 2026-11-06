@@ -231,20 +231,35 @@ class CircuitBreaker:
             return CLOSED
         if now() < until:
             return OPEN
-        # Cool-off elapsed: admit exactly one probe.
-        if not self._probing.get(key):
-            self._probing[key] = True
         return HALF_OPEN
 
     def allow(self, key: str) -> bool:
-        """True when a real request may be made for `key` right now."""
+        """True when a real request may be made for `key` right now.
+
+        Half-open grants exactly one in-flight probe. That is not a detail: a
+        half-open state that let a whole stage through would rediscover the
+        outage twelve models at a time, which is the behaviour we are here to
+        remove.
+        """
         state = self.state(key)
         if state == CLOSED:
             return True
         if state == OPEN:
             return False
-        # HALF_OPEN: `state()` only flips `_probing` once, so one probe wins.
-        return self._probing.get(key) is True
+        if self._probing.get(key):
+            return False
+        self._probing[key] = True
+        return True
+
+    def release_probe(self, key: str) -> None:
+        """Hand the probe slot back when the call never happened.
+
+        A granted probe whose provider turned out unavailable (`available()`
+        said no) would otherwise stay granted forever — a breaker that opens
+        and never closes again, failing in the worse direction.
+        """
+        if self.state(key) == HALF_OPEN:
+            self._probing.pop(key, None)
 
     def on_failure(self, key: str) -> bool:
         """Record a failed call. Returns True when this failure tripped it."""
