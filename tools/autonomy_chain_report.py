@@ -38,7 +38,7 @@ DEFAULT_DB = REPO_ROOT / "tgfarm.db"
 # Chain stage order as journaled by tgfarm.pipeline for one cycle, mapped to
 # the acceptance-chain link it carries evidence for (docs/AUTONOMY_ACCEPTANCE.md).
 CHAIN_STAGES: list[tuple[str, str]] = [
-    ("s1_sources", "source items collected (unreachable offline; see below)"),
+    ("s1_collect", "source items collected (unreachable offline; see below)"),
     ("s2_trends", "candidate cluster exists and is ranked (heat)"),
     ("s4_generate", "draft with provenance (sources cite seeded urls)"),
     ("s5_quality", "gate verdict with reason (gated/rejected)"),
