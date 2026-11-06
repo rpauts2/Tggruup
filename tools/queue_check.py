@@ -343,6 +343,9 @@ def _known_shas() -> set[str] | None:
 
 #: States that no longer hold files: two owners may collide only over work still open.
 RELEASED = ("INTEGRATED", "VERIFIED", "FAILED", "CANCELLED")
+#: States that deliberately reserve files without running: a dirty foreign path
+#: against one of these is a `foreign-claim`, not yet a double activity.
+RESERVING = ("BLOCKED", "RECOVERY_REQUIRED")
 
 #: Owner shown for unstructured foreign claims when the caller names none.
 DEFAULT_FOREIGN_OWNER = "working-tree"
@@ -462,7 +465,7 @@ def _check_foreign_claims(tasks: list[dict[str, Any]], claims: list[dict[str, An
                         tid, "duplicate-active",
                         f"owners `{owner}` (outside the queue) and `{task_owner}` "
                         f"({tid}, `{status}`) both hold `{path_s}`"))
-                else:
+                elif status in RESERVING:
                     problems.append(Problem(
                         tid, "foreign-claim",
                         f"`{path_s}` is dirty for `{owner}` while `{tid}` "

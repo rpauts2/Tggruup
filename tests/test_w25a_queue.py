@@ -272,6 +272,15 @@ def test_a_foreign_claim_on_a_reserved_but_idle_file_is_foreign_claim() -> None:
     assert "foreign-claim" in _rules(problems)
 
 
+def test_a_backlog_plan_does_not_block_a_foreign_tree() -> None:
+    """Planning paths are intentions; flagging them would bury the real findings."""
+    planned = _task(id="T-8", status="BACKLOG", owner_agent="",
+                    allowed_paths=["tgfarm/cli.py"], worktree=None, branch=None)
+    claims = [{"owner": _MISSIONS_OWNER, "paths": ["tgfarm/cli.py"]}]
+    problems, _ = qc.validate([planned], foreign_claims=claims)
+    assert not [p for p in problems if p.rule in ("foreign-claim", "duplicate-active")], problems
+
+
 def test_a_registered_foreign_owner_produces_no_problem() -> None:
     """When the session writes its own claim into the queue, reality is known."""
     registered = _task(id="MS-T1", status="BLOCKED", owner_agent=_MISSIONS_OWNER,
