@@ -467,7 +467,17 @@ def verify_dir(telemetry_dir: Path) -> tuple[list[VerifyResult], list[str]]:
     results: list[VerifyResult] = []
     problems: list[str] = []
     anchors = load_anchors(telemetry_dir)
-    for file in telemetry_files(telemetry_dir):
+    files = telemetry_files(telemetry_dir)
+    if anchors is not None:
+        # a whole task file deleted from disk leaves no chain to break: only the
+        # anchor knows that the file existed at all
+        listed = set(anchors.get("files", {}))
+        for name in sorted(listed - {f.name for f in files}):
+            problems.append(
+                f"{name}: listed in {ANCHORS_FILE} but absent from the dir — a task record "
+                "file was deleted, which is not an append"
+            )
+    for file in files:
         result = verify_file(file)
         results.append(result)
         if anchors is None:
@@ -516,7 +526,11 @@ def summary_lines(telemetry_dir: Path) -> list[str]:
             state = record.get("state")
             duration = record.get("duration_s")
             commits = record.get("commits")
-            derived = record.get("derived") or compute_derived(record)
+            # the derived block is hashed, so a stale one is a fact worth printing
+            # rather than a number to trust: always recompute from the record's own
+            # fields and say when the two disagree
+            derived = compute_derived(record)
+            stored_derived = record.get("derived")
             if duration is not None:
                 total_duration += float(duration)
                 duration_records += 1
@@ -542,6 +556,12 @@ def summary_lines(telemetry_dir: Path) -> list[str]:
             )
             for name, reason in sorted((derived.get("not_computed") or {}).items()):
                 lines.append(f"    {name}: {reason}")
+            if stored_derived is not None and stored_derived != derived:
+                lines.append(
+                    "    DERIVED BLOCK DISAGREES with the record's own fields — the numbers "
+                    "above are recomputed from the fields, the stored block was "
+                    + json.dumps(stored_derived, sort_keys=True, ensure_ascii=False)
+                )
             lines.append(
                 f"    failure_reason={fmt(record.get('failure_reason'))}"
                 f"  defects_found_by_reviewer={fmt(record.get('defects_found_by_reviewer'))}"

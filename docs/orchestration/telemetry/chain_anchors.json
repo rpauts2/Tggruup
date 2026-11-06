@@ -1,0 +1,16 @@
+{
+  "files": {
+    "W24-A.jsonl": {
+      "head_hash": "cc4ddb42ee0924862ad9e951601b8daff07fef49e4a62e80408bc047462b86f6",
+      "records": 1,
+      "seq": 0
+    },
+    "W24-B.jsonl": {
+      "head_hash": "afe3227e6c24976fdac44415c6984160a895fddaa769f1ee40a1b20664e1893c",
+      "records": 1,
+      "seq": 0
+    }
+  },
+  "schema": 1,
+  "updated_at": "2026-11-06T11:34:28+00:00"
+}

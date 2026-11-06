@@ -103,6 +103,18 @@ def test_every_unreported_field_is_null_not_zero() -> None:
     assert payload["duration_s"] is None
 
 
+def test_summary_recomputes_a_stale_derived_block_and_says_so(telemetry_dir: Path) -> None:
+    """A record whose stored rates contradict its own fields must not be trusted blindly."""
+    file = ar.append_record(telemetry_dir, record(task="W24-A", commits="0", duration_s="2446"))
+    record_line = json.loads(file.read_text(encoding="utf-8"))
+    record_line["derived"]["duration_s_per_commit"] = 1.0
+    file.write_text(json.dumps(record_line, sort_keys=True) + "\n", encoding="utf-8")
+    lines = ar.summary_lines(telemetry_dir)
+    text = "\n".join(lines)
+    assert "DERIVED BLOCK DISAGREES" in text
+    assert "s/commit=not measured" in text, "the recomputed null wins over the stored number"
+
+
 def test_a_record_without_a_commit_count_is_refused() -> None:
     """A null commit count would read as "nobody checked", never as "no commits"."""
     with pytest.raises(ar.RecordError, match="commits"):
@@ -249,7 +261,20 @@ def test_a_deleted_tail_line_is_caught_by_the_anchor(telemetry_dir: Path) -> Non
     kept = file.read_text(encoding="utf-8").splitlines()[0]
     file.write_text(kept + "\n", encoding="utf-8")
     _results, problems = ar.verify_dir(telemetry_dir)
-    assert any("anchor" in problem for problem in problems), problems
+    text = "\n".join(problems)
+    # both anchor guards must fire: the head hash (a tail edit at all) and the
+    # record count (a tail delete). Asserting on the wording is what keeps each
+    # of them load-bearing instead of interchangeable.
+    assert "does not match file head" in text, problems
+    assert "anchor says" in text, problems
+
+
+def test_a_whole_deleted_task_file_is_caught_by_the_anchor(telemetry_dir: Path) -> None:
+    """A task record that vanishes leaves no broken chain behind: only the anchor knows."""
+    ar.append_record(telemetry_dir, record(task="W24-A", commits="1"))
+    (telemetry_dir / "W24-A.jsonl").unlink()
+    _results, problems = ar.verify_dir(telemetry_dir)
+    assert any("deleted" in problem for problem in problems), problems
 
 
 def test_appending_refuses_to_chain_onto_a_broken_file(telemetry_dir: Path) -> None:
