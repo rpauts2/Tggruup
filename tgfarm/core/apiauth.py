@@ -58,6 +58,23 @@ def token_path() -> Path:
     return get_settings().data_root() / TOKEN_FILENAME
 
 
+def token_source() -> str:
+    """Where the token comes from — a state, never a value.
+
+    `tgfarm serve` printed the token itself for years, and because the live farm is
+    `python -u -m tgfarm.cli serve` with its output redirected to a file in the repo,
+    that made a standing credential a plaintext line in every `farm_serve*.log`. The
+    replacement is this function: an operator still learns whether the token is
+    configured, already on disk, or about to be created — which is the only part of
+    the old line that was ever diagnostic — and reads the value only by asking for it.
+    """
+    if (get_settings().api_token or "").strip():
+        return "env"
+    if token_path().exists():
+        return "file"
+    return "generated"
+
+
 def ensure_token() -> str:
     """Return the API token, creating it on first use."""
     configured = (get_settings().api_token or "").strip()
@@ -166,4 +183,5 @@ __all__ = [
     "rotate_token",
     "strip_token_from_query",
     "token_path",
+    "token_source",
 ]

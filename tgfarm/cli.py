@@ -22,6 +22,7 @@
     tgfarm agent-benchmark --report      summarize paired benchmark history
     tgfarm capability [--format]  honest capability level of every platform
     tgfarm rules-status [--format] stored destination rules state, read only
+    tgfarm api-token [--rotate]  read the admin API token on purpose; --rotate replaces it
     tgfarm doctor               diagnose configuration and connectivity
     tgfarm backup-test FILE     restore a backup to a temporary DB and verify it
     tgfarm demo                 seed synthetic data and run a cycle offline
@@ -119,11 +120,40 @@ def cmd_cycle(args) -> int:
     return asyncio.run(_run())
 
 
+def cmd_api_token(args) -> int:
+    """Print the admin API token — the one place that does, on explicit request.
+
+    `serve` used to print it on every start, and the live farm is
+    `python -u -m tgfarm.cli serve` with stdout redirected into `farm_serve*.log`
+    inside the repository, so a standing credential sat in plaintext in a file the
+    operator keeps. A verb is the honest half of the fix: refusing to print the
+    value anywhere would leave the operator unable to use their own panel, so the
+    read stays possible and becomes deliberate. The value goes to stdout alone, so
+    `token=$(tgfarm api-token)` works; anything advisory goes to stderr.
+
+    `--rotate` replaces the secret for exactly the case the audit produced: the old
+    value is already in historical logs, so the remedy is rotation. That is the
+    operator's decision and this verb only performs it when the flag is present.
+    """
+    from tgfarm.core import apiauth
+
+    if getattr(args, "rotate", False):
+        token = apiauth.rotate_token()
+        print(
+            f"прежний токен отозван, новый записан в {apiauth.token_path()}",
+            file=sys.stderr,
+        )
+    else:
+        token = apiauth.ensure_token()
+    print(token)
+    return 0
+
+
 def cmd_serve(args) -> int:
     import uvicorn
 
     from tgfarm.api import create_app
-    from tgfarm.core.apiauth import ensure_token
+    from tgfarm.core import apiauth
     from tgfarm.core.logging import get_logger
 
     log = get_logger(__name__)
@@ -137,14 +167,22 @@ def cmd_serve(args) -> int:
         # token is then the only thing standing between the network and that.
         log.warning(
             "binding the admin API to %s — it can publish posts. "
-            "Every /api call needs the token below.",
+            "Every /api call needs the token (`tgfarm api-token`).",
             host,
         )
 
-    token = ensure_token()
+    # Read the state before `ensure_token()` writes anything: "generated" is the
+    # operator's signal that a new standing secret just appeared on disk, and
+    # after the call every source reads as "file", which says nothing.
+    source = apiauth.token_source()
+    apiauth.ensure_token()
     print(f"панель:  http://{host}:{port}/")
-    print(f"токен:   {token}")
-    print("        (панель подставляет его сама; вручную — заголовок X-TGFarm-Token)")
+    if source == "generated":
+        print(f"токен:   создан только что и не печатается; файл: {apiauth.token_path()}")
+    else:
+        print(f"токен:   не печатается; источник: {source}; файл: {apiauth.token_path()}")
+    print("        (панель подставляет его сама; вручную — заголовок X-TGFarm-Token,")
+    print("         либо `tgfarm api-token`, чтобы прочесть значение осознанно)")
 
     uvicorn.run(
         create_app(with_scheduler=not args.no_scheduler),
@@ -1468,6 +1506,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="serve the panel without the background pipeline",
     )
     p_serve.set_defaults(func=cmd_serve)
+
+    p_api_token = sub.add_parser(
+        "api-token",
+        help="print the admin API token (deliberate read; --rotate to replace it)",
+        description=(
+            "The token is a standing secret, so `serve` no longer prints it: this is the "
+            "one verb that does, and only when asked. The value goes to stdout alone; "
+            "--rotate issues a new token (and says so on stderr) for the case where the "
+            "old one reached a log."
+        ),
+    )
+    p_api_token.add_argument(
+        "--rotate",
+        action="store_true",
+        help="issue and store a new token instead of printing the current one",
+    )
+    p_api_token.set_defaults(func=cmd_api_token)
     sub.add_parser("status", help="fleet status").set_defaults(func=cmd_status)
 
     p_trends = sub.add_parser("trends", help="hot clusters")
