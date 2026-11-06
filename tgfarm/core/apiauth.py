@@ -75,16 +75,38 @@ def token_source() -> str:
     return "generated"
 
 
+def _register_for_logging(token: str) -> None:
+    """Hand the value to the log redactor, so a record cannot print it.
+
+    `core/redact` discovers secrets from the environment and from the token file.
+    A token that exists only in settings — supplied by a dotenv file, a test, or
+    an in-memory configuration — is in neither place, and that is exactly the
+    token the serve path is about to use. Telemetry must never be able to break
+    authentication, so a failure here is swallowed: the token still works, it is
+    simply not protected in logs until the next emit registers it.
+    """
+    if not token:
+        return
+    try:
+        from tgfarm.core import redact
+
+        redact.register_secret(token)
+    except Exception:  # noqa: BLE001 - redaction is never allowed to break auth
+        log.debug("could not register the admin token for log redaction")
+
+
 def ensure_token() -> str:
     """Return the API token, creating it on first use."""
     configured = (get_settings().api_token or "").strip()
     if configured:
+        _register_for_logging(configured)
         return configured
 
     path = token_path()
     if path.exists():
         existing = path.read_text(encoding="utf-8").strip()
         if existing:
+            _register_for_logging(existing)
             return existing
 
     token = secrets.token_urlsafe(TOKEN_BYTES)
@@ -96,6 +118,7 @@ def ensure_token() -> str:
     except OSError:
         log.debug("could not restrict permissions on %s", path)
     log.info("generated admin API token at %s", path)
+    _register_for_logging(token)
     return token
 
 

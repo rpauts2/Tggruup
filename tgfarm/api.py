@@ -6283,6 +6283,20 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
 
         return await io(measurement_coverage)
 
+    @app.get("/api/metrics/attribution")
+    async def metrics_attribution_api(days: int = 30) -> dict:
+        """How much of what was published can be tied back to a measurement.
+
+        `coverage` answers how many posts were measured; this answers whether
+        measuring them was even possible. A publication without the external id
+        the collector needs has no path to a number at all, and that share has to
+        be stated rather than averaged away — `coverage` is None when a platform
+        has nothing to divide by.
+        """
+        from tgfarm.s8_analytics.attribution import attribution_report
+
+        return await io(lambda: attribution_report(days=max(1, days)))
+
     @app.get("/api/backlog")
     async def backlog_api() -> dict:
         """Flow and stock of the publication queue per platform, with the reason

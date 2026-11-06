@@ -236,10 +236,8 @@ def attribution_report(
     """The panel-facing view: per-platform attribution of stats to publications.
 
     ``platforms`` forces buckets for platforms that may have published nothing
-    in the window — they come back with ``coverage = None``, not 0.
-    Seam for the coordinator: ``api.py`` can expose this as e.g.
-    ``GET /api/analytics/attribution`` and the dashboard can render
-    ``report["platforms"]`` directly; nothing here writes or requires network.
+    in the window — they come back with ``coverage = None``, not 0. Served as
+    ``GET /api/metrics/attribution``; nothing here writes or needs network.
     """
     refs, measurements = collect_refs_and_measurements(days=days, channel_ids=channel_ids)
     report = summarize_attribution(refs, measurements, platforms=platforms)
