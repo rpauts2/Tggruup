@@ -466,6 +466,11 @@ def test_serialized_identity_carries_no_credential_names_and_no_secret_values(tm
 
     assert set(identity) <= set(buildinfo.IDENTITY_KEYS)
     assert set(buildinfo.IDENTITY_KEYS).isdisjoint(PLANTED_SECRETS)
+    # Asserted against the owner's own list, not a copy that can rot.
+    offending = [key for key in buildinfo.IDENTITY_KEYS
+                 if any(name in key for name in buildinfo.CREDENTIAL_FIELD_NAMES)]
+    assert offending == []
+    assert "token" in buildinfo.CREDENTIAL_FIELD_NAMES, "the audit list was emptied"
     for name, secret in PLANTED_SECRETS.items():
         assert name not in dumped, f"{name} survived the whitelist into the payload"
         assert secret not in dumped, f"{name} value leaked into the serialized identity"
@@ -628,6 +633,11 @@ def test_ci_stamps_before_the_bundle_is_built_and_before_it_is_uploaded():
     assert steps[stamp].get("shell") == "pwsh"
     travels_script = steps[travels]["run"]
     assert "build_identity.json" in travels_script
+    # "A file exists in dist/" is not the claim. The bundle has to carry *this*
+    # build's identity, so the step compares it with the file just stamped and
+    # parses it; `Get-Content` alone does neither and sets no exit code.
+    assert "Get-FileHash" in travels_script, "the bundle check stopped comparing contents"
+    assert "json.loads" in travels_script, "the bundled identity is no longer parsed"
     # Nothing in the new steps may print a credential into the build log.
     for blob in (script, travels_script):
         assert not re.search(r"api_?id_?hash|bot_?token|\.env(?!example)|TG_API", blob, re.IGNORECASE), blob

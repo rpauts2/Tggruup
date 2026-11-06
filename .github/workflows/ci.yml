@@ -134,7 +134,10 @@ jobs:
           if (-not $found) {
             throw "PyInstaller did not carry build_identity.json into dist/TgFarm/ - the frozen build has no identity"
           }
-          Get-Content $found -Raw
+          if ((Get-FileHash $found).Hash -ne (Get-FileHash "tgfarm/build_identity.json").Hash) {
+            throw "the identity collected into the bundle is not the identity this build stamped"
+          }
+          python -c "import json,pathlib,sys;d=json.loads(pathlib.Path(sys.argv[1]).read_text('utf-8'));print('bundled identity',d['source_sha'],d['packaging_mode'],d['dirty'],d['app_version'])" $found
           if ($LASTEXITCODE -ne 0) { throw "bundled build identity is unreadable" }
 
       - name: Upload Windows build artifact
