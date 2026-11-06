@@ -1,16 +1,25 @@
 """Reconcile configured channels with Telegram reality.
 
 `config/personas.yaml` is a wish list. This module finds out what is actually
-true: which channels exist, how many people read them, whether the farm's bot is
-an administrator there, and — the part that used to be missing entirely — what
+true: which channels exist, how many people read them, whether the farm's bot
+is an administrator there, and — the part that used to be missing entirely — what
 the published posts actually earned.
 
 Everything here is read-only against Telegram and writes only to our own
 database.
+
+Observability (W30-A): `sync_channels` used to be fire-and-forget — if it never
+ran, nothing recorded that fact, and if Telegram was unreachable it raised into
+whoever called it. Now every call, successful or not, produces a structured
+result (seen / added / updated / removed_upstream / failed with reason codes)
+and leaves a timestamped "ran" marker on disk that `sync_status()` reads back.
+Channel text coming from Telegram is untrusted data: it is truncated and stored
+inert, never interpreted.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -20,6 +29,19 @@ from tgfarm.db.models import Channel, Post, PostStat
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
+
+# The single Telegram-session call in the sync; the list cap keeps memory flat.
+CHAT_LIMIT = 300
+# Caps for untrusted text as it leaves Telegram and enters our rows/reports.
+TEXT_CAP = 200
+USERNAME_CAP = 64
+# How often pipeline._build_scheduler should call sync_channels (see spec).
+SYNC_INTERVAL_MIN = 360
+
+REASON_UNREACHABLE = "telegram_unavailable"
+REASON_ADMIN_CHECK = "bot_admin_check_failed"
+REASON_NOT_SEEN = "chat_not_seen_upstream"
+REASON_STATE_WRITE = "state_write_failed"
 
 
 #: Values the farm used to *invent* for "this channel was never synced".
@@ -55,6 +77,39 @@ def _normalise(text: str) -> str:
     return "".join(c for c in (text or "").lower() if c.isalnum() or c.isspace()).strip()
 
 
+def _safe_text(value: object, cap: int = TEXT_CAP) -> str:
+    """Coerce untrusted Telegram text to a plain, length-capped string.
+
+    Channel titles and usernames are attacker-controlled data. We keep them
+    inert: truncated, never executed, never interpolated anywhere.
+    """
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    return text[:cap]
+
+
+def _failure(subject: str, reason_code: str, detail: object = "") -> dict:
+    from tgfarm.core.security import redact_sensitive_text
+
+    return {
+        "subject": subject,
+        "reason_code": reason_code,
+        "detail": redact_sensitive_text(detail, limit=180),
+    }
+
+
+def _chat_preview(chat) -> dict:
+    """A truncated, inert view of one Telegram chat for reports and panels."""
+    return {
+        "id": int(chat.id),
+        "title": _safe_text(chat.title, TEXT_CAP),
+        "username": _safe_text(chat.username, USERNAME_CAP) or None,
+        "kind": _safe_text(chat.kind, 16) or "channel",
+        "participants": int(chat.participants or 0),
+    }
+
+
 def _match(persona_id: str, title: str, username: str | None, chats: list) -> object | None:
     """Find the chat that corresponds to a configured channel.
 
@@ -82,14 +137,159 @@ def _match(persona_id: str, title: str, username: str | None, chats: list) -> ob
     return None
 
 
-async def sync_channels() -> dict:
-    """Refresh channel reality from Telegram and report what does not line up."""
-    from tgfarm.config import get_config
+async def _fetch_chats(limit: int = CHAT_LIMIT) -> list:
+    """The one boundary where the sync touches the Telegram session.
+
+    Everything above it is pure; tests monkeypatch this function.
+    """
     from tgfarm.tguser import list_chats
 
-    config = get_config()
-    personas = config.by_platform("telegram")
-    chats = await list_chats(limit=300)
+    return await list_chats(limit=limit)
+
+
+def _state_path():
+    """Where the last-run marker lives. A file, not a table: the schema is
+    owned elsewhere and the panel only needs the newest snapshot."""
+    from tgfarm.core.settings import get_settings
+
+    return get_settings().data_root() / "telegram_sync_state.json"
+
+
+def _write_state(report: dict) -> bool:
+    payload = {
+        "ran_at": report["ran_at"],
+        "ok": report["ok"],
+        "reason": report["reason"],
+        "seen": report["seen"],
+        "configured": report["configured"],
+        "matched": report["matched"],
+        "added": report["added"],
+        "updated": report["updated"],
+        "removed_upstream": report["removed_upstream"],
+        "failed": report["failed"],
+    }
+    try:
+        _state_path().write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        return True
+    except OSError as exc:
+        log.warning("telegram sync state not written: %s", str(exc)[:120])
+        return False
+
+
+def sync_status() -> dict:
+    """The last recorded run of `sync_channels`, read without touching Telegram.
+
+    Before W30-A the operator could not tell whether the sync had ever run;
+    now `never_run: True` is an answer instead of a guess.
+    """
+    try:
+        raw = json.loads(_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
+        return {"never_run": True, "ran_at": None, "ok": None, "reason": "never_run"}
+    result = {"never_run": False}
+    result.update(raw)
+    return result
+
+
+def scheduler_job_spec() -> dict:
+    """Pure description of the scheduler entry the pipeline *should* register.
+
+    This module does not own pipeline.py, so it only says what belongs there;
+    wiring the job in is the coordinator's seam.
+    """
+    return {
+        "func": sync_channels,
+        "trigger": "interval",
+        "minutes": SYNC_INTERVAL_MIN,
+        "id": "telegram-channel-sync",
+        "name": "telegram channel sync",
+        "max_instances": 1,
+        "coalesce": True,
+        "misfire_grace_time": 3600,
+    }
+
+
+def _apply_reality(row: Channel, chat, bot_admin: dict[int, bool], now: datetime) -> bool:
+    """Write one channel's observed reality onto its row.
+
+    Returns True only if a persisted field actually changed — `tg_synced_at`
+    is touched every run and deliberately does not count, so a second run over
+    the same data reports zero updates.
+    """
+    changed = False
+    observations: list[tuple[str, object]] = [
+        ("tg_chat_id", int(chat.id)),
+        ("tg_participants", int(chat.participants or 0) or None),
+        ("tg_verified", bool(chat.is_verified)),
+        ("username", _safe_text(chat.username, USERNAME_CAP) or None),
+    ]
+    admin = bot_admin.get(int(chat.id))
+    if admin is not None:
+        observations.append(("tg_bot_admin", admin))
+    for field, value in observations:
+        if getattr(row, field) != value:
+            setattr(row, field, value)
+            changed = True
+    row.tg_synced_at = now
+    return changed
+
+
+def _base_report(now: datetime, personas: list, chats: list, failed: list) -> dict:
+    return {
+        "ok": not failed,
+        "reason": failed[0]["reason_code"] if failed else None,
+        "ran_at": now.isoformat(),
+        "synced_at": now.isoformat(),
+        "seen": len(chats),
+        "telegram_chats": len(chats),
+        "configured": len(personas),
+        "matched": 0,
+        "added": [],
+        "updated": [],
+        "removed_upstream": [],
+        "missing_in_telegram": [],
+        "bot_not_admin": [],
+        "unconfigured_channels": [],
+        "failed": failed,
+    }
+
+
+async def sync_channels() -> dict:
+    """Refresh channel reality from Telegram and report exactly what happened.
+
+    Idempotent: a second run over unchanged data adds and updates nothing and
+    says so. Failure-visible: an unreachable Telegram session or a failed
+    permission check is returned as a stated outcome with a reason code, never
+    raised-and-swallowed. Self-reporting: every call ends with a structured
+    result and a timestamped marker that `sync_status()` can read back.
+    """
+    from tgfarm.config import get_config
+
+    now = datetime.now(UTC)
+    personas = get_config().by_platform("telegram")
+    failed: list[dict] = []
+
+    try:
+        chats = await _fetch_chats()
+    except Exception as exc:  # noqa: BLE001 - offline Telegram is a result, not a crash
+        log.warning("telegram sync: session unreachable (%s)", type(exc).__name__)
+        failed.append(_failure("list_chats", REASON_UNREACHABLE, type(exc).__name__))
+        report = _base_report(now, personas, [], failed)
+        report["ok"] = False
+        _write_state(report)
+        return report
+
+    try:
+        bot_admin = await _bot_admin_map()
+    except Exception as exc:  # noqa: BLE001 - a failed permission check must not sink sync
+        log.warning("telegram sync: bot admin check failed (%s)", type(exc).__name__)
+        bot_admin = {}
+        failed.append(_failure("getChatMember", REASON_ADMIN_CHECK, type(exc).__name__))
 
     matched: dict[str, object] = {}
     for persona in personas:
@@ -97,64 +297,85 @@ async def sync_channels() -> dict:
         if found is not None:
             matched[persona.id] = found
 
-    bot_admin = await _bot_admin_map()
+    added: list[str] = []
+    updated: list[str] = []
+    removed_upstream: list[str] = []
+    missing: list[dict] = []
 
-    now = datetime.now(UTC)
     with session_scope() as session:
         rows = {row.id: row for row in session.execute(select(Channel)).scalars().all()}
 
         for persona in personas:
             row = rows.get(persona.id)
-            if row is None:
-                continue
             chat = matched.get(persona.id)
-            if chat is None:
+            if row is None:
+                row = Channel(
+                    id=persona.id,
+                    platform="telegram",
+                    title=_safe_text(persona.title, TEXT_CAP),
+                    niche=_safe_text(persona.niche, 64),
+                    persona=persona.as_dict(),
+                    timezone=persona.timezone,
+                    posts_per_day=persona.posts_per_day,
+                    enabled=persona.enabled,
+                )
+                session.add(row)
+                rows[persona.id] = row
+                added.append(persona.id)
+                if chat is not None:
+                    _apply_reality(row, chat, bot_admin, now)
+                else:
+                    row.tg_synced_at = now
                 continue
-            row.tg_chat_id = chat.id
-            row.tg_participants = chat.participants or None
-            row.tg_verified = chat.is_verified
-            row.tg_synced_at = now
-            if chat.id in bot_admin:
-                row.tg_bot_admin = bot_admin[chat.id]
-            if chat.username:
-                row.username = chat.username
+            if chat is None:
+                if row.tg_chat_id:
+                    removed_upstream.append(persona.id)
+                missing.append({"id": persona.id, "title": _safe_text(persona.title)})
+                continue
+            if _apply_reality(row, chat, bot_admin, now):
+                updated.append(persona.id)
 
         stored_ids = {row.tg_chat_id for row in rows.values() if row.tg_chat_id}
+        not_admin = [
+            {"id": row.id, "reason": "бот не администратор"}
+            for row in rows.values()
+            if row.tg_chat_id and row.tg_bot_admin is False
+        ]
 
-    configured_titles = {p.title for p in personas}
+    configured_titles = {_normalise(p.title) for p in personas}
     unconfigured = [
-        c.as_dict()
+        _chat_preview(c)
         for c in chats
         if c.id not in stored_ids
         and c.kind == "channel"
         and c.participants > 0
-        and _normalise(c.title) not in {_normalise(t) for t in configured_titles}
+        and _normalise(c.title) not in configured_titles
     ]
-
-    missing = [
-        {"id": p.id, "title": p.title}
+    missing.extend(
+        {"id": p.id, "title": _safe_text(p.title)}
         for p in personas
-        if p.id not in matched
-    ]
-    not_admin = [
-        {"id": cid, "reason": "бот не администратор"}
-        for cid, row in ((r.id, r) for r in rows.values())
-        if row.tg_chat_id and row.tg_bot_admin is False
-    ]
+        if p.id not in matched and p.id not in {m["id"] for m in missing}
+    )
 
-    report = {
-        "ok": not missing and not not_admin,
-        "telegram_chats": len(chats),
-        "matched": len(matched),
-        "configured": len(personas),
-        "missing_in_telegram": missing,
-        "bot_not_admin": not_admin,
-        "unconfigured_channels": unconfigured[:25],
-        "synced_at": now.isoformat(),
-    }
+    report = _base_report(now, personas, chats, failed)
+    report.update(
+        {
+            "ok": not failed and not missing and not not_admin,
+            "reason": failed[0]["reason_code"] if failed else None,
+            "matched": len(matched),
+            "added": added,
+            "updated": updated,
+            "removed_upstream": removed_upstream,
+            "missing_in_telegram": missing,
+            "bot_not_admin": not_admin,
+            "unconfigured_channels": unconfigured[:25],
+        }
+    )
+    if not _write_state(report):
+        report["failed"].append(_failure("state", REASON_STATE_WRITE, ""))
     log.info(
-        "telegram sync: %d/%d каналов найдено, %d чатов видно",
-        len(matched), len(personas), len(chats),
+        "telegram sync: %d/%d каналов найдено, %d чатов видно, +%d новых, %d изменено",
+        len(matched), len(personas), len(chats), len(added), len(updated),
     )
     return report
 
@@ -339,4 +560,11 @@ def channel_reality() -> list[dict]:
         ]
 
 
-__all__ = ["channel_reality", "collect_post_stats", "real_tg_chat_id", "sync_channels"]
+__all__ = [
+    "channel_reality",
+    "collect_post_stats",
+    "real_tg_chat_id",
+    "scheduler_job_spec",
+    "sync_channels",
+    "sync_status",
+]
