@@ -231,7 +231,7 @@ tasks:
     title: "Независимое ревью спасённой build-identity + тесты, которых не было"
     priority: high
     category: review
-    status: REVIEW
+    status: INTEGRATED
     owner_role: "Code Reviewer + Test Engineer"
     owner_agent: "ageneral-purpose-ee7f9d4f9378d86d"
     base_sha: 14c165a
@@ -250,13 +250,13 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w24b_buildinfo.py"
     review_status: RETURNED_TO_COORDINATOR
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T14:05:00+03:00"
-    updated_at: "2026-11-06T14:20:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "OBSERVED: вердикт accept-with-fixes; 4 коммита на w24br-build-review, HEAD 015305e; 33 теста, 6/6 мутантов"
       - "CODE_VERIFIED: BLOCKER №1 — packaging/tgfarm.spec:37 незакрытая строка → SyntaxError, то есть PyInstaller падал и артефакта не было"
@@ -264,6 +264,7 @@ tasks:
       - "OBSERVED: ветка базирована на 91029a3+14c165a, не на 7e58455 — переносить с пересчётом"
       - "DEFER, не моё решение: .gitignore не скрывает build_identity.json; после gc проверка SHA в очереди слепа к упakованным объектам"
       - "GIT_VERIFIED: вся пятёрка 14c165a..015305e лежит в main только как черри-пики 183c031..fbefd22 на ветке coordinator/w2425-integration; в main@183daa4 ни одного нет (git merge-base --is-ancestor 14c165a main — ложь)"
+      - "CI_VERIFIED: cherry-pick 183c031 b823ab7 7812737 7c87f1c fbefd22; 33 теста; version, строка при serve и /api/build закрыты в 404baa8"
     next_action: "Приёмка: черри-пик 14c165a+5d689d5+d3a1323+93259a0+015305e на main (или rebase-приём coordinator/w2425-integration), затем wiring версии в cli.py"
 
   # ------------------------------------------------------------- wave 25 (orchestration foundation)
@@ -362,7 +363,7 @@ tasks:
     description: "503-шторм бесплатного тира: Retry-After, ограниченный backoff с jitter, бюджет времени вызова, circuit breaker и честный provenance offline-fallback"
     priority: critical
     category: product
-    status: REVIEW
+    status: INTEGRATED
     owner_role: "AI / LLM Engineer"
     owner_agent: "ageneral-purpose-43372317f891f137"
     base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
@@ -383,19 +384,20 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w28a_llm_backoff.py tests/test_w28a_circuit_breaker.py"
     review_status: RETURNED_TO_COORDINATOR
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T13:48:00+03:00"
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "OBSERVED: dirty=2 — работа пошла"
       - "LOG_VERIFIED: farm_serve25.log — 503 ×5512, offline fallback ×7591, s4_generate 2 552 107 ms"
       - "GIT_VERIFIED: 4 коммита на w28a-llm-reliability (6e9c5b4 Retry-After/backoff/budget → 940496d circuit breaker → b01ed04 provenance failover → 8e71545 budget pin), ни один не ancestor of main — пакет доставлен, не принят"
       - "GIT_VERIFIED: те же четыре шага лежат в черри-пиках координатора 4bcca3a..143ddc9 на ветке coordinator/w2425-integration (не в main на 183daa4)"
       - "DUPLICATE_ACTIVE:missions: та же задача параллельно переписывается незакоммиченно в общем основном дереве сессией missions/t1-t4 (см. MISSIONS-T1) — единственный известный случай, когда проверяльщик без --foreign-claims слеп; решение принимает координатор до приёмки"
+      - "CI_VERIFIED: cherry-pick 4bcca3a d70dc61 10ad810 143ddc9; 54 теста; швы закрыты координатором в 404baa8"
     next_action: >
       Приёмка невозможна, пока не разрешено дублирование: либо missions-дерево
       сбрасывает tgfarm/llm/client.py и берет ветку W28-A, либо W28-A закрывается
@@ -407,7 +409,7 @@ tasks:
     description: "Проверка бэкапа по числам строк в таблицах и осознание WAL-партнёров: плоский cp живой базы давал копию с 0 постов"
     priority: high
     category: product
-    status: REVIEW
+    status: INTEGRATED
     owner_role: "Database Engineer / DevOps"
     owner_agent: "ageneral-purpose-d7712debb3e8bfaf"
     base_sha: 7e584550280b812a5f18e0c36e2cc613133cb8af
@@ -427,15 +429,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w28k_restore_proof.py tests/test_backup.py"
     review_status: RETURNED_TO_COORDINATOR
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T14:10:00+03:00"
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: 2 коммита на w28k-restore-proof (cd8aae5 «prove a backup by row counts, not by file existence», b1f24c6 «same-size corrupted freelist caught only by integrity_check»), ни один не ancestor of main — доставка есть, приёмки нет"
+      - "CI_VERIFIED: recovery.py принят через W26-R (f7c3be8); backup_snapshot.py и test_w28k_* остались в ветке"
     next_action: "Приёмка координатором; продолжение названо отдельным пакетом W26-R"
 
   - id: W29-C
@@ -704,7 +707,7 @@ tasks:
       логовых путей.
     priority: high
     category: security
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "Security Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -721,15 +724,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w24s_log_redaction.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: остаток назван в записи W24-A (7e58455); пути tgfarm/desktop.py:419/:519 — из next_action W24-A"
+      - "CI_VERIFIED: cherry-pick d1b502f 1b4f833; 8 тестов; реестр секретов пополняется из apiauth.ensure_token (ce7e24f)"
     next_action: "Начать после разрешения дубля миссий: миссия T2 уже трогает соседний cli.py"
 
   - id: W24-M
@@ -741,7 +745,7 @@ tasks:
       ответом площадки и атрибутирует post_stats строке.
     priority: high
     category: product
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "Backend Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -758,15 +762,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w24m_metric_attribution.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: диагноз взят из разрыв-анализа 6.0 в docs/EXECUTION_PLAN.md на 183daa4 (строка «Качество сбора метрик стоит») — по замерам mode=ro"
+      - "CI_VERIFIED: cherry-pick e77a00a; 7 тестов; /api/metrics/attribution закрыт в ce7e24f"
     next_action: "READY после W30-A: без sync_channels атрибутировать нечего"
 
   - id: W28-L2
@@ -777,7 +782,7 @@ tasks:
       без provenance-честности offline-пути.
     priority: high
     category: product
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "AI / LLM Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -797,15 +802,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w28l2_nonchat_resilience.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: файлы не-чат пути перечислены по main@183daa4 (ls tgfarm/llm); предмет унаследован from W28-A (6e9c5b4..8e71545)"
+      - "CI_VERIFIED: cherry-pick 2b2c3b0; 11 оффлайн-тестов, мутация убита; ruff images.py 1 -> 0"
     next_action: "Не начинать, пока дубль W28-A/missions-T1 не разрешён: общее tgfarm/llm/"
 
   - id: W29-B
@@ -816,7 +822,7 @@ tasks:
       W29-C — наблюдатель сеется из самой пустой таблицы.
     priority: medium
     category: product
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "Platform Integration Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -833,15 +839,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w29b_community_target_selection.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: остаток-швы доказаны отсутствием на main (grep api.py на 'snapshot was not stored|community_policy_snapshots' = 0 на 183daa4)"
+      - "CI_VERIFIED: cherry-pick 0d745fb 31db8ac e460959; 94 теста"
     next_action: "Ждёт закрытия остатка W29-C"
 
   - id: W26-R
@@ -852,7 +859,7 @@ tasks:
       = UNKNOWN) остаётся отдельным шагом, названным в acceptance W28-K.
     priority: high
     category: product
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "Database Engineer / DevOps"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -869,15 +876,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w26r_restore_proof.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: база — cd8aae5/b1f24c6 (w28k-restore-proof), ещё не на main; пакет продолжает, не дублирует"
+      - "CI_VERIFIED: cherry-pick f7c3be8; 6 новых + 21 существующих без ослаблений"
     next_action: "READY как только W28-K принят"
 
   - id: W29-S
@@ -888,7 +896,7 @@ tasks:
       следующий rebind (W23-A) меняет и повод, и судью одновременно.
     priority: medium
     category: product
-    status: BACKLOG
+    status: RECOVERY_REQUIRED
     owner_role: "Backend Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -904,15 +912,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w29s_gate_independence.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: RECOVERY_REQUIRED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
+    updated_at: "2026-11-06T17:25:00+03:00"
     completed_at: null
     evidence:
       - "GIT_VERIFIED: словарь из 12 ключей и slot_booking_rebounded зафиксированы волной 22 (3ea795b, P107-P108) в docs/EXECUTION_PLAN.md на 183daa4"
+      - "CI_VERIFIED: 78d019a не перенесён: 4 смысловых конфликта в s5_quality (оффлайн-черновик проходит по AI_*_OFFLINE, пакет делает это отказом)"
     next_action: "Не начинать, пока миссия T3 держит editorial_plan.py незакоммиченно"
 
   - id: W30-A
@@ -923,7 +932,7 @@ tasks:
       (W24-M) мерить нечем, а публикации упираются в отсутствие цели.
     priority: medium
     category: product
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "Backend Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -939,15 +948,16 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w30a_telegram_channel_sync.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: состояние (9 каналов, enabled=0, tg_chat_id пуст) — разрыв-анализ 6.0 в docs/EXECUTION_PLAN.md на 183daa4, замер mode=ro"
+      - "CI_VERIFIED: cherry-pick 847148a, конфликт в __all__ разрешён вручную; 63 теста включая существующий channel_sync_job"
     next_action: "Внешний блок: TG_BOT_TOKEN (OPS-2)"
 
   - id: W31-D
@@ -958,7 +968,7 @@ tasks:
       глагол, печатающий матрицу и ничего не меняющий.
     priority: medium
     category: release
-    status: BACKLOG
+    status: INTEGRATED
     owner_role: "DevOps / Release Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -976,13 +986,14 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w31d_readiness_matrix.py"
     review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    integration_status: VERIFIED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-06T17:25:00+03:00"
+    completed_at: "2026-11-06T17:25:00+03:00"
     evidence:
       - "GIT_VERIFIED: buildinfo живёт только на w24br-build-review/coordinator/w2425-integration (14c165a..015305e / 183c031..fbefd22), на main ещё нет — пакет стартует после приёмки W24-BR"
+      - "CI_VERIFIED: cherry-pick ace5aad 68cd272"
     next_action: "Ждёт приёмки W24-BR; миссия T2 трогает cli.py незакоммиченно"
