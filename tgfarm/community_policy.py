@@ -946,6 +946,10 @@ def record_rules_snapshot(
         "rules_source": policy.rules_source,
         "checked_at": policy.checked_at,
         "verdict_status": _verdict_status(verdict.get("status")),
+        # Returned, not just stored: a caller must be able to see that the
+        # publish right came from its own structured input and not from the page.
+        "auto_publish_supported": policy.auto_publish_supported,
+        "allow_publish": bool(verdict.get("allow_publish")),
         "rule_lines": len(rule_lines),
         "target_key": policy.target_key(),
     }

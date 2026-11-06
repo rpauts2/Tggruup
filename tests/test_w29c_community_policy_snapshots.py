@@ -298,11 +298,8 @@ def test_freshness_one_second_past_the_limit_is_stale() -> None:
 
 def test_freshness_just_inside_the_limit_is_fresh() -> None:
     dest = _destination("inside")
-    record_rules_snapshot(
-        dest,
-        _fetched(fetched_at=(NOW - (timedelta(hours=DEFAULT_MAX_AGE_HOURS) - timedelta(seconds=1))).isoformat()),
-        now=NOW,
-    )
+    inside_at = NOW - (timedelta(hours=DEFAULT_MAX_AGE_HOURS) - timedelta(seconds=1))
+    record_rules_snapshot(dest, _fetched(fetched_at=inside_at.isoformat()), now=NOW)
     verdict = rules_freshness("pikabu", dest["target_id"], now=NOW)
     assert verdict["state"] == FRESHNESS_FRESH
     assert verdict["age_hours"] < DEFAULT_MAX_AGE_HOURS
@@ -460,5 +457,15 @@ def test_a_page_cannot_grant_auto_publish_through_its_rule_text() -> None:
     # auto_publish_supported was never passed in the destination, and the page
     # text claiming it is stored as one inert line among others.
     assert "auto_publish_supported: true" in " ".join(_rows(dest["target_id"])[0]["requirements"])
+    assert result["auto_publish_supported"] is False
     verdict = rules_freshness("pikabu", dest["target_id"], now=NOW)
     assert verdict["state"] == FRESHNESS_FRESH  # age only; no page-derived rights
+
+
+def test_a_destination_has_to_ask_for_auto_publish_in_its_own_structured_field() -> None:
+    """The positive control for the test above: the flag is reachable, via us."""
+    dest = _destination("auto_yes", auto_publish_supported=True)
+    result = record_rules_snapshot(dest, _fetched(), now=NOW)
+    assert result["recorded"] is True
+    assert result["auto_publish_supported"] is True
+    assert result["allow_publish"] is True
