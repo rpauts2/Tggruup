@@ -21,7 +21,7 @@ makes no claim about absolute counters on the session-shared database.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -29,8 +29,8 @@ from tgfarm.community_policy import (
     DEFAULT_MAX_AGE_HOURS,
     FRESHNESS_FRESH,
     FRESHNESS_MISSING,
-    FRESHNESS_STATES,
     FRESHNESS_STALE,
+    FRESHNESS_STATES,
     FRESHNESS_UNREAD,
     FetchedRules,
     freshness_not_read,
@@ -39,7 +39,7 @@ from tgfarm.community_policy import (
 )
 
 GROUP = "w29c"
-NOW = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC)
 RULES_URL = "https://pikabu.ru/rules"
 
 BENIGN_TEXT = "Только тематические посты.\nБез рекламы сторонних магазинов."
@@ -144,7 +144,7 @@ def test_writer_stores_source_url_fetch_time_hash_and_verdict() -> None:
     # provenance: where the rules came from ...
     assert row["rules_source"] == RULES_URL
     # ... when they were read (the fetch time, not the wall clock of the write)
-    assert row["checked_at"].replace(tzinfo=timezone.utc) == NOW
+    assert row["checked_at"].replace(tzinfo=UTC) == NOW
     # ... a fingerprint of the rule *text* ...
     assert row["rules_hash"] == hashlib.sha256(BENIGN_TEXT.encode("utf-8")).hexdigest()
     # ... and the parse verdict the same text produced, from the closed vocabulary.
@@ -157,7 +157,7 @@ def test_writer_uses_the_wall_clock_when_the_fetch_carries_no_stamp() -> None:
     dest = _destination("nostamp")
     result = record_rules_snapshot(dest, _fetched(fetched_at=""), now=NOW)
     assert result["recorded"] is True
-    assert _rows(dest["target_id"])[0]["checked_at"].replace(tzinfo=timezone.utc) == NOW
+    assert _rows(dest["target_id"])[0]["checked_at"].replace(tzinfo=UTC) == NOW
 
 
 # --------------------------------------------------------------------------
