@@ -713,6 +713,11 @@ def build_editorial_plan(
                 if channel is not None:
                     load[channel.id] += 1
 
+            no_slot_reason = None
+            if action == "schedule" and channel is not None and slot is None:
+                legal = _next_free_slot(channel, {}, moment, horizon_days)
+                no_slot_reason = "horizon_occupied" if legal is not None else "no_legal_hours"
+
             entry = EditorialPlanEntry(
                 cluster_public_id=cluster_id,
                 title=str(row.get("label") or ""),
@@ -731,6 +736,7 @@ def build_editorial_plan(
                     "sources": row.get("sources"),
                     "age_hours": row.get("age_hours"),
                     "is_news": bool(row.get("is_news")),
+                    "no_slot_reason": no_slot_reason,
                     "needs_media": action != "hold",
                     "channel_title": channel.title if channel else None,
                 },

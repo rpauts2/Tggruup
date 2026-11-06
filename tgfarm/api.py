@@ -2948,7 +2948,9 @@ def _booking_fidelity() -> dict[str, Any]:
         if len(samples) < BOOKING_SAMPLE_ROWS:
             samples.append(view)
 
-    # The scan above filters `plan_slot_at IS NOT NULL`, so an unbooked row can never
+    from tgfarm.booking_evidence import explain_rebinds
+
+    explain_rebinds(samples)
     # reach the classifier and the loop's zero for this code is not a measurement of
     # it. The whole-table count is: `no_booking` is the number of posts the plan never
     # reserved, and leaving it at the loop's 0 would print "0 posts without a booking"

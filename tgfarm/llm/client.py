@@ -27,6 +27,7 @@ from tgfarm.core.text import (
     truncate,
 )
 from tgfarm.llm.extract import extract_json
+from tgfarm.llm.reliability import PermanentProviderError, circuit_available, retry_after
 
 log = get_logger(__name__)
 
@@ -51,6 +52,7 @@ class LLMResponse:
     latency_ms: int
     usage: dict[str, int] = field(default_factory=dict)
     raw: Any = None
+    provenance: str = "online_llm"
 
 
 class _Provider:
@@ -106,13 +108,12 @@ class _Anthropic(_Provider):
                 json=body,
             )
         if resp.status_code == 429:
-            self._down = time.monotonic() + 60
-            raise ProviderRateLimited("anthropic 429", retry_after=60)
-        if resp.status_code >= 500:
-            self._down = time.monotonic() + 30
+            delay = retry_after(getattr(resp, "headers", {}).get("Retry-After"))
+            raise ProviderRateLimited("anthropic 429", retry_after=delay)
+        if resp.status_code >= 500 or resp.status_code == 408:
             raise ProviderUnavailable(f"anthropic {resp.status_code}")
         if resp.status_code != 200:
-            raise ProviderUnavailable(f"anthropic {resp.status_code}: {resp.text[:200]}")
+            raise PermanentProviderError(f"anthropic {resp.status_code}")
         data = resp.json()
         chunks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
         record_stat(self.name, "tokens_out", float(data.get("usage", {}).get("output_tokens", 0)))
@@ -241,9 +242,10 @@ class _OpenAI(_Provider):
                     record_stat(f"{self.name}:{candidate}", "rate_limited")
                     # One request per minute per model on the free tier: park
                     # this candidate and let the rotation move on.
-                    self._model_cooldown[candidate] = time.monotonic() + 60
+                    delay = retry_after(getattr(resp, "headers", {}).get("Retry-After"))
+                    self._model_cooldown[candidate] = time.monotonic() + delay
                     last_error = ProviderRateLimited(
-                        f"{self.name} 429 on {candidate}", retry_after=60
+                        f"{self.name} 429 on {candidate}", retry_after=delay
                     )
                     break  # next candidate; this one is out of quota
                 if resp.status_code in (401, 402, 403):
@@ -267,13 +269,13 @@ class _OpenAI(_Provider):
                         self._model_cooldown[candidate] = time.monotonic() + 3600
                         record_stat(f"{self.name}:{candidate}", "consent_required")
                         last_error = ProviderUnavailable(
-                            f"{self.name} 403 for {candidate}: {resp.text[:160]}"
+                            f"{self.name} 403 for {candidate}"
                         )
                         break
                     # Bad key, revoked access, or an exhausted prepaid quota:
                     # retrying this provider in the same process will not help.
                     self._down = time.monotonic() + 3600
-                    raise ProviderUnavailable(f"{self.name} {resp.status_code}: {resp.text[:200]}")
+                    raise PermanentProviderError(f"{self.name} {resp.status_code}")
                 if resp.status_code >= 500:
                     # An overloaded model (503 "providers busy") is not a dead
                     # provider: rotate to the next candidate instead of parking
@@ -286,8 +288,10 @@ class _OpenAI(_Provider):
                     continue  # same model, plain text + extractor
                 if resp.status_code != 200:
                     record_stat(self.name, "model_rejected")
+                    if resp.status_code not in (404, 408):
+                        raise PermanentProviderError(f"{self.name} {resp.status_code}")
                     last_error = ProviderUnavailable(
-                        f"{self.name} {resp.status_code} on {candidate}: {resp.text[:200]}"
+                        f"{self.name} {resp.status_code} on {candidate}"
                     )
                     break  # unknown model id — try the next one
                 data = resp.json()
@@ -304,7 +308,7 @@ class _OpenAI(_Provider):
             if isinstance(last_error, ProviderRateLimited):
                 # Every candidate is out of quota: park the provider for a
                 # minute so the client loop does not hammer it immediately.
-                self._down = time.monotonic() + 60
+                self._down = time.monotonic() + last_error.retry_after
             raise last_error
         raise ProviderUnavailable(f"{self.name}: no usable model in the list")
 
@@ -476,17 +480,19 @@ class LLMClient:
     def offline(self) -> bool:
         return self._resolved is None
 
-    async def _resolve(self) -> _Provider | None:
+    async def _resolve(self, exclude=()) -> _Provider | None:
         if self._resolved is not None:
             try:
-                if await self._resolved.available():
+                if (self._resolved not in exclude and circuit_available(self, self._resolved)
+                        and await self._resolved.available()):
                     return self._resolved
             except Exception as exc:  # noqa: BLE001 - a probe must never raise
                 log.debug("provider %s re-probe failed: %s", self._resolved.name, exc)
             self._resolved = None
         for provider in self._providers:
             try:
-                if await provider.available():
+                if (provider not in exclude and circuit_available(self, provider)
+                        and await provider.available()):
                     self._resolved = provider
                     log.info("llm provider: %s", provider.name)
                     return provider
@@ -539,92 +545,61 @@ class LLMClient:
             }
 
     async def complete_text(
-        self,
-        system: str,
-        prompt: str,
-        *,
-        max_tokens: int = 1500,
-        offline_fallback: str | None = None,
-        model: str | None = None,
+        self, system: str, prompt: str, *, max_tokens: int = 1500,
+        offline_fallback: str | None = None, model: str | None = None,
     ) -> LLMResponse:
-        last_error: Exception | None = None
-        for attempt in range(self._settings.llm_max_retries):
-            provider = await self._resolve()
-            if provider is None:
-                break
-            try:
-                started = time.monotonic()
-                text = await provider.complete(
-                    system, prompt, json_mode=False, max_tokens=max_tokens, model=model
-                )
-                record_stat(provider.name, "calls")
-                record_stat(provider.name, "retries", float(attempt))
-                return LLMResponse(
-                    text,
-                    provider.name,
-                    model or getattr(provider, "_model", "?"),
-                    int((time.monotonic() - started) * 1000),
-                )
-            except ProviderRateLimited as exc:
-                last_error = exc
-                self._resolved = None
-                await asyncio.sleep(min(exc.retry_after, 20))
-            except Exception as exc:  # noqa: BLE001 - failover is the point
-                last_error = exc
-                record_stat(provider.name, "errors")
-                self._resolved = None
-                await asyncio.sleep(0.5 * (2**attempt))
+        from tgfarm.llm.reliability import attempt
 
-        if offline_fallback is not None:
-            log.warning("llm failed (%s), using offline fallback", last_error)
+        try:
+            _, raw, provider, latency, retries = await attempt(
+                self, system, prompt, json_mode=False, max_tokens=max_tokens,
+                model=model, parse=lambda raw: raw,
+            )
+            record_stat(provider.name, "calls")
+            record_stat(provider.name, "retries", float(retries))
+            return LLMResponse(raw, provider.name, model or getattr(provider, "_model", "?"),
+                               latency, provenance="retry_succeeded" if retries else "online_llm")
+        except asyncio.CancelledError:
+            record_stat("client", "cancelled")
+            raise
+        except ProviderUnavailable:
+            if offline_fallback is None:
+                raise
             record_stat("offline", "calls")
-            return LLMResponse(offline_fallback, "offline", "none", 0)
-        raise ProviderUnavailable(f"all llm providers failed: {last_error}")
+            return LLMResponse(offline_fallback, "offline", "none", 0,
+                               provenance="deterministic_fallback")
 
     async def complete_json(
-        self,
-        system: str,
-        prompt: str,
-        *,
-        max_tokens: int = 2000,
-        offline_fallback: dict | None = None,
-        model: str | None = None,
+        self, system: str, prompt: str, *, max_tokens: int = 2000,
+        offline_fallback: dict | None = None, model: str | None = None,
     ) -> tuple[dict, LLMResponse]:
-        last_error: Exception | None = None
-        for attempt in range(self._settings.llm_max_retries):
-            provider = await self._resolve()
-            if provider is None:
-                break
-            try:
-                started = time.monotonic()
-                raw = await provider.complete(
-                    system, prompt, json_mode=True, max_tokens=max_tokens, model=model
-                )
-                parsed = extract_json(raw)
-                if not isinstance(parsed, dict):
-                    raise ProviderUnavailable("expected a JSON object")
-                record_stat(provider.name, "calls")
-                return parsed, LLMResponse(
-                    raw,
-                    provider.name,
-                    model or getattr(provider, "_model", "?"),
-                    int((time.monotonic() - started) * 1000),
-                )
-            except ProviderRateLimited as exc:
-                last_error = exc
-                self._resolved = None
-                await asyncio.sleep(min(exc.retry_after, 20))
-            except Exception as exc:  # noqa: BLE001 - retry then failover
-                last_error = exc
-                record_stat(provider.name, "errors")
-                self._resolved = None
-                await asyncio.sleep(0.5 * (2**attempt))
+        from tgfarm.llm.reliability import attempt
 
-        if offline_fallback is not None:
-            log.warning("llm json failed (%s), using offline fallback", last_error)
+        def parse(raw):
+            parsed = extract_json(raw)
+            if not isinstance(parsed, dict):
+                raise ProviderUnavailable("expected a JSON object")
+            return parsed
+
+        try:
+            parsed, raw, provider, latency, retries = await attempt(
+                self, system, prompt, json_mode=True, max_tokens=max_tokens,
+                model=model, parse=parse,
+            )
+            record_stat(provider.name, "calls")
+            return parsed, LLMResponse(
+                raw, provider.name, model or getattr(provider, "_model", "?"), latency,
+                provenance="retry_succeeded" if retries else "online_llm",
+            )
+        except asyncio.CancelledError:
+            record_stat("client", "cancelled")
+            raise
+        except ProviderUnavailable:
+            if offline_fallback is None:
+                raise
             record_stat("offline", "calls")
-            return offline_fallback, LLMResponse("", "offline", "none", 0)
-        raise ProviderUnavailable(f"all llm providers failed: {last_error}")
+            return offline_fallback, LLMResponse("", "offline", "none", 0,
+                                                 provenance="deterministic_fallback")
 
 
 _CLIENT: LLMClient | None = None

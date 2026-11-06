@@ -6,6 +6,7 @@ publisher. Reddit, vc.ru and Pikabu keep their specialised live rule checks.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Mapping
@@ -1066,6 +1067,15 @@ async def adapt_payload_with_ai(
             "notes": [str(item)[:240] for item in (parsed.get("notes") or [])[:4]],
             "community_policy": native_audit,
         }
+    except asyncio.CancelledError:
+        payload.title = title
+        payload.text = body
+        payload.meta = original_meta
+        await to_thread(
+            policy.finalize, decision.usage_id,
+            provider=response_provider, model=response_model, used=False,
+        )
+        raise
     except Exception as exc:
         # A provider outage must not cancel the rest of the crosspost batch.
         # Restore the deterministic source variant even if an error happened
