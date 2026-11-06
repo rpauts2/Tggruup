@@ -103,6 +103,17 @@ jobs:
           DATABASE_URL: sqlite:///./tgfarm-ci-smoke.db
         run: python -m tgfarm.cli demo --cycles 1
 
+      - name: Stamp Windows build identity
+        shell: pwsh
+        run: |
+          python packaging/stamp_build_info.py `
+            --packaging-mode pyinstaller `
+            --artifact-name "TgFarm-Windows-${{ github.sha }}" `
+            --artifact-path "dist/TgFarm"
+          if ($LASTEXITCODE -ne 0) { throw "build identity stamping failed" }
+          python -c "import pathlib,json;d=json.loads(pathlib.Path('tgfarm/build_identity.json').read_text('utf-8'));print('stamped',d['source_sha'],d['dirty'],d['app_version'])"
+          if ($LASTEXITCODE -ne 0) { throw "build identity metadata is not readable" }
+
       - name: Build Windows desktop application
         run: python -m PyInstaller packaging/tgfarm.spec --noconfirm
 
@@ -111,6 +122,20 @@ jobs:
           if (!(Test-Path "dist/TgFarm/TgFarm.exe")) {
             throw "Expected dist/TgFarm/TgFarm.exe was not created"
           }
+
+      - name: Verify Windows build identity travels with the bundle
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "dist/TgFarm/_internal/tgfarm/build_identity.json",
+            "dist/TgFarm/tgfarm/build_identity.json"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) {
+            throw "PyInstaller did not carry build_identity.json into dist/TgFarm/ - the frozen build has no identity"
+          }
+          Get-Content $found -Raw
+          if ($LASTEXITCODE -ne 0) { throw "bundled build identity is unreadable" }
 
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4

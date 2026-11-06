@@ -25,6 +25,18 @@ datas = [
 ]
 datas += collect_data_files("tgfarm")
 
+# Build identity, stamped by `python packaging/stamp_build_info.py` before this
+# spec runs (CI step "Stamp Windows build identity"). It is data, not code: the
+# bundle has to carry the SHA of the tree it was built from, and a file the
+# runtime can only read is a stronger claim than one it could edit. Absent on a
+# local build, in which case tgfarm.buildinfo reports the honest "unstamped".
+_build_identity = ROOT / "tgfarm" / "build_identity.json"
+if _build_identity.exists():
+    datas.append((str(_build_identity), "tgfarm"))
+else:
+    print("tgfarm.spec: tg
+farm/build_identity.json is absent - this bundle will report no build identity")
+
 # These are imported lazily or by name at runtime, so the dependency walker does
 # not see them: uvicorn's protocol/loop implementations, apscheduler's triggers,
 # sqlmodel-free SQLAlchemy dialects, and the optional desktop stack.
