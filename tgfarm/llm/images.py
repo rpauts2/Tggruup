@@ -19,6 +19,7 @@ Cloudflare Workers AI. Both are optional and both fall back to templates.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -34,6 +35,73 @@ from tgfarm.core.settings import get_settings
 from tgfarm.llm.image_budget import budgeted_image_call
 
 log = get_logger(__name__)
+
+# The chat path in tgfarm/llm/client.py retries a 503 burst; these endpoints are
+# called directly and used to fail every generation on the first 5xx. Same
+# discipline, bounded here: the three-attempt budget mirrors LLM_MAX_RETRIES and
+# the wait cap mirrors the client's 20s ceiling on ProviderRateLimited.retry_after.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.5
+_RETRY_AFTER_CAP_S = 20.0
+
+
+def _retry_delay_seconds(resp, attempt: int) -> float:
+    """Seconds to wait before the next attempt.
+
+    `Retry-After` wins when the provider sends a numeric one; otherwise an
+    exponential backoff, both capped so a hostile header cannot stall a stage.
+    """
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if raw:
+        try:
+            return min(_RETRY_AFTER_CAP_S, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    return min(_RETRY_AFTER_CAP_S, _BACKOFF_BASE_S * 2**attempt)
+
+
+async def _provider_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict | None,
+    body: dict | None,
+    timeout: float,
+    follow_redirects: bool = False,
+):
+    """One outbound image call with a bounded retry for retryable statuses only.
+
+    Every attempt re-passes the image rate bucket (the provider is asking us to
+    slow down), while `budgeted_image_call` still sees exactly one call — the
+    retry lives inside the reservation, not on top of it. A non-retryable status
+    and an exhausted retry are both returned as-is; each provider maps them to a
+    raised ProviderUnavailable, which the budget decorator records as `failed`.
+    """
+    import httpx
+
+    resp = None
+    for attempt in range(_MAX_ATTEMPTS):
+        await RATE.image.take()
+        kwargs: dict = {}
+        if headers:
+            kwargs["headers"] = headers
+        if body is not None:
+            kwargs["json"] = body
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=follow_redirects) as client:
+            resp = await client.request(method, url, **kwargs)
+        if resp.status_code not in _RETRYABLE_STATUSES or attempt == _MAX_ATTEMPTS - 1:
+            return resp
+        delay = _retry_delay_seconds(resp, attempt)
+        log.warning(
+            "image provider %s, retrying in %.1fs (attempt %d/%d)",
+            resp.status_code,
+            delay,
+            attempt + 2,
+            _MAX_ATTEMPTS,
+        )
+        await asyncio.sleep(delay)
+    return resp
 
 
 @dataclass
@@ -134,11 +202,13 @@ class ImageProvider:
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
 
-        import httpx
-
-        await RATE.image.take()
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(f"{self._base}/images/generations", headers=headers, json=body)
+        resp = await _provider_request(
+            "POST",
+            f"{self._base}/images/generations",
+            headers=headers,
+            body=body,
+            timeout=self._timeout,
+        )
 
         if resp.status_code in (401, 403):
             raise ProviderUnavailable(f"image auth failed ({resp.status_code})")
@@ -216,11 +286,13 @@ class CloudflareImageProvider:
             f"{self._account}/ai/run/{self._model}"
         )
 
-        import httpx
-
-        await RATE.image.take()
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
+        resp = await _provider_request(
+            "POST",
+            url,
+            headers=headers,
+            body=body,
+            timeout=self._timeout,
+        )
 
         if resp.status_code in (401, 403):
             raise ProviderUnavailable(f"Cloudflare image auth failed ({resp.status_code})")
@@ -261,7 +333,6 @@ class PollinationsImageProvider:
 
     @budgeted_image_call
     async def generate(self, prompt: str, negative: str = "") -> GeneratedImage:
-        import httpx
         from urllib.parse import quote
 
         width, height = _parse_size(self._size)
@@ -274,9 +345,14 @@ class PollinationsImageProvider:
             + quote(full_prompt, safe="")
             + f"?width={width}&height={height}&model={self._model}&nologo=true&enhance=true&seed={seed}"
         )
-        await RATE.image.take()
-        async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
+        resp = await _provider_request(
+            "GET",
+            url,
+            headers=None,
+            body=None,
+            timeout=self._timeout,
+            follow_redirects=True,
+        )
         if resp.status_code in (401, 403):
             raise ProviderUnavailable(f"Pollinations auth failed ({resp.status_code})")
         if resp.status_code == 429:

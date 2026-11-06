@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from collections import Counter
 from typing import Protocol
 
@@ -26,6 +27,31 @@ from tgfarm.core.settings import get_settings
 from tgfarm.core.text import char_ngrams, content_tokens
 
 log = get_logger(__name__)
+
+# The chat path in tgfarm/llm/client.py retries a 503 burst; this module used to
+# fail the whole batch on the first one. Same discipline, bounded here: the
+# three-attempt budget mirrors LLM_MAX_RETRIES and the wait cap mirrors the
+# client's 20s ceiling on ProviderRateLimited.retry_after.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.5
+_RETRY_AFTER_CAP_S = 20.0
+_REQUEST_TIMEOUT_S = 60.0
+
+
+def _retry_delay_seconds(resp, attempt: int) -> float:
+    """Seconds to wait before the next attempt.
+
+    `Retry-After` wins when the provider sends a numeric one; otherwise an
+    exponential backoff, both capped so a hostile header cannot stall a stage.
+    """
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if raw:
+        try:
+            return min(_RETRY_AFTER_CAP_S, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    return min(_RETRY_AFTER_CAP_S, _BACKOFF_BASE_S * 2**attempt)
 
 
 class Embedder(Protocol):
@@ -88,6 +114,34 @@ class OpenAIEmbedder:
         self._model = model
         self.dim = dim
 
+    def _post_batch(self, httpx, batch: list[str]):
+        """POST one batch with a bounded retry, retryable statuses only.
+
+        A 4xx other than 429 comes straight back — retrying it is waste. An
+        exhausted retry also comes back as a response; the caller turns any
+        non-200 into a raised ProviderUnavailable, never into a silent vector.
+        """
+        resp = None
+        for attempt in range(_MAX_ATTEMPTS):
+            resp = httpx.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={"model": self._model, "input": batch},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            if resp.status_code not in _RETRYABLE_STATUSES or attempt == _MAX_ATTEMPTS - 1:
+                return resp
+            delay = _retry_delay_seconds(resp, attempt)
+            log.warning(
+                "openai embeddings %s, retrying in %.1fs (attempt %d/%d)",
+                resp.status_code,
+                delay,
+                attempt + 2,
+                _MAX_ATTEMPTS,
+            )
+            time.sleep(delay)
+        return resp
+
     def embed_many(self, texts: list[str]) -> np.ndarray:
         import httpx
 
@@ -97,12 +151,7 @@ class OpenAIEmbedder:
         # batch of 96 keeps us well inside per-request token limits
         for start in range(0, len(texts), 96):
             batch = texts[start : start + 96]
-            resp = httpx.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": self._model, "input": batch},
-                timeout=60.0,
-            )
+            resp = self._post_batch(httpx, batch)
             if resp.status_code != 200:
                 raise ProviderUnavailable(f"openai embeddings {resp.status_code}: {resp.text[:200]}")
             payload = resp.json()["data"]
