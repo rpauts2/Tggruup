@@ -81,7 +81,7 @@ class WeChatOfficialAccountAdapter:
             hint = 'This Official Account is not authorized for the requested API operation (48001).'
         else:
             hint = f'WeChat API rejected the request (errcode {exc.code}).'
-        return CrosspostResult(platform='wechat', status='permanent', error=hint)
+        return CrosspostResult(platform='wechat', status='permanent', remote_id=draft_id, error=hint)
 
     async def _get_access_token(self, client: httpx.AsyncClient) -> str:
         app_id, app_secret, _author = self._credentials()

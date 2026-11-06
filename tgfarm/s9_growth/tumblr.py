@@ -52,7 +52,7 @@ def build_npf_content(title: str, body: str) -> list[dict[str, str]]:
         if not remaining:
             break
         for chunk in _split_block(remaining):
-            if total + len(chunk) > MAX_POST_CHARS:
+            if len(blocks) >= 100 or total + len(chunk) > MAX_POST_CHARS:
                 break
             blocks.append({"type": "text", "text": chunk})
             total += len(chunk)

@@ -862,6 +862,7 @@ def _learn_channel(channel_id):
                 evidence[best]["n"], _sample_confidence(evidence[best]["n"]),
                 "best angle: %s" % best,
             )
+            learned += 1
             if worst != best:
                 _upsert(
                     channel_id, "mistake", "worst_angle",

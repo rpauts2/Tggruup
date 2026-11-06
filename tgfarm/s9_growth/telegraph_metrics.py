@@ -166,7 +166,10 @@ async def refresh_telegraph_metrics(limit: int = 50) -> dict[str, Any]:
     articles = build_article_metrics(logs, snapshots)
     latest_by_log = {
         int(row["crosspost_log_id"]): row
-        for row in sorted(snapshots, key=lambda item: (_timestamp(item.get("collected_at")), int(item.get("id") or 0)), reverse=True)
+        # Walk oldest first so repeated log IDs retain the newest observation.
+        for row in sorted(
+            snapshots, key=lambda item: (_timestamp(item.get("collected_at")), int(item.get("id") or 0))
+        )
     }
     now = datetime.now(UTC)
     targets: list[dict[str, Any]] = []

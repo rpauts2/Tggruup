@@ -132,6 +132,9 @@ async def _get_json(client, path: str, params: dict[str, Any] | None = None) -> 
             )
         response.raise_for_status()
         body = response.json()
+        # This endpoint returns an array, unlike Reddit's listing endpoints.
+        if isinstance(body, list) and path.endswith("/api/link_flair.json"):
+            return {"choices": body}
         return body if isinstance(body, dict) else {}
     except RedditScoutError:
         raise

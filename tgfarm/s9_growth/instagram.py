@@ -302,9 +302,9 @@ class InstagramAdapter:
             if not ready:
                 return CrosspostResult(
                     platform=self.platform,
-                    status="unknown",
+                    status="failed",
                     remote_id=creation_id,
-                    error="Instagram Reel processing was not confirmed. Check the account before retrying.",
+                    error="Instagram Reel processing timed out before media_publish; no request was sent.",
                 )
 
             try:
