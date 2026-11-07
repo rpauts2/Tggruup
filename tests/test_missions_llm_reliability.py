@@ -52,10 +52,13 @@ def no_rate_wait(monkeypatch):
 @pytest.fixture
 def delays(monkeypatch):
     values = []
+    clock = [reliability.time.monotonic()]
 
     async def sleep(delay):
         values.append(delay)
+        clock[0] += delay
 
+    monkeypatch.setattr(reliability, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(reliability.asyncio, "sleep", sleep)
     monkeypatch.setattr(reliability.random, "uniform", lambda *_: 0)
     return values
@@ -186,6 +189,69 @@ async def test_failed_primary_does_not_starve_backup(failure, delays):
     assert response.text == "backup"
     assert primary.calls == backup.calls == 1
     assert delays == []
+
+
+async def test_primary_cooldown_survives_failed_backup(delays):
+    primary = Provider([ProviderRateLimited("429", retry_after=120), "too early"])
+    backup = Provider([ProviderUnavailable("503"), "backup"])
+    instance = client(primary)
+    instance._providers.append(backup)
+    assert (await instance.complete_text("s", "p")).text == "backup"
+    assert primary.calls == 1
+
+
+async def test_half_open_claim_during_availability_uses_backup():
+    primary, backup = Provider(["wrong"]), Provider(["backup"])
+    instance = client(primary)
+    instance._providers.append(backup)
+    instance._circuits = {primary: (3, 0, False)}
+
+    async def concurrent_claim():
+        # Another task claims the probe while the availability I/O is pending.
+        instance._circuits[primary] = (3, 0, True)
+        return True
+
+    primary.available = concurrent_claim
+    assert (await instance.complete_text("s", "p")).text == "backup"
+    assert primary.calls == 0
+
+
+async def test_expired_deadline_does_not_probe_backup():
+    blocker = asyncio.Event()
+    primary, backup = Provider([blocker.wait]), Provider(["backup"])
+    instance = client(primary, timeout=0.01)
+    instance._providers.append(backup)
+    probes = []
+
+    async def slow_probe():
+        probes.append(True)
+        await asyncio.sleep(0.1)
+        return True
+
+    backup.available = slow_probe
+    with pytest.raises(ProviderUnavailable):
+        await instance.complete_text("s", "p")
+    assert probes == []
+
+
+async def test_ollama_permanent_error_is_secret_safe_and_not_retried(monkeypatch, delays):
+    from tgfarm.llm.client import _Ollama
+
+    calls = []
+
+    async def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={})
+        calls.append(request)
+        return httpx.Response(400, text="TEST_SECRET_SENTINEL")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler)))
+    provider = _Ollama("http://localhost:11434", "model", 1)
+    with pytest.raises(reliability.PermanentProviderError) as error:
+        await client(provider).complete_text("s", "p")
+    assert len(calls) == 1
+    assert "TEST_SECRET_SENTINEL" not in str(error.value)
 
 
 def test_retry_after_formats():

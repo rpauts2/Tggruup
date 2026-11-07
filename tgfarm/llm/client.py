@@ -386,8 +386,14 @@ class _Ollama(_Provider):
         }
         async with httpx.AsyncClient(timeout=self._timeout, proxy=self._proxy or None) as client:
             resp = await client.post(f"{self._url}/api/chat", json=body)
+        if resp.status_code == 429:
+            raise ProviderRateLimited(
+                "ollama 429", retry_after=retry_after(resp.headers.get("Retry-After"))
+            )
+        if resp.status_code >= 500 or resp.status_code == 408:
+            raise ProviderUnavailable(f"ollama {resp.status_code}")
         if resp.status_code != 200:
-            raise ProviderUnavailable(f"ollama {resp.status_code}: {resp.text[:200]}")
+            raise PermanentProviderError(f"ollama {resp.status_code}")
         return resp.json()["message"]["content"]
 
 
@@ -484,7 +490,8 @@ class LLMClient:
         if self._resolved is not None:
             try:
                 if (self._resolved not in exclude and circuit_available(self, self._resolved)
-                        and await self._resolved.available()):
+                        and await self._resolved.available()
+                        and circuit_available(self, self._resolved)):
                     return self._resolved
             except Exception as exc:  # noqa: BLE001 - a probe must never raise
                 log.debug("provider %s re-probe failed: %s", self._resolved.name, exc)
@@ -492,7 +499,8 @@ class LLMClient:
         for provider in self._providers:
             try:
                 if (provider not in exclude and circuit_available(self, provider)
-                        and await provider.available()):
+                        and await provider.available()
+                        and circuit_available(self, provider)):
                     self._resolved = provider
                     log.info("llm provider: %s", provider.name)
                     return provider

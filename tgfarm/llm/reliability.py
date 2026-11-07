@@ -30,7 +30,7 @@ def retry_after(value: str | None, default: float = 60.0) -> float:
 
 def circuit_available(client, provider) -> bool:
     failures, until, probing = getattr(client, "_circuits", {}).get(provider, (0, 0.0, False))
-    return not probing and (failures < 3 or time.monotonic() >= until)
+    return not probing and time.monotonic() >= until
 
 
 async def attempt(client, system, prompt, *, json_mode, max_tokens, model, parse):
@@ -77,8 +77,11 @@ async def attempt(client, system, prompt, *, json_mode, max_tokens, model, parse
             if provider is not None:
                 failures, _, _ = client._circuits.get(provider, (0, 0.0, False))
                 failures += 1
+                cooldown = max(0.0, exc.retry_after) if isinstance(exc, ProviderRateLimited) else 0.0
+                if failures >= 3:
+                    cooldown = max(cooldown, 30.0)
                 client._circuits[provider] = (
-                    failures, time.monotonic() + 30 if failures >= 3 else 0.0, False
+                    failures, time.monotonic() + cooldown if cooldown else 0.0, False
                 )
             client._resolved = None
             if provider is not None:
@@ -87,8 +90,16 @@ async def attempt(client, system, prompt, *, json_mode, max_tokens, model, parse
                     permanent.add(provider)
             if number + 1 >= attempts:
                 break
-            # Try a healthy backup immediately, without sleeping on primary's quota.
-            if await client._resolve(exclude=failed) is not None:
+            # Availability probes share the same total deadline as completion.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                async with asyncio.timeout(remaining):
+                    backup = await client._resolve(exclude=failed)
+            except TimeoutError:
+                break
+            if backup is not None:
                 continue
             if isinstance(exc, PermanentProviderError):
                 raise
