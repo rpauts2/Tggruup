@@ -986,10 +986,11 @@ async def adapt_payload_with_ai(
             await to_thread(
                 policy.finalize,
                 decision.usage_id,
-                provider=response.provider,
-                model=response.model,
+                provider=response.audit_provider,
+                model=response.audit_model,
                 latency_ms=response.latency_ms,
                 used=False,
+                billed=response.billed,
             )
             return _not_applied(
                 "Нативная версия не сформирована; сохранён исходный адаптированный текст.",
@@ -1007,10 +1008,11 @@ async def adapt_payload_with_ai(
             await to_thread(
                 policy.finalize,
                 decision.usage_id,
-                provider=response.provider,
-                model=response.model,
+                provider=response.audit_provider,
+                model=response.audit_model,
                 latency_ms=response.latency_ms,
                 used=False,
+                billed=response.billed,
             )
             guardrail_audit = _community_policy_audit(community)
             payload.meta = {
@@ -1053,10 +1055,11 @@ async def adapt_payload_with_ai(
         await to_thread(
             policy.finalize,
             decision.usage_id,
-            provider=response.provider,
-            model=response.model,
+            provider=response.audit_provider,
+            model=response.audit_model,
             latency_ms=response.latency_ms,
             used=True,
+            billed=response.billed,
         )
         return {
             "used_ai": True,

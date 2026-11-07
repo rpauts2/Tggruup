@@ -82,6 +82,13 @@ class LLMResponse:
     attempts: int = 0
     tried: tuple[str, ...] = ()
     offline_reason: str = ""
+    #: True when a provider returned a body for this call and was therefore
+    #: billed, even though the body was unusable and the caller fell back to the
+    #: deterministic composer. `provider` stays `offline`: an unusable answer is
+    #: not a generation. Money is a different question from provenance.
+    billed: bool = False
+    billed_provider: str = ""
+    billed_model: str = ""
 
     def __post_init__(self) -> None:
         # An offline draft must never carry a model name. Not cosmetic:
@@ -104,9 +111,19 @@ class LLMResponse:
 
         The existing contract across the pipeline is
         `used = response.provider != "offline"`; this is the same rule with a
-        name, so a caller cannot half-implement it.
+        name, so a caller cannot half-implement it. It deliberately says nothing
+        about money: see `billed`.
         """
         return self.provider != OFFLINE_PROVIDER
+
+    @property
+    def audit_provider(self) -> str:
+        """Who to record on the reservation: the billed call, if there was one."""
+        return self.billed_provider or self.provider
+
+    @property
+    def audit_model(self) -> str:
+        return self.billed_model or self.model
 
 
 class _Provider:
@@ -843,6 +860,11 @@ class LLMClient:
         spent = 0
         reason = "no provider configured"
         last_error: Exception | None = None
+        #: The last provider that actually returned a body. A 200 whose JSON
+        #: does not parse is a billed call that produced nothing usable: it must
+        #: still reach the daily cap, or the farm spends past its budget.
+        billed_provider = ""
+        billed_model = ""
 
         for attempt in range(attempts):
             blocked.clear()
@@ -882,6 +904,8 @@ class LLMClient:
                     provider, system, prompt, json_mode=json_mode, max_tokens=max_tokens,
                     model=model, deadline=budget.started_at + budget.limit_s,
                 )
+                billed_provider = provider.name
+                billed_model = model or getattr(provider, "_model", "") or "?"
                 parsed: Any = None
                 if json_mode:
                     # Inside the try on purpose: `extract_json` raises when the
@@ -977,6 +1001,9 @@ class LLMClient:
             "tried": tuple(tried),
             "reason": reason,
             "error": last_error,
+            "billed": bool(billed_provider),
+            "billed_provider": billed_provider,
+            "billed_model": billed_model,
         }
 
     async def complete_text(
@@ -1065,6 +1092,9 @@ class LLMClient:
             attempts=attempts,
             tried=tuple(outcome.get("tried") or ()),
             offline_reason=reason[:300],
+            billed=bool(outcome.get("billed")),
+            billed_provider=str(outcome.get("billed_provider") or ""),
+            billed_model=str(outcome.get("billed_model") or ""),
         )
         response.usage = {"attempts": attempts, "max_tokens": max_tokens}
         response.raw = {"offline_reason": response.offline_reason, "tried": list(response.tried)}

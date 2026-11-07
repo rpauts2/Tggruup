@@ -546,10 +546,11 @@ async def gate_tone(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=response.audit_provider,
+        model=response.audit_model,
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=response.billed,
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"tone": 0.8})
@@ -604,10 +605,11 @@ async def gate_relevance(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=response.audit_provider,
+        model=response.audit_model,
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=response.billed,
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
@@ -663,10 +665,11 @@ async def gate_quality(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=response.audit_provider,
+        model=response.audit_model,
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=response.billed,
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
@@ -833,10 +836,11 @@ async def rewrite(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=response.audit_provider,
+        model=response.audit_model,
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=response.billed,
     )
     if response.provider == "offline":
         return None
