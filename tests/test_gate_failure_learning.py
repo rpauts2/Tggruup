@@ -36,6 +36,144 @@ def _mistake(channel_id: str, gate: str) -> dict:
     return rows[0]
 
 
+
+
+def _seed_channel(channel_id: str, title: str) -> None:
+    from tgfarm.db.models import Channel
+
+    with session_scope() as session:
+        session.add(Channel(
+            id=channel_id,
+            platform="telegram",
+            title=title,
+            niche="tech",
+            enabled=True,
+            timezone="UTC",
+        ))
+
+
+def test_pipeline_failure_lessons_aggregate_and_keep_the_newest_error(channel):
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.db.models import PipelineRun
+    from tgfarm.s12_learning import _record_recent_failures
+
+    now = datetime.now(UTC)
+    with session_scope() as session:
+        session.add_all([
+            PipelineRun(
+                run_id=f"lesson-run-{uuid.uuid4().hex[:8]}",
+                stage="generation",
+                status="error",
+                error="older generation error",
+                created_at=now - timedelta(hours=2),
+            ),
+            PipelineRun(
+                run_id=f"lesson-run-{uuid.uuid4().hex[:8]}",
+                stage="generation",
+                status="error",
+                error="newest generation error",
+                created_at=now,
+            ),
+            PipelineRun(
+                run_id=f"lesson-run-{uuid.uuid4().hex[:8]}",
+                stage="factcheck",
+                status="error",
+                error="factcheck error",
+                created_at=now - timedelta(minutes=30),
+            ),
+        ])
+
+    written = _record_recent_failures(channel)
+    rows = {row["key"]: row for row in lessons(channel, kind="mistake")}
+
+    assert written == 2
+    generation = rows["pipeline:generation"]
+    assert generation["sample_size"] == 2
+    assert generation["value"]["occurrences"] == 2
+    assert generation["value"]["error"] == "newest generation error"
+    assert generation["value"]["recent_errors"] == [
+        "newest generation error",
+        "older generation error",
+    ]
+    assert generation["confidence"] == pytest.approx(_sample_confidence(2))
+    assert "2 failures" in (generation["note"] or "")
+    assert rows["pipeline:factcheck"]["sample_size"] == 1
+
+
+def test_crosspost_failure_lessons_are_channel_scoped_and_redacted(channel):
+    from datetime import UTC, datetime, timedelta
+
+    from tgfarm.db.models import CrosspostLog, Post
+    from tgfarm.s12_learning import _record_recent_failures
+
+    other_channel = f"{channel}_other"
+    _seed_channel(channel, "Primary learning channel")
+    _seed_channel(other_channel, "Unrelated learning channel")
+    now = datetime.now(UTC)
+    own_ids = [f"{channel}_post_{index}" for index in range(2)]
+    other_id = f"{other_channel}_post"
+
+    with session_scope() as session:
+        session.add_all([
+            Post(
+                public_id=own_ids[0],
+                channel_id=channel,
+                hook="Hook",
+                body="Body",
+                status="failed",
+            ),
+            Post(
+                public_id=own_ids[1],
+                channel_id=channel,
+                hook="Hook",
+                body="Body",
+                status="failed",
+            ),
+            Post(
+                public_id=other_id,
+                channel_id=other_channel,
+                hook="Hook",
+                body="Body",
+                status="failed",
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            CrosspostLog(
+                post_public_id=own_ids[0],
+                platform="reddit",
+                status="failed",
+                error="older own-channel failure",
+                created_at=now - timedelta(hours=1),
+            ),
+            CrosspostLog(
+                post_public_id=own_ids[1],
+                platform="reddit",
+                status="failed",
+                error="Authorization: Bearer TEST_SECRET_SENTINEL_7f9c2e",
+                created_at=now,
+            ),
+            CrosspostLog(
+                post_public_id=other_id,
+                platform="reddit",
+                status="failed",
+                error="unrelated newer channel failure",
+                created_at=now + timedelta(minutes=1),
+            ),
+        ])
+
+    written = _record_recent_failures(channel)
+    row = next(item for item in lessons(channel, kind="mistake") if item["key"] == "crosspost:reddit")
+
+    assert written == 1
+    assert row["sample_size"] == 2
+    assert row["value"]["occurrences"] == 2
+    assert row["value"]["error"] == "Authorization: Bearer [REDACTED]"
+    assert "TEST_SECRET_SENTINEL_7f9c2e" not in str(row["value"])
+    assert row["value"]["recent_errors"][1] == "older own-channel failure"
+    assert row["confidence"] == pytest.approx(_sample_confidence(2))
+
 def test_repeated_rejections_of_one_gate_accumulate(channel):
     for attempt in range(3):
         record_gate_failure(channel, "cliches", f"штамп #{attempt}")
