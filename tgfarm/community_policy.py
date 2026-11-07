@@ -271,8 +271,16 @@ def policy_from_candidate(
     *,
     rules_source: str = "",
     auto_publish_supported: bool | None = None,
+    checked_at: datetime | None = None,
 ) -> CommunityPolicy:
-    """Build the contract from a Pikabu/vc.ru selector candidate."""
+    """Build the contract from a Pikabu/vc.ru selector candidate.
+
+    ``checked_at`` is the moment the rules are claimed to have been read. It
+    defaults to the wall clock, but a caller that evaluates the gate at an
+    explicit ``now`` must pass that same moment: otherwise the freshly built
+    policy is stamped microseconds after ``now`` and ``assess_policy`` refuses
+    it as a timestamp from the future.
+    """
     candidate = candidate or {}
     notes = [
         _inert_text(item, NOTE_LINE_LIMIT)
@@ -305,7 +313,11 @@ def policy_from_candidate(
         media_limits=_lines(candidate.get("media_limits"), limit=TOPIC_LINE_LIMIT),
         link_rules=_inert_text(candidate.get("link_rules") or "", LINK_RULES_LIMIT),
         tag_requirements=_lines(candidate.get("suggested_tags"), limit=TOPIC_LINE_LIMIT),
-        checked_at=_utcnow_iso(),
+        checked_at=(
+            checked_at.astimezone(timezone.utc).isoformat()
+            if checked_at is not None
+            else _utcnow_iso()
+        ),
         rules_source=source,
         rules_available=available,
         auto_publish_supported=auto_flag,
@@ -387,7 +399,11 @@ def policy_from_reddit(
         ),
         audience=audience,
         requirements=(rule_lines + extra)[:RULES_FIELD_LIMIT],
-        checked_at=_utcnow_iso(),
+        checked_at=(
+            checked_at.astimezone(timezone.utc).isoformat()
+            if checked_at is not None
+            else _utcnow_iso()
+        ),
         rules_source=source,
         rules_available=bool(rule_lines),
         auto_publish_supported=_as_flag(community.get("auto_publish_supported"), default=True),

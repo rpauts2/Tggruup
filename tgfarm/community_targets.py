@@ -924,7 +924,9 @@ def check_destination_rules_proof(
             },
         }
 
-    policy = policy_from_candidate(platform, candidate, rules_source=rules_source)
+    policy = policy_from_candidate(
+        platform, candidate, rules_source=rules_source, checked_at=now
+    )
     verdict = assess_policy(policy, max_age_hours=max_age_hours, now=now)
     if not verdict.get("allow_publish"):
         blockers = ", ".join(str(item) for item in (verdict.get("blockers") or ()))
@@ -968,11 +970,22 @@ def check_destination_rules_proof(
             "only a fresh snapshot whose verdict allowed publishing justifies a publish"
         )
     elif state == FRESHNESS_UNREAD:
-        code = REJECT_SNAPSHOT_UNREAD
-        text = (
-            "a rules snapshot row exists but proves nothing: "
-            + str(proof.get('reason') or 'unreadable rules history')
-        )
+        # A stored verdict that denies publishing is a decision, not an
+        # unreadable store: `rules_freshness` folds both into `unread`, but the
+        # operator must see that the history itself refused the destination.
+        stored_verdict = str(proof.get("verdict_status") or "")
+        if stored_verdict and stored_verdict != "ok":
+            code = REJECT_VERDICT_DENIES
+            text = (
+                f"the stored snapshot's verdict was {stored_verdict!r}; "
+                "only a fresh snapshot whose verdict allowed publishing justifies a publish"
+            )
+        else:
+            code = REJECT_SNAPSHOT_UNREAD
+            text = (
+                "a rules snapshot row exists but proves nothing: "
+                + str(proof.get('reason') or 'unreadable rules history')
+            )
     else:
         code = REJECT_SNAPSHOT_UNREAD
         text = (

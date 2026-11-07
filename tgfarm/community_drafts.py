@@ -919,8 +919,6 @@ async def publish_pikabu_scheduled(
     body: str,
 ) -> dict[str, Any]:
     """Create one native scheduled Pikabu post through the owner's saved browser session."""
-    from playwright.async_api import async_playwright
-
     from tgfarm.browser_auth import _launch_context, browser_session_status
     from tgfarm.community_targets import (
         recommend_automatic_pikabu_target,
@@ -1066,6 +1064,16 @@ async def publish_pikabu_scheduled(
         session = browser_session_status("pikabu")
         if not session.get("verified") or not session.get("profile_saved"):
             raise CommunityDraftError("Сначала подключи и проверь авторизованный профиль Пикабу.")
+        try:
+            # The browser stack is an optional extra (`dzen`/`desktop`). A
+            # headless installation must get a named refusal to act on, not a
+            # ModuleNotFoundError from the middle of the publisher.
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise CommunityDraftError(
+                "Браузерная автоматизация Пикабу недоступна: не установлен playwright "
+                '(pip install -e ".[dzen]").'
+            ) from exc
         profile = DATA_DIR / "platform_profiles" / "pikabu"
         scheduled_at = plan_pikabu_schedule(
             now=datetime.now(UTC),
