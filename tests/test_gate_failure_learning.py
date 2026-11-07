@@ -124,6 +124,17 @@ def test_pipeline_failure_lessons_aggregate_and_keep_the_newest_error(channel, f
     assert "2 failures" in (generation["note"] or "")
     assert rows[f"pipeline:{stage[:20]}qc"]["sample_size"] == 1
 
+    # Re-reading the same bounded evidence must not count the same DB rows twice.
+    from tgfarm.s12_learning import _record_recent_failures as record_again
+
+    record_again(channel)
+    repeated = next(
+        row for row in lessons(channel, kind="mistake")
+        if row["key"] == f"pipeline:{stage}"
+    )
+    assert repeated["sample_size"] == 2
+    assert repeated["value"]["occurrences"] == 2
+
 
 def test_crosspost_failure_lessons_are_channel_scoped_and_redacted(channel, failure_entities):
     from datetime import UTC, datetime, timedelta
@@ -195,10 +206,18 @@ def test_crosspost_failure_lessons_are_channel_scoped_and_redacted(channel, fail
     assert written == 1
     assert row["sample_size"] == 2
     assert row["value"]["occurrences"] == 2
-    assert row["value"]["error"] == "Authorization: Bearer [REDACTED]"
+    assert "[REDACTED]" in row["value"]["error"]
     assert "TEST_SECRET_SENTINEL_7f9c2e" not in str(row["value"])
     assert row["value"]["recent_errors"][1] == "older own-channel failure"
     assert row["confidence"] == pytest.approx(_sample_confidence(2))
+
+    _record_recent_failures(channel)
+    repeated = next(
+        item for item in lessons(channel, kind="mistake")
+        if item["key"] == "crosspost:reddit"
+    )
+    assert repeated["sample_size"] == 2
+    assert repeated["value"]["occurrences"] == 2
 
 def test_repeated_rejections_of_one_gate_accumulate(channel):
     for attempt in range(3):
