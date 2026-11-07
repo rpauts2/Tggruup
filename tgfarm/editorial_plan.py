@@ -146,23 +146,32 @@ def _first_free_and_legal_slot(
     start_aware = start_aware.astimezone(clock_tz)
     limit_aware = limit_aware.astimezone(clock_tz)
 
-    candidates: set[datetime] = set()
+    # Preserve the established cadence first. A legal, unoccupied point on the
+    # original 90-minute lattice wins even when an earlier supplemental point
+    # could be inserted: correction bookings in particular are phase-anchored to
+    # the refused minute and must not jump backwards to a new hour boundary.
     candidate = start
     for _ in range(steps):
         key = candidate.replace(second=0, microsecond=0)
         key = key.replace(tzinfo=clock_tz) if key.tzinfo is None else key.astimezone(clock_tz)
-        if key <= limit_aware:
-            candidates.add(key)
+        if (
+            key <= limit_aware
+            and key not in occupied
+            and local_hours_allow(key, channel.timezone, config=active_config)
+        ):
+            return key
         candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
         if candidate > limit:
             break
 
+    # Only when the original grid has no usable slot do we seed the beginning of
+    # each contiguous legal-hour run. This fills a one-hour gap the grid skipped
+    # without changing existing cadence decisions when that grid already works.
     zone = _zone(channel.timezone)
-    # Only seed the beginning of each contiguous legal-hour run. Seeding every
-    # hour would silently turn a 90-minute cadence into an hourly cadence.
     window_starts = sorted(
         hour for hour in legal_hours if (hour - 1) % 24 not in legal_hours
     )
+    supplemental: set[datetime] = set()
     first_day = start_aware.astimezone(zone).date()
     last_day = limit_aware.astimezone(zone).date()
     day = first_day
@@ -184,11 +193,10 @@ def _first_free_and_legal_slot(
                     continue
                 key = instant.replace(second=0, microsecond=0)
                 if start_aware <= key <= limit_aware:
-                    candidates.add(key)
+                    supplemental.add(key)
         day += timedelta(days=1)
 
-    # All candidate sources share the exact same final policy and occupancy gate.
-    for key in sorted(candidates):
+    for key in sorted(supplemental):
         if key not in occupied and local_hours_allow(
             key, channel.timezone, config=active_config
         ):
