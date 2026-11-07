@@ -546,11 +546,11 @@ async def gate_tone(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.audit_provider,
-        model=response.audit_model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
-        billed=response.billed,
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"tone": 0.8})
@@ -605,11 +605,11 @@ async def gate_relevance(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.audit_provider,
-        model=response.audit_model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
-        billed=response.billed,
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
@@ -665,11 +665,11 @@ async def gate_quality(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.audit_provider,
-        model=response.audit_model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
-        billed=response.billed,
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
@@ -836,11 +836,11 @@ async def rewrite(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.audit_provider,
-        model=response.audit_model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
-        billed=response.billed,
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return None

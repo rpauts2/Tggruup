@@ -399,11 +399,7 @@ def policy_from_reddit(
         ),
         audience=audience,
         requirements=(rule_lines + extra)[:RULES_FIELD_LIMIT],
-        checked_at=(
-            checked_at.astimezone(timezone.utc).isoformat()
-            if checked_at is not None
-            else _utcnow_iso()
-        ),
+        checked_at=_utcnow_iso(),
         rules_source=source,
         rules_available=bool(rule_lines),
         auto_publish_supported=_as_flag(community.get("auto_publish_supported"), default=True),

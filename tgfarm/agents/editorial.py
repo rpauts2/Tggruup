@@ -142,11 +142,11 @@ async def create_editorial_strategy(
         await to_thread(
             policy.finalize,
             decision.usage_id,
-            provider=response.audit_provider,
-            model=response.audit_model,
+            provider=getattr(response, "audit_provider", response.provider),
+            model=getattr(response, "audit_model", response.model),
             latency_ms=response.latency_ms,
             used=valid,
-            billed=response.billed,
+            billed=getattr(response, "billed", False),
         )
         if not valid:
             return _fallback("fallback", "Стратегический план не прошёл проверку структуры; автор использует базовый план.")
