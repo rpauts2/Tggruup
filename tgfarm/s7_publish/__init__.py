@@ -2166,6 +2166,15 @@ async def run() -> dict[str, Any]:
             "gates": report}
 
 
+class _ScheduleClaim(int):
+    """Backwards-compatible count carrying identities from UPDATE RETURNING."""
+
+    def __new__(cls, public_ids):
+        instance = super().__new__(cls, len(public_ids))
+        instance.public_ids = frozenset(public_ids)
+        return instance
+
+
 def unpublish(posts_public_ids: list[str], *, at: datetime | None = None) -> int:
     """Schedule eligible posts, optionally at an instant the caller was given.
 
@@ -2190,17 +2199,20 @@ def unpublish(posts_public_ids: list[str], *, at: datetime | None = None) -> int
     the panel's requeue (`tgfarm/api.py`), the CLI, the state-machine matrix:
     `scheduled_at = datetime.now(UTC)`.
     """
+    # A plan handover may claim only a gated row; manual requeue retains its
+    # existing ability to reschedule. Never overwrite another scheduler's slot.
     moment = _as_utc(at) if at is not None else datetime.now(UTC)
     with session_scope() as session:
         result = session.execute(
             update(PostRow)
             .where(
                 PostRow.public_id.in_(posts_public_ids),
-                PostRow.status.in_(("scheduled", "gated")),
+                PostRow.status.in_(("gated",) if at is not None else ("scheduled", "gated")),
             )
             .values(status=canonical_post_status(STATUS_SCHEDULED), scheduled_at=moment)
+            .returning(PostRow.public_id)
         )
-        return result.rowcount or 0
+        return _ScheduleClaim(result.scalars().all())
 
 
 def new_run_id() -> str:

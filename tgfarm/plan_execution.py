@@ -742,7 +742,10 @@ def _decide_schedule(
     if slot is None:
         # The planner returned a `schedule` decision with an empty horizon: the
         # slot it meant does not exist, so there is nothing to queue against.
-        return _OUTCOME_HELD, REASON_NO_SLOT, None
+        reason = (entry.get("payload") or {}).get("no_slot_reason")
+        if reason not in {"horizon_occupied", "no_legal_hours"}:
+            reason = REASON_NO_SLOT  # Old persisted plans retain their unknown cause.
+        return _OUTCOME_HELD, reason, None
     if slot > state.moment:
         return _OUTCOME_HELD, REASON_SLOT_NOT_DUE, None
     # Two hours are named by one code below, and both of them are this entry's
@@ -991,18 +994,23 @@ def _hand_over(
     its reason nor its journal record is claimed here, and the status writes the
     honest `already scheduled` / `handover refused` instead.
     """
+    # UPDATE RETURNING proves ownership without losing same-instant batching.
     batches: dict[datetime, list[str]] = {}
     for _entry, public_id, release, _reason, _rebind in handovers:
         batches.setdefault(release, []).append(public_id)
+    claimed = set()
     for release, public_ids in batches.items():
-        s7_publish.unpublish(public_ids, at=release)
+        claim = s7_publish.unpublish(public_ids, at=release)
+        claimed.update(getattr(claim, "public_ids", ()))
     rebinds: list[dict[str, Any]] = []
     with session_scope() as session:
-        for entry, public_id, _release, reason, rebind in handovers:
-            status = session.execute(
-                select(Post.status).where(Post.public_id == public_id)
-            ).scalar_one_or_none()
-            if status == s7_publish.STATUS_SCHEDULED:
+        for entry, public_id, release, reason, rebind in handovers:
+            stored = session.execute(
+                select(Post.status, Post.scheduled_at).where(Post.public_id == public_id)
+            ).one_or_none()
+            status = stored.status if stored else None
+            stamped = ensure_utc(stored.scheduled_at) if stored and stored.scheduled_at else None
+            if public_id in claimed and status == s7_publish.STATUS_SCHEDULED and stamped == release:
                 result["applied"] += 1
                 if rebind is not None:
                     _count(result["reasons"], reason)
@@ -1046,7 +1054,11 @@ def _rebind_record(
         "post_public_id": str(target.post.public_id),
         "cluster_public_id": str(entry.get("cluster_public_id") or ""),
         "channel_id": str(target.channel.id) if target.channel is not None else None,
-        "refused_slot_at": entry.get("slot_at"),
+        "requested_slot_at": entry.get("slot_at"),
+        "refused_slot_at": (
+            ensure_utc(target.post.plan_slot_at).isoformat()
+            if target.post.plan_slot_at is not None else entry.get("slot_at")
+        ),
         "corrected_slot_at": corrected.isoformat() if corrected else None,
     }
 

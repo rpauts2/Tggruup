@@ -95,7 +95,13 @@ def _parse_ok_response(response: httpx.Response, method: str):
         try:
             payload = response.json()
         except ValueError as exc:
-            raise OKAPIError(f"OK {method} returned a non-JSON response (HTTP {response.status_code}).") from exc
+            raise OKAPIError(
+                f"OK {method} returned a non-JSON response (HTTP {response.status_code}).",
+                ambiguous=(method == "mediatopic.post" and (
+                    response.status_code < 400 or response.status_code in {408, 425}
+                    or response.status_code >= 500
+                )),
+            ) from exc
     if response.status_code >= 400:
         ambiguous = method == "mediatopic.post" and (
             response.status_code in {408, 425} or response.status_code >= 500

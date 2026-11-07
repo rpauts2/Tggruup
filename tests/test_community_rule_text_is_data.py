@@ -54,6 +54,15 @@ INSTRUCTION_LIKE_RULES = (
     "<img src=x onerror=alert(1)>" + (" padding" * 400)
 )
 
+@pytest.fixture(autouse=True)
+def _fixed_policy_clock(monkeypatch, request):
+    # Only these direct gate tests assess at NOW; integration uses the real clock.
+    if request.node.name in {
+        "test_instruction_shaped_text_cannot_move_a_gate_decision",
+        "test_free_text_cannot_forge_a_permission_flag",
+        "test_hostile_text_cannot_open_a_plan_the_selector_blocked",
+    }:
+        monkeypatch.setattr("tgfarm.community_policy._utcnow_iso", lambda: NOW.isoformat())
 
 @pytest.fixture(autouse=True)
 def _clean_seeded_snapshots():

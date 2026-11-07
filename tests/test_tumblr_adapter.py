@@ -107,3 +107,41 @@ def test_tumblr_npf_builder_splits_long_paragraphs_into_safe_blocks():
     content = build_npf_content("Heading", "A" * (MAX_BLOCK_CHARS + 50))
     assert content[0] == {"type": "text", "text": "Heading"}
     assert all(len(block["text"]) <= MAX_BLOCK_CHARS for block in content)
+
+
+def test_malformed_source_url_is_dropped_not_raised():
+    from tgfarm.s9_growth.tumblr import _valid_http_url
+
+    for bad in ("http://[bad", "https://[::1", "http://", "://nope", "ftp://x.invalid/a"):
+        assert _valid_http_url(bad) == "", bad
+    assert _valid_http_url("https://site.invalid/a") == "https://site.invalid/a"
+    assert _valid_http_url("  https://site.invalid/a  ") == "https://site.invalid/a"
+    assert _valid_http_url("https://user:pass@site.invalid/a") == ""
+
+
+@pytest.mark.asyncio
+async def test_publish_survives_a_malformed_link(monkeypatch):
+    from tgfarm.s9_growth import adapters, tumblr
+
+    FakeTumblrPublishClient.calls = []
+    monkeypatch.setattr(tumblr, "get_settings", lambda: SimpleNamespace(
+        tumblr_client_id="client-id",
+        tumblr_client_secret="client-secret",
+        tumblr_blog_identifier="demo-blog",
+        tumblr_access_token="access-secret",
+        tumblr_refresh_token="",
+        tumblr_blog_url="https://demo-blog.tumblr.com/",
+    ))
+
+    async def token():
+        return "access-secret"
+
+    monkeypatch.setattr(tumblr, "get_valid_tumblr_access_token", token)
+    monkeypatch.setattr(tumblr.httpx, "AsyncClient", FakeTumblrPublishClient)
+    result = await adapters.ADAPTERS["tumblr"].publish(
+        CrosspostPayload(platform="tumblr", title="T", text="Body", link="http://[bad")
+    )
+    assert result.status == "posted", result
+    assert FakeTumblrPublishClient.calls, "the malformed link must not stop the publication"
+    sent = FakeTumblrPublishClient.calls[0][1]["json"]
+    assert "source_url" not in sent

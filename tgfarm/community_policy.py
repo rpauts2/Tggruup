@@ -499,6 +499,13 @@ def assess_policy(
         moment = moment.replace(tzinfo=timezone.utc)
     age = moment - checked
     age_hours = round(age.total_seconds() / 3600, 2)
+    if age < timedelta(0):
+        return {
+            **base,
+            "reason": "rules check timestamp is in the future — publishing is forbidden",
+            "blockers": ["checked_at_future"],
+            "age_hours": age_hours,
+        }
     if age > timedelta(hours=max_age_hours):
         return {
             **base,
@@ -884,7 +891,17 @@ def record_rules_snapshot(
     source = _inert_text(
         rules_source or rules.url or identity["url"] or SELECTOR_RULES_SOURCE, URL_LIMIT
     )
-    stamp = _parse_iso(rules.fetched_at) or moment
+    stamp = _parse_iso(rules.fetched_at)
+    if stamp is None and rules.fetched_at:
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": "checked_at_invalid",
+            "state": FRESHNESS_UNREAD,
+            "allow_publish": False,
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+    stamp = stamp or moment
     candidate: dict[str, Any] = {
         "target_type": identity["target_type"],
         "name": identity["name"] or identity["target_id"],
@@ -1015,6 +1032,7 @@ def rules_freshness(
                     **base,
                     "reason": "no rules snapshot has ever been stored for this destination",
                 }
+            rules_available = bool(row.rules_available)
             stored_hash = _inert_text(row.rules_hash, 64)
             evidence = _inert_text(row.rules_excerpt, RULES_EXCERPT_LIMIT) or any(
                 str(line).strip() for line in list(row.requirements_json or ())
@@ -1029,7 +1047,7 @@ def rules_freshness(
                 "verdict_status": _verdict_status(row.verdict_status),
             }
     except Exception as exc:  # noqa: BLE001 - a broken store is 'unread', not 'missing'
-        log.warning("rules freshness could not be read for %s: %s", key, exc)
+        log.warning("rules freshness could not be read for %s: %s", key, type(exc).__name__)
         return {
             **base,
             "state": FRESHNESS_UNREAD,
@@ -1044,7 +1062,7 @@ def rules_freshness(
             "state": FRESHNESS_UNREAD,
             "reason": "a snapshot exists but stores no rule text — nothing is known here",
         }
-    if checked is None:
+    if checked is None or checked > moment:
         return {
             **base,
             **payload,
@@ -1065,6 +1083,12 @@ def rules_freshness(
                 f"rules were read {age_hours:.1f} h ago (limit {limit:g} h) "
                 "— re-read them before publishing"
             ),
+            "age_hours": age_hours,
+        }
+    if not rules_available or payload["verdict_status"] != "ok":
+        return {
+            **base, **payload, "state": FRESHNESS_UNREAD,
+            "reason": "stored rules are unavailable or the policy verdict does not permit publishing",
             "age_hours": age_hours,
         }
     return {

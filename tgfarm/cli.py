@@ -1855,8 +1855,16 @@ def main(argv: list[str] | None = None) -> int:
         print("interrupted", file=sys.stderr)
         return 130
     except Exception as exc:  # noqa: BLE001 - CLI boundary
-        log.exception("command failed")
-        _print({"error": type(exc).__name__, "message": str(exc)[:500]})
+        # Arbitrary credentials can occur in exception messages and chains.
+        # Keep the classification, never the original message or traceback.
+        log.error("command failed (%s)", type(exc).__name__)
+        message = "Command failed; secret-bearing details suppressed."
+        # Never load optional dependencies while handling another failure.
+        demo_error = getattr(sys.modules.get("tgfarm.demo"), "DemoGateError", None)
+        if demo_error is not None and isinstance(exc, demo_error):
+            # Fixed public diagnostic, never arbitrary exception text or report data.
+            message = "Demo acceptance failed: no draft was generated or a later required stage was not proven."
+        _print({"error": type(exc).__name__, "message": message})
         return 1
 
 

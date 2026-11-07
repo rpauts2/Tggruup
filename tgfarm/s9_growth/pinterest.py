@@ -201,6 +201,8 @@ class PinterestAdapter:
                         "url": cover_url,
                         "is_standard": True,
                     }
+            except httpx.HTTPStatusError as exc:
+                return _error_result(exc, "media_upload")
             except Exception as exc:
                 log.warning("Pinterest media upload failed (%s)", type(exc).__name__)
                 return CrosspostResult(
