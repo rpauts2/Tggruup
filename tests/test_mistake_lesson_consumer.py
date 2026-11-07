@@ -49,7 +49,7 @@ from sqlalchemy import delete
 
 from tgfarm.config import Persona
 from tgfarm.core.schemas import DraftPost
-from tgfarm.db.models import CrosspostLog, LearningMemory, PipelineRun
+from tgfarm.db.models import Channel, CrosspostLog, LearningMemory, PipelineRun, Post
 from tgfarm.db.session import session_scope
 from tgfarm.s4_generation import _persona_block, _rank_learning_mistakes, generate
 from tgfarm.s12_learning import lessons, record_gate_failure
@@ -58,6 +58,7 @@ from tgfarm.s12_learning import lessons, record_gate_failure
 SEEDED_CHANNELS: list[str] = []
 SEEDED_RUN_IDS: list[str] = []
 SEEDED_LOG_KEYS: list[str] = []
+SEEDED_POST_KEYS: list[str] = []
 
 #: The shape the live table actually holds for this kind (2026-11-05, read-only).
 LIVE_MISTAKE_SCORE = 0.0
@@ -80,9 +81,14 @@ def _clean_seeded_rows():
         if SEEDED_LOG_KEYS:
             session.execute(delete(CrosspostLog).where(
                 CrosspostLog.post_public_id.in_(SEEDED_LOG_KEYS)))
+        if SEEDED_POST_KEYS:
+            session.execute(delete(Post).where(Post.public_id.in_(SEEDED_POST_KEYS)))
+        if SEEDED_CHANNELS:
+            session.execute(delete(Channel).where(Channel.id.in_(SEEDED_CHANNELS)))
     SEEDED_CHANNELS.clear()
     SEEDED_RUN_IDS.clear()
     SEEDED_LOG_KEYS.clear()
+    SEEDED_POST_KEYS.clear()
 
 
 def _channel(prefix: str = "mlc") -> str:
@@ -305,10 +311,28 @@ def test_the_learning_cycle_stores_the_keys_the_writer_looks_up(monkeypatch):
     SEEDED_LOG_KEYS.append(post_key)
 
     with session_scope() as session:
+        # Crosspost failures are now attributed through their owning Post. Model
+        # that relationship instead of broadcasting an orphan log to every channel.
+        session.add(Channel(
+            id=channel,
+            platform="telegram",
+            title="Learning consumer fixture",
+            niche="tech",
+            enabled=True,
+            timezone="UTC",
+        ))
+        session.add(Post(
+            public_id=post_key,
+            channel_id=channel,
+            hook="Hook",
+            body="Body",
+            status="failed",
+        ))
         session.add(PipelineRun(run_id=run_id, stage=stage, status="error",
                                 error="OperationalError: disk is full"))
         session.add(CrosspostLog(post_public_id=post_key, platform=platform,
                                  status="failed", error="getaddrinfo failed"))
+    SEEDED_POST_KEYS.append(post_key)
 
     _fake_s8(monkeypatch)
     s12_learning._learn_channel(channel)  # noqa: SLF001 - the stage's own entry point
