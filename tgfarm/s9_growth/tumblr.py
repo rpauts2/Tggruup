@@ -18,7 +18,11 @@ MAX_POST_CHARS = 20_000
 
 def _valid_http_url(value: str) -> str:
     value = str(value or "").strip()
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        # malformed URLs like "http://[bad" must fail validation, not crash the adapter
+        return ""
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         return ""
     return value

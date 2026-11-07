@@ -232,3 +232,36 @@ def test_known_platforms_are_in_the_denylist(url):
 
     host = urlparse(url).netloc
     assert host in REFUSED_HOSTS
+
+
+def test_lookalike_label_is_not_the_same_domain():
+    from tgfarm.s11_video import _same_domain
+
+    assert not _same_domain("evil-samedomain.com", "samedomain.com")
+    assert not _same_domain("samedomain.com.evil.net", "samedomain.com")
+    assert not _same_domain("notexample.com", "example.com")
+
+
+def test_unrelated_hosts_under_a_public_suffix_are_not_the_same_domain():
+    from tgfarm.s11_video import _same_domain
+
+    assert not _same_domain("evil.co.uk", "good.co.uk")
+    assert not _same_domain("evil.com.au", "good.com.au")
+    assert _same_domain("co.uk", "co.uk")
+
+
+def test_subdomains_of_one_owner_under_a_public_suffix_still_match():
+    from tgfarm.s11_video import _same_domain
+
+    assert _same_domain("cdn.example.co.uk", "www.example.co.uk")
+    assert _same_domain("example.co.uk", "cdn.example.co.uk")
+    assert _same_domain("cdn.example.com.au", "example.com.au")
+
+
+def test_sibling_subdomains_and_case_normalisation():
+    from tgfarm.s11_video import _same_domain
+
+    assert _same_domain("cdn.site.invalid", "www.site.invalid")
+    assert _same_domain("CDN.Example.COM.", "example.com")
+    assert not _same_domain("", "example.com")
+    assert _same_domain("localhost", "localhost")

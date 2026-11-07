@@ -105,15 +105,46 @@ def evaluate(candidate: MediaCandidate, article_url: str, licence_marker: str) -
     return candidate
 
 
+# Registry boundaries that own nothing themselves: evil.co.uk and good.co.uk
+# share "co.uk" but are unrelated owners. A bounded subset, not the full public
+# suffix list - an unlisted multi-label registry still compares by two labels.
+_PUBLIC_SECOND_LEVEL = frozenset({
+    "ac.uk", "co.uk", "gov.uk", "ltd.uk", "me.uk", "net.uk", "org.uk", "plc.uk",
+    "asn.au", "com.au", "edu.au", "gov.au", "id.au", "net.au", "org.au",
+    "ac.jp", "co.jp", "go.jp", "ne.jp", "or.jp", "co.kr", "ne.kr", "or.kr",
+    "com.br", "net.br", "org.br", "com.cn", "gov.cn", "net.cn", "org.cn",
+    "com.hk", "com.my", "com.ph", "com.sg", "com.tw", "net.tw", "org.tw",
+    "co.id", "or.id", "co.in", "net.in", "org.in", "co.th", "or.th", "com.vn",
+    "com.bd", "com.pk", "com.sa", "com.eg", "com.ng", "co.ke", "or.ke", "co.za",
+    "org.za", "web.za", "co.il", "org.il", "com.tr", "com.ua", "com.ru", "com.pl",
+    "com.mx", "com.ar", "com.co", "com.pe", "com.ve", "com.ec", "com.uy",
+    "com.py", "com.bo", "com.do", "co.nz", "net.nz", "org.nz",
+})
+
+
+def _registrable_domain(host: str) -> str:
+    labels = host.split(".")
+    if len(labels) < 2:
+        return ""
+    tail = ".".join(labels[-2:])
+    if tail not in _PUBLIC_SECOND_LEVEL:
+        return tail
+    if len(labels) < 3:
+        return ""
+    return ".".join(labels[-3:])
+
+
 def _same_domain(host: str, article_host: str) -> bool:
     if not host or not article_host:
         return False
     if host == article_host:
         return True
-    # allow cdn.example.com for example.com and vice versa
-    a = host.split(".")
-    b = article_host.split(".")
-    return len(a) >= 2 and len(b) >= 2 and a[-2:] == b[-2:]
+    host = host.lower().rstrip(".")
+    article_host = article_host.lower().rstrip(".")
+    if host == article_host:
+        return True
+    shared = _registrable_domain(host)
+    return bool(shared) and shared == _registrable_domain(article_host)
 
 
 def is_video(candidate: MediaCandidate) -> bool:
