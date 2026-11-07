@@ -358,7 +358,7 @@ def test_known_shas_includes_objects_from_a_pack_index(tmp_path, monkeypatch) ->
     pack_dir = git_dir / "objects" / "pack"
     pack_dir.mkdir(parents=True)
 
-    object_sha = "12" + "34567890abcdef" * 2 + "12345678"
+    object_sha = "12" + "34567890abcdef" * 2 + "1234567890"
     assert len(object_sha) == 40
     first_byte = int(object_sha[:2], 16)
     fanout = b"".join(
@@ -366,13 +366,13 @@ def test_known_shas_includes_objects_from_a_pack_index(tmp_path, monkeypatch) ->
         for index in range(256)
     )
     index_data = (
-        b"\\xfftOc"
+        b"\xfftOc"
         + (2).to_bytes(4, "big")
         + fanout
         + bytes.fromhex(object_sha)
-        + b"\\x00" * 4  # CRC32
+        + b"\x00" * 4  # CRC32
         + (12).to_bytes(4, "big")  # 32-bit pack offset
-        + b"\\x00" * 40  # pack checksum and index checksum
+        + b"\x00" * 40  # pack checksum and index checksum
     )
     (pack_dir / "pack-test.idx").write_bytes(index_data)
     monkeypatch.setattr(qc, "REPO_ROOT", tmp_path)
