@@ -102,6 +102,10 @@ async def attempt(client, system, prompt, *, json_mode, max_tokens, model, parse
             if backup is not None:
                 continue
             if isinstance(exc, PermanentProviderError):
+                if failed - permanent:
+                    # A rejected backup must not consume a transient primary's
+                    # remaining attempts. Permanent providers stay excluded.
+                    continue
                 raise
             delay = (max(0.0, exc.retry_after) if isinstance(exc, ProviderRateLimited)
                      else min(8.0, 0.5 * 2**number) + random.uniform(0, 0.25))

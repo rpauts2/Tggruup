@@ -254,6 +254,17 @@ async def test_ollama_permanent_error_is_secret_safe_and_not_retried(monkeypatch
     assert "TEST_SECRET_SENTINEL" not in str(error.value)
 
 
+async def test_permanent_backup_does_not_abort_primary_retry(delays):
+    primary = Provider([ProviderUnavailable("503"), "recovered"])
+    backup = Provider([reliability.PermanentProviderError("400")])
+    instance = client(primary)
+    instance._providers.append(backup)
+    response = await instance.complete_text("s", "p")
+    assert response.text == "recovered"
+    assert primary.calls == 2
+    assert backup.calls == 1
+
+
 def test_retry_after_formats():
     assert reliability.retry_after("12") == 12
     assert reliability.retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0

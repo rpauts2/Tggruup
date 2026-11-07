@@ -908,7 +908,10 @@ def _entry_reference(value: Any) -> int | None:
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    measured = int(value)
+    try:
+        measured = int(value)
+    except (ValueError, OverflowError):
+        return None
     if isinstance(value, float) and value != measured:
         return None
     return measured if measured > 0 else None

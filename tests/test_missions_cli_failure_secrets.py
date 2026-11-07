@@ -40,6 +40,28 @@ def test_token_initialization_failure_is_safe(command, monkeypatch, capsys, capl
         assert record.exc_text is None
 
 
+def test_error_boundary_survives_demo_import_failure(monkeypatch, capsys):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "tgfarm.demo":
+            raise ImportError("demo dependency unavailable")
+        return original_import(name, *args, **kwargs)
+
+    def fail():
+        raise RuntimeError(SENTINEL)
+
+    monkeypatch.setattr(cli, "setup_logging", lambda *_: None)
+    monkeypatch.setattr(apiauth, "ensure_token", fail)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    assert cli.main(["api-token"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["error"] == "RuntimeError"
+    assert SENTINEL not in captured.out + captured.err
+
+
 def test_server_run_failure_is_safe(monkeypatch, capsys, caplog):
     import uvicorn
 

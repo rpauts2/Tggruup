@@ -499,6 +499,13 @@ def assess_policy(
         moment = moment.replace(tzinfo=timezone.utc)
     age = moment - checked
     age_hours = round(age.total_seconds() / 3600, 2)
+    if age < timedelta(0):
+        return {
+            **base,
+            "reason": "rules check timestamp is in the future — publishing is forbidden",
+            "blockers": ["checked_at_future"],
+            "age_hours": age_hours,
+        }
     if age > timedelta(hours=max_age_hours):
         return {
             **base,
@@ -884,7 +891,17 @@ def record_rules_snapshot(
     source = _inert_text(
         rules_source or rules.url or identity["url"] or SELECTOR_RULES_SOURCE, URL_LIMIT
     )
-    stamp = _parse_iso(rules.fetched_at) or moment
+    stamp = _parse_iso(rules.fetched_at)
+    if stamp is None and rules.fetched_at:
+        return {
+            "recorded": False,
+            "changed": None,
+            "reason": "checked_at_invalid",
+            "state": FRESHNESS_UNREAD,
+            "allow_publish": False,
+            "target_key": f"{identity['platform']}:{identity['target_type']}:{identity['target_id']}",
+        }
+    stamp = stamp or moment
     candidate: dict[str, Any] = {
         "target_type": identity["target_type"],
         "name": identity["name"] or identity["target_id"],
