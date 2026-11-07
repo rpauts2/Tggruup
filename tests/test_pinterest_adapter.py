@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -220,3 +221,23 @@ async def test_pinterest_adapter_uploads_video_waits_for_ready_and_creates_video
         "cover_image_url": "https://farm.example/signed-cover.jpg",
         "media_id": "video-media-123",
     }
+
+
+
+def test_pinterest_retry_after_accepts_http_date() -> None:
+    from tgfarm.s9_growth.pinterest import _error_result
+
+    retry_at = datetime.now(UTC) + timedelta(minutes=5)
+    request = httpx.Request("POST", "https://api.pinterest.com/v5/pins")
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": retry_at.strftime("%a, %d %b %Y %H:%M:%S GMT")},
+        json={"message": "rate limited"},
+        request=request,
+    )
+    error = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    result = _error_result(error, "create_pin")
+    assert result.status == "failed"
+    assert result.retry_after_seconds is not None
+    assert 240 <= result.retry_after_seconds <= 300
