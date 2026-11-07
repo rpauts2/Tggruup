@@ -399,7 +399,8 @@ def _real_sha() -> str:
     assert gitdir is not None and common is not None, f"{REPO_ROOT} is not a git checkout"
     head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
     if not head.startswith("ref:"):
-        return head[5:] if len(head) == 40 else head
+        # Detached checkouts store the full object id directly in HEAD.
+        return head if len(head) == 40 else head
     ref_name = head[5:]
     loose = common / ref_name
     if loose.exists():
