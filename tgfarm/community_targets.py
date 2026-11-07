@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -925,7 +926,14 @@ def check_destination_rules_proof(
         }
 
     policy = policy_from_candidate(platform, candidate, rules_source=rules_source)
-    verdict = assess_policy(policy, max_age_hours=max_age_hours, now=now)
+    # Honour the caller's clock for both the freshly-created policy and its verdict.
+    # Otherwise a frozen/test `now` can precede the real timestamp by microseconds,
+    # making a just-read policy look like a future-dated rules snapshot.
+    evaluation_time = now
+    if now is not None:
+        evaluation_time = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+        policy = replace(policy, checked_at=evaluation_time.isoformat())
+    verdict = assess_policy(policy, max_age_hours=max_age_hours, now=evaluation_time)
     if not verdict.get("allow_publish"):
         blockers = ", ".join(str(item) for item in (verdict.get("blockers") or ()))
         return {
@@ -944,7 +952,7 @@ def check_destination_rules_proof(
             },
         }
 
-    proof = rules_freshness(platform, target_id, max_age_hours=max_age_hours, now=now)
+    proof = rules_freshness(platform, target_id, max_age_hours=max_age_hours, now=evaluation_time)
     state = str(proof.get("state") or "")
     if state == FRESHNESS_MISSING:
         code = REJECT_NO_SNAPSHOT
