@@ -158,11 +158,16 @@ def _first_free_and_legal_slot(
             break
 
     zone = _zone(channel.timezone)
+    # Only seed the beginning of each contiguous legal-hour run. Seeding every
+    # hour would silently turn a 90-minute cadence into an hourly cadence.
+    window_starts = sorted(
+        hour for hour in legal_hours if (hour - 1) % 24 not in legal_hours
+    )
     first_day = start_aware.astimezone(zone).date()
     last_day = limit_aware.astimezone(zone).date()
     day = first_day
     while day <= last_day:
-        for hour in sorted(legal_hours):
+        for hour in window_starts:
             wall_time = datetime(day.year, day.month, day.day, hour) + timedelta(
                 minutes=SLOT_START_OFFSET_MINUTES
             )
