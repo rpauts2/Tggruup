@@ -282,6 +282,34 @@ def test_a_no_window_build_writes_no_record_of_its_own(monkeypatch, db) -> None:
 
 
 # ------------------------------------------------------------------- rule 2: window
+def test_a_one_hour_legal_window_is_not_skipped_by_the_90_minute_grid() -> None:
+    """The 08:30 → 10:00 grid misses [09:00, 10:00); the legal 09:30 does not."""
+    channel = _channel()
+    config = _window_config([9, 10])
+    now = datetime(2026, 11, 4, 8, 0, tzinfo=UTC)
+
+    got = _next_free_slot(channel, {}, now, 1, config=config)
+
+    assert got == datetime(2026, 11, 4, 9, 30, tzinfo=UTC), got
+    assert local_hours_allow(got, channel.timezone, config=config) is True
+
+
+def test_a_full_short_window_moves_to_the_next_day_not_an_illegal_grid_point() -> None:
+    """An occupied legal candidate must not fall back to the next forbidden grid point."""
+    channel = _channel()
+    config = _window_config([9, 10])
+    now = datetime(2026, 11, 4, 8, 0, tzinfo=UTC)
+    first_legal = datetime(2026, 11, 4, 9, 30, tzinfo=UTC)
+    next_legal = datetime(2026, 11, 5, 9, 30, tzinfo=UTC)
+
+    got = _next_free_slot(
+        channel, {channel.id: {first_legal}}, now, 2, config=config
+    )
+
+    assert got == next_legal, got
+    assert local_hours_allow(got, channel.timezone, config=config) is True
+
+
 def test_a_legal_window_skips_the_illegal_instant_main_booked() -> None:
     """The headline cell: `main` books 21:30, this tree books 09:30 next day.
 
