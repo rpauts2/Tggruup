@@ -318,6 +318,32 @@ def test_freshness_just_inside_the_limit_is_fresh() -> None:
     assert verdict["age_hours"] < DEFAULT_MAX_AGE_HOURS
 
 
+def test_freshness_is_separate_from_a_denied_stored_policy_verdict() -> None:
+    """Fresh means the evidence is fresh; it does not mean publishing is allowed."""
+    from sqlalchemy import update
+
+    from tgfarm.db.models import CommunityPolicySnapshot
+    from tgfarm.db.session import session_scope
+
+    dest = _destination("fresh_but_denied")
+    stored = record_rules_snapshot(dest, _fetched(), now=NOW)
+    assert stored["recorded"] is True
+
+    with session_scope() as session:
+        session.execute(
+            update(CommunityPolicySnapshot)
+            .where(CommunityPolicySnapshot.target_id == dest["target_id"])
+            .values(verdict_status="unknown")
+        )
+
+    verdict = rules_freshness("pikabu", dest["target_id"], now=NOW)
+    assert verdict["state"] == FRESHNESS_FRESH
+    assert verdict["verdict_status"] == "unknown"
+    assert verdict["age_hours"] == 0
+    assert verdict["publishable"] is False
+    assert "verdict" in verdict["reason"]
+
+
 def test_freshness_missing_reports_no_age_rather_than_zero() -> None:
     verdict = rules_freshness("pikabu", f"{GROUP}_never_written", now=NOW)
     assert verdict["state"] == FRESHNESS_MISSING
