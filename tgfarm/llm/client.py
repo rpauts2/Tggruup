@@ -83,9 +83,10 @@ class LLMResponse:
     tried: tuple[str, ...] = ()
     offline_reason: str = ""
     #: True when a provider returned a body for this call and was therefore
-    #: billed, even though the body was unusable and the caller fell back to the
-    #: deterministic composer. `provider` stays `offline`: an unusable answer is
-    #: not a generation. Money is a different question from provenance.
+    #: billed. `provider` names who produced the *usable* answer (or `offline`
+    #: when nobody did): an unusable answer is not a generation. Money is a
+    #: different question from provenance, so a caller that rejects the body must
+    #: still charge the reservation through `billed`.
     billed: bool = False
     billed_provider: str = ""
     billed_model: str = ""
@@ -989,6 +990,9 @@ class LLMClient:
                 "latency_ms": int((res.now() - started) * 1000),
                 "attempts": spent,
                 "tried": tuple(tried),
+                "billed": True,
+                "billed_provider": provider.name,
+                "billed_model": answered,
             }
 
         if last_error is not None and reason == "no provider configured":
@@ -1026,6 +1030,9 @@ class LLMClient:
                 outcome["latency_ms"],
                 attempts=outcome["attempts"],
                 tried=outcome["tried"],
+                billed=bool(outcome.get("billed")),
+                billed_provider=str(outcome.get("billed_provider") or ""),
+                billed_model=str(outcome.get("billed_model") or ""),
             )
         return self._offline_response(
             outcome, offline_fallback, kind="text", max_tokens=max_tokens
@@ -1051,6 +1058,9 @@ class LLMClient:
                 outcome["latency_ms"],
                 attempts=outcome["attempts"],
                 tried=outcome["tried"],
+                billed=bool(outcome.get("billed")),
+                billed_provider=str(outcome.get("billed_provider") or ""),
+                billed_model=str(outcome.get("billed_model") or ""),
             )
         response = self._offline_response(
             outcome, offline_fallback, kind="json", max_tokens=max_tokens

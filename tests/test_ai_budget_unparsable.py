@@ -154,3 +154,57 @@ async def test_a_provider_that_never_answered_still_releases(monkeypatch):
         assert row is not None
         assert row.charged is False
         assert row.reason == "fallback:offline"
+
+
+class _AnswersValidJson:
+    name = "scripted"
+    supports_deadline = False
+    _model = "scripted-1"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def available(self) -> bool:
+        return True
+
+    async def complete(self, system, prompt, *, json_mode, max_tokens, model=None):
+        self.calls += 1
+        return '{"score": 1}'
+
+
+async def test_a_valid_answer_the_caller_rejects_still_charges(monkeypatch):
+    """"Unusable" is wider than "unparsable": a parsed answer can fail a gate.
+
+    The strategist charges only a structurally valid plan, and the platform
+    editor only a version that passes its guardrail. Releasing the reservation
+    in those cases spends a paid call without the cap seeing it.
+    """
+    monkeypatch.setattr(policy, "get_settings", _settings)
+    client = _client(_AnswersValidJson())
+    decision = policy.reserve("s4_strategy", purpose="guardrail")
+    assert decision.allowed is True
+
+    parsed, response = await client.complete_json(
+        "system", "prompt", max_tokens=64, offline_fallback={"score": 0}
+    )
+
+    assert parsed == {"score": 1}
+    assert response.provider == "scripted"
+    assert response.billed is True
+
+    policy.finalize(
+        decision.usage_id,
+        provider=response.audit_provider,
+        model=response.audit_model,
+        latency_ms=response.latency_ms,
+        used=False,
+        billed=response.billed,
+    )
+
+    assert policy.charged_today() == 1
+    with session_scope() as session:
+        row = session.get(AIUsage, decision.usage_id)
+        assert row is not None
+        assert row.charged is True
+        assert row.used is False
+        assert row.reason == "billed:unusable"
