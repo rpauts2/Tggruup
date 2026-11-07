@@ -367,7 +367,7 @@ def _known_shas() -> set[str] | None:
         if pack_dir.is_dir():
             for index_path in pack_dir.glob("*.idx"):
                 raw = index_path.read_bytes()
-                if raw.startswith(b"\\xfftOc"):
+                if raw.startswith(b"\xfftOc"):
                     if len(raw) < 8 + 1024 or int.from_bytes(raw[4:8], "big") != 2:
                         continue
                     fanout_offset = 8
