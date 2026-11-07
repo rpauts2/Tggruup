@@ -112,25 +112,82 @@ def _first_free_and_legal_slot(
     """
     # Local import, and it has to stay local: `plan_execution` imports this
     # module at its own top level (`tgfarm/plan_execution.py:75`), so a
-    # module-level import here would close that cycle the other way round. The
-    # same discipline is already in `tgfarm/s7_publish/__init__.py`, which
-    # reaches back for exactly one thing — the legal local hours this module
-    # must book inside. Nothing is re-derived here: a second copy of the
-    # cadence reading is how two schedulers start disagreeing about one plan.
-    from tgfarm.plan_execution import local_hours_allow
+    # module-level import here would close that cycle the other way round.
+    from tgfarm.plan_execution import (
+        _legal_local_hours,
+        _zone,
+        get_config,
+        local_hours_allow,
+    )
 
+    active_config = config if config is not None else get_config()
+    legal_hours = _legal_local_hours(active_config)
+
+    # Preserve the shipped 24/7 path bit-for-bit: there is no reason to add
+    # candidates or change its 90-minute cadence when no hours are restricted.
+    if legal_hours is None:
+        candidate = start
+        for _ in range(steps):
+            key = candidate.replace(second=0, microsecond=0)
+            if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
+                return key
+            candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
+            if candidate > limit:
+                break
+        return None
+
+    # A 90-minute grid can jump over an entire one-hour publishing window.
+    # Keep its established 30-minute phase, but add the same phase at the start
+    # of every legal local hour. This finds short windows without moving the
+    # existing [09:00, 18:00) golden bookings from 09:30 to 09:00.
+    clock_tz = start.tzinfo or UTC
+    start_aware = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
+    limit_aware = limit if limit.tzinfo is not None else limit.replace(tzinfo=clock_tz)
+    start_aware = start_aware.astimezone(clock_tz)
+    limit_aware = limit_aware.astimezone(clock_tz)
+
+    candidates: set[datetime] = set()
     candidate = start
     for _ in range(steps):
         key = candidate.replace(second=0, microsecond=0)
-        # Free and legal, or not a booking at all: when the horizon has no
-        # legal free instant the answer is None, never the nearest illegal one.
-        # Substituting an instant the channel cannot publish in would put the
-        # refusal back where this change found it.
-        if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
-            return key
+        key = key.replace(tzinfo=clock_tz) if key.tzinfo is None else key.astimezone(clock_tz)
+        if key <= limit_aware:
+            candidates.add(key)
         candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
         if candidate > limit:
             break
+
+    zone = _zone(channel.timezone)
+    first_day = start_aware.astimezone(zone).date()
+    last_day = limit_aware.astimezone(zone).date()
+    day = first_day
+    while day <= last_day:
+        for hour in sorted(legal_hours):
+            wall_time = datetime(day.year, day.month, day.day, hour) + timedelta(
+                minutes=SLOT_START_OFFSET_MINUTES
+            )
+            for fold in (0, 1):
+                local_candidate = wall_time.replace(tzinfo=zone, fold=fold)
+                instant = local_candidate.astimezone(clock_tz)
+                round_trip = instant.astimezone(zone)
+                # Skip nonexistent local times at a DST jump and duplicate fold=1
+                # for ordinary hours; preserve both real instants in a repeated hour.
+                if (
+                    round_trip.replace(tzinfo=None) != wall_time
+                    or round_trip.fold != fold
+                ):
+                    continue
+                key = instant.replace(second=0, microsecond=0)
+                if start_aware <= key <= limit_aware:
+                    candidates.add(key)
+        day += timedelta(days=1)
+
+    # All candidate sources share the exact same final policy and occupancy gate.
+    for key in sorted(candidates):
+        if key not in occupied and local_hours_allow(
+            key, channel.timezone, config=active_config
+        ):
+            return key
     return None
 
 
