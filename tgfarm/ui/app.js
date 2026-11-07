@@ -5636,7 +5636,7 @@
           ${ready}
           <a class="btn btn-ghost btn-sm" href="${esc(externalUrl)}" target="_blank" rel="noopener noreferrer">Открыть ${esc(result.name)} ↗</a>
         </div>
-        <p class="drawer-meta">${esc(result.format)} · ${Number(result.body.length || 0)} символов · ручная отправка</p>
+        <p class="drawer-meta">${esc(result.format)} · ${(result.body || "").length} символов · ручная отправка</p>
         <label class="field"><span>Заголовок</span><textarea rows="2" readonly id="manual-title-${esc(id)}">${esc(result.title)}</textarea></label>
         <div class="short-video-actions">
           <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmCopyManualField('${esc(id)}','title')">Копировать заголовок</button>

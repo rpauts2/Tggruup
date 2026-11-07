@@ -26,10 +26,34 @@ POLL_ATTEMPTS = 60
 POLL_DELAY_SECONDS = 5
 
 
+#: Graph API application-level throttling codes. Meta answers these with HTTP
+#: 400 even though nothing was created, so they are retryable, not permanent.
+_GRAPH_THROTTLE_CODES = frozenset({4, 17, 32, 613})
+
+
+def _graph_error_code(response) -> int | None:
+    """The Graph error code in a reply, or None when the body is not one."""
+    try:
+        payload = response.json() if response is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    try:
+        return int(error.get("code"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _http_result(platform: str, exc: BaseException, operation: str) -> CrosspostResult:
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     if status == 429:
+        result_status = "failed"
+    elif status == 400 and _graph_error_code(response) in _GRAPH_THROTTLE_CODES:
         result_status = "failed"
     elif status in (408, 425) or (isinstance(status, int) and status >= 500):
         result_status = "unknown" if operation == "publish" else "failed"
@@ -46,11 +70,10 @@ def _http_result(platform: str, exc: BaseException, operation: str) -> Crosspost
     )
     retry_after = None
     if status == 429 and response is not None:
-        raw = response.headers.get("Retry-After")
-        try:
-            retry_after = min(86400, max(0, int(raw))) if raw is not None else None
-        except (TypeError, ValueError):
-            retry_after = None
+        # Shared parser: delta-seconds and the HTTP-date form both count.
+        from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
+
+        retry_after = crosspost_retry_after_seconds(exc)
     log.warning("Instagram %s %s: %s", operation, result_status, redact_sensitive_text(exc, limit=180))
     return CrosspostResult(
         platform=platform,

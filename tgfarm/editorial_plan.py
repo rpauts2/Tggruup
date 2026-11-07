@@ -119,15 +119,33 @@ def _first_free_and_legal_slot(
     # cadence reading is how two schedulers start disagreeing about one plan.
     from tgfarm.plan_execution import local_hours_allow
 
-    candidate = start
-    for _ in range(steps):
-        key = candidate.replace(second=0, microsecond=0)
+    def _free_and_legal(instant: datetime) -> bool:
         # Free and legal, or not a booking at all: when the horizon has no
         # legal free instant the answer is None, never the nearest illegal one.
         # Substituting an instant the channel cannot publish in would put the
         # refusal back where this change found it.
-        if key not in occupied and local_hours_allow(key, channel.timezone, config=config):
+        return instant not in occupied and local_hours_allow(
+            instant, channel.timezone, config=config
+        )
+
+    candidate = start
+    for _ in range(steps):
+        key = candidate.replace(second=0, microsecond=0)
+        legal = local_hours_allow(key, channel.timezone, config=config)
+        if legal and key not in occupied:
             return key
+        # A fixed 90-minute grid can straddle a legal window shorter than the
+        # step: from 08:30 the next cells are 10:00 and 11:30, so a channel
+        # allowed only in 09:xx was told `no_legal_hours` while 09:00 was free.
+        # Only an hour that no grid cell lands in can be missed, so the probe is
+        # limited to that case: a legal-but-occupied cell keeps the old answer,
+        # and a 24/7 channel never takes this branch at all.
+        if not legal:
+            next_grid = key + timedelta(minutes=SLOT_STEP_MINUTES)
+            hour = key.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            if hour + timedelta(hours=1) <= next_grid and hour <= limit:
+                if hour not in occupied and local_hours_allow(hour, channel.timezone, config=config):
+                    return hour
         candidate = candidate + timedelta(minutes=SLOT_STEP_MINUTES)
         if candidate > limit:
             break

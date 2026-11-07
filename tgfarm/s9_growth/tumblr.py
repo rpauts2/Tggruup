@@ -28,6 +28,19 @@ def _valid_http_url(value: str) -> str:
     return value
 
 
+def _oauth_failure_status(exc: BaseException) -> str:
+    """Classify a token-refresh failure before any publish request is sent.
+
+    Nothing has been posted yet, so a transient failure is safe to retry and
+    must not be recorded as permanent. Only a 4xx from the token endpoint means
+    the grant itself is dead; `TumblrOAuthError` carries that status.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 400 <= status < 500 and status != 429:
+        return "permanent"
+    return "failed"
+
+
 def _split_block(text: str) -> list[str]:
     chunks: list[str] = []
     remaining = str(text or "").strip()
@@ -129,7 +142,7 @@ class TumblrAdapter:
         except Exception as exc:  # noqa: BLE001 - no publication request has been sent yet
             return CrosspostResult(
                 platform=self.platform,
-                status="permanent",
+                status=_oauth_failure_status(exc),
                 error=redact_sensitive_text(exc, limit=300) or "Tumblr OAuth could not be refreshed.",
             )
         try:
