@@ -352,6 +352,37 @@ def test_a_real_sha_is_not_flagged() -> None:
     assert "unknown-sha" not in _rules(problems), problems
 
 
+def test_known_shas_includes_objects_from_a_pack_index(tmp_path, monkeypatch) -> None:
+    """Historical queue SHAs are often packed objects, not current ref tips."""
+    git_dir = tmp_path / ".git"
+    pack_dir = git_dir / "objects" / "pack"
+    pack_dir.mkdir(parents=True)
+
+    object_sha = "12" + "34567890abcdef" * 2 + "12345678"
+    assert len(object_sha) == 40
+    first_byte = int(object_sha[:2], 16)
+    fanout = b"".join(
+        (0 if index < first_byte else 1).to_bytes(4, "big")
+        for index in range(256)
+    )
+    index_data = (
+        b"\\xfftOc"
+        + (2).to_bytes(4, "big")
+        + fanout
+        + bytes.fromhex(object_sha)
+        + b"\\x00" * 4  # CRC32
+        + (12).to_bytes(4, "big")  # 32-bit pack offset
+        + b"\\x00" * 40  # pack checksum and index checksum
+    )
+    (pack_dir / "pack-test.idx").write_bytes(index_data)
+    monkeypatch.setattr(qc, "REPO_ROOT", tmp_path)
+
+    known = qc._known_shas()
+    assert known is not None
+    assert object_sha in known
+    assert object_sha[:7] in known
+
+
 # ---------------------------------------------------------------- entry point
 def _real_sha() -> str:
     """Resolve HEAD the way git does: loose ref first, then packed-refs.
