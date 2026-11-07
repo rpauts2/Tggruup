@@ -318,23 +318,75 @@ def _git_dirs(root: Path) -> tuple[Path | None, Path | None]:
 
 
 def _known_shas() -> set[str] | None:
+    """Read advertised refs and the local object database without invoking Git.
+
+    Queue entries often point at historical base commits, not branch tips.
+    Looking only at packed-refs/loose refs therefore rejects real ancestors.
+    Pack index v1/v2 files contain the complete sorted object-ID table, so they
+    let this read-only validator recognize objects fetched by a full checkout.
+    """
     git_dir, common_dir = _git_dirs(REPO_ROOT)
     if git_dir is None or common_dir is None:
         return None
-    packed = common_dir / "packed-refs"
+
     found: set[str] = set()
-    if packed.exists():
-        for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+    packed_refs = common_dir / "packed-refs"
+    if packed_refs.exists():
+        for line in packed_refs.read_text(encoding="utf-8", errors="replace").splitlines():
             parts = line.split()
             if len(parts) >= 2 and len(parts[0]) == 40:
                 found.add(parts[0])
+
     refs_dir = common_dir / "refs"
     if refs_dir.exists():
         for path in refs_dir.rglob("*"):
             if path.is_file():
-                text = path.read_text(encoding="utf-8", errors="replace").strip()
-                if len(text) == 40:
-                    found.add(text)
+                value = path.read_text(encoding="utf-8", errors="replace").strip()
+                if len(value) == 40:
+                    found.add(value)
+
+    objects_dir = common_dir / "objects"
+    if objects_dir.is_dir():
+        # Loose object names are split into a two-hex directory and 38-hex file.
+        for prefix in objects_dir.iterdir():
+            if (
+                len(prefix.name) == 2
+                and all(char in "0123456789abcdef" for char in prefix.name.lower())
+                and prefix.is_dir()
+            ):
+                for object_path in prefix.iterdir():
+                    if (
+                        object_path.is_file()
+                        and len(object_path.name) == 38
+                        and all(char in "0123456789abcdef" for char in object_path.name.lower())
+                    ):
+                        found.add(prefix.name.lower() + object_path.name.lower())
+
+        # A pack index stores all object IDs in sorted order after its fanout table.
+        pack_dir = objects_dir / "pack"
+        if pack_dir.is_dir():
+            for index_path in pack_dir.glob("*.idx"):
+                raw = index_path.read_bytes()
+                if raw.startswith(b"\\xfftOc"):
+                    if len(raw) < 8 + 1024 or int.from_bytes(raw[4:8], "big") != 2:
+                        continue
+                    fanout_offset = 8
+                    object_ids_offset = 8 + 1024
+                else:
+                    # Version 1 has no magic/version prefix.
+                    if len(raw) < 1024:
+                        continue
+                    fanout_offset = 0
+                    object_ids_offset = 1024
+
+                count_offset = fanout_offset + (255 * 4)
+                count = int.from_bytes(raw[count_offset:count_offset + 4], "big")
+                end_offset = object_ids_offset + count * 20
+                if end_offset > len(raw):
+                    continue
+                for offset in range(object_ids_offset, end_offset, 20):
+                    found.add(raw[offset:offset + 20].hex())
+
     if not found:
         return None
     # Short forms used in this queue are prefixes of the full objects.
