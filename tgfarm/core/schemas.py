@@ -176,6 +176,35 @@ class QualityReport(Strict):
     # The critic's itemized notes; the panel shows them verbatim so the
     # operator sees *why*, not just a number.
     issues: list[str] = Field(default_factory=list)
+    # W29-S review integrity. `passed` answers "may this post be published";
+    # this answers "did an AI critic actually read the draft". A skipped or
+    # fallback gate must never be reported as an approval, so the two questions
+    # cannot share one boolean. Maps gate name -> "online" | "skipped" |
+    # "fallback". Empty means the report was built outside the gate pipeline
+    # (an operator or a test stated the verdict directly).
+    review_provenance: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def review_status(self) -> str:
+        """What the review board *actually* did, as one honest word.
+
+        ``passed`` is reserved for a real AI review that approved the draft. A
+        critic that never ran says ``skipped``; a critic answered by the offline
+        fallback says ``fallback``; neither of those is an approval, whatever
+        ``passed`` says about publishing.
+        """
+        if not self.review_provenance:
+            return "passed" if self.passed else "rejected"
+        kinds = set(self.review_provenance.values())
+        if "online" in kinds and not self.passed:
+            return "rejected"
+        if kinds == {"online"}:
+            return "passed" if self.passed else "rejected"
+        if "skipped" in kinds:
+            return "skipped"
+        if "fallback" in kinds:
+            return "fallback"
+        return "rejected" if not self.passed else "passed"
 
     def fail(self, gate: str, reason: str) -> QualityReport:
         return QualityReport(passed=False, gate=gate, reason=reason, scores=self.scores)

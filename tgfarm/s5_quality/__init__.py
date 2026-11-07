@@ -144,6 +144,9 @@ class GateOutcome:
     reason: str | None = None
     scores: dict[str, float] | None = None
     issues: list[str] | None = None
+    # Provenance: how this result was produced. Used by S5 integrity to
+    # distinguish a real AI review from a skipped/fallback path.
+    provenance: str = ""  # "online" | "offline" | "fallback" | "skipped"
 
 
 def _blocked_domains() -> set[str]:
@@ -521,12 +524,12 @@ async def gate_tone(
             reason=reason,
             cluster_public_id=usage_scope,
         )
-        return GateOutcome(True, scores={"tone": 0.8})
+        return GateOutcome(False, "tone", f"skipped: {reason}", provenance="skipped")
     decision = await to_thread(
         policy.reserve, "s5_tone", purpose="tone", cluster_public_id=usage_scope
     )
     if not decision.allowed:
-        return GateOutcome(True, scores={"tone": 0.8})
+        return GateOutcome(False, "tone", f"skipped: {decision.reason}", provenance="skipped")
 
     llm = get_llm()
     prompt = (
@@ -552,15 +555,25 @@ async def gate_tone(
         used=response.provider != "offline",
     )
     if response.provider == "offline":
-        return GateOutcome(True, scores={"tone": 0.8})
+        return GateOutcome(
+            False, "tone",
+            "fallback: offline provider (no real AI review)",
+            provenance="fallback",
+        )
     try:
         score = float(payload.get("score", 0))
     except (TypeError, ValueError):
         score = TONE_OFFLINE["score"]
     issues = [str(i) for i in (payload.get("issues") or [])][:6]
     if score < TONE_THRESHOLD:
-        return GateOutcome(False, "tone", f"critic {score:.1f}/10: {issues[:3]}", issues=issues)
-    return GateOutcome(True, scores={"tone": round(score / 10.0, 3)}, issues=issues)
+        return GateOutcome(
+            False, "tone", f"critic {score:.1f}/10: {issues[:3]}",
+            issues=issues, provenance="online",
+        )
+    return GateOutcome(
+        True, scores={"tone": round(score / 10.0, 3)},
+        issues=issues, provenance="online",
+    )
 
 
 async def gate_relevance(
@@ -581,12 +594,12 @@ async def gate_relevance(
             reason=reason,
             cluster_public_id=usage_scope,
         )
-        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+        return GateOutcome(False, "relevance", f"skipped: {reason}", provenance="skipped")
     decision = await to_thread(
         policy.reserve, "s5_relevance", purpose="relevance", cluster_public_id=usage_scope
     )
     if not decision.allowed:
-        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+        return GateOutcome(False, "relevance", f"skipped: {decision.reason}", provenance="skipped")
 
     llm = get_llm()
     prompt = (
@@ -610,15 +623,25 @@ async def gate_relevance(
         used=response.provider != "offline",
     )
     if response.provider == "offline":
-        return GateOutcome(True, scores={"relevance": AI_RELEVANCE_OFFLINE["score"] / 10.0})
+        return GateOutcome(
+            False, "relevance",
+            "fallback: offline provider (no real AI review)",
+            provenance="fallback",
+        )
     try:
         score = float(payload.get("score", 0))
     except (TypeError, ValueError):
         score = AI_RELEVANCE_OFFLINE["score"]
     issues = payload.get("issues") or []
     if score < relevance_threshold():
-        return GateOutcome(False, "relevance", f"critic {score:.1f}/10: {issues[:3]}")
-    return GateOutcome(True, scores={"relevance": round(score / 10.0, 3)})
+        return GateOutcome(
+            False, "relevance", f"critic {score:.1f}/10: {issues[:3]}",
+            provenance="online",
+        )
+    return GateOutcome(
+        True, scores={"relevance": round(score / 10.0, 3)},
+        provenance="online",
+    )
 
 
 async def gate_quality(
@@ -639,12 +662,12 @@ async def gate_quality(
             reason=reason,
             cluster_public_id=usage_scope,
         )
-        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+        return GateOutcome(False, "quality", f"skipped: {reason}", provenance="skipped")
     decision = await to_thread(
         policy.reserve, "s5_quality", purpose="quality", cluster_public_id=usage_scope
     )
     if not decision.allowed:
-        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+        return GateOutcome(False, "quality", f"skipped: {decision.reason}", provenance="skipped")
 
     llm = get_llm()
     prompt = (
@@ -669,15 +692,25 @@ async def gate_quality(
         used=response.provider != "offline",
     )
     if response.provider == "offline":
-        return GateOutcome(True, scores={"quality": AI_QUALITY_OFFLINE["score"] / 10.0})
+        return GateOutcome(
+            False, "quality",
+            "fallback: offline provider (no real AI review)",
+            provenance="fallback",
+        )
     try:
         score = float(payload.get("score", 0))
     except (TypeError, ValueError):
         score = AI_QUALITY_OFFLINE["score"]
     issues = payload.get("issues") or []
     if score < quality_threshold():
-        return GateOutcome(False, "quality", f"critic {score:.1f}/10: {issues[:3]}")
-    return GateOutcome(True, scores={"quality": round(score / 10.0, 3)})
+        return GateOutcome(
+            False, "quality", f"critic {score:.1f}/10: {issues[:3]}",
+            provenance="online",
+        )
+    return GateOutcome(
+        True, scores={"quality": round(score / 10.0, 3)},
+        provenance="online",
+    )
 
 
 def gate_disclaimer(draft: DraftPost, persona: Persona) -> GateOutcome:
@@ -746,11 +779,15 @@ async def evaluate(
     usage_scope: str = "",
 ) -> QualityReport:
     scores: dict[str, float] = {}
+    review_provenance: dict[str, str] = {}
 
     for gate in CHEAP_GATES + MEDIUM_GATES:
         outcome = gate(draft, persona)
         if not outcome.passed:
-            return QualityReport(passed=False, gate=outcome.gate, reason=outcome.reason, scores=scores)
+            return QualityReport(
+                passed=False, gate=outcome.gate, reason=outcome.reason,
+                scores=scores, review_provenance=review_provenance,
+            )
         scores.update(outcome.scores or {})
 
     issues: list[str] = []
@@ -764,21 +801,37 @@ async def evaluate(
         if outcome.issues:
             issues.extend(outcome.issues)
         if not outcome.passed:
+            # W29-S: a critic that never ran (skipped) or answered from the
+            # offline fallback did not reject the draft — it has no opinion.
+            # Blocking on it would outlaw the whole offline pipeline; passing
+            # it on as an approval would lie about the review board. Record
+            # where the answer came from and let the deterministic gates
+            # decide publishability; `review_status` tells the operator the
+            # AI review did not happen.
+            if outcome.provenance in ("skipped", "fallback"):
+                review_provenance[outcome.gate or "ai"] = outcome.provenance
+                continue
             return QualityReport(
                 passed=False, gate=outcome.gate, reason=outcome.reason,
                 scores=scores, issues=issues,
+                review_provenance=review_provenance,
             )
+        review_provenance[outcome.gate or "ai"] = outcome.provenance or "online"
         scores.update(outcome.scores or {})
 
     for gate in HEAVY_GATES:
         outcome = gate(draft, persona)
         if not outcome.passed:
-            return QualityReport(passed=False, gate=outcome.gate, reason=outcome.reason, scores=scores)
+            return QualityReport(
+                passed=False, gate=outcome.gate, reason=outcome.reason,
+                scores=scores, review_provenance=review_provenance,
+            )
         scores.update(outcome.scores or {})
 
     mean = sum(scores.values()) / len(scores) if scores else 0.0
     return QualityReport(
-        passed=True, scores=scores, reason=f"mean={mean:.2f}", issues=issues[:6]
+        passed=True, scores=scores, reason=f"mean={mean:.2f}", issues=issues[:6],
+        review_provenance=review_provenance,
     )
 
 
@@ -903,13 +956,18 @@ def save_outcome(public_id: str, report: QualityReport) -> None:
         # S5 review board result instead of replacing the trace with its own score.
         agent_team = dict(quality.get("agent_team") or {})
         roles = dict(agent_team.get("roles") or {})
+        # W29-S: use review_status so the DB stores the honest word — not a
+        # blanket "passed" when the AI critic never actually read the draft.
+        # The panel reads review_board.status as one of: passed, skipped,
+        # fallback, rejected, failed.
         roles["review_board"] = {
-            "status": "passed" if report.passed else "rejected",
+            "status": report.review_status,
             "scores": report.scores,
             "gate": report.gate,
             "reason": report.reason,
             "issues": list(report.issues or [])[:8],
             "rewrites_used": report.rewrites_used,
+            "provenance": report.review_provenance,
         }
         agent_team["version"] = int(agent_team.get("version") or 1)
         agent_team["roles"] = roles
