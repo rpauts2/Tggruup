@@ -2216,12 +2216,13 @@
     no_booking: "брони нет",
     honoured: "забронировано и уважено",
     shifted: "забронировано и сдвинуто",
+    rebound: "забронировано и исправлено по правилу локальных часов",
     refused: "забронировано и отказано",
     awaiting_slot: "забронировано, слот ещё не выдан",
     unread_row: "бронь не читается",
   };
   const BOOKING_STATE_ORDER = [
-    "no_booking", "honoured", "shifted", "refused", "awaiting_slot", "unread_row",
+    "no_booking", "honoured", "shifted", "rebound", "refused", "awaiting_slot", "unread_row",
   ];
   const BOOKING_DIRECTION_WORDS = { later: "позже брони", earlier: "раньше брони" };
   const bookingCount = (v) => (typeof v === "number" && Number.isFinite(v) ? n(v) : BOOKING_UNREAD);
@@ -2367,12 +2368,16 @@
     if (population.truncated === true) {
       chips.push(`<span class="plan-chip">${esc(`окно ограничено: ${bookingCount(population.limit)} строк`)}</span>`);
     }
-    const stateChips = BOOKING_STATE_ORDER.map((code) => bookingStateChip(code, stats[code]));
+    // The server decides which states this card may word: a state it did not
+    // send (the rebind state while the flag is off) is not printed as unread.
+    const stateChips = BOOKING_STATE_ORDER
+      .filter((code) => stats[code] !== undefined)
+      .map((code) => bookingStateChip(code, stats[code]));
     // With no booking in the table the four booked states are vacuous, and
     // printing their measured zeros would look exactly like a verdict about them.
     const stateLine = booked === 0
       ? `<p class="plan-entry-reasons">Бронированных постов нет — состояния «уважено / сдвинуто / `
-        + "отказано / ждёт» не о чём спрашивать, и нули вместо них не печатаются.</p>"
+        + "исправлено / отказано / ждёт» не о чём спрашивать, и нули вместо них не печатаются.</p>"
       : `<div class="plan-chips">${stateChips.join("")}</div>`;
     const rows = Array.isArray(data.samples) ? data.samples : [];
     const rowsBlock = rows.length

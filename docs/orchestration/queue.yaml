@@ -54,12 +54,12 @@ tasks:
       «сдвинул без объяснения» и «исправлен по правилу локальных часов».
     priority: high
     category: product
-    status: RUNNING
+    status: INTEGRATED
     owner_role: "Backend Engineer"
-    owner_agent: "ageneral-purpose-79248e6927f3beb8"
+    owner_agent: "coordinator"
     base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
-    worktree: .qoder/worktrees/w23a-rebind-attribution
-    branch: w23a-rebind-attribution
+    worktree: null
+    branch: main
     allowed_paths:
       - tgfarm/api.py
       - tgfarm/ui/app.js
@@ -76,20 +76,22 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w23a_rebind_attribution.py"
       - "python -m pytest -q --tb=line -k booking or fidelity"
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
-    retry_count: 0
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 1
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T09:55:00+03:00"
-    updated_at: "2026-11-06T14:20:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-08T08:30:00+03:00"
+    completed_at: "2026-11-08T08:30:00+03:00"
     evidence:
       - "OBSERVED: ветка существует на 7e58455, `commits=0`, `dirty=0` — 4,5 часа после запуска артефактов нет"
+      - "OBSERVED: агент ageneral-purpose-79248e6927f3beb8 мёртв с 2026-11-06; worktree отсутствует, ветка w23a-rebind-attribution отсутствует в remotes (только main) — пакет передан координатору по next_action"
+      - "TEST_VERIFIED: tests/test_w23a_rebind_attribution.py (8 тестов, 6 краснели до правки) + обновлённые W20-C API/UI fidelity; полный прогон 3401 passed, 4 xfailed; tools/queue_check.py — 0"
     next_action: >
-      Дождаться уведомления харнесса. Если агент мёртв — пакет переходит к
-      координатору (attempt_limit ещё не исчерпан, но файлы остаются за ним,
-      пока статус не изменён).
+      Закрыто координатором в общем дереве main по правилу пакета (владелец
+      мёртв). Следующий пакет по плану — W23-B (RECOVERY_REQUIRED, координатор
+      берёт по тому же правилу) либо решение владельца по MISSIONS/Ops.
 
   - id: W23-B
     title: "Разделение REASON_NO_SLOT: горизонт занят / легальных часов нет"

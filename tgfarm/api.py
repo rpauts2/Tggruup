@@ -2646,12 +2646,33 @@ def _plan_execution_note(
 BOOKING_NO_BOOKING = "no_booking"
 BOOKING_HONOURED = "honoured"
 BOOKING_SHIFTED = "shifted"
+#: The slot the plan booked is gone, and the *tick repaired the booking* instead
+#: of parking it: `plan_slot_rebind` journalled the refused minute and the
+#: corrected one, so this row is evidence of a repair and not of a silent move.
+#: It is an answer only while the plan-execution flag is on — the reader is the
+#: same reader, and its state vocabulary follows the switch that lets the tick
+#: make these rows at all.
+BOOKING_REBOUND = "rebound"
 BOOKING_REFUSED = "refused"
 BOOKING_AWAITING = "awaiting_slot"
 #: A booked row whose column holds no moment. Counting it as `awaiting_slot`
 #: would promise a slot this row may never be given.
 BOOKING_UNREAD_ROW = "unread_row"
 BOOKING_STATES = (
+    BOOKING_NO_BOOKING,
+    BOOKING_HONOURED,
+    BOOKING_SHIFTED,
+    BOOKING_REBOUND,
+    BOOKING_REFUSED,
+    BOOKING_AWAITING,
+    BOOKING_UNREAD_ROW,
+)
+#: What the read serves while `plan_execution_enabled` is off (the default):
+#: the six original states, and no rebind state at all, so the payload is
+#: byte-identical to the one served before this state existed. The journal
+#: attribution on the samples ships either way; only the classification is
+#: gated, because a state the row cannot reach is one the payload may not name.
+BOOKING_STATES_BASE = (
     BOOKING_NO_BOOKING,
     BOOKING_HONOURED,
     BOOKING_SHIFTED,
@@ -2804,6 +2825,8 @@ def _booking_note(
     scanned: int | None,
     truncated: bool | None,
     gate: dict[str, Any],
+    codes: tuple[str, ...] = BOOKING_STATES_BASE,
+    rebind_measurable: bool = True,
 ) -> str:
     """One sentence saying what this read measured and what it refuses to claim."""
     if not readable:
@@ -2836,7 +2859,7 @@ def _booking_note(
         + ". "
     )
     listed = ", ".join(
-        f"{code}={counts.get(code)}" for code in BOOKING_STATES if counts.get(code) is not None
+        f"{code}={counts.get(code)}" for code in codes if counts.get(code) is not None
     )
     ledger = gate.get("count")
     if ledger is None:
@@ -2854,6 +2877,13 @@ def _booking_note(
             f"Последний publish-тик записал {ledger} отказов по гейту {gate['code']}; "
             "счётчик принадлежит тику, а не отдельному посту."
         )
+    if not rebind_measurable:
+        # The rebind count is `null` for this read (see `_booking_fidelity`); the
+        # note says why instead of letting the omission read as «no rebinds».
+        tail += (
+            " Перепривязка не измерена: журнал тиков не прочитан целиком, "
+            "поэтому состояние «исправлено» ни одной строке не присваивалось."
+        )
     return head + f"Состояния: {listed}. " + tail
 
 
@@ -2861,7 +2891,9 @@ def _booking_fidelity() -> dict[str, Any]:
     """Did the farm publish the post where the plan booked it? Read-only.
 
     Builds nothing, schedules nothing, publishes nothing and writes no row: it is
-    a subtraction over `posts`, plus the one ledger that could name a refusal.
+    a subtraction over `posts`, plus the one ledger that could name a refusal
+    and — while the plan-execution flag is on — the rebind journal, which names
+    which of the moved slots the tick repaired rather than merely used.
     Everything a read could not measure travels as `None`, never as `0` (P34) —
     which is not a stylistic choice here: the live store today has no booking
     column at all, and a card of zeros there would claim the plan books nothing
@@ -2872,12 +2904,14 @@ def _booking_fidelity() -> dict[str, Any]:
     table differ — the property `tests/test_api_plan_execution.py` already pins
     for its own reader and that this one keeps on purpose.
     """
+    extended = bool(getattr(get_settings(), "plan_execution_enabled", False))
+    codes = BOOKING_STATES if extended else BOOKING_STATES_BASE
     try:
         from tgfarm import s7_publish
         from tgfarm.plan_execution import local_hours_allow
     except Exception as exc:  # noqa: BLE001 - the gate vocabulary lives in two modules
         log.warning("booking fidelity: gate vocabulary unread (%s)", type(exc).__name__)
-        return _booking_unread("reader_unavailable", None, {"code": None})
+        return _booking_unread("reader_unavailable", None, {"code": None}, codes=codes)
     gate = {
         "code": s7_publish.GATE_SLOT_OUTSIDE_LOCAL_HOURS,
         "attribution": "tick",
@@ -2923,34 +2957,60 @@ def _booking_fidelity() -> dict[str, Any]:
         detail = redact_sensitive_text(exc, limit=180)
         reason = "plan_columns_missing" if "no such column" in str(exc) else "post_table_unread"
         log.warning("booking fidelity: %s (%s)", reason, detail)
-        return _booking_unread(reason, detail, gate)
+        return _booking_unread(reason, detail, gate, codes=codes)
     except Exception as exc:  # noqa: BLE001 - a card must not fail the plan view
         log.warning("booking fidelity: reader failed (%s)", type(exc).__name__)
-        return _booking_unread("reader_unavailable", type(exc).__name__, gate)
+        return _booking_unread("reader_unavailable", type(exc).__name__, gate, codes=codes)
 
-    counts: dict[str, int] = {code: 0 for code in BOOKING_STATES}
-    samples: list[dict[str, Any]] = []
+    counts: dict[str, int | None] = {code: 0 for code in codes}
+    views: list[dict[str, Any]] = []
     later = earlier = 0
     largest = 0.0
+    rebind_measurable = True
     for row in rows:
-        view = _booking_row_view(
-            row,
-            gate=gate,
-            gated_status=s7_publish.STATUS_GATED,
-            hours_judge=local_hours_allow,
-            config=config,
+        views.append(
+            _booking_row_view(
+                row,
+                gate=gate,
+                gated_status=s7_publish.STATUS_GATED,
+                hours_judge=local_hours_allow,
+                config=config,
+            )
         )
-        counts[view["state"]] += 1
-        if view["state"] == BOOKING_SHIFTED:
-            later += 1 if (view["shift_seconds"] or 0) > 0 else 0
-            earlier += 1 if (view["shift_seconds"] or 0) < 0 else 0
-            largest = max(largest, abs(float(view["shift_minutes"] or 0.0)))
-        if len(samples) < BOOKING_SAMPLE_ROWS:
-            samples.append(view)
 
     from tgfarm.booking_evidence import explain_rebinds
 
-    explain_rebinds(samples)
+    if extended:
+        # The whole scanned window is attributed, not only the named samples:
+        # a count about rebinds must not be read off a dozen lines.
+        explain_rebinds(views)
+        # A rebind must be proven for *every* moved row, or the count would
+        # dress a partial hunt as a total (P34). A row whose evidence came back
+        # `unread` or `incomplete` proves nothing, so no row is reclassified and
+        # the rebind count stays null instead of a measured-looking zero.
+        shifted_views = [v for v in views if v["state"] == BOOKING_SHIFTED]
+        measurable = all(
+            (v.get("rebind") or {}).get("status") in ("matched", "not_found")
+            for v in shifted_views
+        )
+        if measurable:
+            for view in views:
+                if view["state"] == BOOKING_SHIFTED and view["rebind"]["status"] == "matched":
+                    view["state"] = BOOKING_REBOUND
+        else:
+            rebind_measurable = False
+    else:
+        explain_rebinds(views[:BOOKING_SAMPLE_ROWS])
+    samples = views[:BOOKING_SAMPLE_ROWS]
+
+    for view in views:
+        counts[view["state"]] += 1
+        if view["state"] in (BOOKING_SHIFTED, BOOKING_REBOUND):
+            later += 1 if (view["shift_seconds"] or 0) > 0 else 0
+            earlier += 1 if (view["shift_seconds"] or 0) < 0 else 0
+            largest = max(largest, abs(float(view["shift_minutes"] or 0.0)))
+    if extended and not rebind_measurable:
+        counts[BOOKING_REBOUND] = None
     # reach the classifier and the loop's zero for this code is not a measurement of
     # it. The whole-table count is: `no_booking` is the number of posts the plan never
     # reserved, and leaving it at the loop's 0 would print "0 posts without a booking"
@@ -2959,15 +3019,19 @@ def _booking_fidelity() -> dict[str, Any]:
 
     complete = booked_total == len(rows)
     states = {
-        code: {
-            "count": counts[code],
-            # `no_booking` is a whole-table SQL count and is always complete; the
-            # rest describe the scanned window, which is the whole population only
-            # while the limit was not reached.
-            "basis": "population" if code == BOOKING_NO_BOOKING or complete else "sample",
-            "single_row": counts[code] == 1,
-        }
-        for code in BOOKING_STATES
+        code: (
+            {"count": None, "basis": None, "single_row": None}
+            if counts[code] is None
+            else {
+                "count": counts[code],
+                # `no_booking` is a whole-table SQL count and is always complete;
+                # the rest describe the scanned window, which is the whole
+                # population only while the limit was not reached.
+                "basis": "population" if code == BOOKING_NO_BOOKING or complete else "sample",
+                "single_row": counts[code] == 1,
+            }
+        )
+        for code in codes
     }
     truncated = booked_total > len(rows)
     return {
@@ -2988,9 +3052,11 @@ def _booking_fidelity() -> dict[str, Any]:
         "shift": {
             "later": later,
             "earlier": earlier,
-            # Measured nothing beats a printed 0: with no shifted row there is no
-            # largest displacement to report.
-            "largest_abs_minutes": None if counts[BOOKING_SHIFTED] == 0 else largest,
+            # Measured nothing beats a printed 0: with no moved row there is no
+            # largest displacement to report — a rebound is a moved row either way.
+            "largest_abs_minutes": None
+            if counts[BOOKING_SHIFTED] + (counts.get(BOOKING_REBOUND) or 0) == 0
+            else largest,
         },
         "samples": samples,
         "note": _booking_note(
@@ -3002,11 +3068,19 @@ def _booking_fidelity() -> dict[str, Any]:
             scanned=len(rows),
             truncated=truncated,
             gate=gate,
+            codes=codes,
+            rebind_measurable=rebind_measurable,
         ),
     }
 
 
-def _booking_unread(reason: str, detail: str | None, gate: dict[str, Any]) -> dict[str, Any]:
+def _booking_unread(
+    reason: str,
+    detail: str | None,
+    gate: dict[str, Any],
+    *,
+    codes: tuple[str, ...] = BOOKING_STATES_BASE,
+) -> dict[str, Any]:
     """The whole read unavailable, stated as one fact and not as six zeros.
 
     `reason` is the payload's own vocabulary and it is deliberately not a boolean:
@@ -3029,7 +3103,7 @@ def _booking_unread(reason: str, detail: str | None, gate: dict[str, Any]) -> di
             "truncated": None,
             "limit": BOOKING_SCAN_LIMIT,
         },
-        "states": {code: {"count": None, "basis": None, "single_row": None} for code in BOOKING_STATES},
+        "states": {code: {"count": None, "basis": None, "single_row": None} for code in codes},
         "shift": {"later": None, "earlier": None, "largest_abs_minutes": None},
         "samples": None,
         "note": _booking_note(
