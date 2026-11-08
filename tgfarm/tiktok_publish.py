@@ -12,8 +12,11 @@ from pathlib import Path
 
 import httpx
 
+from tgfarm.core.logging import get_logger
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.core.settings import get_settings
+
+log = get_logger(__name__)
 
 INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"

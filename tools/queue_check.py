@@ -293,7 +293,10 @@ def declared_foreign_shas(meta: dict[str, Any] | None) -> dict[str, str]:
         return {str(key).strip(): str(value or "").strip() for key, value in raw.items()}
     if isinstance(raw, list):
         return {str(item).strip(): "" for item in raw}
-    return {FOREIGN_SHA_EXAMPLE: ""}
+    # Any other shape declares nothing. The old fallback named a constant that
+    # only existed in the docstring example, so a malformed queue raised
+    # NameError before a single rule could report it.
+    return {}
 
 
 def _check_sha_claims(

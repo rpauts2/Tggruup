@@ -617,3 +617,13 @@ def test_the_two_state_vocabularies_are_pinned_apart() -> None:
         if value in {"BLOCKED", "FAILED", "CANCELLED"}
     }, "a failure outcome that maps to a non-failure lifecycle state would hide the reason"
     assert "DONE" not in record.FAILURE_STATES and "UNKNOWN" not in record.FAILURE_STATES
+
+
+def test_foreign_shas_of_an_unexpected_type_is_ignored() -> None:
+    """A malformed `meta.foreign_shas` must not crash the validator.
+
+    The fallback referenced a name that only existed in the docstring example,
+    so any queue whose metadata was not a mapping or a list raised NameError
+    before a single rule could report the problem.
+    """
+    assert qc.declared_foreign_shas({"foreign_shas": "deadbeef"}) == {}
