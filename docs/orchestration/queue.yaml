@@ -100,12 +100,12 @@ tasks:
       «поставить позже» и «настроить часы канала».
     priority: medium
     category: product
-    status: RECOVERY_REQUIRED
+    status: INTEGRATED
     owner_role: "Backend Engineer"
-    owner_agent: "ageneral-purpose-1d7a01a772b88582"
+    owner_agent: "coordinator"
     base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
     worktree: null
-    branch: null
+    branch: main
     allowed_paths:
       - tgfarm/editorial_plan.py
       - tgfarm/plan_execution.py
@@ -118,20 +118,24 @@ tasks:
       при выключенном флаге поведение прежнее; тесты краснеют на мутантах.
     test_commands:
       - "python -m pytest -q tests/test_w23b_no_slot_reasons.py"
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
-    retry_count: 0
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 1
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T09:57:00+03:00"
-    updated_at: "2026-11-06T14:20:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-08T09:40:00+03:00"
+    completed_at: "2026-11-08T09:40:00+03:00"
     evidence:
       - "OBSERVED: ни ветки, ни worktree (`no branch`), ни одной строки в `git status` основного дерева — 4 часа после запуска"
+      - "OBSERVED: агент ageneral-purpose-1d7a01a772b88582 мёртв с 2026-11-06 (ни ветки, ни worktree); пакет передан координатору по next_action"
+      - "OBSERVED: разделение уже в main: 0b302c2 (билдер: payload.no_slot_reason) + 389dcf3 (короткие окна); координатор закрепил его фальсифицируемыми пинами tests/test_w23b_no_slot_reasons.py (5), мутанты M1/M2/M3 проверены по очереди, каждый краснит свои тесты"
+      - "TEST_VERIFIED: полный прогон 3406 passed, 4 xfailed, 0 failed; соседи 95 passed; tools/queue_check.py — 0"
     next_action: >
-      Спасать нечего; при подтверждённой смерти — перезначить (attempt+1) или
-      взять координатору. Файлы помечены занятыми, чтобы параллельный запуск не
-      сел на plan_execution.py вторым владельцем.
+      Координатор закрыл фолд-чеком: разделение уже было в main, не хватало
+      тестов. Следующий пакет по плану — W29-S (RECOVERY_REQUIRED, «не начинать»,
+      пока миссия T3 держит editorial_plan.py) — решение владельца создателем
+      миссии; BLOCKED-пакеты — за владельцем.
 
   - id: W23-C
     description: "lru_cache get_config перезагружается в conftest, но не очищается: режим каденции наследуется от соседа по прогону"
