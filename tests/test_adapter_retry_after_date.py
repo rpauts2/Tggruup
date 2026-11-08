@@ -99,3 +99,53 @@ def test_instagram_a_malformed_error_body_does_not_raise():
     error = httpx.HTTPStatusError("bad body", request=request, response=response)
 
     assert instagram._http_result("instagram", error, "create_media").status == "permanent"
+
+
+def test_facebook_honours_an_http_date_retry_after():
+    """Facebook kept its own int-only parser after the other adapters were fixed.
+
+    A Graph 429 that answers with a date is a cooldown the publisher must not
+    shorten to its own default backoff.
+    """
+    from tgfarm.s9_growth import facebook
+
+    retry_at = datetime.now(UTC) + timedelta(hours=2)
+    result = facebook._error_result(
+        _error(429, headers={"Retry-After": format_datetime(retry_at, usegmt=True)}),
+        "feed",
+    )
+
+    assert result.status == "failed"
+    assert result.retry_after_seconds is not None
+    assert 7000 <= result.retry_after_seconds <= 7300
+
+
+def test_facebook_delta_seconds_still_work():
+    from tgfarm.s9_growth import facebook
+
+    result = facebook._error_result(_error(429, headers={"Retry-After": "45"}), "feed")
+
+    assert result.retry_after_seconds == 45
+
+
+async def test_tiktok_honours_an_http_date_retry_after():
+    """TikTok read `Retry-After` with int(float(...)) and dropped the date form."""
+    import pytest
+
+    from tgfarm.tiktok_publish import TikTokProviderError, _provider_json
+
+    request = httpx.Request("POST", "https://open.tiktokapis.com/v2/video/init/")
+    retry_at = datetime.now(UTC) + timedelta(hours=2)
+    response = httpx.Response(
+        429,
+        request=request,
+        headers={"Retry-After": format_datetime(retry_at, usegmt=True)},
+        content=b"",
+    )
+
+    with pytest.raises(TikTokProviderError) as caught:
+        await _provider_json(response, "video/init")
+
+    assert caught.value.retryable is True
+    assert caught.value.retry_after_seconds is not None
+    assert 7000 <= caught.value.retry_after_seconds <= 7300

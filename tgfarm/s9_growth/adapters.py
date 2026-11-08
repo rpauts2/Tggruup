@@ -124,15 +124,16 @@ def crosspost_retry_delay_min(attempt: int) -> int | None:
     return CROSSPOST_RETRY_DELAYS_MIN[number - 1]
 
 
-def crosspost_retry_after_seconds(
-    exc: BaseException, *, now: datetime | None = None, max_seconds: int = 86_400
+def retry_after_seconds_from_headers(
+    headers, *, now: datetime | None = None, max_seconds: int = 86_400
 ) -> int | None:
-    """Read provider Retry-After for explicit rate-limit/service-unavailable replies."""
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code not in (429, 503):
-        return None
-    headers = getattr(response, "headers", {}) or {}
+    """`Retry-After` as whole seconds from either legal encoding, or None.
+
+    RFC 9110 allows delta-seconds and an HTTP-date. Adapters that parsed only
+    `int(raw)` silently shortened a provider's cooldown whenever the gateway
+    answered with a date, so the parsing lives here once and every adapter,
+    publisher included, reads the header through it.
+    """
     raw = headers.get("Retry-After") or headers.get("retry-after")
     if raw is None:
         return None
@@ -153,6 +154,18 @@ def crosspost_retry_after_seconds(
         seconds = ceil((retry_at.astimezone(UTC) - current.astimezone(UTC)).total_seconds())
 
     return min(max(0, seconds), max(0, int(max_seconds)))
+
+
+def crosspost_retry_after_seconds(
+    exc: BaseException, *, now: datetime | None = None, max_seconds: int = 86_400
+) -> int | None:
+    """Read provider Retry-After for explicit rate-limit/service-unavailable replies."""
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) not in (429, 503):
+        return None
+    return retry_after_seconds_from_headers(
+        getattr(response, "headers", {}) or {}, now=now, max_seconds=max_seconds
+    )
 
 
 def crosspost_retry_not_before(row) -> datetime | None:

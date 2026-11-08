@@ -33,13 +33,15 @@ def _error_result(exc: BaseException, operation: str) -> CrosspostResult:
         state = "failed"
     else:
         state = "unknown" if operation in {"feed", "photo", "video"} else "failed"
-    retry_after = None
-    if status == 429 and response is not None:
-        raw = response.headers.get("Retry-After")
-        try:
-            retry_after = min(86400, max(0, int(raw))) if raw is not None else None
-        except (TypeError, ValueError):
-            retry_after = None
+    # One parser for both legal forms of Retry-After: a gateway that answers with
+    # an HTTP-date must not lose the cooldown Facebook asked for.
+    from tgfarm.s9_growth.adapters import retry_after_seconds_from_headers
+
+    retry_after = (
+        retry_after_seconds_from_headers(getattr(response, "headers", {}) or {})
+        if response is not None and status in (429, 503)
+        else None
+    )
     log.warning("Facebook Page %s %s: %s", operation, state, redact_sensitive_text(exc, limit=180))
     return CrosspostResult(
         platform="facebook",
