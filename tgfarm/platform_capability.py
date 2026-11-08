@@ -57,6 +57,32 @@ DRAFT_ONLY: frozenset[str] = frozenset({"vc_ru"})
 #: (Reddit, Telegraph) belong to destinations that also publish.
 READ_ONLY: frozenset[str] = frozenset()
 
+# ------------------------------------------------------------------ consent-gated
+# Platforms registered in ADAPTERS whose publish() always returns "skipped" because
+# the destination requires per-operation consent in the owner's dashboard.  These
+# must never be labelled "publish" even though an adapter exists — the adapter is
+# a connection probe, not a publisher.  The default set below is the floor; the
+# catalogue note in platforms.MANUAL_ONLY_AUTOMATION can only widen it.
+
+_CONSENT_GATED_DEFAULT: frozenset[str] = frozenset({"tiktok", "douyin"})
+
+
+def _consent_gated() -> frozenset[str]:
+    """Consent-gated platforms: adapter exists but publish() is intentionally skipped.
+
+    The default set is a floor, not a guess: it is the code fact that these two
+    adapters return ``skipped`` unconditionally, so it is unioned with
+    ``platforms.MANUAL_ONLY_AUTOMATION`` rather than replaced by it.  Dropping an
+    entry from the catalogue note must never silently re-promote a consent-gated
+    destination to ``publish``.
+    """
+    try:
+        from tgfarm.platforms import MANUAL_ONLY_AUTOMATION
+
+        return _CONSENT_GATED_DEFAULT | frozenset(str(k).lower() for k in MANUAL_ONLY_AUTOMATION)
+    except Exception:  # noqa: BLE001
+        return _CONSENT_GATED_DEFAULT
+
 
 def _adapter_ids() -> frozenset[str]:
     """Platform ids with a registered crosspost adapter (lazy: heavy imports)."""
@@ -99,6 +125,10 @@ def capability_of(
     pid = str(platform_id or "").strip().lower()
     if not pid:
         return "unsupported"
+    # Consent-gated adapters have a registered adapter but publish() always
+    # returns "skipped" — they must never be labelled "publish".
+    if pid in _consent_gated():
+        return "manual_upload"
     if pid in publish_ids(adapters=adapters):
         return "publish"
     draft = {str(x).lower() for x in draft_only}
@@ -140,6 +170,11 @@ def capability_counts() -> dict[str, int]:
     return counts
 
 
+def consent_gated_ids() -> frozenset[str]:
+    """Public accessor for the consent-gated deny-list (see :func:`_consent_gated`)."""
+    return _consent_gated()
+
+
 def is_at_least(platform_id: str, level: str, **kwargs) -> bool:
     """True when the destination supports at least ``level``."""
     if level not in LEVEL_RANK:
@@ -159,6 +194,7 @@ __all__ = [
     "describe",
     "capability_matrix",
     "capability_counts",
+    "consent_gated_ids",
     "is_at_least",
     "publish_ids",
 ]

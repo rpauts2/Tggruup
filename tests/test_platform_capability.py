@@ -15,6 +15,7 @@ from tgfarm.platform_capability import (
     capability_counts,
     capability_matrix,
     capability_of,
+    consent_gated_ids,
     describe,
     is_at_least,
     publish_ids,
@@ -118,3 +119,58 @@ def test_platforms_api_exposes_capability_without_overstating():
         for row in rows:
             if row["capability"] != "publish":
                 assert row.get("automation_mode") != "automatic", row["id"]
+
+
+# ---------------------------------------------------------------- consent gate
+
+
+def test_consent_gated_destinations_are_demoted_despite_an_adapter():
+    """TikTok and Douyin have registered adapters whose ``publish()`` always
+    returns ``skipped``: a registry entry is not a publisher, and the matrix must
+    not hand them a green badge (or let the router plan them as automatic)."""
+    from tgfarm.platform_capability import consent_gated_ids
+    from tgfarm.s9_growth.adapters import ADAPTERS
+
+    gated = consent_gated_ids()
+    assert {"tiktok", "douyin"} <= gated
+    # They really are in the adapter registry — the demotion is not accidental.
+    assert gated & set(ADAPTERS)
+    for platform_id in ("tiktok", "douyin"):
+        assert platform_id in ADAPTERS
+        assert capability_of(platform_id) == "manual_upload", platform_id
+        row = describe(platform_id)
+        assert row["auto_publish"] is False
+        assert row["supports_manual_package"] is True
+
+
+def test_consent_gate_is_a_floor_not_a_catalogue_note():
+    """The gate is a code fact (those two ``publish()`` methods return ``skipped``
+    unconditionally), so it is unioned with the catalogue note rather than taken
+    from it: editing the wording in ``platforms.py`` must not re-promote anyone."""
+    from tgfarm import platform_capability
+    from tgfarm.platforms import MANUAL_ONLY_AUTOMATION
+
+    assert platform_capability._CONSENT_GATED_DEFAULT <= consent_gated_ids()
+    assert set(MANUAL_ONLY_AUTOMATION) <= consent_gated_ids()
+
+
+def test_consent_gate_does_not_touch_real_publishers():
+    """The gate is a deny-list, not a blanket downgrade: automatic crosspost
+    destinations keep publishing, and no automatic destination is consent-gated."""
+    from tgfarm.platform_capability import consent_gated_ids
+
+    gated = consent_gated_ids()
+    for platform_id in ("pikabu", "reddit", "bluesky", "mastodon", "threads"):
+        assert capability_of(platform_id) == "publish", platform_id
+        assert platform_id not in gated
+    assert gated.isdisjoint({"telegram", "vk", "dzen"})
+
+
+def test_router_never_plans_a_consent_gated_destination_as_unmarked():
+    """``s3_router`` reads the same capability level, so a consent-gated
+    destination must be flagged as requiring manual action when planned."""
+    from tgfarm.s3_router import MANUAL_CAPABILITIES, _capability_level
+
+    for platform_id in ("tiktok", "douyin"):
+        level = _capability_level(platform_id)
+        assert level in MANUAL_CAPABILITIES, level
