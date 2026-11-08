@@ -28,6 +28,20 @@ meta:
     shared main tree — not from agent reports. Every state correction carries
     the commit SHAs that prove it; what could not be proved is named UNKNOWN
     in the record itself.
+  foreign_shas:
+    # Base commits of the full session above. They exist in the coordinator's
+    # local history (183daa4 was its `main`), which was never pushed; the
+    # canonical rpauts2/Tggruup history begins at a merge that does not contain
+    # them. tools/queue_check.py reports an undeclared SHA and an unused
+    # declaration, so this list cannot quietly become an allowlist.
+    183daa4755d996f734212f06796d6bcaf91f954c: >
+      HEAD of the coordinator's local main (Qoder Desktop session 241fe48c);
+      not pushed to GitHub and absent from the canonical history.
+    7e584550280b812a5f18e0c36e2cc613133cb8af: >
+      github/main as the coordinator observed it (the W24-A integration); not
+      an ancestor of the canonical history.
+    91029a38e28b14057e118cfbeeaa8a4b06d7cb94: >
+      local main before wave 23, in the same unpushed history.
 
 tasks:
 

@@ -89,7 +89,10 @@ def _write(tmp_path: Path, *tasks, name: str = "queue.yaml") -> Path:
 def test_the_shipped_queue_is_consistent() -> None:
     """The file this session relies on must be defensible in CI, not in my memory."""
     loaded = qc._load_raw(SHIPPED_QUEUE)
-    problems, _ = qc.validate(loaded["tasks"])
+    problems, _ = qc.validate(
+        loaded["tasks"],
+        foreign_shas=qc.declared_foreign_shas(loaded.get("meta")),
+    )
     assert not problems, "\n".join(str(p) for p in problems)
 
 
@@ -350,6 +353,50 @@ def test_a_real_sha_is_not_flagged() -> None:
     """The check must not be theatre: a commit that exists has to pass it."""
     problems, _ = qc.validate([_task(base_sha=_real_sha())])
     assert "unknown-sha" not in _rules(problems), problems
+
+
+def test_a_foreign_sha_passes_only_when_meta_declares_it_with_a_reason() -> None:
+    """An imported queue names commits this clone cannot advertise.
+
+    Deleting them loses the record; accepting any unknown SHA makes the rule
+    decorative. A full SHA listed in `meta.foreign_shas` with a reason is the
+    recorded third option, and the reason is required so the list cannot become
+    a silent allowlist.
+    """
+    sha = "d" * 40
+    task = _task(base_sha=sha)
+    undeclared, _ = qc.validate([task])
+    assert "unknown-sha" in _rules(undeclared)
+
+    declared, _ = qc.validate([task], foreign_shas={sha: "lives in the old repo"})
+    assert "unknown-sha" not in _rules(declared), declared
+
+    silent, _ = qc.validate([task], foreign_shas={sha: ""})
+    assert "bad-foreign-sha" in _rules(silent), silent
+
+
+def test_a_declaration_no_task_uses_is_stale() -> None:
+    """A declaration has to stay attached to the task that needs it."""
+    problems, _ = qc.validate(
+        [_task(base_sha=_real_sha())],
+        foreign_shas={"e" * 40: "orphaned note"},
+    )
+    assert "stale-foreign-sha" in _rules(problems), problems
+
+
+def test_a_truncated_foreign_sha_is_rejected() -> None:
+    """Twelve-character forms are what an executor writes from memory; they are not commits."""
+    short = "f" * 12
+    problems, _ = qc.validate([_task(base_sha=short + "0" * 28)], foreign_shas={short: "guess"})
+    assert "bad-foreign-sha" in _rules(problems), problems
+
+
+def test_the_shipped_declaration_never_covers_a_sha_no_task_names() -> None:
+    loaded = qc._load_raw(SHIPPED_QUEUE)
+    declared = qc.declared_foreign_shas(loaded.get("meta"))
+    used = {str(t.get("base_sha")) for t in loaded["tasks"]}
+    assert declared, "the imported history must stay declared, not deleted"
+    assert set(declared) <= used, sorted(set(declared) - used)
 
 
 # ---------------------------------------------------------------- entry point
