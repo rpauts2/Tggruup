@@ -220,6 +220,20 @@ async def complete_tumblr_oauth(state: str, code: str) -> dict[str, str]:
     }
 
 
+class TumblrOAuthError(RuntimeError):
+    """A token-endpoint failure that carries the status it was refused with.
+
+    The adapter has to tell a dead grant (HTTP 400/401 - retrying cannot help)
+    from a network or 5xx failure (safe to retry, because no publish request
+    exists yet). A bare RuntimeError erases that difference, which is how every
+    refresh failure used to be recorded as `permanent`.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 async def get_valid_tumblr_access_token() -> str:
     """Refresh an expiring Tumblr token and persist rotated credentials."""
     from tgfarm.core.settings import get_settings
@@ -238,7 +252,9 @@ async def get_valid_tumblr_access_token() -> str:
     if access and (not expires_at or expires_at > now + 180):
         return access
     if not (refresh and client_id and client_secret):
-        raise RuntimeError("Tumblr OAuth не подключён или истёк. Переподключи аккаунт.")
+        raise TumblrOAuthError(
+            "Tumblr OAuth не подключён или истёк. Переподключи аккаунт.", status_code=400
+        )
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
             response = await client.post(
@@ -256,8 +272,9 @@ async def get_valid_tumblr_access_token() -> str:
     except httpx.RequestError as exc:
         raise RuntimeError("Не удалось обновить Tumblr OAuth-токен из-за сетевой ошибки.") from exc
     if response.status_code >= 400:
-        raise RuntimeError(
-            f"Tumblr не обновил OAuth-токен (HTTP {response.status_code}). Переподключи аккаунт."
+        raise TumblrOAuthError(
+            f"Tumblr не обновил OAuth-токен (HTTP {response.status_code}). Переподключи аккаунт.",
+            status_code=response.status_code,
         )
     try:
         data = response.json()

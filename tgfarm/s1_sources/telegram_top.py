@@ -53,14 +53,20 @@ def discover_top_chats(
         if min_participants is not None
         else settings.telegram_top_group_min_participants
     ))
-    excluded = _configured_handles() | set(settings.channel_ids())
+    # Configured sources are keyed by handle, our own publishing channels by
+    # numeric id, so the two cannot share one set: comparing ints with usernames
+    # always misses and the farm ends up harvesting its own posts.
+    excluded_handles = _configured_handles()
+    excluded_ids = set(settings.channel_ids())
     chats = _list_chats_sync()
     picked: list[dict] = []
     for chat in chats:
         username = (chat.username or "").strip().lstrip("@")
         if not username or chat.participants < minimum:
             continue
-        if username.lower() in excluded or chat.kind not in ("channel", "group"):
+        if chat.id in excluded_ids or username.lower() in excluded_handles:
+            continue
+        if chat.kind not in ("channel", "group"):
             continue
         picked.append({**chat.as_dict(), "username": username})
         if len(picked) >= limit:

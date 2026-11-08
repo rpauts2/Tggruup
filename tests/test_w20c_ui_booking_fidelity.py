@@ -45,10 +45,13 @@ UI_DIR = ROOT / "tgfarm" / "ui"
 APP_CSS = UI_DIR / "app.css"
 ENDPOINT = "/api/editorial/plan/booking"
 
-#: The six codes the server may answer with (`tgfarm/api.py::BOOKING_STATES`).
+#: The seven codes the server may answer with (`tgfarm/api.py::BOOKING_STATES`).
 #: Repeated here on purpose: the panel has to name them without importing Python,
-#: and this file is where a rename on one side of the seam is caught.
-STATE_CODES = ("no_booking", "honoured", "shifted", "refused", "awaiting_slot", "unread_row")
+#: and this file is where a rename on one side of the seam is caught. A flag-off
+#: payload carries only the first six — the panel words what the server sent,
+#: and the render tests below exercise both shapes.
+STATE_CODES = ("no_booking", "honoured", "shifted", "rebound", "refused",
+               "awaiting_slot", "unread_row")
 
 # Anchors in full: a short reused anchor silently slices the wrong body.
 HELPERS_START = "  const $ = (sel, root = document) => root.querySelector(sel);"
@@ -121,6 +124,48 @@ def test_the_six_states_have_six_different_words(booking):
     order = re.search(r"BOOKING_STATE_ORDER = \[(.*?)\];", booking, re.S)
     assert order, "the panel lost the list that fixes the order of the states"
     assert re.findall(r'"([a-z_]+)"', order.group(1)) == list(STATE_CODES), order.group(1)
+
+
+def test_the_rebind_state_has_its_own_word_and_position(booking):
+    """«Исправлено по правилу» is a third sentence about a moved slot.
+
+    A corrected booking is not a plain shift: if the state borrowed «сдвинуто»,
+    the operator could not tell a repair from a stall, which is the whole
+    reason W23-A exists. Fails the moment the seventh word is missing,
+    duplicated from a neighbour, or seated somewhere the chips do not follow.
+    """
+    code = _code_only(booking)
+    words = re.findall(
+        r'^\s{4}(no_booking|honoured|shifted|rebound|refused|awaiting_slot|unread_row): "(.*)",$',
+        code,
+        re.MULTILINE,
+    )
+    assert len(words) == 7, words
+    assert len({word for _code, word in words}) == 7, f"два состояния — одни слова: {words}"
+    rebound = dict(words)["rebound"]
+    assert "исправлено" in rebound and "правилу" in rebound, rebound
+    order = re.search(r"BOOKING_STATE_ORDER = \[(.*?)\];", booking, re.S)
+    assert order, "the panel lost the list that fixes the order of the states"
+    assert re.findall(r'"([a-z_]+)"', order.group(1)) == list(STATE_CODES), order.group(1)
+
+
+def test_a_six_state_payload_renders_no_rebind_chip(tmp_path):
+    """A flag-off payload never prints the state the server did not send.
+
+    The panel words only the states present in `states`: rendering a chip for
+    the rebind state would print «не прочитано» about a measurement the server
+    never owed, which is the exact dishonesty the filter exists to prevent.
+    """
+    counts = {"no_booking": 12, "honoured": 1, "shifted": 2, "refused": 0,
+              "awaiting_slot": 0, "unread_row": 0}
+    states = {code: {"count": count, "basis": "population", "single_row": count == 1}
+              for code, count in counts.items()}
+    payload = _card(states=states, population={"posts": 15, "booked": 3, "unbooked": 12,
+                                               "scanned": 3, "truncated": False, "limit": 400})
+    html = _cards(tmp_path, [("card", payload, None)])["card"]["html"]
+    assert "исправлено" not in html, html
+    for word in ("брони нет", "уважено", "сдвинуто", "отказано"):
+        assert word in html, html
 
 
 def test_a_refusal_keeps_the_gate_code_and_never_becomes_a_generic_block(booking):
@@ -437,8 +482,8 @@ def test_a_card_that_measured_nothing_prints_no_digits(tmp_path):
 
 def test_the_six_states_are_printed_side_by_side_in_words(tmp_path):
     """A readable card names every state it was given, each with its own count."""
-    counts = {"no_booking": 223, "honoured": 2, "shifted": 1, "refused": 4,
-              "awaiting_slot": 5, "unread_row": 0}
+    counts = {"no_booking": 223, "honoured": 2, "shifted": 1, "rebound": 3,
+              "refused": 4, "awaiting_slot": 5, "unread_row": 0}
     states = {code: {"count": count, "basis": "population", "single_row": count == 1}
               for code, count in counts.items()}
     payload = _card(states=states, population={"posts": 235, "booked": 12, "unbooked": 223,
@@ -447,7 +492,8 @@ def test_the_six_states_are_printed_side_by_side_in_words(tmp_path):
     for code, count in counts.items():
         word = {
             "no_booking": "брони нет", "honoured": "уважено", "shifted": "сдвинуто",
-            "refused": "отказано", "awaiting_slot": "слот ещё не выдан", "unread_row": "не читается",
+            "rebound": "исправлено по правилу локальных часов", "refused": "отказано",
+            "awaiting_slot": "слот ещё не выдан", "unread_row": "не читается",
         }[code]
         assert f"{word}: {count}" in html, f"{code} ({word}) не напечатано со своим числом"
     # One row is an observation, not a finding, and the flag comes from the server.

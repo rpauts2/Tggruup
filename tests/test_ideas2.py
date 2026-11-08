@@ -58,19 +58,35 @@ def test_dzen_auth_alert_fires(db):
     assert "dzen_auth" in codes
 
 
-def test_dzen_status_endpoint_structure():
+def test_dzen_status_endpoint_structure(tmp_path, monkeypatch):
+    """The endpoint answers for the *configured* profile, not the owner's disk.
+
+    A clean checkout has no saved Yandex session, so asserting on the real
+    `data/dzen_profile` made this test pass only on the machine that had logged
+    in. The profile is seeded in a temp dir and pointed at explicitly; the
+    browser probe itself may only report "could not check" without playwright.
+    """
     from fastapi.testclient import TestClient
 
     from tgfarm.api import create_app
     from tgfarm.core.apiauth import ensure_token
+    from tgfarm.core.settings import get_settings
 
-    client = TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1")
-    headers = {"X-TGFarm-Token": ensure_token()}
-    resp = client.get("/api/dzen/status", headers=headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert {"authorized", "busy", "profile_ready"} <= set(body)
-    assert body["profile_ready"] is True
+    profile = tmp_path / "dzen_profile"
+    profile.mkdir()
+    (profile / "Cookies").write_text("[]", encoding="utf-8")
+    monkeypatch.setenv("DZEN_PROFILE_DIR", str(profile))
+    get_settings.cache_clear()
+    try:
+        client = TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1")
+        headers = {"X-TGFarm-Token": ensure_token()}
+        resp = client.get("/api/dzen/status", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {"authorized", "busy", "profile_ready"} <= set(body)
+        assert body["profile_ready"] is True
+    finally:
+        get_settings.cache_clear()
 
 
 def test_weekly_report_sends_digest(db, monkeypatch):

@@ -19,11 +19,21 @@ class TokenBucket:
             raise ValueError("rate_per_s must be > 0")
         self.rate = float(rate_per_s)
         self.capacity = float(capacity if capacity is not None else max(1.0, rate_per_s))
+        if self.capacity <= 0:
+            raise ValueError("capacity must be > 0")
         self._tokens = self.capacity
         self._updated = time.monotonic()
         self._lock = asyncio.Lock()
 
     async def take(self, tokens: float = 1.0) -> None:
+        # The bucket can never hold more than `capacity` tokens, so a larger
+        # request would spin here forever instead of reporting the mistake.
+        if tokens <= 0:
+            raise ValueError("tokens must be > 0")
+        if tokens > self.capacity:
+            raise ValueError(
+                f"cannot take {tokens} tokens: capacity is {self.capacity}"
+            )
         while True:
             async with self._lock:
                 now = time.monotonic()

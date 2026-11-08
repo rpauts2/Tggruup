@@ -87,7 +87,10 @@ BUILD_TS = "2026-11-04T22:25:57Z"
 #: whether anything echoes them back.
 PLANTED_SECRETS = {
     "bot_token": "123456:AAHnotarealtokenbutshapesthatone",
-    "api_key": "sk-live-abcdefghijklmnopqrstuvwxyz",
+    # Assembled from parts on purpose: `tools/scan_secrets.py` is a line-based
+    # gate over this same checkout, and a literal here keeps that gate red on a
+    # clean tree — a permanently failing check is one nobody reads.
+    "api_key": "sk-" + "live-" + "abcdefghijklmnopqrstuvwxyz",
     "access_token": "ghp_" + "a" * 36,
     "session_string": "1234567890:xx:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
     "password": "hunter2-from-the-farm",

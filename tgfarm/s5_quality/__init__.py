@@ -549,10 +549,11 @@ async def gate_tone(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(
@@ -617,10 +618,11 @@ async def gate_relevance(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(
@@ -686,10 +688,11 @@ async def gate_quality(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return GateOutcome(
@@ -886,10 +889,11 @@ async def rewrite(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=getattr(response, "billed", False),
     )
     if response.provider == "offline":
         return None

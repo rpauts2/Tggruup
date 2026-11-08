@@ -50,7 +50,10 @@ from tgfarm.core.apiauth import ensure_token
 from tgfarm.db.models import Channel, Post
 from tgfarm.db.session import session_scope
 
-#: The six states the read may answer with, and the only six it may answer with.
+#: The six states the read answers with while `plan_execution_enabled` is off
+#: (the default — every test in this file runs there), and the only six it then
+#: may answer with. The flag-on seventh state is pinned in
+#: `tests/test_w23a_rebind_attribution.py`.
 BOOKING_STATES = (
     "no_booking",
     "honoured",

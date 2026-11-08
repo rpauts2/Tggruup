@@ -191,8 +191,16 @@ def finalize(
     model: str = "",
     latency_ms: int = 0,
     used: bool = False,
+    billed: bool = False,
 ) -> None:
-    """Settle a reservation. Offline fallbacks release their budget."""
+    """Settle a reservation. Offline fallbacks release their budget.
+
+    `billed` is the case `used` cannot express: a provider returned a body (so
+    the owner paid for the tokens) but the answer was unusable, e.g. prose where
+    JSON was required. The reservation stays charged — releasing it lets the
+    farm spend past `ai_daily_budget` — while the row is not counted as a used
+    draft. A provider that never answered is still fully released.
+    """
     if usage_id is None:
         return
     with session_scope() as session:
@@ -203,9 +211,11 @@ def finalize(
         row.model = model or ""
         row.latency_ms = max(0, int(latency_ms))
         row.used = bool(used and provider != "offline")
-        row.charged = row.used
+        row.charged = row.used or bool(billed)
         if row.used:
             row.reason = "used"
+        elif billed:
+            row.reason = BILLED_UNUSABLE_REASON
         elif provider == "offline":
             row.reason = "fallback:offline"
         else:
@@ -237,6 +247,9 @@ def record_skip(
             )
         )
 
+
+#: A provider answered and was paid, but the answer could not be used.
+BILLED_UNUSABLE_REASON = "billed:unusable"
 
 #: A reservation whose process died is closed, not refunded: the provider may
 #: have been called, so the charge stays and only the alarm stops repeating.
@@ -280,7 +293,13 @@ def usage_report(days: int = 7, now: datetime | None = None) -> dict:
     rows_today = [row for row in rows if _aware(row.created_at) >= today_start]
     used_rows = [row for row in rows if row.used]
     fallback_rows = [row for row in rows if row.reason == "fallback:offline"]
-    closed_reasons = {"", "fallback:offline", "reserved", STALE_CLOSURE_REASON}
+    closed_reasons = {
+        "",
+        "fallback:offline",
+        "reserved",
+        STALE_CLOSURE_REASON,
+        BILLED_UNUSABLE_REASON,
+    }
     blocked_rows = [
         row for row in rows
         if not row.used and row.reason not in closed_reasons
@@ -361,7 +380,10 @@ def usage_summary(days: int = 1, now: datetime | None = None) -> dict[str, int |
         ).scalars().all()
     used = [r for r in rows if r.used]
     fallbacks = [r for r in rows if r.reason == "fallback:offline"]
-    blocked = [r for r in rows if not r.used and r.reason and r.reason != "fallback:offline"]
+    blocked = [
+        r for r in rows
+        if not r.used and r.reason and r.reason not in ("fallback:offline", BILLED_UNUSABLE_REASON)
+    ]
     return {
         "calls": len(rows),
         "charged": sum(1 for r in rows if r.charged),

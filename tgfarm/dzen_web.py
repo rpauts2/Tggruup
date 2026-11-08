@@ -326,8 +326,6 @@ class DzenWebPublisher:
         """
         from datetime import UTC, datetime
 
-        from playwright.async_api import async_playwright
-
         global _auth_state_cache, _auth_state_at
         checked_at = datetime.now(UTC).isoformat(timespec="seconds")
         try:
@@ -335,6 +333,10 @@ class DzenWebPublisher:
         except TimeoutError:
             return {"authorized": None, "busy": True, "checked_at": checked_at}
         try:
+            # The browser stack is an optional extra. A probe must report that
+            # it could not check, not turn /api/dzen/status into a 500.
+            from playwright.async_api import async_playwright
+
             async with async_playwright() as playwright:
                 context = await asyncio.wait_for(self._launch(playwright), timeout=15)
                 try:

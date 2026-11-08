@@ -167,6 +167,25 @@ def _upsert(channel_id, kind, key, value, score, sample_size, confidence, note=N
             row.note = note
 
 
+def _drop_lesson(channel_id, kind, key):
+    """Remove a lesson that no longer describes the evidence.
+
+    A stale `mistake/worst_angle` row used to survive a newer cycle in which the
+    same angle became the best one, so S4 was told both "prefer news" and "avoid
+    news" from one memory. An upsert cannot express removal.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(LearningMemory).where(
+                LearningMemory.channel_id == channel_id,
+                LearningMemory.kind == kind,
+                LearningMemory.key == key,
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            session.delete(row)
+
+
 def lessons(channel_id="", kind=None):
     with session_scope() as session:
         stmt = select(LearningMemory)
@@ -871,6 +890,10 @@ def _learn_channel(channel_id):
                     "weak angle: %s" % worst,
                 )
                 learned += 1
+            else:
+                # One angle, or a tie at the top: an old "avoid this" row would
+                # now contradict the best-angle lesson from the same evidence.
+                _drop_lesson(channel_id, "mistake", "worst_angle")
 
     style_perf = hook_style_performance(14, channel_id=channel_id)
     if style_perf:
@@ -946,16 +969,18 @@ def _learn_channel(channel_id):
     try:
         from tgfarm.db.models import CrosspostLog, PipelineRun
         with session_scope() as session:
+            # Ascending: the newest row of a stage must win the per-stage upsert.
             runs = session.execute(
-                select(PipelineRun).where(PipelineRun.status == "error").order_by(PipelineRun.created_at.desc()).limit(20)
+                select(PipelineRun).where(PipelineRun.status == "error").order_by(PipelineRun.created_at.asc()).limit(20)
             ).scalars().all()
             for r in runs:
                 if r.error:
                     _upsert(channel_id, "mistake", "pipeline:%s" % r.stage,
                             {"stage": r.stage, "error": r.error[:300]}, 0.0, 1, 0.2,
                             "stage %s failed: %s" % (r.stage, r.error[:120]))
+            # Ascending: the newest row of a platform must win the per-platform upsert.
             logs = session.execute(
-                select(CrosspostLog).where(CrosspostLog.status == "failed").order_by(CrosspostLog.created_at.desc()).limit(20)
+                select(CrosspostLog).where(CrosspostLog.status == "failed").order_by(CrosspostLog.created_at.asc()).limit(20)
             ).scalars().all()
             for lg in logs:
                 if lg.error:

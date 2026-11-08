@@ -12,8 +12,11 @@ from pathlib import Path
 
 import httpx
 
+from tgfarm.core.logging import get_logger
 from tgfarm.core.schemas import CrosspostResult
 from tgfarm.core.settings import get_settings
+
+log = get_logger(__name__)
 
 INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
@@ -69,13 +72,9 @@ async def _provider_json(response: httpx.Response, label: str) -> dict:
                 f"TikTok отклонил доступ во время {label}. Проверь токен, scope video.publish и статус приложения."
             )
         if response.status_code in (408, 425, 429) or response.status_code >= 500:
-            retry_after = None
-            raw_retry_after = response.headers.get("Retry-After")
-            if raw_retry_after:
-                try:
-                    retry_after = min(86_400, max(1, int(float(raw_retry_after))))
-                except (TypeError, ValueError):
-                    retry_after = None
+            from tgfarm.s9_growth.adapters import retry_after_seconds_from_headers
+
+            retry_after = retry_after_seconds_from_headers(response.headers)
             raise TikTokProviderError(
                 f"TikTok временно недоступен во время {label} (HTTP {response.status_code}).",
                 retryable=True,

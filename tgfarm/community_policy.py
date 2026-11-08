@@ -271,8 +271,16 @@ def policy_from_candidate(
     *,
     rules_source: str = "",
     auto_publish_supported: bool | None = None,
+    checked_at: datetime | None = None,
 ) -> CommunityPolicy:
-    """Build the contract from a Pikabu/vc.ru selector candidate."""
+    """Build the contract from a Pikabu/vc.ru selector candidate.
+
+    ``checked_at`` is the moment the rules are claimed to have been read. It
+    defaults to the wall clock, but a caller that evaluates the gate at an
+    explicit ``now`` must pass that same moment: otherwise the freshly built
+    policy is stamped microseconds after ``now`` and ``assess_policy`` refuses
+    it as a timestamp from the future.
+    """
     candidate = candidate or {}
     notes = [
         _inert_text(item, NOTE_LINE_LIMIT)
@@ -305,7 +313,11 @@ def policy_from_candidate(
         media_limits=_lines(candidate.get("media_limits"), limit=TOPIC_LINE_LIMIT),
         link_rules=_inert_text(candidate.get("link_rules") or "", LINK_RULES_LIMIT),
         tag_requirements=_lines(candidate.get("suggested_tags"), limit=TOPIC_LINE_LIMIT),
-        checked_at=_utcnow_iso(),
+        checked_at=(
+            checked_at.astimezone(timezone.utc).isoformat()
+            if checked_at is not None
+            else _utcnow_iso()
+        ),
         rules_source=source,
         rules_available=available,
         auto_publish_supported=auto_flag,
@@ -1085,10 +1097,25 @@ def rules_freshness(
             ),
             "age_hours": age_hours,
         }
-    if not rules_available or payload["verdict_status"] != "ok":
+    if not rules_available:
         return {
-            **base, **payload, "state": FRESHNESS_UNREAD,
-            "reason": "stored rules are unavailable or the policy verdict does not permit publishing",
+            **base,
+            **payload,
+            "state": FRESHNESS_UNREAD,
+            "reason": "stored rules are unavailable — the destination cannot be assessed",
+            "age_hours": age_hours,
+        }
+    if payload["verdict_status"] != "ok":
+        # Freshness describes when and whether we read the rules, not whether
+        # that read granted permission. Keep the evidence fresh, but never let
+        # a denied/unknown verdict become publishable; the caller can report the
+        # precise policy refusal instead of mislabelling it as an unreadable row.
+        return {
+            **base,
+            **payload,
+            "state": FRESHNESS_FRESH,
+            "reason": "rules are fresh and readable, but the stored policy verdict does not permit publishing",
+            "publishable": False,
             "age_hours": age_hours,
         }
     return {

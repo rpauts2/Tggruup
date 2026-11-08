@@ -28,6 +28,20 @@ meta:
     shared main tree — not from agent reports. Every state correction carries
     the commit SHAs that prove it; what could not be proved is named UNKNOWN
     in the record itself.
+  foreign_shas:
+    # Base commits of the full session above. They exist in the coordinator's
+    # local history (183daa4 was its `main`), which was never pushed; the
+    # canonical rpauts2/Tggruup history begins at a merge that does not contain
+    # them. tools/queue_check.py reports an undeclared SHA and an unused
+    # declaration, so this list cannot quietly become an allowlist.
+    183daa4755d996f734212f06796d6bcaf91f954c: >
+      HEAD of the coordinator's local main (Qoder Desktop session 241fe48c);
+      not pushed to GitHub and absent from the canonical history.
+    7e584550280b812a5f18e0c36e2cc613133cb8af: >
+      github/main as the coordinator observed it (the W24-A integration); not
+      an ancestor of the canonical history.
+    91029a38e28b14057e118cfbeeaa8a4b06d7cb94: >
+      local main before wave 23, in the same unpushed history.
 
 tasks:
 
@@ -40,12 +54,12 @@ tasks:
       «сдвинул без объяснения» и «исправлен по правилу локальных часов».
     priority: high
     category: product
-    status: RUNNING
+    status: INTEGRATED
     owner_role: "Backend Engineer"
-    owner_agent: "ageneral-purpose-79248e6927f3beb8"
+    owner_agent: "coordinator"
     base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
-    worktree: .qoder/worktrees/w23a-rebind-attribution
-    branch: w23a-rebind-attribution
+    worktree: null
+    branch: main
     allowed_paths:
       - tgfarm/api.py
       - tgfarm/ui/app.js
@@ -62,20 +76,22 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w23a_rebind_attribution.py"
       - "python -m pytest -q --tb=line -k booking or fidelity"
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
-    retry_count: 0
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 1
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T09:55:00+03:00"
-    updated_at: "2026-11-06T14:20:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-08T08:30:00+03:00"
+    completed_at: "2026-11-08T08:30:00+03:00"
     evidence:
       - "OBSERVED: ветка существует на 7e58455, `commits=0`, `dirty=0` — 4,5 часа после запуска артефактов нет"
+      - "OBSERVED: агент ageneral-purpose-79248e6927f3beb8 мёртв с 2026-11-06; worktree отсутствует, ветка w23a-rebind-attribution отсутствует в remotes (только main) — пакет передан координатору по next_action"
+      - "TEST_VERIFIED: tests/test_w23a_rebind_attribution.py (8 тестов, 6 краснели до правки) + обновлённые W20-C API/UI fidelity; полный прогон 3401 passed, 4 xfailed; tools/queue_check.py — 0"
     next_action: >
-      Дождаться уведомления харнесса. Если агент мёртв — пакет переходит к
-      координатору (attempt_limit ещё не исчерпан, но файлы остаются за ним,
-      пока статус не изменён).
+      Закрыто координатором в общем дереве main по правилу пакета (владелец
+      мёртв). Следующий пакет по плану — W23-B (RECOVERY_REQUIRED, координатор
+      берёт по тому же правилу) либо решение владельца по MISSIONS/Ops.
 
   - id: W23-B
     title: "Разделение REASON_NO_SLOT: горизонт занят / легальных часов нет"
@@ -84,12 +100,12 @@ tasks:
       «поставить позже» и «настроить часы канала».
     priority: medium
     category: product
-    status: RECOVERY_REQUIRED
+    status: INTEGRATED
     owner_role: "Backend Engineer"
-    owner_agent: "ageneral-purpose-1d7a01a772b88582"
+    owner_agent: "coordinator"
     base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
     worktree: null
-    branch: null
+    branch: main
     allowed_paths:
       - tgfarm/editorial_plan.py
       - tgfarm/plan_execution.py
@@ -102,20 +118,24 @@ tasks:
       при выключенном флаге поведение прежнее; тесты краснеют на мутантах.
     test_commands:
       - "python -m pytest -q tests/test_w23b_no_slot_reasons.py"
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
-    retry_count: 0
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 1
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-06T09:57:00+03:00"
-    updated_at: "2026-11-06T14:20:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-08T09:40:00+03:00"
+    completed_at: "2026-11-08T09:40:00+03:00"
     evidence:
       - "OBSERVED: ни ветки, ни worktree (`no branch`), ни одной строки в `git status` основного дерева — 4 часа после запуска"
+      - "OBSERVED: агент ageneral-purpose-1d7a01a772b88582 мёртв с 2026-11-06 (ни ветки, ни worktree); пакет передан координатору по next_action"
+      - "OBSERVED: разделение уже в main: 0b302c2 (билдер: payload.no_slot_reason) + 389dcf3 (короткие окна); координатор закрепил его фальсифицируемыми пинами tests/test_w23b_no_slot_reasons.py (5), мутанты M1/M2/M3 проверены по очереди, каждый краснит свои тесты"
+      - "TEST_VERIFIED: полный прогон 3406 passed, 4 xfailed, 0 failed; соседи 95 passed; tools/queue_check.py — 0"
     next_action: >
-      Спасать нечего; при подтверждённой смерти — перезначить (attempt+1) или
-      взять координатору. Файлы помечены занятыми, чтобы параллельный запуск не
-      сел на plan_execution.py вторым владельцем.
+      Координатор закрыл фолд-чеком: разделение уже было в main, не хватало
+      тестов. Следующий пакет по плану — W29-S (RECOVERY_REQUIRED, «не начинать»,
+      пока миссия T3 держит editorial_plan.py) — решение владельца создателем
+      миссии; BLOCKED-пакеты — за владельцем.
 
   - id: W23-C
     description: "lru_cache get_config перезагружается в conftest, но не очищается: режим каденции наследуется от соседа по прогону"

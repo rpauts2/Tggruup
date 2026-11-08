@@ -493,10 +493,11 @@ async def generate(
         await to_thread(
             policy.finalize,
             decision.usage_id,
-            provider=response.provider,
-            model=response.model,
+            provider=getattr(response, "audit_provider", response.provider),
+            model=getattr(response, "audit_model", response.model),
             latency_ms=response.latency_ms,
             used=response.provider != "offline",
+            billed=getattr(response, "billed", False),
         )
     else:
         payload, response = offline, LLMResponse("", OFFLINE_PROVIDER, OFFLINE_MODEL, 0)
@@ -597,10 +598,11 @@ async def verify(
     await to_thread(
         policy.finalize,
         decision.usage_id,
-        provider=response.provider,
-        model=response.model,
+        provider=getattr(response, "audit_provider", response.provider),
+        model=getattr(response, "audit_model", response.model),
         latency_ms=response.latency_ms,
         used=response.provider != "offline",
+        billed=getattr(response, "billed", False),
     )
 
     claims: list[Claim] = []

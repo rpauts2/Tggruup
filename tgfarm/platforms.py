@@ -474,23 +474,6 @@ _AUTH_FIELDS: dict[str, list[dict[str, Any]]] = {
         {"key": "LINKEDIN_MEMBER_ID", "attribute": "linkedin_member_id", "label": "Member ID", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "ID подтверждённого аккаунта."},
         {"key": "LINKEDIN_MEMBER_NAME", "attribute": "linkedin_member_name", "label": "Member name", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
     ],
-    "youtube": [
-        {"key": "YOUTUBE_CLIENT_ID", "attribute": "youtube_client_id", "label": "Google OAuth Client ID", "secret": False, "placeholder": "Client ID из Google Cloud", "help": "Создай OAuth Web application и зарегистрируй callback URL из панели."},
-        {"key": "YOUTUBE_CLIENT_SECRET", "attribute": "youtube_client_secret", "label": "Google OAuth Client Secret", "secret": True, "placeholder": "Client Secret", "help": "Хранится локально в .env и не отображается повторно."},
-        {"key": "YOUTUBE_REFRESH_TOKEN", "attribute": "youtube_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний долгоживущий OAuth токен."},
-        {"key": "YOUTUBE_CHANNEL_ID", "attribute": "youtube_channel_id", "label": "Channel ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID канала подтверждается через YouTube API."},
-        {"key": "YOUTUBE_CHANNEL_TITLE", "attribute": "youtube_channel_title", "label": "Channel title", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого канала."},
-    ],
-    "tiktok": [
-        {"key": "TIKTOK_CLIENT_KEY", "attribute": "tiktok_client_key", "label": "TikTok Client Key", "secret": False, "placeholder": "Client Key from TikTok Developer Portal", "help": "Приложение должно иметь Content Posting API и нужный scope."},
-        {"key": "TIKTOK_CLIENT_SECRET", "attribute": "tiktok_client_secret", "label": "TikTok Client Secret", "secret": True, "placeholder": "Client Secret", "help": "Хранится только локально; не делись секретом в чате."},
-        {"key": "TIKTOK_ACCESS_TOKEN", "attribute": "tiktok_access_token", "label": "OAuth access token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний access token."},
-        {"key": "TIKTOK_REFRESH_TOKEN", "attribute": "tiktok_refresh_token", "label": "OAuth refresh token", "secret": True, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний refresh token."},
-        {"key": "TIKTOK_TOKEN_EXPIRES_AT", "attribute": "tiktok_token_expires_at", "label": "Access expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия access token."},
-        {"key": "TIKTOK_REFRESH_TOKEN_EXPIRES_AT", "attribute": "tiktok_refresh_token_expires_at", "label": "Refresh expiry", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Внутренний срок действия refresh token."},
-        {"key": "TIKTOK_OPEN_ID", "attribute": "tiktok_open_id", "label": "Open ID", "secret": False, "hidden": True, "placeholder": "", "help": "ID подтверждённого TikTok аккаунта."},
-        {"key": "TIKTOK_USERNAME", "attribute": "tiktok_username", "label": "Username", "secret": False, "hidden": True, "fingerprint": False, "placeholder": "", "help": "Имя подключённого аккаунта."},
-    ],
     "telegraph": [
         {"key": "TELEGRAPH_ACCESS_TOKEN", "attribute": "telegraph_access_token", "label": "Telegraph access token", "secret": True, "placeholder": "Токен из createAccount", "help": "Создай аккаунт через официальный Telegraph API createAccount и вставь access_token. Ключ хранится только в локальном .env."},
     ],

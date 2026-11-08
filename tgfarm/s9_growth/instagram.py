@@ -24,12 +24,26 @@ log = get_logger(__name__)
 API_ROOT = "https://graph.instagram.com/v25.0"
 POLL_ATTEMPTS = 60
 POLL_DELAY_SECONDS = 5
+_INSTAGRAM_RATE_LIMIT_CODES = frozenset({4, 17, 32, 613})
 
 
 def _http_result(platform: str, exc: BaseException, operation: str) -> CrosspostResult:
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
-    if status == 429:
+    graph_code = None
+    if status == 400 and response is not None:
+        try:
+            payload = response.json()
+        except (AttributeError, TypeError, ValueError):
+            payload = None
+        error_data = payload.get("error") if isinstance(payload, dict) else None
+        raw_code = error_data.get("code") if isinstance(error_data, dict) else None
+        try:
+            graph_code = int(raw_code)
+        except (TypeError, ValueError):
+            graph_code = None
+    graph_rate_limited = graph_code in _INSTAGRAM_RATE_LIMIT_CODES
+    if status == 429 or graph_rate_limited:
         result_status = "failed"
     elif status in (408, 425) or (isinstance(status, int) and status >= 500):
         result_status = "unknown" if operation == "publish" else "failed"
@@ -44,13 +58,10 @@ def _http_result(platform: str, exc: BaseException, operation: str) -> Crosspost
         if isinstance(status, int)
         else f"Instagram {operation} failed ({type(exc).__name__})."
     )
-    retry_after = None
-    if status == 429 and response is not None:
-        raw = response.headers.get("Retry-After")
-        try:
-            retry_after = min(86400, max(0, int(raw))) if raw is not None else None
-        except (TypeError, ValueError):
-            retry_after = None
+    # Use the shared parser so integer delays and HTTP-date values behave alike.
+    from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
+
+    retry_after = crosspost_retry_after_seconds(exc)
     log.warning("Instagram %s %s: %s", operation, result_status, redact_sensitive_text(exc, limit=180))
     return CrosspostResult(
         platform=platform,

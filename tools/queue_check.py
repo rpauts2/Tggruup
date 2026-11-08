@@ -263,7 +263,46 @@ def _check_duplicates(tasks: list[dict[str, Any]]) -> list[Problem]:
     return problems
 
 
-def _check_sha_claims(tasks: list[dict[str, Any]]) -> list[Problem]:
+_HEX = frozenset("0123456789abcdef")
+
+
+def _is_full_sha(text: str) -> bool:
+    """A commit is 40 lowercase hex characters; anything else is a guess.
+
+    Kept as a plain set membership instead of `re` because this module's import
+    list is pinned by a test: the validator may not gain capabilities.
+    """
+    return len(text) == 40 and set(text) <= _HEX
+
+
+def declared_foreign_shas(meta: dict[str, Any] | None) -> dict[str, str]:
+    """SHAs the queue says live in another repository, with the reason why.
+
+    A queue imported from a different history names commits this clone cannot
+    advertise. Silently deleting those SHAs destroys the record; accepting any
+    unknown SHA destroys the rule. The middle way is a declaration in `meta`:
+    every foreign SHA is listed in full next to the repository it belongs to, the
+    list is checked for staleness (a declaration no task uses is a problem), and
+    an undeclared SHA is still reported. A mapping is preferred; a list is read as
+    SHA -> "" and then fails the non-empty-reason rule on purpose.
+    """
+    raw = (meta or {}).get("foreign_shas")
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(key).strip(): str(value or "").strip() for key, value in raw.items()}
+    if isinstance(raw, list):
+        return {str(item).strip(): "" for item in raw}
+    # Any other shape declares nothing. The old fallback named a constant that
+    # only existed in the docstring example, so a malformed queue raised
+    # NameError before a single rule could report it.
+    return {}
+
+
+def _check_sha_claims(
+    tasks: list[dict[str, Any]],
+    foreign_shas: dict[str, str] | None = None,
+) -> list[Problem]:
     """A recorded integration must point at a commit that exists.
 
     An audit of this project found executors naming SHAs that do not exist, so the
@@ -272,8 +311,25 @@ def _check_sha_claims(tasks: list[dict[str, Any]]) -> list[Problem]:
     object list is read through the refs files when available — following the
     `gitdir:` pointer so linked worktrees see the common refs too — and when it is
     not we report `UNKNOWN` rather than pretending.
+
+    `foreign_shas` is the `meta.foreign_shas` declaration: a full SHA listed there
+    with a reason is a recorded commit of another repository, not a fiction. The
+    declaration itself is audited: a malformed entry, an empty reason, or an entry
+    no task uses is reported, so the allowlist cannot grow into a blanket excuse.
     """
     problems: list[Problem] = []
+    foreign = dict(foreign_shas or {})
+    for sha, reason in sorted(foreign.items()):
+        if not _is_full_sha(sha):
+            problems.append(Problem("meta", "bad-foreign-sha",
+                                    f"foreign_shas key {sha[:12]!r} is not a full 40-char SHA"))
+        if not reason:
+            problems.append(Problem("meta", "bad-foreign-sha",
+                                    f"foreign_shas[{sha[:12]}] has no reason recorded"))
+    used = {str(task.get("base_sha")) for task in tasks}
+    for sha in sorted(set(foreign) - used):
+        problems.append(Problem("meta", "stale-foreign-sha",
+                                f"foreign_shas declares {sha[:12]} but no task uses it"))
     refs = _known_shas()
     for task in tasks:
         for field in ("base_sha",):
@@ -281,6 +337,8 @@ def _check_sha_claims(tasks: list[dict[str, Any]]) -> list[Problem]:
             if value in (None, ""):
                 continue
             text = str(value)
+            if text in foreign:
+                continue
             if len(text) == 40 and refs is not None and text not in refs:
                 problems.append(Problem(str(task.get("id")), "unknown-sha",
                                         f"{field}={text[:12]} is not an object this repo advertises"))
@@ -318,23 +376,75 @@ def _git_dirs(root: Path) -> tuple[Path | None, Path | None]:
 
 
 def _known_shas() -> set[str] | None:
+    """Read advertised refs and the local object database without invoking Git.
+
+    Queue entries often point at historical base commits, not branch tips.
+    Looking only at packed-refs/loose refs therefore rejects real ancestors.
+    Pack index v1/v2 files contain the complete sorted object-ID table, so they
+    let this read-only validator recognize objects fetched by a full checkout.
+    """
     git_dir, common_dir = _git_dirs(REPO_ROOT)
     if git_dir is None or common_dir is None:
         return None
-    packed = common_dir / "packed-refs"
+
     found: set[str] = set()
-    if packed.exists():
-        for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+    packed_refs = common_dir / "packed-refs"
+    if packed_refs.exists():
+        for line in packed_refs.read_text(encoding="utf-8", errors="replace").splitlines():
             parts = line.split()
             if len(parts) >= 2 and len(parts[0]) == 40:
                 found.add(parts[0])
+
     refs_dir = common_dir / "refs"
     if refs_dir.exists():
         for path in refs_dir.rglob("*"):
             if path.is_file():
-                text = path.read_text(encoding="utf-8", errors="replace").strip()
-                if len(text) == 40:
-                    found.add(text)
+                value = path.read_text(encoding="utf-8", errors="replace").strip()
+                if len(value) == 40:
+                    found.add(value)
+
+    objects_dir = common_dir / "objects"
+    if objects_dir.is_dir():
+        # Loose object names are split into a two-hex directory and 38-hex file.
+        for prefix in objects_dir.iterdir():
+            if (
+                len(prefix.name) == 2
+                and all(char in "0123456789abcdef" for char in prefix.name.lower())
+                and prefix.is_dir()
+            ):
+                for object_path in prefix.iterdir():
+                    if (
+                        object_path.is_file()
+                        and len(object_path.name) == 38
+                        and all(char in "0123456789abcdef" for char in object_path.name.lower())
+                    ):
+                        found.add(prefix.name.lower() + object_path.name.lower())
+
+        # A pack index stores all object IDs in sorted order after its fanout table.
+        pack_dir = objects_dir / "pack"
+        if pack_dir.is_dir():
+            for index_path in pack_dir.glob("*.idx"):
+                raw = index_path.read_bytes()
+                if raw.startswith(b"\xfftOc"):
+                    if len(raw) < 8 + 1024 or int.from_bytes(raw[4:8], "big") != 2:
+                        continue
+                    fanout_offset = 8
+                    object_ids_offset = 8 + 1024
+                else:
+                    # Version 1 has no magic/version prefix.
+                    if len(raw) < 1024:
+                        continue
+                    fanout_offset = 0
+                    object_ids_offset = 1024
+
+                count_offset = fanout_offset + (255 * 4)
+                count = int.from_bytes(raw[count_offset:count_offset + 4], "big")
+                end_offset = object_ids_offset + count * 20
+                if end_offset > len(raw):
+                    continue
+                for offset in range(object_ids_offset, end_offset, 20):
+                    found.add(raw[offset:offset + 20].hex())
+
     if not found:
         return None
     # Short forms used in this queue are prefixes of the full objects.
@@ -487,11 +597,14 @@ def _check_foreign_claims(tasks: list[dict[str, Any]], claims: list[dict[str, An
 def validate(
     tasks: list[dict[str, Any]],
     foreign_claims: list[dict[str, Any]] | None = None,
+    foreign_shas: dict[str, str] | None = None,
 ) -> tuple[list[Problem], list[dict[str, Any]]]:
     """Every rule that needs only the queue, plus the outside-tree rules when fed.
 
     `foreign_claims` defaults to None so every existing caller keeps the exact
     old behaviour: the cross-tree checks are additive, never a silent requirement.
+    `foreign_shas` is the `meta.foreign_shas` declaration for a queue whose base
+    commits live in another repository; see `_check_sha_claims`.
     """
     problems: list[Problem] = []
     for task in tasks:
@@ -501,7 +614,7 @@ def validate(
     problems += _check_owner_conflicts(tasks)
     problems += _check_cycles(tasks)
     problems += _check_duplicates(tasks)
-    problems += _check_sha_claims(tasks)
+    problems += _check_sha_claims(tasks, foreign_shas)
     if foreign_claims:
         problems += _check_foreign_claims(tasks, foreign_claims)
 
@@ -605,7 +718,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"foreign claims unreadable: {exc}", file=sys.stderr)
         return 2
 
-    problems, _ = validate(tasks, foreign_claims=foreign)
+    problems, _ = validate(
+        tasks,
+        foreign_claims=foreign,
+        foreign_shas=declared_foreign_shas(loaded.get("meta")),
+    )
 
     if args.owners:
         for task in tasks:

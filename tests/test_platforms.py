@@ -931,3 +931,47 @@ def test_x_requirements_name_only_credentials_the_code_reads():
 
     # And the credential the OAuth flow really starts from is on the card.
     assert "X_OAUTH_CLIENT_ID" in named
+
+
+def test_auth_fields_declare_each_platform_exactly_once():
+    """A repeated dict key silently drops the earlier block.
+
+    `_AUTH_FIELDS` declared `youtube` and `tiktok` twice; Python kept the last
+    block, so the YouTube OAuth callback tried to save two keys the surviving
+    declaration did not allow and the whole connect step failed after the token
+    exchange. Parsing the source is the only way to see a shadowed block, since
+    the runtime mapping looks perfectly normal.
+    """
+    import ast
+    from pathlib import Path
+
+    source_path = Path(__file__).resolve().parents[1] / "tgfarm" / "platforms.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    dicts = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "_AUTH_FIELDS"
+    ]
+    assert len(dicts) == 1
+    keys = [key.value for key in dicts[0].keys if isinstance(key, ast.Constant)]
+    assert len(keys) == len(set(keys)), sorted({k for k in keys if keys.count(k) > 1})
+
+
+def test_youtube_can_save_every_key_its_oauth_callback_writes():
+    """The callback's values must all pass the allowlist, or the connect fails."""
+    from tgfarm import platforms
+
+    allowed = {field["key"] for field in platforms._AUTH_FIELDS["youtube"]}
+    callback_keys = {
+        "YOUTUBE_CLIENT_ID",
+        "YOUTUBE_CLIENT_SECRET",
+        "YOUTUBE_ACCESS_TOKEN",
+        "YOUTUBE_REFRESH_TOKEN",
+        "YOUTUBE_TOKEN_EXPIRES_AT",
+        "YOUTUBE_CHANNEL_ID",
+        "YOUTUBE_CHANNEL_TITLE",
+    }
+
+    assert callback_keys <= allowed, sorted(callback_keys - allowed)
