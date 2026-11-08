@@ -414,11 +414,25 @@ async def _run_publisher_cell(cell: Cell, monkeypatch) -> None:
         after = snapshot(public_id)
         assert after.status == "published", result
         assert after.published_at is not None, result
-        assert after.tg_message_id is not None, result
         assert after.tg_chat_id not in UNKNOWN_CHAT_PLACEHOLDERS, result
         if cell.platform == "telegram":
+            # W26-TG: the Telegram message id is the only value the stats
+            # collector can pair with a chat, so a successful send must leave it
+            # on the row — and the chat that goes with it.
             assert after.tg_chat_id == REAL_TG_CHAT, result
             assert after.tg_message_id == 555, result
+        else:
+            # `posts.tg_message_id` is a *Telegram* message id. VK and Dzen hand
+            # their identifier to `remote_id` and to the crosspost journal, which
+            # `test_publishing_state_machine.py:783` already pins ("Dzen never had
+            # a Telegram id to write"). The blanket `tg_message_id is not None`
+            # this cell used to assert only passed because the fakes above return
+            # `"dzen-777"` / `"vk-888"` as `message_id` (lines 308/313) and SQLite
+            # wrote those strings into the INTEGER column verbatim — i.e. it
+            # demanded that a non-Telegram string count as a Telegram message id,
+            # which `s8_analytics.formats`/`coverage` then read as evidence for a
+            # post no collector can ask about.
+            assert after.tg_message_id is None, result
 
 
 @pytest.mark.parametrize("cell", PUBLISHER_CELLS, ids=[_cell_id(c) for c in PUBLISHER_CELLS])

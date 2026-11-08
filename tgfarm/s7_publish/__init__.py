@@ -594,6 +594,37 @@ def assemble_text(post: PostRow, platform: str = "telegram") -> str:
 
 
 # ------------------------------------------------------------------ publishing
+def _recordable_message_id(value: Any) -> int | None:
+    """The platform's message id, or `None` — never a number that is not one.
+
+    `posts.tg_message_id` is not decoration. `tg_sync.collect_post_stats` builds its
+    request list from the pair `(real chat id, posts.tg_message_id)`, and
+    `s8_analytics.attribution` calls a published post without one `unknowable`, so
+    the only value worth storing is one Telegram can answer about: a positive
+    integer, read off the sent `Message`, off a `{"message_id": ...}` body, or from
+    anything that coerces to an int without interpretation.
+
+    Everything else comes back `None` — `0`, `-1`, `True`, `""`, `"dry-1"`, a body
+    with no id, a `None` message. A placeholder stored *as* an id is the same lie as
+    a missing one: the collector would then ask about a message that never existed
+    and record the answer as evidence for this post. Values that do come back from
+    the platform are stored as inert numbers, never reinterpreted or interpolated.
+    """
+    candidate: Any = value
+    if isinstance(candidate, dict):
+        candidate = candidate.get("message_id")
+    elif candidate is not None and not isinstance(candidate, (int, float, str)):
+        # an aiogram `Message`, or a fake shaped like one
+        candidate = getattr(candidate, "message_id", None)
+    if candidate is None or isinstance(candidate, bool):
+        return None
+    try:
+        message_id = int(candidate)
+    except (TypeError, ValueError):
+        return None
+    return message_id if message_id > 0 else None
+
+
 class TelegramPublisher:
     def __init__(self) -> None:
         self._bot = None
@@ -609,11 +640,18 @@ class TelegramPublisher:
         self._bot = Bot(token=self._settings.telegram_bot_token)
         return self._bot
 
-    async def send_video(self, chat_id: int, text: str, video_path: str) -> int:
+    async def send_video(self, chat_id: int, text: str, video_path: str) -> int | None:
         """Video first, caption on the message, remainder as a follow-up.
 
         Bot API caps uploads at 50 MB and captions at 1024 chars, so the text is
         split rather than silently truncated.
+
+        Returns the id of the message the video landed in — the pair the stats
+        collector asks Telegram about — or `None` when the platform gave no usable
+        id back. It does not raise for that: `_publish_one` has to state the
+        outcome itself, as `publish_unknown`, rather than lose it here. The
+        follow-up text message has its own id, which this farm does not record:
+        one post, one measurable message (see `_publish_one`).
         """
         from aiogram.types import FSInputFile
 
@@ -634,9 +672,18 @@ class TelegramPublisher:
         if len(text) > CAPTION_LIMIT:
             await bot.send_message(chat_id=chat_id, text=text[CAPTION_LIMIT:])
         await bot.session.close()
-        return message.message_id
+        return _recordable_message_id(message)
 
-    async def send(self, chat_id: int, text: str, media_path: str | None) -> int:
+    async def send(self, chat_id: int, text: str, media_path: str | None) -> int | None:
+        """Deliver one post and hand back the id the platform gave for it.
+
+        `int | None`, and the `None` is a fact about the platform's answer, not a
+        default: the Bot API returns a `Message` with a `message_id` for everything
+        it accepts, so no id means either nothing was accepted or the reply was
+        shaped differently than documented. The caller must not be able to read
+        that as a success, which is why the return value is normalized here rather
+        than passed through raw.
+        """
         from aiogram.types import FSInputFile
 
         await RATE.bot_api.take()
@@ -656,7 +703,7 @@ class TelegramPublisher:
             message = await bot.send_message(chat_id=chat_id, text=text)
 
         await bot.session.close()
-        return message.message_id
+        return _recordable_message_id(message)
 
     async def health(self) -> dict:
         settings = get_settings()
@@ -1405,9 +1452,22 @@ def has_publication_evidence(
       carry an empty `remote_id`, so treating a missing *id* as a missing
       *publication* would un-publish real work; VK is 403 of 403 and Telegram 0 of
       15, which is the class `publication_evidence_repair` was written for.
+
+    Telegram is held to the first test alone: it is the only platform whose
+    publications this database can point at, so the journal cannot vouch for it.
     """
     if message_id is not None:
         return True
+    if platform == "telegram":
+        # Nothing else can stand in for a Telegram message id, and this is the one
+        # place the claim "`published`" is earned for Telegram. The journal is not
+        # consulted: `s9_growth.adapters.ADAPTERS` has no `telegram` key (the bot
+        # path is the only Telegram publisher), so a `posted` row for Telegram can
+        # only be legacy or hand-written — and even then it is no help downstream,
+        # because `tg_sync.collect_post_stats` pairs `(chat id, tg_message_id)` and
+        # a Telegram publication with no id stays unmeasurable whatever a journal
+        # row asserts. Live on 2026-11-06: 15 Telegram rows, 0 of them askable.
+        return False
     text = str(remote_id or "").strip()
     if text and text != _dry_run_remote_id(platform, post_id):
         return True
@@ -1732,6 +1792,13 @@ async def _publish_one(
         }
 
     await _stop_publish_heartbeat(heartbeat_task)
+    #: One spelling for "the platform named the message it took". Done here, once,
+    #: so the evidence gate below and the column write below it cannot disagree:
+    #: a `0`, a `-1`, a placeholder string or a reply with no id all become `None`,
+    #: which is the same fact the collector would discover when it tried to pair
+    #: the row. Every Telegram send that returns a usable id returns it as the int
+    #: the Bot API gave, never as text this module reinterprets.
+    message_id = _recordable_message_id(message_id)
     refusal: str | None = None
     with session_scope() as session:
         # A lock here loses the publish outcome: the platform already has the
@@ -1782,17 +1849,33 @@ async def _publish_one(
                     # already moves these rows to after the fact.
                     row.status = canonical_post_status(STATUS_PUBLISH_UNKNOWN)
                     row.publish_heartbeat_at = None
+                    unmeasurable = (
+                        "; with no message id the stats collector cannot pair this "
+                        "post with a chat, so it is unmeasurable rather than measured"
+                        if platform == "telegram"
+                        else ""
+                    )
                     row.publish_error = (
                         f"{platform} returned ok with no remote identifier of any kind "
                         "(no message id, no non-placeholder remote id, no journalled "
-                        f"`posted` row); verify the destination before trusting or "
-                        "retrying it"
+                        f"`posted` row){unmeasurable}; verify the destination before "
+                        "trusting or retrying it"
                     )[:400]
                     refusal = "publication without evidence: recorded as publish_unknown"
                     break
                 row.status = canonical_post_status(STATUS_PUBLISHED)
                 row.published_at = datetime.now(UTC)
-                row.tg_message_id = message_id
+                if message_id is not None:
+                    # Not `row.tg_message_id = message_id`. For Dzen and VK the
+                    # normalized id is `None` by design — they hand their
+                    # identifier to the crosspost journal, never to this column —
+                    # so an unconditional assignment let a second publication of a
+                    # row that already carried a Telegram id blank it back to NULL,
+                    # turning a measurable post into an unknowable one. A column
+                    # this farm can only re-earn from the platform is written when
+                    # there is something to write, in this same transaction as the
+                    # `published` status that depends on it.
+                    row.tg_message_id = message_id
                 row.publish_heartbeat_at = None
                 if platform == "telegram":
                     # Named by the chat guard before the post was claimed: an
