@@ -5248,6 +5248,116 @@
          <b>${esc(a.code)}</b> — ${esc(a.message)}</div>`).join("");
   }
 
+  // «Что вообще можно было измерить» — второй вопрос к тому же покрытию.
+  // Карта выше отвечает, сколько публикаций имеют снимок; она молчит, сколько
+  // из них могли бы иметь вообще. Без этого разделения 0 % покрытия из-за
+  // отсутствующего `tg_message_id` и 0 % из-за сборщика, который ни разу не
+  // запустился, выглядят на экране одинаково — а это два разных дефекта у
+  // разных владельцев. `/api/metrics/attribution` (`s8_analytics/attribution.py`)
+  // приносит `unknowable` — сколько публикаций вообще нет идентификатора, за
+  // который сборщик смог бы зацепить число, и `coverage`, который равен None
+  // (никогда не 0), когда делить не на что. Последнее — почему доля идёт через
+  // `rate()`, а не через `pct()`: `pct(null)` печатает ровно то нулевое «0,0%»,
+  // которое модуль отказался отправлять.
+  //
+  // Блок живет здесь, а не между `renderMetricsCoverage` и
+  // `renderMetricsFormats`, потому что оба коридора зарезаны шпурками формы
+  // (`tests/test_ui_coverage_panel.py::_renderer_body`,
+  // `tests/test_ui_evidence_and_cancellation.py::_coverage_body`): новая функция
+  // внутри них бы обвинила чужой эндпоинт в отсутствующих полях.
+  const ATTRIBUTION_GAP = {
+    no_id: { cls: "tag-err", label: "нет внешнего id — измерить нельзя" },
+    no_stats: { cls: "tag-warn", label: "id есть, снимков нет" },
+    partly: { cls: "tag-ok", label: "часть публикаций измерима" },
+    nothing: { cls: "tag-none", label: "публикаций нет" },
+  };
+
+  // Контейнер этой карты создаётся здесь, а не в `index.html`: этот
+  // пакет владеет только скриптом. Тот же приём, что у `#alert-banner` в
+  // `renderAlerts` — нода ищется, отсутствующий вставляется, повторно
+  // проход рендера ничего не дублирует.
+  function attributionRoot() {
+    const existing = $("#metrics-attribution");
+    if (existing) return existing;
+    const anchor = $("#metrics-coverage-dzen") || $("#metrics-coverage");
+    if (!anchor || !anchor.parentElement || !anchor.insertAdjacentElement) return null;
+    const node = document.createElement("div");
+    node.id = "metrics-attribution";
+    node.className = "coverage-attribution";
+    anchor.insertAdjacentElement("afterend", node);
+    return node;
+  }
+
+  const attributionWindow = (v) =>
+    (typeof v === "number" ? n(v) + " дн." : "не прочитано");
+
+  function renderMetricsAttribution(payload, failure) {
+    const root = attributionRoot();
+    if (!root) return;
+    // Три тишины — три формулировки, как в карте очереди. Эндпоинт
+    // здесь не возвращает ключа `error` (`api.py::io` не ловит исключение,
+    // так что падение чтения = HTTP 500 = `failure`), и на этом пути не
+    // печатается ни одна цифра: итоги пустого отчёта — нули, а нуль
+    // здесь звучит как «измерять нечего», хотя ответа вообще не было.
+    if (failure) {
+      const message = String(failure.message || failure);
+      root.innerHTML = '<div class="alert alert-err"><b>Атрибуция метрик не прочитана:</b> '
+        + esc(message.slice(0, 160)) + "</div>"
+        + '<div class="empty">Ни одной цифры не показано: вместо них был бы ноль.</div>';
+      return;
+    }
+    const data = payload || {};
+    const rows = Object.entries(data.platforms || {});
+    // Пустой отчёт — не нулевое покрытие: это отсутствие предмета.
+    if (!rows.length) {
+      root.innerHTML = '<div class="item-meta"><b>Что можно было измерить</b>: '
+        + "ни одной публикации в окне — это не «0 % измерено», это "
+        + "отсутствие предмета.</div>";
+      return;
+    }
+    const explained = '<div class="item-meta"><b>Что можно было измерить</b>: у '
+      + "какой доли публикаций вообще есть внешний id, за который "
+      + "сборщик зацепил бы снимок — 0 % без id и 0 % с id чинятся "
+      + "по-разному.</div>";
+    const body = rows
+      .slice()
+      .sort((a, b) => Number(b[1].publications || 0) - Number(a[1].publications || 0))
+      .map(([platform, row]) => {
+        const gap = Number(row.publications || 0) === 0
+          ? ATTRIBUTION_GAP.nothing
+          : (Number(row.unknowable || 0) === Number(row.publications || 0)
+            ? ATTRIBUTION_GAP.no_id
+            : (Number(row.with_stats || 0) === 0
+              ? ATTRIBUTION_GAP.no_stats
+              : ATTRIBUTION_GAP.partly));
+        // Две разные поломки на одной строке: доля и сколько
+        // публикаций без идентификатора. Они рядом не случайно:
+        // по одной только доле их не различить.
+        const verdict = "измеримо " + rate(row.coverage)
+          + " · не привязываемо " + n(row.unknowable)
+          + " из " + n(row.publications);
+        return '<div class="item"><div class="item-main"><div class="item-title">'
+          + esc(platform) + "</div>"
+          + '<div class="item-meta">' + verdict + "</div>"
+          + '<div class="item-meta">публикаций ' + n(row.publications)
+          + " · с id " + n(row.with_external_id)
+          + " · со снимком " + n(row.with_stats) + "</div>"
+          + '<div class="item-meta">последний замер '
+          + esc(dt(row.last_measurement_at)) + "</div>"
+          + '</div><div class="item-side"><span class="tag ' + gap.cls + '">'
+          + esc(gap.label) + "</span></div></div>";
+      })
+      .join("");
+    // `orphan_measurements` — строки метрик, не привязанные ни к одной
+    // публикации: они не двигают ничьё покрытие, но доказывают, что
+    // сборщик хоть раз работал. `items()` и проверка типа — потому что
+    // поля может не быть в ответе старой сборки, а отсутствие — не ноль.
+    root.innerHTML = explained + body
+      + '<div class="item-meta">строк метрик не от публикаций: '
+      + esc(items(data.orphan_measurements, ""))
+      + " · окно " + attributionWindow(data.window_days) + ".</div>";
+  }
+
   async function refresh() {
     if (state.inFlight) return;
     state.inFlight = true;
@@ -5269,6 +5379,7 @@
         aiUsage: "/api/ai/usage?days=7",
         metricsFreshness: "/api/metrics/freshness",
         metricsCoverage: "/api/metrics/coverage",
+        metricsAttribution: "/api/metrics/attribution?days=30",
         backlog: "/api/backlog",
         metricsFormats: "/api/metrics/formats?days=30",
         distributionPlan: "/api/distribution/plan",
@@ -5337,6 +5448,12 @@
       if ("report" in data) renderReport(data.report);
       if ("metricsFreshness" in data) renderMetricsFreshness(data.metricsFreshness);
       if ("metricsCoverage" in data) renderMetricsCoverage(data.metricsCoverage);
+      // Перерисовывается и на том проходе, где чтение умерло:
+      // старая атрибуция на экране отчиталась бы о разделе,
+      // которого больше нет.
+      renderMetricsAttribution("metricsAttribution" in data ? data.metricsAttribution : null,
+        "metricsAttribution" in data ? null
+          : reasons.metricsAttribution || new Error("атрибуция не получена"));
       if ("metricsFormats" in data) renderMetricsFormats(data.metricsFormats);
       if ("runs" in data) {
         renderPipeline(data.runs.runs || []);
