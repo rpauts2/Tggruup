@@ -24,36 +24,26 @@ log = get_logger(__name__)
 API_ROOT = "https://graph.instagram.com/v25.0"
 POLL_ATTEMPTS = 60
 POLL_DELAY_SECONDS = 5
-
-
-#: Graph API application-level throttling codes. Meta answers these with HTTP
-#: 400 even though nothing was created, so they are retryable, not permanent.
-_GRAPH_THROTTLE_CODES = frozenset({4, 17, 32, 613})
-
-
-def _graph_error_code(response) -> int | None:
-    """The Graph error code in a reply, or None when the body is not one."""
-    try:
-        payload = response.json() if response is not None else None
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    error = payload.get("error")
-    if not isinstance(error, dict):
-        return None
-    try:
-        return int(error.get("code"))
-    except (TypeError, ValueError):
-        return None
+_INSTAGRAM_RATE_LIMIT_CODES = frozenset({4, 17, 32, 613})
 
 
 def _http_result(platform: str, exc: BaseException, operation: str) -> CrosspostResult:
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
-    if status == 429:
-        result_status = "failed"
-    elif status == 400 and _graph_error_code(response) in _GRAPH_THROTTLE_CODES:
+    graph_code = None
+    if status == 400 and response is not None:
+        try:
+            payload = response.json()
+        except (AttributeError, TypeError, ValueError):
+            payload = None
+        error_data = payload.get("error") if isinstance(payload, dict) else None
+        raw_code = error_data.get("code") if isinstance(error_data, dict) else None
+        try:
+            graph_code = int(raw_code)
+        except (TypeError, ValueError):
+            graph_code = None
+    graph_rate_limited = graph_code in _INSTAGRAM_RATE_LIMIT_CODES
+    if status == 429 or graph_rate_limited:
         result_status = "failed"
     elif status in (408, 425) or (isinstance(status, int) and status >= 500):
         result_status = "unknown" if operation == "publish" else "failed"
@@ -68,12 +58,10 @@ def _http_result(platform: str, exc: BaseException, operation: str) -> Crosspost
         if isinstance(status, int)
         else f"Instagram {operation} failed ({type(exc).__name__})."
     )
-    retry_after = None
-    if status == 429 and response is not None:
-        # Shared parser: delta-seconds and the HTTP-date form both count.
-        from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
+    # Use the shared parser so integer delays and HTTP-date values behave alike.
+    from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
 
-        retry_after = crosspost_retry_after_seconds(exc)
+    retry_after = crosspost_retry_after_seconds(exc)
     log.warning("Instagram %s %s: %s", operation, result_status, redact_sensitive_text(exc, limit=180))
     return CrosspostResult(
         platform=platform,

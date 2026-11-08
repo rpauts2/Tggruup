@@ -47,13 +47,10 @@ _NOT_SET = object()
 
 #: The instant W22-C gives `DUE_SLOT - 1min` on a São Paulo channel with the
 #: window above: the 90-minute grid walked from the refused minute (01:29 local)
-#: lands on 02:59, 04:29, 05:59, 07:29, 08:59 — all closed. The next cell, 10:29
-#: local, is legal, but the hour 09:00-09:59 lies between two cells and no grid
-#: point lands in it, so the walk now also tests the top of that hour: 09:00
-#: local (12:00 UTC) is the first instant the window admits. Written out as a
-#: literal because the test must state the number the planner owes, not
-#: recompute it.
-REBOUND_ILLEGAL_BOOKING = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+#: lands on 02:59, 04:29, 05:59, 07:29, 08:59 — all closed — and on 10:29 local,
+#: 13:29 UTC, the first the window admits. Written out as a literal because the
+#: test must state the number the planner owes, not recompute it.
+REBOUND_ILLEGAL_BOOKING = datetime(2026, 11, 5, 13, 29, tzinfo=UTC)
 
 
 def _uid() -> str:

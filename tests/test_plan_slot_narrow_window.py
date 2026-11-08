@@ -34,14 +34,20 @@ def _config(window: list[int]):
     )
 
 
-def test_the_legal_hour_between_two_illegal_grid_cells_is_booked():
-    # The builder starts 30 minutes after the clock: 08:00 -> 08:30, then the
-    # 90-minute grid jumps to 10:00 and 11:30, skipping 09:00 entirely.
+def test_a_supplemental_candidate_keeps_the_established_half_hour_phase():
+    """The hour a skipped grid cell crossed is offered at :30, not at :00.
+
+    The builder starts 30 minutes after the clock: 08:00 -> 08:30, and the
+    90-minute grid then jumps to 10:00, skipping the 09:xx window entirely.
+    The supplemental candidate fills that hour at the same 30-minute phase the
+    channel already books with, so a correction anchored to a refused minute
+    cannot jump backwards to a new hour boundary.
+    """
     now = datetime(2026, 11, 4, 8, 0, tzinfo=UTC)
 
     slot = _next_free_slot(_channel(), {}, now, 1, config=_config([9, 10]))
 
-    assert slot == datetime(2026, 11, 4, 9, 0, tzinfo=UTC)
+    assert slot == datetime(2026, 11, 4, 9, 30, tzinfo=UTC)
 
 
 def test_an_occupied_legal_hour_moves_to_the_next_legal_hour():

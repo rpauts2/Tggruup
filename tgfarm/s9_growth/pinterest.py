@@ -33,13 +33,10 @@ def _error_result(exc: BaseException, operation: str) -> CrosspostResult:
         state = "failed"
     else:
         state = "unknown" if operation == "create_pin" else "failed"
-    retry_after = None
-    if status == 429 and response is not None:
-        # One parser for both forms of Retry-After: delta-seconds and the
-        # HTTP-date form, which this adapter used to discard.
-        from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
+    # Keep adapter behavior aligned with the shared S9 Retry-After parser.
+    from tgfarm.s9_growth.adapters import crosspost_retry_after_seconds
 
-        retry_after = crosspost_retry_after_seconds(exc)
+    retry_after = crosspost_retry_after_seconds(exc)
     log.warning("Pinterest %s %s: %s", operation, state, redact_sensitive_text(exc, limit=180))
     return CrosspostResult(
         platform="pinterest",

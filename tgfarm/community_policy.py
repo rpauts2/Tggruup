@@ -1097,10 +1097,25 @@ def rules_freshness(
             ),
             "age_hours": age_hours,
         }
-    if not rules_available or payload["verdict_status"] != "ok":
+    if not rules_available:
         return {
-            **base, **payload, "state": FRESHNESS_UNREAD,
-            "reason": "stored rules are unavailable or the policy verdict does not permit publishing",
+            **base,
+            **payload,
+            "state": FRESHNESS_UNREAD,
+            "reason": "stored rules are unavailable — the destination cannot be assessed",
+            "age_hours": age_hours,
+        }
+    if payload["verdict_status"] != "ok":
+        # Freshness describes when and whether we read the rules, not whether
+        # that read granted permission. Keep the evidence fresh, but never let
+        # a denied/unknown verdict become publishable; the caller can report the
+        # precise policy refusal instead of mislabelling it as an unreadable row.
+        return {
+            **base,
+            **payload,
+            "state": FRESHNESS_FRESH,
+            "reason": "rules are fresh and readable, but the stored policy verdict does not permit publishing",
+            "publishable": False,
             "age_hours": age_hours,
         }
     return {
