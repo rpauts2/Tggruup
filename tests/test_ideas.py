@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 
 def _draft(hook: str, body: str = "Тело поста с достаточной длиной для гейтов."):
@@ -143,27 +144,108 @@ def test_model_cooldown_skips_hot_candidate(monkeypatch):
 
 
 # ---------------------------------------------------------------- breaker
-def test_dzen_waits_when_llm_is_down(db):
-    from sqlalchemy import select
+def test_dzen_waits_when_llm_is_down(db, monkeypatch):
+    """The Dzen gate, measured on rows this test owns.
+
+    `conftest` gives the session one database, and this gate reads two global
+    facts out of it: which platform the *five most recent drafts* came from
+    (`tgfarm/core/llm_health.py`) and when the *last Dzen publication* happened.
+    A neighbour that generated online therefore silently unlocks the gate, and a
+    neighbour that published to Dzen holds our post for the wrong reason — both
+    were observed as this test failing only in some run orders.
+
+    The fix is to seed the facts, not to patch the verdict: the six rows below are
+    the newest drafts in the table and every one of them carries the offline
+    composer's stamp, so `llm_recently_working()` is False because of our rows; the
+    batch is addressed by our own public id, so no other queued post can be
+    counted; and the queue-gap clock is pinned to "nothing published to Dzen yet"
+    — a gate that is not the one under test — with its own assertion proving it
+    stayed at zero.
+    """
+    from sqlalchemy import delete, func, select
 
     from tgfarm.db.models import Channel, Post
     from tgfarm.db.session import session_scope
-    from tgfarm.s7_publish import publish_due
+    from tgfarm.s7_publish import (
+        GATE_DZEN_NEEDS_ONLINE_MODEL,
+        GATE_DZEN_QUEUE_GAP,
+        publish_due,
+    )
+
+    stamp = uuid4().hex[:10]
+    channel_id = f"brk-ch-{stamp}"
+    subject_id = f"brk-due-{stamp}"
+    filler_ids = [f"brk-draft-{index}-{stamp}" for index in range(5)]
 
     with session_scope() as session:
-        session.merge(Channel(id="zen_misc_ru", title="Дзен", niche="general", platform="dzen"))
-        session.add(Post(public_id="brk-1", channel_id="zen_misc_ru", hook="Хук.",
-                         body="Тело.", status="scheduled",
-                         scheduled_at=datetime.now(UTC) - timedelta(minutes=1)))
+        newest = session.execute(select(func.max(Post.created_at))).scalar_one_or_none()
+        base = max(
+            ensure_tz(newest) if newest is not None else datetime.now(UTC),
+            datetime.now(UTC),
+        ) + timedelta(hours=1)
+        session.merge(
+            Channel(id=channel_id, title="Дзен (W26-OR)", niche="general", platform="dzen")
+        )
+        session.add(
+            Post(
+                public_id=subject_id,
+                channel_id=channel_id,
+                hook="Хук.",
+                body="Тело.",
+                status="scheduled",
+                generation_provider="offline",
+                scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+                created_at=base,
+            )
+        )
+        # Five offline drafts newer than everything else in the table: they are
+        # what the health signal reads, so the signal is a fact of this test.
+        for index, public_id in enumerate(filler_ids):
+            session.add(
+                Post(
+                    public_id=public_id,
+                    channel_id=channel_id,
+                    hook="Черновик.",
+                    body="Тело офлайн-композера.",
+                    status="draft",
+                    generation_provider="offline",
+                    created_at=base + timedelta(minutes=index + 1),
+                )
+            )
 
-    result = asyncio_run(publish_due(limit=10))
-    assert result.get("skipped_llm", 0) >= 1, "офлайн-текст не должен идти в Дзен"
+    # The Dzen pacing gate is not the subject here; pin it to "no Dzen post has
+    # been sent recently" so the number below can only come from the model gate.
+    monkeypatch.setattr("tgfarm.s7_publish._last_dzen_publish_time", lambda: None)
+    monkeypatch.setattr(publish_due, "_last_dzen", None, raising=False)
+
+    result = asyncio_run(publish_due(limit=10, post_public_ids=[subject_id]))
+
+    assert result["due"] == 1, "the batch is exactly the post this test seeded"
+    assert result["gates"][GATE_DZEN_NEEDS_ONLINE_MODEL] == 1
+    assert result["gates"][GATE_DZEN_QUEUE_GAP] == 0, "the pacing gate must not be the reason"
+    assert result["skipped_llm"] == 1, "офлайн-текст не должен идти в Дзен"
+    assert result.get("published", 0) == 0
+    assert "dry_run" not in result, "the post was held back, not sent as a dry run"
 
     with session_scope() as session:
         row = session.execute(
-            select(Post).where(Post.public_id == "brk-1")
+            select(Post).where(Post.public_id == subject_id)
         ).scalar_one()
         assert row.status == "scheduled", "пост должен остаться в очереди"
+
+    with session_scope() as session:
+        own = filler_ids + [subject_id]
+        session.execute(delete(Post).where(Post.public_id.in_(own)))
+        session.execute(delete(Channel).where(Channel.id == channel_id))
+    with session_scope() as session:
+        left = session.execute(
+            select(func.count()).select_from(Post).where(Post.public_id.in_(own))
+        ).scalar_one()
+        assert left == 0, "offline filler drafts must not outlive the test"
+
+
+def ensure_tz(value):
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def asyncio_run(coro):

@@ -18,14 +18,20 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 
 from tgfarm.core.run import StageTimer, current_stage_timer, to_thread
-from tgfarm.db.models import PipelineRun
+from tgfarm.db.models import Cluster, PipelineRun, RawItem
 from tgfarm.db.session import session_scope
+from tgfarm.s2_trends import CLUSTER_WINDOW_HOURS
+
+_REPRINT_HOURS = 5.0
+_own_item_ids: list[str] = []
+_own_cluster_ids: list[str] = []
 
 
 def _run_id() -> str:
@@ -37,6 +43,132 @@ def _journal(run_id: str, stage: str) -> PipelineRun:
         return session.execute(
             select(PipelineRun).where(PipelineRun.run_id == run_id, PipelineRun.stage == stage)
         ).scalar_one()
+
+
+# --------------------------------------------------------------- own-state reads
+# `conftest` gives the whole session one SQLite database, so `_dedup_pass` and
+# `_cluster_pass` count rows any earlier file left behind: a neighbour that seeds
+# 147 same-titled items makes a real pass report 147. The counters below are
+# therefore never compared with a literal — they are compared with a second read
+# of the same table taken inside the same test, and the rows the test itself
+# seeded are addressed only through their own ids.
+
+
+def _window_start() -> datetime:
+    return datetime.now(UTC) - timedelta(hours=CLUSTER_WINDOW_HOURS)
+
+
+def _open_window_count() -> int:
+    """Rows the dedup pass can still decide about: in-window and not yet flagged."""
+    with session_scope() as session:
+        return session.execute(
+            select(func.count())
+            .select_from(RawItem)
+            .where(RawItem.fetched_at >= _window_start(), RawItem.duplicate_of.is_(None))
+        ).scalar_one()
+
+
+def _cluster_count() -> int:
+    with session_scope() as session:
+        return session.execute(select(func.count()).select_from(Cluster)).scalar_one()
+
+
+def _duplicate_state(external_ids: list[str]) -> dict[str, int | None]:
+    """external_id -> `duplicate_of` for our own rows, read back from the table."""
+    with session_scope() as session:
+        return dict(
+            session.execute(
+                select(RawItem.external_id, RawItem.duplicate_of).where(
+                    RawItem.external_id.in_(external_ids)
+                )
+            ).all()
+        )
+
+
+def _seed_reprint_group(*, copies: int = 3) -> tuple[str, list[str]]:
+    """One original plus `copies` exact reprints, all addressed by our own ids.
+
+    The title carries a uuid, so no other file's row can join the group and none of
+    ours can join somebody else's. Every row is already clustered and the cluster
+    already has a niche, so the only contribution our rows can make to the counters
+    is the flags dedup itself writes: `copies` of them, and none for the original.
+    """
+    stamp = uuid.uuid4().hex[:8]
+    title = f"w26or reprint group {stamp}"
+    cluster_public_id = f"w26or-cluster-{stamp}"
+    original_id = f"w26or-orig-{stamp}"
+    copy_ids = [f"w26or-copy-{index}-{stamp}" for index in range(copies)]
+
+    def moment(hours_ago: float) -> datetime:
+        return datetime.now(UTC) - timedelta(hours=hours_ago)
+
+    with session_scope() as session:
+        cluster = Cluster(
+            public_id=cluster_public_id,
+            label=title,
+            niche="tech",
+            status="ready",
+            heat=0.4,
+            last_seen_at=moment(_REPRINT_HOURS),
+        )
+        session.add(cluster)
+        session.flush()
+        original = RawItem(
+            source_id=f"w26or-src-{stamp}",
+            external_id=original_id,
+            url=f"https://w26or.invalid/{stamp}/original",
+            title=title,
+            text="Текст оригинала.",
+            published_at=moment(_REPRINT_HOURS),
+            fetched_at=moment(_REPRINT_HOURS),
+            cluster_id=cluster.id,
+        )
+        session.add(original)
+        session.flush()
+        for index, external_id in enumerate(copy_ids):
+            session.add(
+                RawItem(
+                    source_id=f"w26or-src-{stamp}",
+                    external_id=external_id,
+                    url=f"https://w26or.invalid/{stamp}/copy-{index}",
+                    title=title,
+                    text="Тот же текст целиком.",
+                    published_at=moment(_REPRINT_HOURS - 1 - index / 10),
+                    fetched_at=moment(_REPRINT_HOURS - 1 - index / 10),
+                    cluster_id=cluster.id,
+                )
+            )
+    _own_cluster_ids.append(cluster_public_id)
+    _own_item_ids.extend([original_id, *copy_ids])
+    return original_id, copy_ids
+
+
+@pytest.fixture(autouse=True)
+def _drop_own_rows():
+    """Leave no residue, and prove it: the suite shares one session database."""
+    yield
+    item_ids, cluster_ids = list(_own_item_ids), list(_own_cluster_ids)
+    _own_item_ids.clear()
+    _own_cluster_ids.clear()
+    if not item_ids and not cluster_ids:
+        return
+    with session_scope() as session:
+        # copies first: they point at the original, and the delete must not strand
+        # a `duplicate_of` reference on a row we are keeping.
+        flagged = select(RawItem.id).where(
+            RawItem.external_id.in_(item_ids), RawItem.duplicate_of.is_not(None)
+        )
+        session.execute(delete(RawItem).where(RawItem.id.in_(flagged)))
+        session.execute(delete(RawItem).where(RawItem.external_id.in_(item_ids)))
+        session.execute(delete(Cluster).where(Cluster.public_id.in_(cluster_ids)))
+    with session_scope() as session:
+        left_items = session.execute(
+            select(func.count()).select_from(RawItem).where(RawItem.external_id.in_(item_ids))
+        ).scalar_one()
+        left_clusters = session.execute(
+            select(func.count()).select_from(Cluster).where(Cluster.public_id.in_(cluster_ids))
+        ).scalar_one()
+    assert (left_items, left_clusters) == (0, 0), "our seeded rows must not outlive the test"
 
 
 @pytest.mark.asyncio
@@ -160,6 +292,12 @@ async def test_a_stage_that_throws_records_what_it_had_measured(monkeypatch):
     The numbers measured before the throw are the reason the error row is worth
     having — dropping them back to 0/0 is what made the failure indistinguishable
     from an empty farm.
+
+    The database is shared for the whole session, so `0` is not what a real pass
+    returns when a neighbour has left reprints behind. The group this test seeds is
+    therefore the measurement it is checked against: dedup must flag exactly its
+    three copies, under its own ids, and the journal number must equal the rows the
+    pass actually decided about between the two reads taken here.
     """
     from tgfarm import pipeline, s2_trends
 
@@ -167,6 +305,9 @@ async def test_a_stage_that_throws_records_what_it_had_measured(monkeypatch):
         msg = "scoring pass could not read embeddings"
         raise RuntimeError(msg)
 
+    original_id, copy_ids = _seed_reprint_group(copies=3)
+    open_before = _open_window_count()
+    clusters_before = _cluster_count()
     monkeypatch.setattr(s2_trends, "_score_pass", _boom)
 
     result = pipeline.CycleResult(run_id=_run_id())
@@ -179,13 +320,25 @@ async def test_a_stage_that_throws_records_what_it_had_measured(monkeypatch):
     assert "scoring pass could not read embeddings" in (row.error or "")
     measured = {entry["stage"]: entry for entry in row.meta["sub_stages"]}
     assert set(measured) == {"s2_dedup", "s2_cluster", "s2_score"}
-    # The passes that finished keep their (zero) measurements; the one that threw
-    # is recorded as measured-nothing, and the stage headline is the last real
+    # The passes that finished keep their measurements; the one that threw is
+    # recorded as measured-nothing, and the stage headline is the last real
     # measurement taken before the throw, not a fabricated 0.
-    assert measured["s2_dedup"]["items_out"] == 0
-    assert measured["s2_cluster"]["items_out"] == 0
+    #
+    # dedup flags every undecided row in the window, its own included, so the
+    # journal number is checked against the drop in that same population rather
+    # than against a literal that only holds in one run order.
+    assert measured["s2_dedup"]["items_out"] == open_before - _open_window_count()
+    assert measured["s2_dedup"]["items_out"] >= len(copy_ids)
+    # and attributed: the three copies are flagged, and each of them points at the
+    # original this test seeded — which is the only way to know the pass ran over
+    # the rows the counter claims to have measured.
+    state = _duplicate_state([original_id, *copy_ids])
+    assert state[original_id] is None, "the earliest appearance survives"
+    roots = {state[copy_id] for copy_id in copy_ids}
+    assert len(roots) == 1 and None not in roots, "every copy got a parent, and one parent"
+    assert measured["s2_cluster"]["items_out"] == _cluster_count() - clusters_before
     assert measured["s2_score"]["items_out"] is None
-    assert row.items_out == 0
+    assert row.items_out == measured["s2_cluster"]["items_out"]
     assert row.meta["counters"] == "partial"
     assert row.meta["unmeasured"] == ["items_in"]
     # The row's duration is the stage's own wall time, which contains the passes.
