@@ -63,6 +63,15 @@ MANUAL_DESTINATIONS: dict[str, dict[str, Any]] = {
         "name": "RedNote / Xiaohongshu", "url": "https://creator.xiaohongshu.com/", "format": "visual_note",
         "notes": ["Нужна корректная локализация на китайский язык.", "Проверь creator permissions и правила коммерческого контента."],
     },
+    "tiktok": {
+        "name": "TikTok", "url": "https://www.tiktok.com/upload", "format": "vertical_video",
+        "needs_video": True,
+        "notes": [
+            "TikTok требует отдельного выбора privacy options и согласия владельца на каждый ролик.",
+            "Загрузи вертикальный MP4 в официальном загрузчике; проверь права на музыку.",
+            "Согласованная публикация через API идёт только из карточки поста, не из очереди.",
+        ],
+    },
 }
 
 
@@ -124,7 +133,7 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
         body = truncate(body, 80_000)
     elif platform_id in {"whatsapp_channels", "twitch"}:
         body = truncate(body, 4_000)
-    elif platform_id in {"vk_clips", "rutube", "snapchat", "douyin"}:
+    elif platform_id in {"vk_clips", "rutube", "snapchat", "douyin", "tiktok"}:
         body = truncate(body, 5_000)
     else:
         body = truncate(body, 30_000)
