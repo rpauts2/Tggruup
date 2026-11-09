@@ -563,6 +563,36 @@ def gate_uniqueness(draft: DraftPost, persona: Persona, *, exclude_public_id: st
     return GateOutcome(True, scores={"uniqueness": round(1.0 - score, 3)})
 
 
+def _critic_score(payload: dict) -> tuple[float | None, str]:
+    """Read a critic's score without inventing one in either direction.
+
+    Returns ``(score, error)``. An unreadable verdict used to be coerced to the
+    offline default, and because TONE_OFFLINE / AI_RELEVANCE_OFFLINE /
+    AI_QUALITY_OFFLINE sit at or above their thresholds, a model answering
+    ``{"score": "excellent"}`` was recorded as an *online approval*. A missing
+    score became ``0.0`` and was reported as ``critic 0.0/10`` — a rejection the
+    parser invented and attributed to the critic. Neither is a judgement, so
+    both are an error the gate labels fallback.
+
+    The critic scores 0-10: a non-finite or out-of-range value is a broken
+    verdict, not an aggressive one. Accepting NaN would also make the comparison
+    a silent no-op (``nan < threshold`` is always false) and store NaN in the
+    average.
+    """
+    raw = payload.get("score")
+    if raw is None:
+        return None, "verdict has no score"
+    if isinstance(raw, bool):
+        return None, f"score is a boolean: {raw!r}"
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        return None, f"score is not a number: {raw!r}"[:120]
+    if not math.isfinite(score) or not 0.0 <= score <= 10.0:
+        return None, f"score outside 0-10: {raw!r}"[:120]
+    return score, ""
+
+
 async def gate_tone(
     draft: DraftPost,
     persona: Persona,
@@ -618,10 +648,13 @@ async def gate_tone(
             "fallback: offline provider (no real AI review)",
             provenance="fallback",
         )
-    try:
-        score = float(payload.get("score", 0))
-    except (TypeError, ValueError):
-        score = TONE_OFFLINE["score"]
+    score, error = _critic_score(payload)
+    if score is None:
+        return GateOutcome(
+            False, "tone",
+            f"fallback: unreadable verdict ({error})",
+            provenance="fallback",
+        )
     issues = [str(i) for i in (payload.get("issues") or [])][:6]
     if score < TONE_THRESHOLD:
         return GateOutcome(
@@ -687,10 +720,13 @@ async def gate_relevance(
             "fallback: offline provider (no real AI review)",
             provenance="fallback",
         )
-    try:
-        score = float(payload.get("score", 0))
-    except (TypeError, ValueError):
-        score = AI_RELEVANCE_OFFLINE["score"]
+    score, error = _critic_score(payload)
+    if score is None:
+        return GateOutcome(
+            False, "relevance",
+            f"fallback: unreadable verdict ({error})",
+            provenance="fallback",
+        )
     issues = payload.get("issues") or []
     if score < relevance_threshold():
         return GateOutcome(
@@ -757,10 +793,13 @@ async def gate_quality(
             "fallback: offline provider (no real AI review)",
             provenance="fallback",
         )
-    try:
-        score = float(payload.get("score", 0))
-    except (TypeError, ValueError):
-        score = AI_QUALITY_OFFLINE["score"]
+    score, error = _critic_score(payload)
+    if score is None:
+        return GateOutcome(
+            False, "quality",
+            f"fallback: unreadable verdict ({error})",
+            provenance="fallback",
+        )
     issues = payload.get("issues") or []
     if score < quality_threshold():
         return GateOutcome(
