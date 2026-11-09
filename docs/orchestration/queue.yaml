@@ -913,41 +913,52 @@ tasks:
     next_action: "READY как только W28-K принят"
 
   - id: W29-S
-    title: "Независимость quality gate: ни один гейт не судит по данным потребителя"
-    description: >
-      Гейты качества (s5_quality) читают те же поля, что пишет потребитель
-      плана; независимость предиката надо выделить и закрепить тестом, иначе
-      следующий rebind (W23-A) меняет и повод, и судью одновременно.
+    title: 'Независимость quality gate: ни один гейт не судит по данным потребителя'
+    description: 'Гейты качества (s5_quality) читают те же поля, что пишет потребитель плана; независимость
+      предиката надо выделить и закрепить тестом, иначе следующий rebind (W23-A) меняет и повод, и судью
+      одновременно.
+
+      '
     priority: medium
     category: product
-    status: "DEFERRED"
-    owner_role: "Backend Engineer"
-    owner_agent: null
+    status: INTEGRATED
+    owner_role: Backend Engineer
+    owner_agent: coordinator
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
     worktree: null
     branch: null
     allowed_paths:
-      - tgfarm/s5_quality/
-      - tests/test_w29s_gate_independence.py
+    - tgfarm/s5_quality/
+    - tests/test_w29s_gate_independence.py
     depends_on: []
     blocked_by: []
-    p_refs: [P107]
-    acceptance: "Закрытый словарь гейтов (12 ключей) обновляется без правок в читателе плана; мутант «гейт читает поле потребителя» краснеет"
+    p_refs:
+    - P107
+    - P123
+    acceptance: Закрытый словарь гейтов (12 ключей) обновляется без правок в читателе плана; мутант «гейт
+      читает поле потребителя» краснеет
     test_commands:
-      - "python -m pytest -q tests/test_w29s_gate_independence.py"
-    review_status: "RETURNED_TO_COORDINATOR"
-    integration_status: "NOT_INTEGRATED"
+    - python -m pytest -q tests/test_w29s_gate_independence.py
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-09T22:09:14+00:00"
-    completed_at: null
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: '2026-11-09T22:58:44+00:00'
     evidence:
-      - "GIT_VERIFIED: словарь из 12 ключей и slot_booking_rebounded зафиксированы волной 22 (3ea795b, P107-P108) в docs/EXECUTION_PLAN.md на 183daa4"
-      - "CI_VERIFIED: 78d019a не перенесён: 4 смысловых конфликта в s5_quality (оффлайн-черновик проходит по AI_*_OFFLINE, пакет делает это отказом)"
-      - "CODE_VERIFIED: карточка требует gate-independence, а test_review_integrity_w29s.py требует честного исхода AI-review; совпадение W29-S в имени не доказывает одинаковую acceptance. Миссия T3 уже интегрирована."
-    next_action: "Снять устаревший hold миссии T3. Словарь 12 ключей уже закреплён; отдельное утверждение независимости quality-gate от данных потребителя ещё не проверено мутантом. test_review_integrity_w29s.py проверяет другой предмет, поэтому не объявлять весь пакет дублем или завершённым."
+    - 'GIT_VERIFIED: словарь из 12 ключей и slot_booking_rebounded зафиксированы волной 22 (3ea795b, P107-P108)
+      в docs/EXECUTION_PLAN.md на 183daa4'
+    - 'CI_VERIFIED: 78d019a не перенесён: 4 смысловых конфликта в s5_quality (оффлайн-черновик проходит
+      по AI_*_OFFLINE, пакет делает это отказом)'
+    - 'CODE_VERIFIED: карточка требует gate-independence, а test_review_integrity_w29s.py требует честного
+      исхода AI-review; совпадение W29-S в имени не доказывает одинаковую acceptance. Миссия T3 уже интегрирована.'
+    - 'GIT_VERIFIED: independence remainder closed by 9a33f8f (W36-E), 36 real stored-content combinations.
+      Independent mutations consumer entry/slot/flag readers failed 12/6/6/9 plus two additional 6-case
+      mutants. Existing closed twelve-key dictionary unchanged; AI-review remains a different contract.'
+    next_action: Remainder integrated without production changes; rejected original 78d019a remains preserved
+      and not merged.
 
   - id: W30-A
     title: "Синхронизация telegram-каналов: tg_chat_id пуст у всех девяти, enabled=0"
@@ -1408,56 +1419,69 @@ tasks:
   # are red at HEAD for reasons that are now proven, not guessed. This package is
   # the critical path: nothing is pushed until the suite is green.
   - id: W34-A
-    title: "Семь красных тестов на HEAD: мёртвая константа DATA_DIR и устаревшее ожидание по Telegram"
-    description: >
-      Полный прогон на 0352c3c дал 7 failed / 3816 passed / 4 xfailed. Шесть падений —
-      регрессия от bcda034: data_root() теперь читает поле Settings.data_dir, а тесты
-      патчат мёртвую константу settings_mod.DATA_DIR; корень изоляции называется data0,
-      поэтому литеральная проверка части пути 'data' тоже неверна. Седьмое — устаревшее
-      ожидание: оператор намеренно ужесточил has_publication_evidence (Telegram только
-      по message id), и 9 telegram-расхождений исчезли по замыслу. Починить тесты, не
-      ослабляя их, и покрыть новое правило Telegram положительным тестом.
+    title: 'Семь красных тестов на HEAD: мёртвая константа DATA_DIR и устаревшее ожидание по Telegram'
+    description: 'Полный прогон на 0352c3c дал 7 failed / 3816 passed / 4 xfailed. Шесть падений — регрессия
+      от bcda034: data_root() теперь читает поле Settings.data_dir, а тесты патчат мёртвую константу settings_mod.DATA_DIR;
+      корень изоляции называется data0, поэтому литеральная проверка части пути ''data'' тоже неверна. Седьмое
+      — устаревшее ожидание: оператор намеренно ужесточил has_publication_evidence (Telegram только по message
+      id), и 9 telegram-расхождений исчезли по замыслу. Починить тесты, не ослабляя их, и покрыть новое правило
+      Telegram положительным тестом.
+
+      '
     priority: high
     category: release
-    status: "INTEGRATED"
-    owner_role: "Test Integrity Engineer"
-    owner_agent: "w34a"
+    status: INTEGRATED
+    owner_role: Test Integrity Engineer
+    owner_agent: w34a
     base_sha: 0352c3c5690d42f87eeeb9a5b636fd821b03eed9
-    worktree: ".qoder/worktrees/w34a-red-suite"
+    worktree: .qoder/worktrees/w34a-red-suite
     branch: w34a-red-suite
     allowed_paths:
-      - tests/test_w24a_sentinel_no_secret_leaks.py
-      - tests/test_telegram_and_sources.py
-      - tests/test_maintenance_evidence_predicate_shared.py
+    - tests/test_w24a_sentinel_no_secret_leaks.py
+    - tests/test_telegram_and_sources.py
+    - tests/test_maintenance_evidence_predicate_shared.py
     depends_on: []
     blocked_by: []
-    p_refs: [P115]
-    acceptance: "0 failed на полном прогоне; ни одно утверждение не удалено и не ослаблено; новое правило Telegram покрыто положительным тестом; продакшен-код не тронут"
+    p_refs:
+    - P115
+    acceptance: 0 failed на полном прогоне; ни одно утверждение не удалено и не ослаблено; новое правило Telegram
+      покрыто положительным тестом; продакшен-код не тронут
     test_commands:
-      - "python -m pytest -q -p no:randomly tests/test_w24a_sentinel_no_secret_leaks.py tests/test_telegram_and_sources.py tests/test_maintenance_evidence_predicate_shared.py"
-      - "python -m pytest -q -p no:randomly"
-    review_status: "SELF_CHECKED_BY_COORDINATOR"
-    integration_status: "INTEGRATED"
+    - python -m pytest -q -p no:randomly tests/test_w24a_sentinel_no_secret_leaks.py tests/test_telegram_and_sources.py
+      tests/test_maintenance_evidence_predicate_shared.py
+    - python -m pytest -q -p no:randomly
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
-    started_at: "2026-11-09T22:35:00+03:00"
-    updated_at: "2026-11-09T22:09:14+00:00"
-    completed_at: "2026-11-09T22:09:14+00:00"
+    started_at: '2026-11-09T22:35:00+03:00'
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:09:14+00:00'
     evidence:
-      - "CODE_VERIFIED: координатор воспроизвёл все 7 падений на трёх файлах вместе и седьмое — в одиночку; значит это не загрязнение порядка всего прогона"
-      - "GIT_VERIFIED: git diff --stat 74025b7 HEAD показал, что maintenance.py, apiauth.py и оба теста неизменны с зелёного CI, а conftest.py (+90) и settings.py (+26) изменены коммитом bcda034"
-      - "CODE_VERIFIED: apiauth.py:57 token_path() = get_settings().data_root() / TOKEN_FILENAME; data_root() берёт Path(self.data_dir) при непустом поле, поэтому патч DATA_DIR мёртв"
-      - "CODE_VERIFIED: s7_publish has_publication_evidence получил ветку 'if platform == telegram: return False' с живым замером 15 строк / 0 askable; maintenance._row_has_publication_evidence делегирует владельцу, поэтому 9 telegram-расхождений исчезли по замыслу"
-      - "CODE_VERIFIED: лично проверен diff трёх тестовых файлов; 68 passed на затронутых файлах; продакшен-код не изменён."
-      - "CODE_VERIFIED: полный прогон именно main eeb3c24, а не старой базы агента: 3906 passed, 4 xfailed, 12 warnings; PYTEST_EXIT=0, FAILED=0, ERROR=0."
-      - "GIT_VERIFIED: исходный коммит 45d0d51 перенесён в main как eeb3c24; tools/scan_secrets.py exit 0 (значения секретов не выведены)."
-    next_action: "Код принят в eeb3c24; отправить проверенный main в github и отдельно измерить CI."
+    - 'CODE_VERIFIED: координатор воспроизвёл все 7 падений на трёх файлах вместе и седьмое — в одиночку; значит
+      это не загрязнение порядка всего прогона'
+    - 'GIT_VERIFIED: git diff --stat 74025b7 HEAD показал, что maintenance.py, apiauth.py и оба теста неизменны
+      с зелёного CI, а conftest.py (+90) и settings.py (+26) изменены коммитом bcda034'
+    - 'CODE_VERIFIED: apiauth.py:57 token_path() = get_settings().data_root() / TOKEN_FILENAME; data_root() берёт
+      Path(self.data_dir) при непустом поле, поэтому патч DATA_DIR мёртв'
+    - 'CODE_VERIFIED: s7_publish has_publication_evidence получил ветку ''if platform == telegram: return False''
+      с живым замером 15 строк / 0 askable; maintenance._row_has_publication_evidence делегирует владельцу, поэтому
+      9 telegram-расхождений исчезли по замыслу'
+    - 'CODE_VERIFIED: лично проверен diff трёх тестовых файлов; 68 passed на затронутых файлах; продакшен-код
+      не изменён.'
+    - 'CODE_VERIFIED: полный прогон именно main eeb3c24, а не старой базы агента: 3906 passed, 4 xfailed, 12
+      warnings; PYTEST_EXIT=0, FAILED=0, ERROR=0.'
+    - 'GIT_VERIFIED: исходный коммит 45d0d51 перенесён в main как eeb3c24; tools/scan_secrets.py exit 0 (значения
+      секретов не выведены).'
+    - 'GIT_VERIFIED: накопленные43коммита отправлены доab86646; CI42711999680 обаjobfailed толькоlocale-test.
+      Исправлениеda1b78c отправлено; новыйCI42714642733 выполняется, неCI_VERIFIED.'
+    next_action: Интегрировано и отправлено; localeCI-дефект закрытW36-D, результат новогоCI измерить отдельно.
 
   - id: W34-B
     title: Тайм-бюджет отдельной доставки crosspost
-    description: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма ничего
-      не интегрировать.
+    description: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма
+      ничего не интегрировать.
     priority: high
     category: reliability
     status: RECOVERY_REQUIRED
@@ -1471,21 +1495,26 @@ tasks:
     - tests/test_crosspost_delivery_budget.py
     depends_on: []
     blocked_by: []
-    acceptance: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма ничего
-      не интегрировать.
+    acceptance: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма
+      ничего не интегрировать.
     test_commands:
     - python -m pytest -q tests/test_crosspost_delivery_budget.py
-    review_status: RETURNED_TO_COORDINATOR
+    review_status: CHANGES_REQUIRED
     integration_status: RECOVERY_REQUIRED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:48:35+00:00'
     completed_at: null
     evidence:
     - 'OBSERVED: агент w34b завершился ошибкой сервиса; сохранены M __init__.py и новый тест, коммитов нет; независимый
       read-only reviewer запущен.'
-    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+    - 'CODE_VERIFIED: read-only review отклонил исходный diff несмотря на10passed: unbounded rendering/DB, гонки
+      отмены claim/log, неверный unknown при подготовке. Исходные байты сохранены.'
+    - 'GIT_VERIFIED: узкий безопасный publish-await инкремент32d40ab принят отдельно какW36-A; весь batch/preparation/DB
+      всё ещё не ограничен.'
+    next_action: Не интегрировать исходный diff. Продолжить общий batch/preparation/DB budget отдельным пакетом;
+      узкий W36-A уже принят.
 
   - id: W35-A
     title: 'S12: новейшее ограниченное окно ошибок вместо oldest-20'
@@ -1493,7 +1522,7 @@ tasks:
       не читаются.
     priority: high
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Integrating Engineer
     owner_agent: coordinator
     base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
@@ -1509,17 +1538,23 @@ tasks:
       не читаются.
     test_commands:
     - python -m pytest -q tests/test_s12_mistake_window.py
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:09:14+00:00'
-    completed_at: null
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
     evidence:
-    - 'CODE_VERIFIED: исходный агент погиб, сохранив тест; координатор лично получил 3 failed до правки и 17 passed
-      после правки с соседними recency/format тестами. Коммита пока нет.'
-    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+    - 'CODE_VERIFIED: исходный агент погиб, сохранив тест; координатор лично получил 3 failed до правки и 17
+      passed после правки с соседними recency/format тестами. Коммита пока нет.'
+    - 'GIT_VERIFIED: main a462fd9, независимое ревью READY; push github/main da1b78c подтверждён ls-remote.'
+    - 'CODE_VERIFIED: Новейшие 20 строк и newest-wins; tie-breaker id отдельно воспроизведён RED 2. Координатор
+      19 passed; общий интегрированный прогон 126 passed.'
+    - 'CODE_VERIFIED: полный main32d40ab —3971 passed/4 xfailed/12 warnings, PYTEST_EXIT=0.'
+    next_action: Интегрировано и отправлено; остатки названы отдельно, CI42714642733 ещё выполняется.
+    p_refs:
+    - P117
 
   - id: W35-B
     title: 'S8: отказ чтения ВК, неизвестный ERR и ограниченный SQL IN'
@@ -1527,7 +1562,7 @@ tasks:
       Изменение PostMetrics.quality отложено отдельным остатком.
     priority: high
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Recovery Engineer
     owner_agent: w35b recovery
     base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
@@ -1544,17 +1579,23 @@ tasks:
       Изменение PostMetrics.quality отложено отдельным остатком.
     test_commands:
     - python -m pytest -q tests/test_s8_metric_honesty.py tests/test_vk_stats_failure_status.py
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:09:14+00:00'
-    completed_at: null
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
     evidence:
-    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве с ограниченным предметом;
-      результата пока нет.'
-    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве с ограниченным
+      предметом; результата пока нет.'
+    - 'GIT_VERIFIED: main a781095, независимое ревью READY; push github/main da1b78c подтверждён ls-remote.'
+    - 'CODE_VERIFIED: None ERR, IN<=500, failed/empty/collected ВК. Координатор 43 passed, включая 101-post partial
+      error27 и запрет третьего запроса. Nullable PostMetrics отдельно W36-C.'
+    - 'CODE_VERIFIED: полный main32d40ab —3971 passed/4 xfailed/12 warnings, PYTEST_EXIT=0.'
+    next_action: Интегрировано и отправлено; остатки названы отдельно, CI42714642733 ещё выполняется.
+    p_refs:
+    - P120
 
   - id: W35-C
     title: 'S11: единый deadline caption-encode и fallback'
@@ -1562,7 +1603,7 @@ tasks:
       очищается. Провенанс cache остаётся отдельным остатком.
     priority: high
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Recovery Engineer
     owner_agent: w35c recovery
     base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
@@ -1573,29 +1614,35 @@ tasks:
     - tests/test_video_encode_deadline.py
     depends_on: []
     blocked_by: []
-    acceptance: Fallback получает только остаток бюджета; после исчерпания второй encode не запускается, partial очищается.
-      Провенанс cache остаётся отдельным остатком.
+    acceptance: Fallback получает только остаток бюджета; после исчерпания второй encode не запускается, partial
+      очищается. Провенанс cache остаётся отдельным остатком.
     test_commands:
     - python -m pytest -q tests/test_video_encode_deadline.py
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:09:14+00:00'
-    completed_at: null
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
     evidence:
     - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве только для retry
       deadline; результата пока нет.'
-    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+    - 'GIT_VERIFIED: main 1d08bbb, независимое ревью READY; push github/main da1b78c подтверждён ls-remote.'
+    - 'CODE_VERIFIED: Единый caption/fallback deadline; RED 6 failed, GREEN 11 passed; координатор 87 видео-проверок.
+      Провенанс кеша отдельно W36-B.'
+    - 'CODE_VERIFIED: полный main32d40ab —3971 passed/4 xfailed/12 warnings, PYTEST_EXIT=0.'
+    next_action: Интегрировано и отправлено; остатки названы отдельно, CI42714642733 ещё выполняется.
+    p_refs:
+    - P119
 
   - id: W35-D
     title: 'LockRegistry: владелец и реальное время удержания'
-    description: Чужой task/name/lock не освобождает удерживаемый lock; hold_seconds измеряет hold, не wait; отмена
-      waiter не крадёт lock. DailyQuota не подключать.
+    description: Чужой task/name/lock не освобождает удерживаемый lock; hold_seconds измеряет hold, не wait;
+      отмена waiter не крадёт lock. DailyQuota не подключать.
     priority: medium
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Recovery Engineer
     owner_agent: w35d recovery
     base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
@@ -1610,14 +1657,300 @@ tasks:
       waiter не крадёт lock. DailyQuota не подключать.
     test_commands:
     - python -m pytest -q tests/test_lock_registry_ownership.py
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
+    evidence:
+    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве; результата
+      пока нет. Production consumers LOCKS не найдены: эффект latent, не live.'
+    - 'GIT_VERIFIED: main b0c76e3, независимое ревью READY; push github/main da1b78c подтверждён ls-remote.'
+    - 'CODE_VERIFIED: Task/name/lock ownership и реальное время hold; координатор 20 passed. Native cancellation
+      probes Python3.11/3.14 проверены reviewer; production LOCKS wiring не добавлялся.'
+    - 'CODE_VERIFIED: полный main32d40ab —3971 passed/4 xfailed/12 warnings, PYTEST_EXIT=0.'
+    next_action: Интегрировано и отправлено; остатки названы отдельно, CI42714642733 ещё выполняется.
+    p_refs:
+    - P118
+
+
+  - id: W36-A
+    title: Ограниченный publish-await без гонок терминального журнала
+    description: Доставка по timeout становится unknown с retained claim; поздний task не переписывает терминал;
+      отмена threaded DB не создаёт второго писателя. Preparation/DB/batch остаются отдельным остатком.
+    priority: high
+    category: reliability
+    status: INTEGRATED
+    owner_role: Integration Engineer
+    owner_agent: w36-a
+    base_sha: ab86646a3ae3f69d7cf3865ce75632ec5371726d
+    worktree: .qoder/worktrees/w36a-delivery-recovery
+    branch: w36a-delivery-recovery
+    allowed_paths:
+    - tgfarm/s9_growth/__init__.py
+    - tests/test_crosspost_publish_deadline.py
+    depends_on: []
+    blocked_by: []
+    p_refs:
+    - P121
+    acceptance: Доставка по timeout становится unknown с retained claim; поздний task не переписывает терминал;
+      отмена threaded DB не создаёт второго писателя. Preparation/DB/batch остаются отдельным остатком.
+    test_commands:
+    - python -m pytest -q tests/test_crosspost_publish_deadline.py
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:48:35+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
+    evidence:
+    - GIT_VERIFIED:32d40ab, координатор132passed, reviewer147passed; полныйmain3971passed; pushda1b78c подтверждён.
+    next_action: Интегрировано; CI измерить отдельно.
+
+  - id: W36-B
+    title: Кеш видео хранит фактический провенанс и сохраняет прежний артефакт
+    description: Fingerprint учитывает фактический render-spec; cache не фабрикует субтитры. Старый MP4/sidecars
+      переживают неудачный rerender; redirected sidecars не читаются/не пишутся, manifest bounded, bool
+      timing отклонён.
+    priority: high
+    category: reliability
+    status: REVIEW
+    owner_role: Integration Engineer
+    owner_agent: w36-b
+    base_sha: 1d08bbb68011db5e86d5eb8d1c6ba55d337c4110
+    worktree: .qoder/worktrees/w36b-video-provenance
+    branch: w36b-video-provenance
+    allowed_paths:
+    - tgfarm/s11_video/renderer.py
+    - tests/test_video_cache_provenance.py
+    - tests/test_video_renderer.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: Fingerprint учитывает фактический render-spec; cache не фабрикует субтитры. Старый MP4/sidecars
+      переживают неудачный rerender; redirected sidecars не читаются/не пишутся, manifest bounded, bool
+      timing отклонён.
+    test_commands:
+    - python -m pytest -q tests/test_video_cache_provenance.py
+    review_status: IN_PROGRESS
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
     completed_at: null
     evidence:
-    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве; результата пока
-      нет. Production consumers LOCKS не найдены: эффект latent, не live.'
-    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+    - CODE_VERIFIED:координатор163passed исходного cache patch. Ревью нашло потерюстарогоMP4, SRTsymlink,
+      recursionJSON,booltiming; исправление запущено, неинтегрировано.
+    - 'CODE_VERIFIED: same-filesystem staging, sidecar rollback and boundary guards. Coordinator 162 passed/18
+      skipped; native Windows links unavailable (1314), canonical seam cases passed.'
+    - 'TEST_CONTRACT: two obsolete expectations reproduced as 2 failed/160 passed; strengthened to require
+      staged same-filesystem cleanup and unchanged prior corrupt bytes on missing FFmpeg. Fresh read-only
+      review running.'
+    next_action: Await fresh independent review; do not equate skipped native links or stubbed FFmpeg with
+      runtime verification.
+
+  - id: W36-C
+    title: Nullable PostMetrics через действительных читателей аналитики
+    description: Каждый rate использует собственный положительный denominator; настоящий0 остаётся0. Агрегаты
+      исключают неизвестные rates/quality; hourly не рекламирует unmeasured, holdout сохраняет publishedn.
+    priority: high
+    category: reliability
+    status: RUNNING
+    owner_role: Integration Engineer
+    owner_agent: w36-c
+    base_sha: 32d40abddcd04ed362a8f219b587ff24e7c4a501
+    worktree: .qoder/worktrees/w36c-rate-contract
+    branch: w36c-rate-contract
+    allowed_paths:
+    - tgfarm/s8_analytics/__init__.py
+    - tgfarm/s8_analytics/portfolio.py
+    - tgfarm/s12_learning/__init__.py
+    - tests/test_post_metric_rate_validity.py
+    - tests/test_analytics_measured_denominator.py
+    - tests/test_nullable_quality_consumers.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: Каждый rate использует собственный положительный denominator; настоящий0 остаётся0. Агрегаты
+      исключают неизвестные rates/quality; hourly не рекламирует unmeasured, holdout сохраняет publishedn.
+    test_commands:
+    - python -m pytest -q tests/test_post_metric_rate_validity.py tests/test_analytics_measured_denominator.py
+    review_status: CHANGES_REQUIRED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: null
+    evidence:
+    - CODE_VERIFIED:координатор77passed analytics/portfolio/learning; исполнительRED30/GREEN83. Actualdiff
+      просмотрен; независимое review ещё выполняется.
+    - 'REVIEW: CHANGES_REQUIRED despite 170 passes. Unmeasured slot evidence, S12 None-quality summation
+      and portfolio fabricated-zero baseline reproduced by reviewer (3 failed/1 passed probes).'
+    - 'RECOVERY: owner scope expanded explicitly to both downstream readers and regression tests; TDD repair
+      running, no integration.'
+    next_action: Measure all three repaired boundary cases and request fresh independent review before integration.
+
+  - id: W36-D
+    title: Дата панели проверяется в локали оператора, не hardcoded ru-RU
+    description: Полный native момент проверяется в ru-RU/en-US; мутант потеримомента красный; productDate.toLocaleString
+      неизменён.
+    priority: high
+    category: reliability
+    status: INTEGRATED
+    owner_role: Integration Engineer
+    owner_agent: coordinator
+    base_sha: 32d40abddcd04ed362a8f219b587ff24e7c4a501
+    worktree: .qoder/worktrees/w36d-ci-locale
+    branch: w36d-ci-locale
+    allowed_paths:
+    - tests/test_no_slot_reason_reaches_panel.py
+    depends_on: []
+    blocked_by: []
+    p_refs:
+    - P122
+    acceptance: Полный native момент проверяется в ru-RU/en-US; мутант потеримомента красный; productDate.toLocaleString
+      неизменён.
+    test_commands:
+    - python -m pytest -q tests/test_no_slot_reason_reaches_panel.py
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: '2026-11-09T22:48:35+00:00'
+    evidence:
+    - GIT_VERIFIED:da1b78c, собственные7passed, RED1fail/1pass, дваmutantsrejected; reviewer24checks/4timezones
+      READY; pushSHAсовпадает. CIещёвыполняется.
+    - 'CI_OBSERVED: locale test passed both jobs in run42714642733; each job failed only cancellation handoff
+      on Python3.11 (1 failed/3971 passed/4 xfailed). Whole CI is not verified.'
+    next_action: Интегрировано; CI измерить отдельно.
+
+  - id: W36-E
+    title: Quality gates независимы от booking consumer metadata
+    description: Реальный storedPost->gate_post сохраняет contentвердикт при измененииentry/slot/flag. Bookingapproval/missingentry/futureslot/flagmutants
+      красные; никаких mockedgates.
+    priority: high
+    category: reliability
+    status: INTEGRATED
+    owner_role: Integration Engineer
+    owner_agent: w36-e
+    base_sha: 32d40abddcd04ed362a8f219b587ff24e7c4a501
+    worktree: .qoder/worktrees/w36e-gate-independence
+    branch: w36e-gate-independence
+    allowed_paths:
+    - tests/test_w29s_gate_independence.py
+    depends_on: []
+    blocked_by: []
+    p_refs:
+    - P123
+    acceptance: Реальный storedPost->gate_post сохраняет contentвердикт при измененииentry/slot/flag. Bookingapproval/missingentry/futureslot/flagmutants
+      красные; никаких mockedgates.
+    test_commands:
+    - python -m pytest -q tests/test_w29s_gate_independence.py
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: '2026-11-09T22:58:44+00:00'
+    evidence:
+    - CODE_VERIFIED:координатор165passed. Исполнитель36cases, четыреthrowawaymutantsfail12/6/6/9, control36passed.
+      Productionнеизменён; reviewвыполняется.
+    - 'GIT_VERIFIED: source 86d792f -> main 9a33f8f. Reviewer 188 passed and six mutation failures; coordinator
+      165 passed, integrated combined gate/UI/locale 236 passed and secret gate exit0. Product quality source
+      unchanged.'
+    next_action: Integrated; include in next stable full-suite and push after CI cancellation repair.
+
+  - id: W36-F
+    title: Панель различает измеренный ноль и отсутствующую quality
+    description: Numeric0час видим/измерен, nullнеранжируется; unknownangleневпобедителях; holdout/styleNoneне0;
+      servernamesescapedonce. Browsergolden/edge/regressions наisolatedserver.
+    priority: high
+    category: reliability
+    status: INTEGRATED
+    owner_role: Integration Engineer
+    owner_agent: coordinator
+    base_sha: 32d40abddcd04ed362a8f219b587ff24e7c4a501
+    worktree: .qoder/worktrees/w36f-ui-rate-evidence
+    branch: w36f-ui-rate-evidence
+    allowed_paths:
+    - tgfarm/ui/app.js
+    - tests/test_ui_report_rate_evidence.py
+    depends_on: []
+    blocked_by: []
+    p_refs:
+    - P124
+    acceptance: Numeric0час видим/измерен, nullнеранжируется; unknownangleневпобедителях; holdout/styleNoneне0;
+      servernamesescapedonce. Browsergolden/edge/regressions наisolatedserver.
+    test_commands:
+    - python -m pytest -q tests/test_ui_report_rate_evidence.py
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:48:35+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: '2026-11-09T22:58:44+00:00'
+    evidence:
+    - CODE_VERIFIED:координаторRED7fail/2pass->64passed; reviewer64tests+7edgechecks,5mutantsrejected READY.
+      Browsermixed/nullпроверены; escaping/navigationещёпроверяются.
+    - 'GIT_VERIFIED: source c8d0e3f -> main 4fa14a9. Coordinator 64 passed, integrated combined 236 passed,
+      node syntax and secret gate exit0.'
+    - 'BROWSER_VERIFIED: isolated real app/tempDB, mixed/null/escaped names and channels/plan/posts/overview
+      navigation checked in actual DOM; no console errors/warnings. Hidden browser viewport prevented screenshot;
+      appearance not claimed. No live actions.'
+    next_action: Integrated; stable full-suite and push wait for native cancellation repair.
+
+  - id: W37-A
+    title: Native Python 3.11 cancellation handoff must not disappear
+    description: Strict caller cancellation after lock handoff propagates and does not leak or release another
+      owner; native Python3.11 reproduction required.
+    priority: high
+    category: reliability
+    status: RUNNING
+    owner_role: Recovery Engineer
+    owner_agent: w37a-lock-cancel-311
+    base_sha: da1b78cc243d6143ebd87002b77976af705fe8b7
+    worktree: .qoder/worktrees/w37a-lock-cancel-311
+    branch: w37a-lock-cancel-311
+    allowed_paths:
+    - tgfarm/core/ratelimit.py
+    - tests/test_lock_registry_ownership.py
+    - tests/test_lock_cancel_native.py
+    depends_on: []
+    blocked_by: []
+    p_refs:
+    - P118
+    - P122
+    acceptance: Native cancelled handoff propagates CancelledError, preserves owner and hold-time contracts;
+      strict assertions are not weakened.
+    test_commands:
+    - python -m pytest -q tests/test_lock_registry_ownership.py tests/test_core_ratelimit.py
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-09T22:58:44+00:00'
+    updated_at: '2026-11-09T22:58:44+00:00'
+    completed_at: null
+    evidence:
+    - 'CI_OBSERVED: run42714642733 Linux3.11.18 and Windows3.11.9 each1failed3971passed4xfail; exact test_cancelled_waiter_cannot_steal_or_leak_lock[True]
+      DID NOT RAISE CancelledError.'
+    - 'RECOVERY: separate main-pinned worktree and exclusive ownership; actual root cause/native RED and
+      TDD repair in progress, not integrated.'
+    next_action: Inspect native reproduction, minimal repair, independent review and fresh integrated suite
+      before push.
