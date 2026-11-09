@@ -142,3 +142,40 @@ async def test_threads_adapter_clips_to_limit_on_a_word_boundary(monkeypatch):
     assert len(sent) <= 500
     assert sent.endswith("…")
     assert not sent[:-1].endswith("длинноесло")  # cut at a word end, not mid-word
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module,adapter_name", [
+    ("threads_oauth", "ThreadsAdapter"),
+    ("linkedin_oauth", "LinkedInAdapter"),
+])
+async def test_temporary_token_refresh_failure_is_not_recorded_as_permanent(
+    monkeypatch, module, adapter_name
+):
+    import importlib
+
+    import httpx
+
+    from tgfarm.s9_growth import adapters
+
+    oauth = importlib.import_module(f"tgfarm.{module}")
+    getter = next(n for n in dir(oauth) if n.startswith("get_valid_") and n.endswith("_access_token"))
+    temporary = next(n for n in dir(oauth) if n.endswith("OAuthTemporaryError"))
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        threads_user_id="u", threads_access_token="t", threads_username="n",
+        linkedin_member_id="m", linkedin_access_token="t", linkedin_member_name="n",
+    ))
+
+    async def temporary_failure():
+        raise getattr(oauth, temporary)("provider is down")
+
+    async def revoked():
+        raise RuntimeError("grant revoked")
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeThreadsClient)
+    payload = CrosspostPayload(platform="x", title="T", text="body")
+    adapter = getattr(adapters, adapter_name)()
+    monkeypatch.setattr(oauth, getter, temporary_failure)
+    assert (await adapter.publish(payload)).status == "failed"
+    monkeypatch.setattr(oauth, getter, revoked)
+    assert (await adapter.publish(payload)).status == "permanent"

@@ -967,14 +967,15 @@ class ThreadsAdapter:
         if not user_id or not saved_token:
             return CrosspostResult(platform=self.platform, status="skipped")
         import httpx
-        from tgfarm.threads_oauth import get_valid_threads_access_token
+        from tgfarm.threads_oauth import ThreadsOAuthTemporaryError, get_valid_threads_access_token
 
         try:
             token = await get_valid_threads_access_token()
         except Exception as exc:  # noqa: BLE001 - no publish request has been made yet
             log.warning("threads token refresh failed (%s)", type(exc).__name__)
             return CrosspostResult(
-                platform=self.platform, status="permanent",
+                platform=self.platform,
+                status="failed" if isinstance(exc, ThreadsOAuthTemporaryError) else "permanent",
                 error="Threads OAuth expired or could not be refreshed; reconnect the account.",
             )
 
@@ -1067,7 +1068,7 @@ class LinkedInAdapter:
         if not member_id or not saved_token:
             return CrosspostResult(platform=self.platform, status="skipped")
 
-        from tgfarm.linkedin_oauth import get_valid_linkedin_access_token
+        from tgfarm.linkedin_oauth import LinkedInOAuthTemporaryError, get_valid_linkedin_access_token
 
         try:
             token = await get_valid_linkedin_access_token()
@@ -1075,7 +1076,7 @@ class LinkedInAdapter:
             log.warning("linkedin token refresh failed (%s)", type(exc).__name__)
             return CrosspostResult(
                 platform=self.platform,
-                status="permanent",
+                status="failed" if isinstance(exc, LinkedInOAuthTemporaryError) else "permanent",
                 error="LinkedIn OAuth expired or could not be refreshed; reconnect the account.",
             )
 

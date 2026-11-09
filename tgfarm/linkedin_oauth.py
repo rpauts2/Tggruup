@@ -17,6 +17,15 @@ _PENDING: dict[str, dict[str, object]] = {}
 _PENDING_LOCK = threading.RLock()
 
 
+class LinkedInOAuthTemporaryError(RuntimeError):
+    """Network or provider-side refresh failure: no post exists yet, a retry is safe."""
+
+
+def _refresh_is_temporary(status_code: int) -> bool:
+    return status_code in (408, 425, 429) or status_code >= 500
+
+
+
 def _validate_redirect_uri(value: str) -> str:
     parsed = urlsplit(str(value or ""))
     host = (parsed.hostname or "").lower()
@@ -217,8 +226,12 @@ async def get_valid_linkedin_access_token() -> str:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
     except httpx.RequestError as exc:
-        raise RuntimeError("Не удалось обновить LinkedIn OAuth-токен.") from exc
+        raise LinkedInOAuthTemporaryError("Не удалось обновить LinkedIn OAuth-токен.") from exc
     if response.status_code >= 400:
+        if _refresh_is_temporary(response.status_code):
+            raise LinkedInOAuthTemporaryError(
+                f"LinkedIn временно не обновил OAuth-токен (HTTP {response.status_code})."
+            )
         raise RuntimeError(
             f"LinkedIn не обновил OAuth-токен (HTTP {response.status_code}). Переподключи аккаунт."
         )

@@ -21,6 +21,15 @@ _PENDING: dict[str, dict[str, object]] = {}
 _PENDING_LOCK = threading.RLock()
 
 
+class ThreadsOAuthTemporaryError(RuntimeError):
+    """Network or provider-side refresh failure: no post exists yet, a retry is safe."""
+
+
+def _refresh_is_temporary(status_code: int) -> bool:
+    return status_code in (408, 425, 429) or status_code >= 500
+
+
+
 def _validate_redirect_uri(value: str) -> str:
     parsed = urlsplit(str(value or ""))
     host = (parsed.hostname or "").lower()
@@ -210,8 +219,12 @@ async def get_valid_threads_access_token() -> str:
                 params={"grant_type": "th_refresh_token", "access_token": token},
             )
     except httpx.RequestError as exc:
-        raise RuntimeError("Не удалось обновить Threads OAuth-токен.") from exc
+        raise ThreadsOAuthTemporaryError("Не удалось обновить Threads OAuth-токен.") from exc
     if response.status_code >= 400:
+        if _refresh_is_temporary(response.status_code):
+            raise ThreadsOAuthTemporaryError(
+                f"Threads временно не обновил OAuth-токен (HTTP {response.status_code})."
+            )
         raise RuntimeError(
             f"Threads не обновил OAuth-токен (HTTP {response.status_code}). Переподключи аккаунт."
         )
