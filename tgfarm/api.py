@@ -994,7 +994,15 @@ def _telegram_html(text: str) -> str:
     out = re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", out)
     out = re.sub(r"(?<![\w`])_([^_\n]+)_(?![\w])", r"<i>\1</i>", out)
     out = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", out)
-    out = re.sub(r"\[([^\]\n]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', out)
+    def _link(match: "re.Match[str]") -> str:
+        # Link targets come from an LLM and external sources: a `javascript:` or
+        # `data:` target would become a live link in the operator's panel.
+        label, target = match.group(1), match.group(2)
+        if target.lower().startswith(("http://", "https://", "tg://")):
+            return f'<a href="{target}">{label}</a>'
+        return f"{label} ({target})"
+
+    out = re.sub(r"\[([^\]\n]+)\]\(([^)\s]+)\)", _link, out)
     return out
 
 

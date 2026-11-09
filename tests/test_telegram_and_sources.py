@@ -385,3 +385,24 @@ def test_preview_escapes_html():
     from tgfarm.api import _telegram_html
 
     assert "<script>" not in _telegram_html("<script>alert(1)</script>")
+
+@pytest.mark.parametrize("target", [
+    "javascript:alert(document.cookie)",
+    "JaVaScRiPt:alert(1)",
+    "data:text/html;base64,AAAA",
+    "vbscript:x",
+    "&#106;avascript:alert(1)",
+])
+def test_preview_never_turns_an_unsafe_target_into_a_live_link(target):
+    from tgfarm.api import _telegram_html
+
+    out = _telegram_html(f"[жми]({target})")
+    assert "<a " not in out
+    assert "жми" in out
+
+
+def test_preview_keeps_http_and_tg_links():
+    from tgfarm.api import _telegram_html
+
+    assert '<a href="tg://user?id=1">' in _telegram_html("[x](tg://user?id=1)")
+    assert '<a href="https://a.invalid/?b=1&amp;c=2">' in _telegram_html("[x](https://a.invalid/?b=1&c=2)")
