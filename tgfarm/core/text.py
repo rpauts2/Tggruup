@@ -10,6 +10,7 @@ import hashlib
 import html
 import re
 import unicodedata
+from collections import Counter
 
 WORD_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 TAG_RE = re.compile(r"<[^>]+>")
@@ -86,15 +87,23 @@ def simhash(text: str, bits: int = 62) -> int:
 
     62 bits (not 64) so the value always fits a signed 64-bit column — SQLite
     INTEGER is signed, and an unsigned 64-bit fingerprint overflows on insert.
+
+    Counted per distinct n-gram, not per occurrence. The fingerprint is a sign
+    vote over the bits of each gram's hash, so `w` identical grams cast the same
+    vote `w` times: weighting the unique grams by their multiplicity is the same
+    number. That equivalence is what makes this linear in distinct grams instead
+    of linear in characters times 62 bits — the old loop spent 62 Python
+    iterations on every one of 77k grams (0.94 s for a 77 KB article), and the
+    pipeline calls this on every collected item.
     """
     vector = [0] * bits
-    grams = char_ngrams(text, 4)
-    if not grams:
+    weights = Counter(char_ngrams(text, 4))
+    if not weights:
         return 0
-    for gram in grams:
+    for gram, weight in weights.items():
         h = int.from_bytes(hashlib.blake2b(gram.encode(), digest_size=8).digest(), "big")
         for i in range(bits):
-            vector[i] += 1 if (h >> i) & 1 else -1
+            vector[i] += weight if (h >> i) & 1 else -weight
     out = 0
     for i in range(bits):
         if vector[i] > 0:

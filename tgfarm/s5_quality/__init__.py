@@ -428,6 +428,12 @@ def gate_facts(draft: DraftPost, persona: Persona) -> GateOutcome:
 
 
 REDUNDANCY_NGRAM = 6
+# A body that repeats one sentence over and over is not a post, whatever the
+# sentence says. The 6-gram check above compares hook against body and is blind
+# to a body repeating itself: 40 copies of one sentence passed both gates.
+REPEAT_SENTENCE_OCCURRENCES = 3
+REPEAT_SENTENCE_SHARE = 0.5
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
 
 def _ngrams(sequence: list[str], n: int) -> set[tuple[str, ...]]:
@@ -436,15 +442,51 @@ def _ngrams(sequence: list[str], n: int) -> set[tuple[str, ...]]:
     return {tuple(sequence[i : i + n]) for i in range(len(sequence) - n + 1)}
 
 
+def _repeated_sentence(text: str) -> tuple[str, int, int] | None:
+    """The sentence that dominates `text`, with its count and the total count.
+
+    Normalised case and whitespace before counting, because a farm that repeats
+    itself repeats itself with different capitalisation too.
+    """
+    seen: dict[str, int] = {}
+    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(text or "") if len(s.strip()) > 20]
+    if len(sentences) < REPEAT_SENTENCE_OCCURRENCES:
+        return None
+    for sentence in sentences:
+        key = " ".join(sentence.lower().split())
+        seen[key] = seen.get(key, 0) + 1
+    sentence, count = max(seen.items(), key=lambda pair: pair[1])
+    if count < REPEAT_SENTENCE_OCCURRENCES:
+        return None
+    if count / len(sentences) < REPEAT_SENTENCE_SHARE:
+        return None
+    return sentence, count, len(sentences)
+
+
 def gate_redundancy(draft: DraftPost, persona: Persona) -> GateOutcome:
-    """Within one post: the body must not restate the hook verbatim.
+    """Within one post: the body must not restate the hook, or itself.
 
     Measured on a shared 6-gram, not token overlap. Token overlap false-positives
     constantly on news copy — a post whose hook is "OpenAI выпустила GPT-5.5" and
     whose body opens with the same three proper nouns is writing correctly, not
     repeating itself. A genuine restatement shares a long contiguous run, and
     that is what this catches.
+
+    The hook comparison alone was not enough. A generated body that repeats one
+    sentence 40 times passed every gate and would have published: the reader gets
+    a wall of the same line, and the channel gets a spam complaint. So the body
+    is also checked against itself — a sentence carrying at least half of a body
+    of three or more sentences is a repetition loop, not writing.
     """
+    repeated = _repeated_sentence(draft.body)
+    if repeated is not None:
+        sentence, count, total = repeated
+        return GateOutcome(
+            False,
+            "redundancy",
+            f"body repeats one sentence {count} of {total} times: {sentence[:80]!r}",
+        )
+
     hook_tokens = tokens(draft.hook)
     body_tokens = tokens(draft.body)
     if len(hook_tokens) < REDUNDANCY_NGRAM:

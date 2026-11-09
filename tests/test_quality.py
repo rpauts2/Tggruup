@@ -251,6 +251,32 @@ def test_redundancy_gate_skips_short_hooks():
     assert gate_redundancy(draft(hook="Коротко.", body="Коротко. " * 30), BASE_PERSONA).passed
 
 
+def test_redundancy_gate_catches_a_body_that_repeats_one_sentence():
+    """A body of 40 copies of one line passed every gate and would have shipped.
+
+    The hook comparison cannot see it: the hook is a different sentence, so the
+    6-gram intersection is empty. The reader sees the same line 40 times, which
+    is the shape of a generation loop, not of writing.
+    """
+    sentence = "Компания сообщила о росте выручки в третьем квартале этого года."
+    outcome = gate_redundancy(
+        draft(hook="Рост выручки ускорился", body=" ".join([sentence] * 40)),
+        BASE_PERSONA,
+    )
+    assert not outcome.passed and outcome.gate == "redundancy"
+    assert "40" in outcome.reason
+
+
+def test_redundancy_gate_allows_a_sentence_repeated_twice():
+    """Two mentions of one sentence is emphasis; the guard must not eat it."""
+    sentence = "Компания сообщила о росте выручки в третьем квартале этого года."
+    body = (
+        f"{sentence} Аналитики ждали меньшего роста и пересматривают прогноз. "
+        f"{sentence} Акции выросли на два процента после публикации отчёта."
+    )
+    assert gate_redundancy(draft(hook="Рост выручки ускорился", body=body), BASE_PERSONA).passed
+
+
 def test_copyright_gate_rejects_reproduced_headline():
     """A body that is just the headline, with nothing added, is a scraped repost."""
     title = "регулятор обновил требования к отчётности компаний"
