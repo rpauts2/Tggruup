@@ -12,6 +12,29 @@ from tgfarm.db.session import get_engine, session_scope
 log = get_logger(__name__)
 
 
+def _scalar_defaults(table) -> dict[str, object]:
+    """`{column: value}` for every column whose model default is a fixed value.
+
+    A Python `default=` is a fixed value; a callable (``utcnow``) is not, because
+    seeding a row written last year with *today's* timestamp would invent history.
+    A `server_default` that is a plain string literal counts as well — it is the
+    value the column would have been created with, so it is what rows added
+    through `ALTER TABLE` (which never sees the server default) must be seeded
+    with. `CURRENT_TIMESTAMP`-style clause defaults are excluded for the same
+    reason `utcnow` is.
+    """
+    out: dict[str, object] = {}
+    for column in table.columns:
+        if column.default is not None:
+            if column.default.is_scalar:
+                out[column.name] = column.default.arg
+            continue
+        server = column.server_default
+        if server is not None and isinstance(server.arg, str):
+            out[column.name] = server.arg
+    return out
+
+
 def init_db(drop: bool = False) -> None:
     engine = get_engine()
     if drop:
@@ -64,7 +87,7 @@ def plan_additive_migrations(engine: Engine) -> list[str]:
 
 
 def apply_additive_migrations(engine: Engine) -> int:
-    """Add columns that exist in the models but not yet in the database.
+    """Add columns and seed defaults for rows written before the column existed.
 
     `create_all` only ever creates *tables*, so a model that gains a column is
     invisible to an already-provisioned database: every read of that column then
@@ -79,8 +102,29 @@ def apply_additive_migrations(engine: Engine) -> int:
     reaches a database provisioned before it existed, and the slowdown is
     invisible until the tables are large.
     """
+    inspector = inspect(engine)
+    live_tables = set(inspector.get_table_names())
+    live_columns: dict[str, set[str]] = {}
+    for tbl in live_tables:
+        live_columns[tbl] = {c["name"] for c in inspector.get_columns(tbl)}
+
+    # Capture which columns the models expect but the database lacks, before
+    # any DDL runs.  This lets us backfill only the tables that exist (the
+    # database may have posts/raw_items but not sources, and the boot must not
+    # crash).
+    pending: dict[str, dict[str, object]] = {}
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in live_tables:
+            continue
+        defaults = _scalar_defaults(table)
+        missing = {
+            col: defaults[col] for col in defaults if col not in live_columns.get(table_name, frozenset())
+        }
+        if missing:
+            pending[table_name] = missing
+
+    # Run all DDL (columns + indexes).
     statements = plan_additive_migrations(engine)
-    live_tables = set(inspect(engine).get_table_names())
     added = 0
     for statement in statements:
         with engine.begin() as conn:
@@ -94,28 +138,18 @@ def apply_additive_migrations(engine: Engine) -> int:
     if created_indexes:
         log.info("migrated %d missing index(es)", created_indexes)
 
-    if added:
-        # Seed model-level defaults for rows written before the column existed,
-        # so a null format does not reach the renderer.
+    # Seed model-level defaults for rows written before the column existed,
+    # so a null format does not reach the renderer. `pending` is the single
+    # owner of "which tables exist and which columns this boot added": the loop
+    # below must not re-derive either, or a guard here can rot unnoticed.
+    for table_name, values in pending.items():
+        assignments = ", ".join(f'"{col}" = :{col}' for col in values)
+        condition = " OR ".join(f'"{col}" IS NULL' for col in values)
+        sql = f'UPDATE "{table_name}" SET {assignments} WHERE {condition}'
         with engine.begin() as conn:
-            conn.execute(text("UPDATE posts SET post_format = 'news' WHERE post_format IS NULL"))
-            conn.execute(
-                text("UPDATE posts SET generation_provider = 'offline' WHERE generation_provider IS NULL")
-            )
-            conn.execute(text("UPDATE sources SET last_yield = 0 WHERE last_yield IS NULL"))
-            conn.execute(text("UPDATE sources SET idle_streak = 0 WHERE idle_streak IS NULL"))
-            if "post_stats" in live_tables:
-                for column in ("impressions", "opens"):
-                    conn.execute(
-                        text(f"UPDATE post_stats SET {column} = 0 WHERE {column} IS NULL")
-                    )
-    if "channels" in live_tables:
-        # `platform` is newer than most existing databases; rows seeded before
-        # it existed must not be mistaken for a non-Telegram surface.
-        with engine.begin() as conn:
-            conn.execute(
-                text("UPDATE channels SET platform = 'telegram' WHERE platform IS NULL")
-            )
+            conn.execute(text(sql), dict(values))
+        log.info("backfilled %s: %s", table_name, ", ".join(values))
+
     return added
 
 
