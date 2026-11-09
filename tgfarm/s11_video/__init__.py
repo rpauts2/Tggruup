@@ -173,6 +173,7 @@ async def download(candidate: MediaCandidate, timeout: float = 120.0) -> MediaCa
         assert_public_http_url(candidate.url)
     except UnsafeURLError as exc:
         candidate.refusal = f"url refused: {exc}"
+        candidate.local_path = None
         return candidate
 
     try:
@@ -180,11 +181,13 @@ async def download(candidate: MediaCandidate, timeout: float = 120.0) -> MediaCa
             async with client.stream("GET", candidate.url, headers=headers) as resp:
                 if resp.status_code != 200:
                     candidate.refusal = f"HTTP {resp.status_code}"
+                    candidate.local_path = None
                     return candidate
 
                 length_header = resp.headers.get("content-length")
                 if length_header and int(length_header) > limit_bytes:
                     candidate.refusal = REFUSAL_REASONS["too_large"]
+                    candidate.local_path = None
                     return candidate
 
                 written = 0
@@ -196,6 +199,10 @@ async def download(candidate: MediaCandidate, timeout: float = 120.0) -> MediaCa
                             target.unlink(missing_ok=True)
                             candidate.refusal = REFUSAL_REASONS["too_large"]
                             candidate.bytes = written
+                            # The file is gone, so the path must not survive: the
+                            # facade decides on `local_path`, and a dead path there
+                            # reads as a usable video.
+                            candidate.local_path = None
                             return candidate
                         handle.write(chunk)
                 candidate.bytes = written
