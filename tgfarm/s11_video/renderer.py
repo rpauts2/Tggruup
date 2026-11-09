@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -372,7 +373,7 @@ def _encode(
     vf: str,
     frames_per_scene: int,
     target: Path,
-    timeout_s: int,
+    timeout_s: float,
 ) -> subprocess.CompletedProcess:
     """Run one FFmpeg pass. Kept separate so the caption retry reuses the shape."""
     command = [
@@ -607,6 +608,7 @@ def render_short_video(
             )
             subtitles = {"burned": True, "reason": "", "path": None}
         timeout_s = max(120, int(duration * 3))
+        encode_deadline = time.monotonic() + timeout_s
         completed = _encode(
             binary, input_pattern=input_pattern, vf=vf,
             frames_per_scene=frames_per_scene, target=target, timeout_s=timeout_s,
@@ -620,9 +622,13 @@ def render_short_video(
                 "reason": f"ffmpeg rejected the subtitles filter: {_ffmpeg_hint(completed.stderr)}",
                 "path": None,
             }
+            remaining_s = encode_deadline - time.monotonic()
+            if remaining_s <= 0:
+                target.unlink(missing_ok=True)
+                raise RuntimeError("FFmpeg превысил лимит времени рендеринга видео.")
             completed = _encode(
                 binary, input_pattern=input_pattern, vf=vf.split(",subtitles=")[0],
-                frames_per_scene=frames_per_scene, target=target, timeout_s=timeout_s,
+                frames_per_scene=frames_per_scene, target=target, timeout_s=remaining_s,
             )
         if completed.returncode != 0:
             target.unlink(missing_ok=True)
