@@ -687,8 +687,6 @@ class RedditAdapter:
     submit_url = "https://oauth.reddit.com/api/submit"
 
     def __init__(self) -> None:
-        import asyncio
-
         self._token = ""
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()

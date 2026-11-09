@@ -171,7 +171,6 @@ def _find_current_sources(
 ) -> list[dict]:
     if not query_terms:
         return []
-    from tgfarm.db.models import RawItem
 
     cutoff = now - timedelta(days=max(1, min(180, int(days))))
     clauses = []
