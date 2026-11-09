@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -307,6 +308,36 @@ async def _reddit_preflight(
         "community_policy_assessment": verdict,
     }
     return None
+
+
+_publish_budget_seconds: ContextVar[float] = ContextVar("crosspost_publish_budget", default=60.0)
+_publish_tasks: set[asyncio.Task] = set()
+
+
+def _consume_publish_task(task: asyncio.Task) -> None:
+    _publish_tasks.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _publish_with_deadline(adapter: Any, payload: CrosspostPayload) -> CrosspostResult:
+    task = asyncio.create_task(adapter.publish(payload))
+    # Retain abandoned sends until cleanup finishes without letting late outcomes rewrite the journal.
+    _publish_tasks.add(task)
+    task.add_done_callback(_consume_publish_task)
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=_publish_budget_seconds.get())
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if not done:
+        task.cancel()
+        return CrosspostResult(
+            platform=payload.platform,
+            status="unknown",
+            error="Publish deadline expired; reconcile the destination before retrying.",
+        )
+    return task.result()
 
 
 async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostResult]:
@@ -610,6 +641,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 **(payload.meta or {}),
                 "video_render_error": video_render_error,
             }
+        publish_cancelled = False
         if settings.live:
             if name == "reddit" and reddit_submission:
                 # Selection, tailoring and the first rules check all happened
@@ -622,7 +654,14 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                     results.append(blocked)
                     continue
             try:
-                result = await adapter.publish(payload)
+                result = await _publish_with_deadline(adapter, payload)
+            except asyncio.CancelledError:
+                publish_cancelled = True
+                result = CrosspostResult(
+                    platform=name,
+                    status="unknown",
+                    error="Publish await cancelled; reconcile the destination before retrying.",
+                )
             except Exception as exc:  # noqa: BLE001 - leave a durable state after adapter faults
                 from tgfarm.s9_growth.adapters import ambiguous_crosspost_error, crosspost_retry_after_seconds
 
@@ -640,6 +679,8 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             )
             log.info("[dry-run] crosspost %s -> %s", post.public_id, name)
         await to_thread(log_result, post.public_id, result, attempt)
+        if publish_cancelled:
+            raise asyncio.CancelledError
         results.append(result)
     return results
 
@@ -766,11 +807,15 @@ async def run_crossposts(limit: int = 20) -> dict[str, int]:
             "skipped_concurrent": 1,
         }
 
+    outer_seconds = max(60, min(900, getattr(get_settings(), "cycle_timeout_min", 60) * 60))
+    # Task-local sharing preserves two-argument callers and bounds only adapter awaits, not preparation or DB work.
+    budget_token = _publish_budget_seconds.set(outer_seconds / max(1, int(limit)))
     if current is not None:
         _active_crosspost_task = current
     try:
         return await _run_crossposts_once(limit)
     finally:
+        _publish_budget_seconds.reset(budget_token)
         if current is not None and _active_crosspost_task is current:
             _active_crosspost_task = None
 
