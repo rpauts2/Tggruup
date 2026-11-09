@@ -75,10 +75,30 @@ MANUAL_DESTINATIONS: dict[str, dict[str, Any]] = {
 }
 
 
+# Emphasis markers are stripped only when they are a real paired delimiter at a
+# word boundary. A blind str.replace() also ate "__init__", "my__var", "2**10"
+# and a lone "~~" inside a quoted string, corrupting technical articles.
+_BOLD_RE = re.compile(r"(?<![\w*])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![\w*])", re.S)
+_UNDER_RE = re.compile(r"(?<![\w_])__(?=\S)(.+?)(?<=\S)__(?![\w_])", re.S)
+_STRIKE_RE = re.compile(r"(?<![\w~])~~(?=\S)(.+?)(?<=\S)~~(?![\w~])", re.S)
+_CODE_RE = re.compile(r"(?<!`)`(?=\S)([^`]+)`(?!`)")
+_WORD_ONLY_RE = re.compile(r"\w+")
+_HASHTAG_RE = re.compile(r"#[0-9a-zа-яё_]+", re.I)
+_LETTER_RE = re.compile(r"[a-zа-яё]", re.I)
+
+
+def _strip_dunder(match: re.Match[str]) -> str:
+    # "__init__" and "__name__" are Python identifiers, not emphasis. Only a
+    # multi-word "__bold text__" span is unambiguous enough to strip.
+    return match.group(0) if _WORD_ONLY_RE.fullmatch(match.group(1)) else match.group(1)
+
+
 def _clean_text(value: str) -> str:
     text = str(value or "")
-    for source, target in (("**", ""), ("__", ""), ("~~", ""), (chr(96), "")):
-        text = text.replace(source, target)
+    text = _BOLD_RE.sub(r"\1", text)
+    text = _UNDER_RE.sub(_strip_dunder, text)
+    text = _STRIKE_RE.sub(r"\1", text)
+    text = _CODE_RE.sub(r"\1", text)
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
@@ -105,6 +125,20 @@ def _body_limit(platform_id: str) -> int:
     return ceiling
 
 
+def _body_limit_source(platform_id: str, limit: int) -> str:
+    """Say who owns the applied cap: the profile's editor limit or our ceiling.
+
+    The internal ceiling is TgFarm's own unverified cap and must not be
+    presented to the operator as a platform rule.
+    """
+    from tgfarm.platform_editorial import PROFILES
+
+    declared = (PROFILES.get(platform_id) or {}).get("max_chars")
+    if isinstance(declared, int) and declared == limit:
+        return f"лимит {limit} символов задан редакторским профилем площадки в TgFarm"
+    return f"внутренний лимит пакета {limit}, не подтверждённый лимит площадки"
+
+
 def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, Any]:
     """Build a platform-specific manual handoff with no external side effects."""
     platform_id = str(platform_id or "").strip().lower()
@@ -115,6 +149,7 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
     body = _clean_text(str(post.get("body") or ""))
     if not title or not body:
         raise ValueError("Для ручного пакета нужны заголовок и основной текст поста.")
+    notes: list[str] = list(spec.get("notes") or [])
 
     tags: list[str] = []
     seen_tags: set[str] = set()
@@ -125,35 +160,93 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
             seen_tags.add(tag.casefold())
 
     lines = body.splitlines()
-    if lines and all(re.fullmatch(r"#[0-9a-zа-яё_]+", item.strip(), re.I) for item in lines[-1].split()):
-        body = "\n".join(lines[:-1]).strip()
+    tail = lines[-1].split() if lines else []
+    remainder = "\n".join(lines[:-1]).strip()
+    # Only an unambiguous word-hashtag line is redundant with `hashtags`.
+    # "#1" / "#2024" are numbered references, and the strip must never empty the
+    # body: the operator still needs something to paste.
+    if (
+        tail
+        and remainder
+        and all(_HASHTAG_RE.fullmatch(token) and _LETTER_RE.search(token) for token in tail)
+    ):
+        body = remainder
 
     sources: list[dict[str, str]] = []
     seen_urls: set[str] = set()
+    skipped_sources = 0
     for item in post.get("sources") or []:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
-        if not url.startswith("https://") or url in seen_urls:
+        # http:// is a legitimate attribution and this module never fetches it.
+        # Anything else stays out of the body, but the drop is now disclosed.
+        if not url.startswith(("http://", "https://")) or len(sources) >= 8:
+            skipped_sources += 1
+            continue
+        if url in seen_urls:
             continue
         seen_urls.add(url)
         sources.append({"title": str(item.get("title") or "")[:180], "url": url})
-        if len(sources) >= 8:
-            break
+    if skipped_sources:
+        notes.append(
+            f"Часть источников не попала в пакет ({skipped_sources} шт.): пакет принимает только "
+            "http/https и не больше 8 ссылок. Проверь остальные вручную."
+        )
     if sources:
         source_text = "\n".join(
             f"{item['title'] + ': ' if item['title'] else ''}{item['url']}" for item in sources
         )
         body = "\n\n".join(part for part in (body, "Источники:\n" + source_text) if part)
     cta = _clean_text(str(post.get("cta") or ""))
-    if cta and cta not in body:
-        body = "\n\n".join(part for part in (body, cta) if part)
+    if cta:
+        # A plain substring test both missed a CTA differing only in whitespace
+        # and matched one buried inside an unrelated word ("лайк" in "Дизлайк"),
+        # silently dropping the call to action. Match the phrase, not any slice.
+        pattern = r"\s+".join(re.escape(token) for token in cta.split())
+        if cta[0].isalnum():
+            pattern = r"(?<!\w)" + pattern
+        if cta[-1].isalnum():
+            pattern += r"(?!\w)"
+        if not re.search(pattern, body):
+            body = "\n\n".join(part for part in (body, cta) if part)
 
     if platform_id == "pikabu" and len(title) > 140:
         raise ValueError("Заголовок Пикабу длиннее 140 символов. Сократи его перед ручной отправкой.")
-    body = truncate(body, _body_limit(platform_id))
+    if platform_id == "twitch" and len(title) > 140:
+        raise ValueError(
+            "Заголовок Twitch длиннее 140 символов — это документированный лимит названия трансляции. "
+            "Сократи его перед ручной отправкой."
+        )
+    if platform_id == "twitch":
+        notes.append("Лимит заголовка Twitch — 140 символов (dev.twitch.tv/docs/api/reference).")
+    elif platform_id == "pikabu":
+        notes.append(
+            f"Заголовок: {len(title)} символов. Порог 140 — существующее правило пакета TgFarm, "
+            "официальным источником Пикабу не подтверждён."
+        )
+    else:
+        # No official limit could be verified for these destinations, so disclose
+        # the length instead of inventing a plausible-looking number.
+        notes.append(
+            f"Заголовок: {len(title)} символов. Лимит заголовка площадки не подтверждён официальным "
+            "источником — проверь его в редакторе перед отправкой."
+        )
+
+    body_limit = _body_limit(platform_id)
+    original_body = body.strip()
+    body = truncate(body, body_limit)
+    if body != original_body:
+        # truncate() is silent. Handing a cut article over as "ready" without
+        # saying so is an honesty defect, so the cut is always disclosed.
+        notes.append(
+            f"Текст сокращён с {len(original_body)} до {len(body)} символов: "
+            f"{_body_limit_source(platform_id, body_limit)}. Полный текст остался в TgFarm — "
+            "проверь, что обрезка не потеряла важное."
+        )
 
     media = []
+    name_counts: dict[str, int] = {}
     for item in post.get("media") or []:
         if not isinstance(item, dict):
             continue
@@ -162,13 +255,23 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
             continue
         kind = str(item.get("kind") or "image")
         if kind == "video":
-            media.append({"kind": kind, "url": f"/api/media/{sha}", "filename": f"tgfarm-{post.get('id','post')}.mp4"})
+            ext = "mp4"
         elif kind in {"article_image", "ai_art", "template", "infographic", "quote"}:
-            media.append({"kind": kind, "url": f"/api/media/{sha}", "filename": f"tgfarm-{post.get('id','post')}.jpg"})
+            ext = "jpg"
+        else:
+            continue
+        # Every image used to collapse onto one filename, so a multi-image
+        # package handed the operator N downloads with a single name.
+        name_counts[ext] = name_counts.get(ext, 0) + 1
+        suffix = "" if name_counts[ext] == 1 else f"-{name_counts[ext]}"
+        media.append({
+            "kind": kind,
+            "url": f"/api/media/{sha}",
+            "filename": f"tgfarm-{post.get('id', 'post')}{suffix}.{ext}",
+        })
 
     needs_video = bool(spec.get("needs_video"))
     has_video = any(item["kind"] == "video" for item in media)
-    notes = list(spec.get("notes") or [])
     if needs_video and not has_video:
         notes.insert(0, "Вертикального MP4 пока нет. Сначала создай его в TgFarm, затем вернись к ручной подготовке.")
     return {
