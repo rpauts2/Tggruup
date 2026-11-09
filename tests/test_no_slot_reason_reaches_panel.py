@@ -61,13 +61,22 @@ const document = {
   addEventListener: () => {},
   querySelector: (sel) => (sel in nodes ? nodes[sel] : null),
 };
-const render = new Function("document", "window", body + "\n; return renderEditorialPlan;")(
+const RuntimeDate = class extends Date {
+  toLocaleString(...args) {
+    return super.toLocaleString(...(args.length ? args : [spec.locale]));
+  }
+};
+const render = new Function("document", "window", "Date", body + "\n; return renderEditorialPlan;")(
   document,
   {},
+  RuntimeDate,
 );
 render(spec.plan, spec.history);
+const slot = spec.plan.entries[0]?.slot_at;
 process.stdout.write(JSON.stringify({ entries: nodes["#plan-entries"].innerHTML,
-                                      meta: nodes["#plan-meta"].textContent }));
+                                      meta: nodes["#plan-meta"].textContent,
+                                      expected_slot: slot
+                                        ? new Date(slot).toLocaleString(spec.locale) : "" }));
 """
 
 SLICES = [
@@ -86,7 +95,7 @@ def script() -> str:
     return client.get("/ui/app.js").text
 
 
-def _render(tmp_path: Path, plan: dict) -> dict[str, str]:
+def _render(tmp_path: Path, plan: dict, *, locale: str = "ru-RU") -> dict[str, str]:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node недоступен — поведение панели не проверить")
@@ -94,7 +103,7 @@ def _render(tmp_path: Path, plan: dict) -> dict[str, str]:
     harness.write_text(HARNESS, encoding="utf-8")
     spec_path = tmp_path / "plan_case.json"
     spec_path.write_text(
-        json.dumps({"slices": SLICES, "ids": NODES, "plan": plan, "history": []},
+        json.dumps({"slices": SLICES, "ids": NODES, "plan": plan, "history": [], "locale": locale},
                    ensure_ascii=False),
         encoding="utf-8",
     )
@@ -193,17 +202,18 @@ def test_produce_entries_keep_the_phrase_that_is_true_for_them(tmp_path):
     )
 
 
-def test_a_booked_minute_is_still_a_moment_on_the_clock(tmp_path):
+@pytest.mark.parametrize("locale", ["ru-RU", "en-US"])
+def test_a_booked_minute_is_still_a_moment_on_the_clock(tmp_path, locale):
     rendered = _render(tmp_path, _plan([
         _entry(slot_at="2026-11-10T09:30:00+00:00",
                payload={"needs_media": True, "no_slot_reason": "horizon_occupied"}),
-    ]))
+    ]), locale=locale)
     entries = rendered["entries"]
     assert "слот не забронирован" not in entries, (
         "the cause is a leftover of the build, not a statement about a booked entry"
     )
-    # Rendered in the operator's own zone, so only the fact of a date is pinned.
-    assert "10.11.2026" in entries, entries
+    assert rendered["expected_slot"]
+    assert rendered["expected_slot"] in entries, entries
 
 
 def test_the_server_actually_sends_the_cause_with_each_schedule_entry():
