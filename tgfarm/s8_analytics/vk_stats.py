@@ -16,8 +16,9 @@ import httpx
 from sqlalchemy import func, select
 
 from tgfarm.core.logging import get_logger
+from tgfarm.core.security import redact_sensitive_text
 from tgfarm.core.settings import get_settings
-from tgfarm.db.models import CrosspostLog, Post
+from tgfarm.db.models import CrosspostLog
 from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
@@ -124,10 +125,11 @@ def _metric(item: dict[str, Any], key: str) -> int:
 async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, Any]:
     """Read VK metrics for recent posts and append one snapshot per post.
 
-    ``status`` is one of ``blocked`` (a precondition is missing and no request
-    was made), ``collected`` (at least one snapshot written) or ``empty`` (the
-    read succeeded and there was genuinely nothing to write). ``reason`` always
-    says which, so an operator never has to guess whether zero means failure.
+    ``status`` is one of ``blocked`` (a precondition is missing or VK rejects
+    the token), ``collected`` (at least one snapshot written), ``failed`` (fetch
+    errors and no snapshots written) or ``empty`` (nothing to fetch or a successful
+    read with nothing to write). ``reason`` explains zero-snapshot outcomes so an
+    operator never has to guess whether zero means failure.
     """
     from tgfarm.s8_analytics import record_post_stat
 
@@ -185,12 +187,16 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
             items = await _fetch(chunk, token=token)
         except Exception as exc:  # noqa: BLE001 - metrics must not break the cycle
             message = str(exc)
+            errors.append(f"{type(exc).__name__}: {redact_sensitive_text(exc, limit=120)}")
             if "error 27" in message:
                 return {
-                    "status": "blocked",
+                    "status": "collected" if saved else "blocked",
                     "checked": checked,
                     "saved": saved,
+                    "unattributed": unattributed,
                     "attributable": attributable,
+                    "planned": len(wall_ids),
+                    "errors": errors,
                     "reason": (
                         "ВК отклонил токен ошибкой 27: wall.getById читается только "
                         "пользовательским токеном (VK_USER_TOKEN), групповой не может"
@@ -200,7 +206,6 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
                         "user token (VK_USER_TOKEN), a group token cannot read them"
                     ),
                 }
-            errors.append(f"{type(exc).__name__}: {str(exc)[:120]}")
             continue
         for item in items:
             checked += 1
@@ -223,7 +228,7 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
         log.warning("s8: vk metrics partially failed: %s", "; ".join(errors[:3]))
     log.info("s8: vk metrics checked=%d saved=%d unattributed=%d", checked, saved, unattributed)
     payload: dict[str, Any] = {
-        "status": "collected" if saved else "empty",
+        "status": "collected" if saved else ("failed" if errors else "empty"),
         "checked": checked,
         "saved": saved,
         "unattributed": unattributed,
@@ -232,10 +237,15 @@ async def collect_and_record(*, days: int = 14, limit: int = 100) -> dict[str, A
         "errors": errors,
     }
     if not saved:
-        payload["reason"] = (
-            f"ВК вернул {checked} записей, из них {unattributed} не сопоставлены с "
-            f"нашими публикациями; снимков не записано"
-        )
+        if errors:
+            payload["reason"] = (
+                f"сбор метрик ВК не выполнился: {'; '.join(errors[:3])}; снимков не записано"
+            )
+        else:
+            payload["reason"] = (
+                f"ВК вернул {checked} записей, из них {unattributed} не сопоставлены с "
+                f"нашими публикациями; снимков не записано"
+            )
     return payload
 
 

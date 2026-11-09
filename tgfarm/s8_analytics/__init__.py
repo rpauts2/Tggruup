@@ -30,6 +30,9 @@ from tgfarm.db.session import session_scope
 
 log = get_logger(__name__)
 
+# Match formats.py: stay below SQLite's historical bound for IN parameters.
+_IN_CHUNK = 500
+
 
 @dataclass
 class PostMetrics:
@@ -134,9 +137,11 @@ def recent_metrics(days: int = 7) -> list[PostMetrics]:
             select(PostRow).where(PostRow.status == "published", PostRow.published_at >= cutoff)
         ).scalars().all()
         stats: dict[int, PostStat] = {}
-        if rows:
+        post_ids = [row.id for row in rows]
+        for start in range(0, len(post_ids), _IN_CHUNK):
+            chunk = post_ids[start : start + _IN_CHUNK]
             for stat in session.execute(
-                select(PostStat).where(PostStat.post_id.in_([r.id for r in rows]))
+                select(PostStat).where(PostStat.post_id.in_(chunk))
             ).scalars().all():
                 if stat.post_id not in stats or stat.collected_at > stats[stat.post_id].collected_at:
                     stats[stat.post_id] = stat
@@ -428,8 +433,9 @@ def write_daily_stats() -> int:
             row.posts = len(items)
             row.views_sum = sum(i.views for i in items)
             row.reactions_sum = sum(i.reactions for i in items)
-            row.err = round(
-                sum(i.engagement for i in items) / max(1, sum(i.views for i in items)), 4
+            row.err = (
+                round(sum(i.engagement for i in items) / row.views_sum, 4)
+                if row.views_sum else None
             )
             persona = config.persona(channel_id)
             if persona:
