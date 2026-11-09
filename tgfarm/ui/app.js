@@ -1098,6 +1098,7 @@
   function renderReport(report) {
     const hours = report.hours || {};
     const entries = Object.entries(hours)
+      .filter(([, v]) => typeof v === "number" && Number.isFinite(v))
       .map(([h, v]) => [Number(h), v])
       .sort((a, b) => a[0] - b[0]);
     const best = entries.length
@@ -1117,12 +1118,13 @@
       const cols = [];
       for (let h = 0; h < 24; h++) {
         const v = byHour.get(h);
+        const measured = byHour.has(h);
         const isBest = best && h === best[0];
-        const height = v ? Math.max(4, (v / max) * 100) : 0;
-        const tip = v
+        const height = measured ? Math.max(4, (v / max) * 100) : 0;
+        const tip = measured
           ? `${h}:00 — качество ${pct(v)}`
           : `${h}:00 — нет данных`;
-        cols.push(`<div class="bar-col ${isBest ? "is-best" : ""} ${v ? "" : "is-empty"}"
+        cols.push(`<div class="bar-col ${isBest ? "is-best" : ""} ${measured ? "" : "is-empty"}"
              title="${tip}">
           <div class="bar" style="height:${height}%"></div>
           ${h % 3 === 0 || isBest ? `<div class="bar-label">${h}</div>` : `<div class="bar-label"></div>`}
@@ -1132,15 +1134,17 @@
     }
 
     const angles = report.angles || {};
-    const angleScore = (v) => v.quality ?? v.er ?? 0;
-    const topAngle = Object.entries(angles).sort((a, b) => angleScore(b[1]) - angleScore(a[1]))[0];
+    const angleScore = (v) => v.quality ?? v.er;
+    const topAngle = Object.entries(angles)
+      .filter(([, v]) => typeof angleScore(v) === "number" && Number.isFinite(angleScore(v)))
+      .sort((a, b) => angleScore(b[1]) - angleScore(a[1]))[0];
     const fleet = report.fleet || {};
     $("#report-breakdown").innerHTML = `
       ${kv("Постов за окно", n(fleet.posts))}
       ${kv("Просмотров", n(fleet.views_total))}
       ${kv("Вовлечений", n(fleet.engagement_total))}
       ${kv("Средний ER", rate(fleet.avg_er))}
-      ${kv("Лучший угол", topAngle ? `${esc(topAngle[0])} (${pct(angleScore(topAngle[1]))})` : "—")}
+      ${kv("Лучший угол", topAngle ? `${topAngle[0]} (${pct(angleScore(topAngle[1]))})` : "—")}
       ${kv("Лучший час", best ? `${best[0]}:00 (${pct(best[1])})` : "—")}
       ${experimentsBlock(report)}`;
     renderPortfolio(report.portfolio || {});
@@ -1374,9 +1378,9 @@
     const ho = hold.holdout || {};
     const guard = report.guardrail || {};
     const styles = report.hook_styles || {};
-    const styleLine = Object.entries(styles).map(([k, v]) => `${esc(k)} ${pct(v.quality || 0)}`).join(" · ");
+    const styleLine = Object.entries(styles).map(([k, v]) => `${k} ${rate(v.quality)}`).join(" · ");
     const parts = [];
-    if (ho.n) parts.push(`holdout: ${n(ho.n)} постов, качество ${pct(ho.quality || 0)} против ${pct(a.quality || 0)} у основных`);
+    if (ho.n) parts.push(`holdout: ${n(ho.n)} постов, качество ${rate(ho.quality)} против ${rate(a.quality)} у основных`);
     if (guard.posts) parts.push(`разнообразие: ${pct(guard.duplicate_gram_share || 0)} повторов 6-грамм`);
     if (styleLine) parts.push(`стили хуков: ${styleLine}`);
     if (!parts.length) return "";
