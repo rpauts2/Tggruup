@@ -470,6 +470,13 @@ class XAdapter:
     platform = "x"
     max_title = 100
     max_body = 260  # X counts a URL as 23 chars regardless of real length
+    max_tweet_length = 280
+
+    @classmethod
+    def _tweet_text(cls, payload: CrosspostPayload) -> str:
+        """Title and body share one tweet: the limit applies to the joined text."""
+        joined = f"{payload.title}\n\n{payload.text}".strip()
+        return truncate(joined, cls.max_tweet_length)
 
     def _credentials(self) -> tuple[str, str]:
         settings = get_settings()
@@ -503,7 +510,7 @@ class XAdapter:
                 resp = await client.post(
                     "https://api.x.com/2/tweets",
                     headers={"Authorization": f"Bearer {token}"},
-                    json={"text": f"{payload.title}\n\n{payload.text}".strip()},
+                    json={"text": self._tweet_text(payload)},
                 )
                 resp.raise_for_status()
             tweet_id = str(resp.json().get("data", {}).get("id", ""))

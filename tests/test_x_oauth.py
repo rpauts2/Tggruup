@@ -194,3 +194,41 @@ async def test_x_adapter_posts_with_oauth_user_token(monkeypatch):
     assert result.url == "https://x.com/i/status/123456789"
     assert FakePostClient.calls[0][0] == "https://api.x.com/2/tweets"
     assert FakePostClient.calls[0][1]["headers"]["Authorization"] == "Bearer user-context-token"
+
+
+@pytest.mark.asyncio
+async def test_x_adapter_never_sends_more_than_one_tweet_of_text(monkeypatch):
+    import httpx
+    from tgfarm import x_oauth
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth import adapters
+
+    class PostResponse(FakeResponse):
+        def __init__(self):
+            super().__init__({"data": {"id": "1"}})
+
+    class FakePostClient(FakeXOAuthClient):
+        calls = []
+
+        async def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return PostResponse()
+
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        x_access_token="t", x_refresh_token="r", x_user_id="1",
+    ))
+
+    async def token():
+        return "tok"
+
+    monkeypatch.setattr(x_oauth, "get_valid_x_access_token", token)
+    monkeypatch.setattr(httpx, "AsyncClient", FakePostClient)
+    # Title (<=100) and body (<=260) are each within their own limit, but they are
+    # joined into one tweet, so the sum used to reach ~362 characters.
+    result = await adapters.XAdapter().publish(CrosspostPayload(
+        platform="x", title="Т" * 100, text="слово " * 70,
+    ))
+    assert result.status == "posted"
+    sent = FakePostClient.calls[0][1]["json"]["text"]
+    assert 0 < len(sent) <= 280
+    assert sent.startswith("Т" * 50)
