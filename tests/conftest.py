@@ -13,7 +13,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("TGFARM_MODE", "off")
+# Forced, not `setdefault`: an operator shell that exports `TGFARM_MODE=live`
+# (this machine does) made the whole suite run against the live gate, and five
+# tests that assert on dry-run behaviour failed on a correct commit. A test run
+# must not inherit a publishing mode from whoever started it. CI sets `off` too,
+# so this only removes a difference between machines.
+os.environ["TGFARM_MODE"] = "off"
 os.environ.setdefault("LLM_PROVIDERS", "offline")
 os.environ.setdefault("EMBEDDING_PROVIDER", "local")
 
@@ -30,8 +35,8 @@ os.environ.setdefault("EMBEDDING_PROVIDER", "local")
 # The values are read back out of `Settings`, never written here, so this list
 # cannot encode an operator preference and it follows a default change in
 # `tgfarm/core/settings.py` automatically.
-# TGFARM_MODE / LLM_PROVIDERS / EMBEDDING_PROVIDER are deliberately absent: they
-# use `setdefault` above so CI can keep choosing them.
+# LLM_PROVIDERS / EMBEDDING_PROVIDER are deliberately absent: they use
+# `setdefault` above so CI can keep choosing them.
 DETERMINISTIC_TUNABLES = (
     # pipeline scoring and cadence
     "HEAT_THRESHOLD",
@@ -116,6 +121,13 @@ DETERMINISTIC_TUNABLES = (
 # Environment variables win over .env in pydantic-settings, so blanking them is
 # enough. Without this a test that touches an adapter publishes to the real
 # channel — which is exactly what happened once with the VK wall.
+#
+# This list is a minimum, not the rule: `_all_credential_aliases()` derives the
+# full set from `Settings` itself, because a hand-kept list of 45 names silently
+# missed 37 credential fields (TikTok, Instagram, Facebook, YouTube, Tumblr,
+# Pinterest, OK, Medium, WeChat, Douyin, Telegraph, VK_USER_TOKEN...). Those
+# reached `Settings` inside pytest whenever the operator's environment had them
+# and `TGFARM_MODE=live`, so a test could have published for real.
 OFFLINE_CREDENTIALS = (
     "VK_ACCESS_TOKEN",
     "VK_GROUP_ID",
@@ -165,6 +177,68 @@ OFFLINE_CREDENTIALS = (
 )
 
 
+#: Name fragments that mark a `Settings` field as a credential. Kept broad on
+#: purpose: a token that leaks into a test can publish, and a false positive
+#: only blanks a value the test was not supposed to have anyway.
+_CREDENTIAL_FRAGMENTS = (
+    "TOKEN", "SECRET", "PASSWORD", "ACCESS", "REFRESH",
+    "ACCOUNT_ID", "API_ID", "API_HASH", "CLIENT_ID", "KEY",
+)
+
+#: Names that match a fragment above but hold a policy switch, not a secret.
+#: Blanking `TGFARM_REQUIRE_TOKEN` would silently switch off the API's token
+#: requirement for every test that touches the desktop endpoints.
+_NON_CREDENTIAL_ALIASES = frozenset({"TGFARM_REQUIRE_TOKEN"})
+
+
+def _all_credential_aliases() -> dict[str, str]:
+    """Alias -> blank value for every credential `Settings` declares.
+
+    Derived from the model so a new platform cannot be forgotten: the previous
+    hand-written list covered 45 of 82 credential-like fields, and the missing 37
+    (TikTok, Instagram, Facebook, YouTube, Tumblr, Pinterest, OK, Medium, WeChat,
+    Douyin, Telegraph, VK_USER_TOKEN) stayed readable inside pytest.
+    """
+    blanks = _credential_defaults()
+    # The hand-kept list stays as a floor: it also names settings that are not
+    # credentials by name (a group id, a channel id) but must still be blank.
+    for name in OFFLINE_CREDENTIALS:
+        blanks.setdefault(name, "")
+    return blanks
+
+
+def is_credential_alias(alias: str) -> bool:
+    """Whether a `Settings` alias names something that must never leak."""
+    if alias.upper() in _NON_CREDENTIAL_ALIASES:
+        return False
+    upper = alias.upper()
+    return any(fragment in upper for fragment in _CREDENTIAL_FRAGMENTS)
+
+
+def _credential_defaults() -> dict[str, str]:
+    """Blank a credential at the value its own type accepts.
+
+    An `int` expiry stamped as `""` fails validation, and a `bool` flag as `""`
+    turns into a parse error, so each field is blanked with its declared default
+    formatted for the environment.
+    """
+    from tgfarm.core.settings import Settings
+
+    blanks: dict[str, str] = {}
+    for name, field in Settings.model_fields.items():
+        alias = field.alias or name
+        if not is_credential_alias(alias):
+            continue
+        default = field.default
+        if isinstance(default, bool):
+            blanks[alias] = _format_default(default)
+        elif isinstance(default, int):
+            blanks[alias] = "0"
+        else:
+            blanks[alias] = ""
+    return blanks
+
+
 def _format_default(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -209,8 +283,8 @@ def _reset_caches() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _offline_env():
     """Force offline credentials and a deterministic image setting."""
-    for name in OFFLINE_CREDENTIALS:
-        os.environ[name] = ""
+    for name, blank in _all_credential_aliases().items():
+        os.environ[name] = blank
     os.environ["IMAGE_ENABLED"] = "false"
     os.environ["VIDEO_ENABLED"] = "false"
     _reset_caches()
@@ -270,6 +344,12 @@ def _no_network(monkeypatch_session=None):
 def _isolate_db(tmp_path_factory, _offline_env) -> Path:
     db_path = tmp_path_factory.mktemp("db") / "test.db"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    # Both roots, not just media: `data_root()` is where the admin token, the
+    # browser profiles, the assisted-draft journal and the benchmark artifacts
+    # live. `TGFARM_MEDIA_DIR` alone used to be a no-op — nothing in `tgfarm/`
+    # read it — so a test run wrote into the operator's `data/`: 1281 media files
+    # and a rewritten `platform_auth_checks.json` were the evidence.
+    os.environ["TGFARM_DATA_DIR"] = str(tmp_path_factory.mktemp("data"))
     os.environ["TGFARM_MEDIA_DIR"] = str(tmp_path_factory.mktemp("media"))
 
     _reset_caches()

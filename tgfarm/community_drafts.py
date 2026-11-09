@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from tgfarm.core.logging import get_logger
-from tgfarm.core.settings import DATA_DIR
+from tgfarm.core.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -50,7 +50,7 @@ class CommunityDraftError(RuntimeError):
 
 
 def _state_path() -> Path:
-    return DATA_DIR / _DRAFT_STATE
+    return get_settings().data_root() / _DRAFT_STATE
 
 
 def _read_state_unlocked() -> dict[str, Any]:
@@ -455,7 +455,7 @@ async def prepare_community_draft(
         spec = PLATFORMS[platform_id]
         target_url = _safe_target_url(platform_id, target_url)
         target_name = str(target_name or "").strip()[:120]
-        profile = DATA_DIR / "platform_profiles" / platform_id
+        profile = get_settings().data_root() / "platform_profiles" / platform_id
         if not profile.is_dir() or not any(profile.iterdir()):
             raise CommunityDraftError(
                 f"Сначала нажми «Войти в браузере» для {spec['name']} и авторизуйся в открытом окне."
@@ -1074,7 +1074,7 @@ async def publish_pikabu_scheduled(
                 "Браузерная автоматизация Пикабу недоступна: не установлен playwright "
                 '(pip install -e ".[dzen]").'
             ) from exc
-        profile = DATA_DIR / "platform_profiles" / "pikabu"
+        profile = get_settings().data_root() / "platform_profiles" / "pikabu"
         scheduled_at = plan_pikabu_schedule(
             now=datetime.now(UTC),
             entries=_read_state(),

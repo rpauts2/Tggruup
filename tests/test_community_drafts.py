@@ -79,7 +79,7 @@ def test_image_count_is_limited_per_platform(tmp_path: Path):
 
 
 def test_state_registry_is_written_atomically_and_keeps_only_supplied_metadata(tmp_path, monkeypatch):
-    monkeypatch.setattr(community_drafts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(community_drafts.get_settings(), "data_dir", str(tmp_path))
     community_drafts._write_state({
         "pikabu:post-123": {
             "status": "prepared",
@@ -103,7 +103,7 @@ def test_fingerprint_changes_when_image_bytes_change(tmp_path: Path):
 
 
 def test_state_entry_updates_merge_across_platforms(tmp_path, monkeypatch):
-    monkeypatch.setattr(community_drafts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(community_drafts.get_settings(), "data_dir", str(tmp_path))
     community_drafts._write_state_entry(
         "vc_ru:post-123",
         {"status": "preparing", "draft_url": "https://vc.ru/editor/123"},

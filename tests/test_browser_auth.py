@@ -27,7 +27,7 @@ def test_vkhost_parser_rejects_untrusted_hosts_and_paths():
 
 
 def test_browser_session_status_does_not_create_empty_profiles(tmp_path, monkeypatch):
-    monkeypatch.setattr(browser_auth, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(browser_auth.get_settings(), "data_dir", str(tmp_path))
     status = browser_auth.browser_session_status("instagram")
     assert status["available"] is True
     assert status["profile_saved"] is False
@@ -35,7 +35,7 @@ def test_browser_session_status_does_not_create_empty_profiles(tmp_path, monkeyp
 
 
 def test_browser_session_status_reports_only_safe_metadata(tmp_path, monkeypatch):
-    monkeypatch.setattr(browser_auth, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(browser_auth.get_settings(), "data_dir", str(tmp_path))
     profile = tmp_path / "platform_profiles" / "reddit"
     profile.mkdir(parents=True)
     (profile / "profile-marker").write_text("not a credential", encoding="utf-8")

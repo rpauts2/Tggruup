@@ -533,8 +533,7 @@ _AUTH_URLS: dict[str, str] = {
 }
 
 def _auth_state_path() -> Path:
-    from tgfarm.core.settings import DATA_DIR
-    return DATA_DIR / "platform_auth_checks.json"
+    return get_settings().data_root() / "platform_auth_checks.json"
 
 
 def _read_auth_checks() -> dict[str, dict[str, Any]]:

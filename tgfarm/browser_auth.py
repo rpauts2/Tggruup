@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from tgfarm.core.logging import get_logger
-from tgfarm.core.settings import DATA_DIR, get_settings
+from tgfarm.core.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -94,13 +94,13 @@ _AUTH_COOKIE_MARKERS: dict[str, tuple[str, ...]] = {
 def _profile_dir(platform_id: str) -> Path:
     if not re.fullmatch(r"[a-z0-9_]{2,40}", platform_id):
         raise ValueError("Недопустимый идентификатор площадки.")
-    path = DATA_DIR / "platform_profiles" / platform_id
+    path = get_settings().data_root() / "platform_profiles" / platform_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _state_path(platform_id: str) -> Path:
-    root = DATA_DIR / "platform_auth"
+    root = get_settings().data_root() / "platform_auth"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{platform_id}.json"
 
@@ -108,7 +108,7 @@ def _state_path(platform_id: str) -> Path:
 def browser_session_status(platform_id: str) -> dict[str, Any]:
     """Return safe status metadata. Never expose cookie/database contents."""
     path = _state_path(platform_id)
-    profile = DATA_DIR / "platform_profiles" / platform_id
+    profile = get_settings().data_root() / "platform_profiles" / platform_id
     saved = False
     checked_at = None
     state = "not_started"
@@ -270,7 +270,7 @@ async def capture_vkhost_token(timeout_s: int = 420) -> dict[str, Any]:
     from playwright.async_api import async_playwright
     import httpx
 
-    profile = DATA_DIR / "platform_profiles" / "vkhost"
+    profile = get_settings().data_root() / "platform_profiles" / "vkhost"
     profile.mkdir(parents=True, exist_ok=True)
     timeout = max(60, min(1800, int(timeout_s)))
     started = time.monotonic()

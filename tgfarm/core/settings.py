@@ -115,6 +115,13 @@ class Settings(BaseSettings):
     # reachable from the network unless the operator says so. `api_token` pins
     # the secret in .env instead of the generated file, which is what a packaged
     # desktop build does when it starts its own server.
+    # Where the farm keeps everything it writes: the admin token, browser
+    # profiles, the assisted-draft journal, benchmark artifacts. Empty means
+    # `ROOT/data`, which is right for a checkout and wrong for a test run: the
+    # suite used to write into the operator's live tree because these paths were
+    # module constants, and `TGFARM_MEDIA_DIR` in conftest was read by nothing.
+    data_dir: str = Field(default="", alias="TGFARM_DATA_DIR")
+    media_dir: str = Field(default="", alias="TGFARM_MEDIA_DIR")
     api_host: str = Field(default="127.0.0.1", alias="TGFARM_API_HOST")
     api_port: int = Field(default=8000, alias="TGFARM_API_PORT")
     api_token: str = Field(default="", alias="TGFARM_API_TOKEN")
@@ -665,28 +672,31 @@ class Settings(BaseSettings):
         return self.live and bool(self.telegram_bot_token) and bool(self.channel_ids)
 
     def media_root(self) -> Path:
-        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        return MEDIA_DIR
+        root = Path(self.media_dir) if self.media_dir else MEDIA_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     def data_root(self) -> Path:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        return DATA_DIR
+        root = Path(self.data_dir) if self.data_dir else DATA_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     def dzen_profile_path(self) -> Path:
-        root = Path(self.dzen_profile_dir) if self.dzen_profile_dir else DATA_DIR / "dzen_profile"
+        root = Path(self.dzen_profile_dir) if self.dzen_profile_dir else self.data_root() / "dzen_profile"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
     def video_root(self) -> Path:
-        root = Path(self.video_download_dir) if self.video_download_dir else DATA_DIR / "video"
+        root = Path(self.video_download_dir) if self.video_download_dir else self.data_root() / "video"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return Settings()
+    settings = Settings()
+    settings.data_root()
+    return settings
 
 
 def reset_settings_cache() -> None:

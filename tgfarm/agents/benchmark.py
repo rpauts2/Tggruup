@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from tgfarm.core.settings import DATA_DIR, get_settings
+from tgfarm.core.settings import get_settings
 from tgfarm.db.models import AIUsage, Cluster as ClusterRow, RawItem as RawItemRow
 from tgfarm.db.session import session_scope
 
@@ -202,7 +202,7 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def aggregate_benchmarks(directory: Path | None = None) -> dict[str, Any]:
     """Read experiment summaries without exposing post text or local paths."""
-    folder = directory or (DATA_DIR / "agent_benchmarks")
+    folder = directory or (get_settings().data_root() / "agent_benchmarks")
     records = _read_records(folder)
     summary = summarize_records(records)
     recent: list[dict[str, Any]] = []
@@ -277,7 +277,7 @@ async def run_paired_benchmark(
         "drafts_persisted": False,
         "usage_scopes": {"control": control_scope, "strategy": strategy_scope},
     }
-    artifact = DATA_DIR / "agent_benchmarks" / f"{run_id}.json"
+    artifact = get_settings().data_root() / "agent_benchmarks" / f"{run_id}.json"
     _write_record(artifact, record)
 
     try:

@@ -17,7 +17,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from conftest import DETERMINISTIC_TUNABLES, OFFLINE_CREDENTIALS
+from conftest import (
+    DETERMINISTIC_TUNABLES,
+    OFFLINE_CREDENTIALS,
+    _all_credential_aliases,
+    is_credential_alias,
+)
 
 from tgfarm.core.settings import Settings
 
@@ -102,14 +107,86 @@ def test_a_local_env_file_cannot_move_a_pinned_tunable(tmp_path: Path):
 
 
 def test_credential_and_mode_isolation_survives_the_pin():
-    """The half of the isolation the new pin must not undo."""
+    """The half of the isolation the new pin must not undo.
+
+    Checked against the blanking value, not against truthiness: an `int` expiry
+    or a `bool` switch has to be blanked at a value its own type parses (`0`,
+    `false`), and those are truthy strings for `os.environ.get`.
+    """
     settings = Settings()
     assert os.environ.get("TGFARM_MODE", "off") == "off"
     assert "offline" in settings.provider_chain
-    leaked = [name for name in OFFLINE_CREDENTIALS if os.environ.get(name)]
+    expected = _all_credential_aliases()
+    leaked = [
+        f"{name}={os.environ.get(name)!r}"
+        for name, blank in expected.items()
+        if os.environ.get(name) != blank
+    ]
     assert not leaked, f"credentials present in the test environment: {leaked}"
     assert settings.image_enabled is False
     assert settings.video_enabled is False
+
+
+def test_every_credential_field_is_blanked_not_just_the_listed_ones():
+    """The hand-kept list covered 45 of 82 credential fields; the rest leaked.
+
+    `Settings` is the source of truth, so a credential field that neither appears
+    in `OFFLINE_CREDENTIALS` nor matches a credential name fragment must not
+    exist, and no credential may be readable through the model in a test run.
+    """
+    by_alias = _by_alias()
+    expected = _all_credential_aliases()
+    uncovered = sorted(alias for alias in by_alias if alias not in expected and is_credential_alias(alias))
+    assert not uncovered, f"credential fields conftest never blanks: {uncovered}"
+
+    settings = Settings()
+    readable = []
+    for alias in expected:
+        entry = by_alias.get(alias)
+        if entry is None:
+            continue
+        value = getattr(settings, entry[0])
+        if value not in (None, "", 0, False):
+            readable.append(f"{alias}={value!r}")
+    assert not readable, f"credentials still readable through Settings: {readable}"
+
+
+def test_a_test_run_never_writes_into_the_operator_data_tree():
+    """`data_root()` and `media_root()` must point outside the checkout.
+
+    The suite shares one database and one media tree, and until this was fixed
+    they were the operator's: `DATA_DIR`/`MEDIA_DIR` were module constants and
+    the `TGFARM_MEDIA_DIR` conftest set was read by nothing in `tgfarm/`. A run
+    left 1281 files in `data/media` and rewrote `data/platform_auth_checks.json`,
+    and — worse — `core/apiauth.token_path()` read the live admin token from
+    `data/api_token`, so every API test authenticated with a real secret.
+    """
+    from tgfarm.core.settings import ROOT
+
+    settings = Settings()
+    live = ROOT / "data"
+    for name, root in (("data_root", settings.data_root()), ("media_root", settings.media_root())):
+        assert live not in root.parents and root != live, (
+            f"{name}() is {root}, inside the operator's live tree: a test run would "
+            "read the real admin token and write media the farm later publishes"
+        )
+        assert root.is_dir(), f"{name}() returned {root}, which was not created"
+
+
+def test_the_admin_token_is_not_the_one_on_disk():
+    """A test must not authenticate with the token the running farm uses."""
+    from tgfarm.core import apiauth
+    from tgfarm.core.settings import ROOT
+
+    live_path = ROOT / "data" / apiauth.TOKEN_FILENAME
+    token_path = apiauth.token_path()
+    assert token_path != live_path, f"the test run points at the live token {live_path}"
+    if live_path.exists():
+        live_token = live_path.read_text(encoding="utf-8").strip()
+        assert apiauth.ensure_token() != live_token, (
+            "the suite generated or read the live admin token; a test that leaks it "
+            "leaks a working credential for the running farm"
+        )
 
 
 def test_heat_promotion_uses_the_pinned_default():
