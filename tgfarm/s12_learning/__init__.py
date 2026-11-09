@@ -969,26 +969,27 @@ def _learn_channel(channel_id):
     try:
         from tgfarm.db.models import CrosspostLog, PipelineRun
         with session_scope() as session:
-            # Ascending: the newest row of a stage must win the per-stage upsert.
+            # Read the newest window, then upsert oldest-first so the newest value wins.
             runs = session.execute(
-                select(PipelineRun).where(PipelineRun.status == "error").order_by(PipelineRun.created_at.asc()).limit(20)
+                select(PipelineRun).where(PipelineRun.status == "error")
+                .order_by(PipelineRun.created_at.desc(), PipelineRun.id.desc()).limit(20)
             ).scalars().all()
-            for r in runs:
+            for r in reversed(runs):
                 if r.error:
                     _upsert(channel_id, "mistake", "pipeline:%s" % r.stage,
                             {"stage": r.stage, "error": r.error[:300]}, 0.0, 1, 0.2,
                             "stage %s failed: %s" % (r.stage, r.error[:120]))
-            # Ascending: the newest row of a platform must win the per-platform upsert.
             logs = session.execute(
-                select(CrosspostLog).where(CrosspostLog.status == "failed").order_by(CrosspostLog.created_at.asc()).limit(20)
+                select(CrosspostLog).where(CrosspostLog.status == "failed")
+                .order_by(CrosspostLog.created_at.desc(), CrosspostLog.id.desc()).limit(20)
             ).scalars().all()
-            for lg in logs:
+            for lg in reversed(logs):
                 if lg.error:
                     _upsert(channel_id, "mistake", "crosspost:%s" % lg.platform,
                             {"platform": lg.platform, "error": lg.error[:300]}, 0.0, 1, 0.2,
                             "crosspost %s failed: %s" % (lg.platform, lg.error[:120]))
     except Exception as exc:
-        log.debug("mistake collection failed: %s", exc)
+        log.warning("mistake collection failed: %s", exc)
 
     return {"lessons": learned}
 
