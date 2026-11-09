@@ -1139,7 +1139,7 @@
       ${kv("Постов за окно", n(fleet.posts))}
       ${kv("Просмотров", n(fleet.views_total))}
       ${kv("Вовлечений", n(fleet.engagement_total))}
-      ${kv("Средний ER", pct(fleet.avg_er))}
+      ${kv("Средний ER", rate(fleet.avg_er))}
       ${kv("Лучший угол", topAngle ? `${esc(topAngle[0])} (${pct(angleScore(topAngle[1]))})` : "—")}
       ${kv("Лучший час", best ? `${best[0]}:00 (${pct(best[1])})` : "—")}
       ${experimentsBlock(report)}`;

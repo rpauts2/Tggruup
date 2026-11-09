@@ -45,6 +45,11 @@ class PostMetrics:
     reactions: int = 0
     comments: int = 0
     forwards: int = 0
+    #: Was a `post_stats` snapshot ever collected for this post? Absence is not
+    #: zero: a post nobody measured and a post that earned nothing are different
+    #: facts, and the fields below used to divide by every published row, which
+    #: averaged the first kind into the second.
+    measured: bool = False
 
     @property
     def engagement(self) -> int:
@@ -90,10 +95,16 @@ class ChannelReport:
     channel_id: str
     title: str
     posts_7d: int = 0
-    avg_views: float = 0.0
-    avg_er: float = 0.0
-    avg_ctr: float = 0.0
-    avg_read_rate: float = 0.0
+    #: How many of ``posts_7d`` ever got a ``post_stats`` snapshot — the
+    #: denominator of ``avg_views``/``avg_er`` below.
+    measured_7d: int = 0
+    #: A rate is ``None`` when its own denominator is empty: an unmeasured post
+    #: did not earn zero views, it never reported any (see ``_rate`` in
+    #: ``s8_analytics.formats`` and the P34 rule «absence is not zero»).
+    avg_views: float | None = None
+    avg_er: float | None = None
+    avg_ctr: float | None = None
+    avg_read_rate: float | None = None
     impressions_total: int = 0
     by_angle: dict[str, float] = field(default_factory=dict)
     by_hour: dict[int, float] = field(default_factory=dict)
@@ -101,6 +112,19 @@ class ChannelReport:
     best_angle: str | None = None
     subs: int | None = None
     err: float | None = None
+
+
+def _rate(total: float, size: int) -> float | None:
+    """A mean over ``size``, or ``None`` when there is nothing to mean over.
+
+    Same rule as ``s8_analytics.formats._rate`` and the P34 directive: «absence
+    is not zero». A published post nobody collected stats for did not earn zero
+    views — it never reported any, and averaging it in with measured posts drags
+    every average toward zero by exactly the share of unmeasured rows.
+    """
+    if size <= 0:
+        return None
+    return round(total / size, 4)
 
 
 def recent_metrics(days: int = 7) -> list[PostMetrics]:
@@ -134,6 +158,7 @@ def recent_metrics(days: int = 7) -> list[PostMetrics]:
                     reactions=stat.reactions if stat else 0,
                     comments=stat.comments if stat else 0,
                     forwards=stat.forwards if stat else 0,
+                    measured=stat is not None,
                 )
             )
     return out
@@ -150,13 +175,18 @@ def channel_report(channel_id: str, days: int = 7) -> ChannelReport:
         return report
 
     report.posts_7d = len(metrics)
-    report.avg_views = sum(m.views for m in metrics) / len(metrics)
-    report.avg_er = sum(m.er for m in metrics) / len(metrics)
+    # The denominator of a rate is the set of posts that were actually measured.
+    # `posts_7d`, `views_total` and `impressions_total` keep counting every
+    # published post, as they always did; only the averages move to the measured
+    # subset, because a post nobody collected stats for did not earn zero views.
+    measured = [m for m in metrics if m.measured]
+    report.measured_7d = len(measured)
+    report.avg_views = _rate(sum(m.views for m in measured), len(measured))
+    report.avg_er = _rate(sum(m.er for m in measured), len(measured))
     reported = [m for m in metrics if m.impressions]
     report.impressions_total = sum(m.impressions for m in metrics)
-    if reported:
-        report.avg_ctr = sum(m.ctr for m in reported) / len(reported)
-        report.avg_read_rate = sum(m.read_rate for m in reported) / len(reported)
+    report.avg_ctr = _rate(sum(m.ctr for m in reported), len(reported))
+    report.avg_read_rate = _rate(sum(m.read_rate for m in reported), len(reported))
 
     angles: dict[str, list[float]] = defaultdict(list)
     hours: dict[int, list[float]] = defaultdict(list)
@@ -174,6 +204,15 @@ def channel_report(channel_id: str, days: int = 7) -> ChannelReport:
 
 
 def fleet_summary(days: int = 7) -> dict:
+    """Per-channel and fleet totals over the window.
+
+    Counts (``posts``, ``views_total``, ``engagement_total``) keep covering every
+    published post; the rates divide by the measured subset only. ``measured``
+    travels beside each row so the panel can say what the rate was taken over —
+    and ``avg_views``/``avg_er`` are ``None``, never ``0.0``, when that subset is
+    empty. ``unmeasured_posts`` names the difference explicitly instead of
+    letting a fabricated zero speak for it.
+    """
     metrics = recent_metrics(days)
     by_channel: dict[str, list[PostMetrics]] = defaultdict(list)
     for m in metrics:
@@ -181,23 +220,29 @@ def fleet_summary(days: int = 7) -> dict:
 
     channels = []
     for channel_id, items in by_channel.items():
+        measured = [i for i in items if i.measured]
         channels.append(
             {
                 "channel_id": channel_id,
                 "posts": len(items),
+                "measured": len(measured),
+                "unmeasured_posts": len(items) - len(measured),
                 "views_total": sum(i.views for i in items),
-                "avg_views": round(sum(i.views for i in items) / len(items), 1),
-                "avg_er": round(sum(i.er for i in items) / len(items), 4),
+                "avg_views": _rate(sum(i.views for i in measured), len(measured)),
+                "avg_er": _rate(sum(i.er for i in measured), len(measured)),
             }
         )
     channels.sort(key=lambda c: c["views_total"], reverse=True)
 
+    measured_all = [m for m in metrics if m.measured]
     return {
         "window_days": days,
         "posts": len(metrics),
+        "measured": len(measured_all),
+        "unmeasured_posts": len(metrics) - len(measured_all),
         "views_total": sum(m.views for m in metrics),
         "engagement_total": sum(m.engagement for m in metrics),
-        "avg_er": round(sum(m.er for m in metrics) / len(metrics), 4) if metrics else 0.0,
+        "avg_er": _rate(sum(m.er for m in measured_all), len(measured_all)),
         "channels": channels,
     }
 

@@ -1356,7 +1356,8 @@ async def weekly_report() -> dict:
     lines = [
         "📊 Недельный отчёт фермы",
         f"Постов: {fleet.get('posts', 0)} · просмотров: {fleet.get('views_total', 0)}"
-        f" · ER: {fleet.get('avg_er', 0)}",
+        # `avg_er` is None when no post was measured — print the absence, not 0.
+        f" · ER: {fleet.get('avg_er') if fleet.get('avg_er') is not None else 'нет замеров'}",
         f"Данные для аналитики: {portfolio.get('measured_posts', 0)} измеренных постов за окно до 30 дней.",
         "Рекомендации по результатам (автоматически настройки не меняются):",
         *_weekly_portfolio_insight_lines(portfolio, limit=3),
