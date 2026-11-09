@@ -16,6 +16,7 @@ import random
 import re
 import time
 import uuid
+from bisect import bisect_right
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
@@ -667,16 +668,19 @@ def _checkable_numbers(text: str) -> list[str]:
     """Canonical numeric values, excluding leading numbered-list markers only."""
     text = text or ""
     values: list[str] = []
+    # One pass over the line breaks instead of two full-text scans per number:
+    # `rfind`/`find` inside the loop made this quadratic on long single-line text.
+    line_starts = [0]
+    line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
     for match in _NUMBER_RE.finditer(text):
         digits = _normalise_number(match.group())
         if not digits:
             continue
 
         # Don't treat "1." or "12)" at the start of a line as a content claim.
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.start())
-        if line_end < 0:
-            line_end = len(text)
+        row = bisect_right(line_starts, match.start()) - 1
+        line_start = line_starts[row]
+        line_end = line_starts[row + 1] - 1 if row + 1 < len(line_starts) else len(text)
         line = text[line_start:line_end]
         marker = re.match(r"\s*(?:[-*•]\s*)?(\d+)[.)](?:\s+|$)", line)
         if marker:
