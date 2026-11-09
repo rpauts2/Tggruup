@@ -16,6 +16,9 @@ from tgfarm.core.settings import get_settings
 
 API_BASE = "https://api.weixin.qq.com"
 THUMB_MAX_BYTES = 10 * 1024 * 1024
+#: WeChat errcodes that mean "the request was fine, the service is not": -1 is
+#: its system-busy answer, 45009 the daily quota, 45011 the per-minute one.
+_WECHAT_TRANSIENT_CODES = frozenset({-1, 45009, 45011})
 
 
 class WeChatAPIError(RuntimeError):
@@ -65,6 +68,21 @@ class WeChatOfficialAccountAdapter:
 
     @staticmethod
     def _api_error_result(exc: WeChatAPIError, *, draft_id: str | None = None) -> CrosspostResult:
+        # Codes WeChat documents as "try again later", not as a rejection of the
+        # request: -1 is its system-busy answer (and what `_check_response`
+        # substitutes for an errcode it cannot read), 45009 is the daily call
+        # quota and 45011 the per-minute one. Every one of them used to come back
+        # `permanent`, which the journal suppresses for good, so a busy minute at
+        # WeChat silently ended a delivery that had nothing wrong with it.
+        if exc.code in _WECHAT_TRANSIENT_CODES:
+            cooldown = 60 if exc.code == 45011 else 3600 if exc.code == 45009 else 300
+            return CrosspostResult(
+                platform='wechat',
+                status='failed',
+                remote_id=draft_id,
+                error=f'WeChat is temporarily unavailable (errcode {exc.code}); retry is scheduled.',
+                retry_after_seconds=cooldown,
+            )
         if exc.code == 48001 and draft_id:
             return CrosspostResult(
                 platform='wechat', status='permanent', remote_id=draft_id,

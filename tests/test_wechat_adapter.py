@@ -175,3 +175,55 @@ def test_wechat_html_renderer_escapes_untrusted_text():
     rendered = WeChatOfficialAccountAdapter._markdown_to_html('Title', '<script>alert(1)</script>')
     assert '<script>' not in rendered
     assert '&lt;script&gt;' in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('errcode', 'cooldown'),
+    [
+        (-1, 300),      # "system busy", and what an unreadable errcode becomes
+        (45009, 3600),  # daily call quota
+        (45011, 60),    # per-minute call quota
+    ],
+)
+async def test_wechat_transient_errcodes_are_retried_not_suppressed(
+    monkeypatch, tmp_path, errcode, cooldown
+):
+    """`permanent` is a suppression: a busy minute at WeChat ended the delivery.
+
+    WeChat documents -1 as system busy, 45009 as the daily quota and 45011 as the
+    per-minute one. All three used to be answered `permanent`, which the journal
+    never re-offers, so a delivery that had nothing wrong with it was dropped for
+    good. They are `failed` with a cooldown now.
+    """
+    from tgfarm.s9_growth.wechat import WeChatOfficialAccountAdapter
+
+    _install(monkeypatch, [
+        FakeResponse({'access_token': 'access-token', 'expires_in': 7200}),
+        FakeResponse({'media_id': 'cover-media-id'}),
+        FakeResponse({'media_id': 'draft-media-id'}),
+        # The rejection lands on freepublish/submit, after the draft exists.
+        FakeResponse({'errcode': errcode, 'errmsg': 'busy'}),
+    ])
+    adapter = WeChatOfficialAccountAdapter()
+    adapter.poll_delay_seconds = 0
+    adapter.poll_attempts = 1
+    result = await adapter.publish(_payload(_cover(tmp_path)))
+
+    assert result.status == 'failed', f"errcode {errcode} came back {result.status}"
+    assert result.retry_after_seconds == cooldown
+    assert result.remote_id == 'draft-media-id'
+
+
+@pytest.mark.asyncio
+async def test_wechat_a_real_rejection_stays_permanent(monkeypatch, tmp_path):
+    """The control: an unauthorized API is not a transient condition."""
+    from tgfarm.s9_growth.wechat import WeChatOfficialAccountAdapter
+
+    _install(monkeypatch, [
+        FakeResponse({'access_token': 'access-token', 'expires_in': 7200}),
+        FakeResponse({'errcode': 48001, 'errmsg': 'api unauthorized'}),
+    ])
+    result = await WeChatOfficialAccountAdapter().publish(_payload(_cover(tmp_path)))
+
+    assert result.status == 'permanent'
