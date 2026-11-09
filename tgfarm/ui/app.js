@@ -2320,6 +2320,33 @@
         ? `отказ по гейту ${esc(String(gateCode))} — счётчик журнала принадлежит тику, не посту`
         : "код гейта не прислан — называть отказ нечем");
     }
+    // A shifted booking has a second, stronger reading: was the move repaired by
+    // the rebind journal, and which tick did it. The four statuses are four facts
+    // — «совпало с журналом» is not «в журнале нет», and «журнал не прочитан до
+    // конца» is not «не найдено» — so each gets its own sentence, and a row with
+    // no `rebind` object at all (the flag is off) prints nothing rather than a
+    // verdict about a journal nobody consulted.
+    const rebind = r.rebind && typeof r.rebind === "object" ? r.rebind : null;
+    if (rebind) {
+      const status = typeof rebind.status === "string" ? rebind.status : "";
+      const journal = typeof rebind.journal_id === "number" || typeof rebind.journal_id === "string"
+        ? String(rebind.journal_id) : "";
+      const source = typeof rebind.source === "string" && rebind.source ? rebind.source : "";
+      if (status === "matched") {
+        const provenance = [
+          journal ? `журнал #${esc(journal)}` : "",
+          source ? `источник: ${esc(source)}` : "",
+        ].filter(Boolean).join(", ");
+        details.push("сдвиг исправлен правилом локальных часов"
+          + (provenance ? ` (${provenance})` : " (журнал не назвал ни записи, ни источника)"));
+      } else if (status === "incomplete") {
+        details.push("сдвиг не объяснён: журнал прочитан не до конца, «не найдено» утверждать нельзя");
+      } else if (status === "unread") {
+        details.push("журнал перепривязок не прочитан — исправление не измерено");
+      } else if (status === "not_found") {
+        details.push("в журнале нет записи об исправлении этого сдвига");
+      }
+    }
     return `<li class="plan-entry">${head}<div class="plan-entry-reasons">${details.join(" · ")}</div></li>`;
   }
 
