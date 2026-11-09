@@ -5558,15 +5558,21 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             )
 
     @app.post("/api/posts/{post_public_id}/video/render")
-    async def render_post_video(post_public_id: str) -> dict:
-        """Render an original vertical MP4 from an already-published post."""
+    async def render_post_video(post_public_id: str, subtitles: bool = False) -> dict:
+        """Render an original vertical MP4 from an already-published post.
+
+        `subtitles` burns the caption track into the same encode. It is a
+        per-request choice and defaults off: a build without libass, or a font
+        the operator has not checked, changes what a channel publishes, so the
+        automatic paths never ask for it and only an explicit render does.
+        """
         from tgfarm.s11_video.renderer import render_post_short
 
         detail = await io(_post_detail, post_public_id)
         if detail.get("status") != "published":
             raise HTTPException(409, "Короткое видео доступно после подтверждённой основной публикации.")
         try:
-            artifact = await io(render_post_short, post_public_id)
+            artifact = await io(render_post_short, post_public_id, burn_subtitles=bool(subtitles))
         except Exception as exc:  # noqa: BLE001 - no fake MP4 or fake success
             log.warning("short video render failed (%s)", type(exc).__name__)
             raise HTTPException(

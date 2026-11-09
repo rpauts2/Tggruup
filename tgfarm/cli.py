@@ -430,6 +430,7 @@ def cmd_video_render(args) -> int:
         args.post_id,
         force=bool(args.force),
         output_path=args.output or None,
+        burn_subtitles=bool(args.subtitles),
     )
     _print(artifact.as_dict())
     return 0
@@ -1616,6 +1617,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_video.add_argument("post_id", help="public ID of a saved post")
     p_video.add_argument("--output", default="", help="optional output .mp4 path")
     p_video.add_argument("--force", action="store_true", help="replace an existing output file")
+    p_video.add_argument(
+        "--subtitles",
+        action="store_true",
+        help="burn the caption track into the same encode (needs FFmpeg with libass)",
+    )
     p_video.set_defaults(func=cmd_video_render)
 
     p_publish = sub.add_parser("publish", help="force-publish one post")
