@@ -83,6 +83,28 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _body_limit(platform_id: str) -> int:
+    """Body cap for a handoff: the tighter of our ceiling and the editor's own limit.
+
+    The editorial profile owns the platform's real limit; a package that exceeds it
+    would be rejected by the editor the operator pastes it into.
+    """
+    from tgfarm.platform_editorial import PROFILES
+
+    if platform_id == "habr":
+        ceiling = 80_000
+    elif platform_id in {"whatsapp_channels", "twitch"}:
+        ceiling = 4_000
+    elif platform_id in {"vk_clips", "rutube", "snapchat", "douyin", "tiktok"}:
+        ceiling = 5_000
+    else:
+        ceiling = 30_000
+    declared = (PROFILES.get(platform_id) or {}).get("max_chars")
+    if isinstance(declared, int) and declared > 0:
+        return min(ceiling, declared)
+    return ceiling
+
+
 def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, Any]:
     """Build a platform-specific manual handoff with no external side effects."""
     platform_id = str(platform_id or "").strip().lower()
@@ -129,14 +151,7 @@ def build_manual_package(platform_id: str, post: dict[str, Any]) -> dict[str, An
 
     if platform_id == "pikabu" and len(title) > 140:
         raise ValueError("Заголовок Пикабу длиннее 140 символов. Сократи его перед ручной отправкой.")
-    if platform_id == "habr":
-        body = truncate(body, 80_000)
-    elif platform_id in {"whatsapp_channels", "twitch"}:
-        body = truncate(body, 4_000)
-    elif platform_id in {"vk_clips", "rutube", "snapchat", "douyin", "tiktok"}:
-        body = truncate(body, 5_000)
-    else:
-        body = truncate(body, 30_000)
+    body = truncate(body, _body_limit(platform_id))
 
     media = []
     for item in post.get("media") or []:
