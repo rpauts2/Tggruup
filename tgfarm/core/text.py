@@ -138,11 +138,66 @@ def keyword_set(text: str, limit: int = 12) -> set[str]:
     return seen
 
 
+#: Tokens a cut must not split: a markdown link, a bare URL, a hashtag or a
+#: mention. Cutting inside one publishes a dead target or a dangling bracket.
+_PROTECTED_TOKEN = re.compile(
+    r"\[([^\]\n]*)\]\(([^)\s]*)\)"  # [label](target)
+    r"|https?://\S+"  # bare URL
+    r"|(?<![\w#@])[#@][\w-]+",  # hashtag or mention
+    re.IGNORECASE,
+)
+
+
 def truncate(text: str, limit: int, ellipsis: str = "…") -> str:
+    """Cut text to `limit` characters without breaking a link or a markdown pair.
+
+    Every platform path ends here (`distribution`, adapters, manual packages), so
+    a cut that lands inside `https://…` ships a dead link, and a cut inside
+    `[label](url)` ships a dangling bracket. A markdown link that straddles the
+    cut keeps its label and loses its target; a bare URL that straddles it is
+    dropped whole, because half a link is worse than none.
+    """
     text = (text or "").strip()
+    if limit <= 0:
+        return ""
+    dropped = False
+    while len(text) > limit:
+        room = max(0, limit - len(ellipsis))
+        straddling = next(
+            (
+                match
+                for match in _PROTECTED_TOKEN.finditer(text)
+                if match.start() < room < match.end()
+            ),
+            None,
+        )
+        if straddling is None:
+            break
+        label = straddling.group(1)
+        if label is None:
+            # A bare URL or a tag: nothing readable survives, so stop before it.
+            head = text[: straddling.start()]
+            if head.strip():
+                return _finish_cut(head, limit, ellipsis, force_ellipsis=True)
+            # Nothing but the link: an empty post helps nobody, so keep a plain cut.
+            break
+        collapsed = text[: straddling.start()] + label + text[straddling.end() :]
+        if len(collapsed) >= len(text):
+            head = text[: straddling.start()]
+            if head.strip():
+                return _finish_cut(head, limit, ellipsis, force_ellipsis=True)
+            break
+        text = collapsed
+        dropped = True
+    return _finish_cut(text, limit, ellipsis, force_ellipsis=dropped)
+
+
+def _finish_cut(text: str, limit: int, ellipsis: str, *, force_ellipsis: bool = False) -> str:
+    """Trim to the limit on a word boundary and mark the omission."""
     if len(text) <= limit:
-        return text
-    cut = text[: max(0, limit - len(ellipsis))]
+        return text + ellipsis if force_ellipsis and text else text
+    room = max(0, limit - len(ellipsis))
+    cut = text[:room]
     space = cut.rfind(" ")
     if space > limit * 0.6:
         cut = cut[:space]
