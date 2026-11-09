@@ -218,13 +218,44 @@ def test_reasons_absent_and_reasons_empty_keep_different_words(block):
 def test_the_reason_histogram_is_escaped(block):
     histogram = block[block.index("function execReasonChips") : block.index("function execJobChips")]
     assert "Object.entries(reasons)" in histogram
-    assert "execChip(code, execCount(count))" in histogram
+    # The count always goes through the measured-number formatter, and the label
+    # is chosen from a closed map — never interpolated from the server's key.
+    assert "execCount(count)" in histogram
+    assert "EXEC_REASON[code]" in histogram, (
+        "the code must be looked up in the panel's own vocabulary, not printed as a sentence"
+    )
     chip = block[block.index("const execChip") : block.index("function execReasonChips")]
     assert "${esc(label)}: ${esc(value)}" in chip, (
         "a reason code is stored plan text: an unescaped key is the XSS hole"
     )
     for raw in ("${code}", "${count}", "${key}", "${value}", "${label}"):
         assert raw not in block, f"raw interpolation of {raw!r}"
+
+
+def test_both_no_slot_causes_are_named_and_kept_apart(block):
+    """The builder holds a `schedule` entry for two opposite reasons.
+
+    `horizon_occupied` means "try later", `no_legal_hours` means "the channel's
+    window is the problem" — and until the cause was carried into the panel both
+    printed the same friendly phrase. An unknown cause keeps its verbatim code,
+    because a code nobody agreed on may not borrow a label we do understand.
+    """
+    labels = block[block.index("const EXEC_REASON") : block.index("function execReasonChips")]
+    for code in ("horizon_occupied", "no_legal_hours", "no_slot_planned"):
+        assert f"{code}:" in labels, code
+    assert "освободится позже" in labels and "нет легальных часов" in labels
+    assert "EXEC_REASON[code]" in block
+    # Every code the executor can emit has a sentence, or the panel is a token list.
+    from tgfarm import plan_execution
+
+    emitted = {
+        value
+        for name, value in vars(plan_execution).items()
+        if name.startswith("REASON_") and isinstance(value, str)
+    }
+    assert emitted, "no reason codes found in tgfarm/plan_execution.py"
+    missing = sorted(code for code in emitted if f"{code}:" not in labels)
+    assert not missing, f"codes with no sentence in the panel: {missing}"
 
 
 def test_the_plan_sub_block_is_omitted_when_there_is_no_plan(block):

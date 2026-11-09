@@ -2035,9 +2035,33 @@
       not_yet: "в горизонте",
       unknown: "без ответа",
     };
+    // A `schedule` decision with no slot is not "по готовности": the builder
+    // chose the action and then found no minute to book, and the consumer holds
+    // the entry under that cause. The builder already names which of the two it
+    // was (`payload.no_slot_reason`), and they ask the operator for opposite
+    // things — «поставить позже» versus «настроить часы канала» — so printing
+    // one phrase for both, or the friendlier "по готовности", sends him to the
+    // wrong lever. An unrecognised cause keeps its verbatim code: a code nobody
+    // agreed on must not borrow a label we do understand.
+    const NO_SLOT_LABELS = {
+      horizon_occupied: "слот не забронирован: горизонт занят — освободится позже",
+      no_legal_hours: "слот не забронирован: у канала нет легальных часов публикации",
+    };
+    const slotCell = (e) => {
+      if (e.slot_at) return new Date(e.slot_at).toLocaleString();
+      if (e.action === "schedule") {
+        const cause = e.payload && typeof e.payload === "object" ? e.payload.no_slot_reason : null;
+        if (typeof cause === "string" && cause) {
+          return NO_SLOT_LABELS[cause] || `слот не забронирован: ${cause}`;
+        }
+        // Written before the cause existed, or written by a path that had none.
+        return "слот не забронирован — причина не записана";
+      }
+      return "по готовности";
+    };
     rows.innerHTML = entries.length
       ? `<ul class="plan-entries">${entries.map((e) => {
-          const slot = e.slot_at ? new Date(e.slot_at).toLocaleString() : "по готовности";
+          const slot = slotCell(e);
           const reasons = (e.reasons || []).filter(Boolean);
           const channel = e.channel_title || (e.channel && e.channel.title) || e.channel_id || "—";
           const state = e.outcome && e.outcome.state ? String(e.outcome.state) : "";
@@ -2091,8 +2115,44 @@
   const execCount = (v) => (typeof v === "number" && Number.isFinite(v) ? n(v) : EXECUTION_UNKNOWN);
   const execChip = (label, value) => `<span class="plan-chip">${esc(label)}: ${esc(value)}</span>`;
 
+  // The executor's refusal vocabulary (`tgfarm/plan_execution.py::REASON_*`),
+  // written out once so the operator reads a cause and not a token. Only the two
+  // codes that used to share one name get a sentence that tells them apart: the
+  // builder holds a `schedule` entry under `horizon_occupied` when a later minute
+  // exists and under `no_legal_hours` when none ever will, and «поставить позже»
+  // and «настроить часы канала» are different jobs for the reader. Every other
+  // code keeps its own short label; an absent code prints verbatim.
+  const EXEC_REASON = {
+    plan_execution_disabled: "исполнитель выключен флагом",
+    no_active_plan: "активного плана нет",
+    plan_action_hold: "решение плана — удержать",
+    produce_entry_not_generated_here: "материал готовит другая стадия",
+    unknown_action: "неизвестное действие в записи плана",
+    gated_post_missing: "черновика под записью нет",
+    already_scheduled: "уже запланировано",
+    post_not_gated: "пост не в состоянии ожидания",
+    channel_missing: "канал записи не найден",
+    channel_disabled: "канал выключен",
+    capability_not_publishable: "площадка не умеет публиковать сама",
+    channel_daily_cap: "дневной лимит канала исчерпан",
+    platform_daily_cap: "дневной лимит площадки исчерпан",
+    ai_daily_budget_exhausted: "дневной бюджет AI исчерпан",
+    horizon_occupied: "горизонт занят: слот освободится позже",
+    no_legal_hours: "у канала нет легальных часов публикации",
+    no_slot_planned: "слот не забронирован, причина не записана",
+    slot_not_due: "срок брони ещё не наступил",
+    slot_outside_local_hours: "слот вне локальных часов канала",
+    slot_booking_rebounded: "слот плана исправлен на ближайший легальный",
+    handover_refused: "передача в очередь отказана",
+  };
+
   function execReasonChips(reasons) {
-    return Object.entries(reasons).map(([code, count]) => execChip(code, execCount(count)));
+    return Object.entries(reasons).map(([code, count]) => {
+      const label = EXEC_REASON[code];
+      // The code stays beside the sentence: it is what the operator greps for in
+      // the journal, and an unknown code must still be readable as itself.
+      return execChip(label ? label + " · " + code : code, execCount(count));
+    });
   }
 
   function execJobChips(jobs) {
