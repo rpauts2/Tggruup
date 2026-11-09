@@ -978,7 +978,10 @@ class ThreadsAdapter:
                 error="Threads OAuth expired or could not be refreshed; reconnect the account.",
             )
 
-        body = f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip()[:self.max_body]
+        body = truncate(
+            f"{str(payload.title or '').strip()}\n\n{str(payload.text or '').strip()}".strip(),
+            self.max_body,
+        )
         if not body:
             return CrosspostResult(
                 platform=self.platform, status="permanent",

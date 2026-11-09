@@ -116,3 +116,29 @@ async def test_threads_adapter_skips_without_credentials(monkeypatch):
         platform="threads", title="Hello", text="Body"
     ))
     assert result.status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_threads_adapter_clips_to_limit_on_a_word_boundary(monkeypatch):
+    import httpx
+
+    from tgfarm import threads_oauth
+    from tgfarm.s9_growth import adapters
+
+    FakeThreadsClient.calls = []
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        threads_user_id="u", threads_access_token="t", threads_username="n",
+    ))
+
+    async def get_token():
+        return "t"
+
+    monkeypatch.setattr(threads_oauth, "get_valid_threads_access_token", get_token)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeThreadsClient)
+    await adapters.ThreadsAdapter().publish(CrosspostPayload(
+        platform="threads", title="Заголовок", text="длинноеслово " * 80,
+    ))
+    sent = FakeThreadsClient.calls[0][2]["data"]["text"]
+    assert len(sent) <= 500
+    assert sent.endswith("…")
+    assert not sent[:-1].endswith("длинноесло")  # cut at a word end, not mid-word
