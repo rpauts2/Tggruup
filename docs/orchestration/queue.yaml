@@ -1,7 +1,7 @@
 # docs/orchestration/queue.yaml — активная инженерная очередь TgFarm
 #
 # Это НЕ вторая дорожная карта. Продуктовый статус блоков живёт только в
-# `docs/EXECUTION_PLAN.md` (реестр P1…P108); здесь — выполняемые задания, ссылки
+# `docs/EXECUTION_PLAN.md` (реестр продуктовых P-пунктов); здесь — выполняемые задания, ссылки
 # на P-пункты (`p_refs`) и то, что диспетчер обязан знать, чтобы не устроить
 # конфликт: владелец, база, разрешённые пути, зависимости и состояние.
 #
@@ -18,16 +18,16 @@ meta:
   schema_version: 1
   registry: docs/EXECUTION_PLAN.md
   coordinator: "Qoder Desktop session 241fe48c (chief architect / integrating engineer)"
-  measured_at: "2026-11-06T17:05:00+03:00"
+  measured_at: "2026-11-09T22:09:14+00:00"
   base_observation: >
-    HEAD of main at the moment of the W25-B registration is 183daa4; `github/main`
-    still equals 7e58455 (the W24-A integration), so waves 25/26-T/29-C are
-    integrated locally but not yet pushed. Executor outcomes below were taken
-    from `git log --ancestry-path`, `git merge-base --is-ancestor`,
-    `git rev-list --count main..<branch>` and `git status --porcelain` of the
-    shared main tree — not from agent reports. Every state correction carries
-    the commit SHAs that prove it; what could not be proved is named UNKNOWN
-    in the record itself.
+    Main HEAD eeb3c24; github/main re-read via git ls-remote is 74025b7.
+    Full suite on main eeb3c24: 3906 passed, 4 xfailed, 0 failed, exit 0;
+    secret gate exit 0. Nothing from the failed W34-B/W35 executors is integrated.
+    All five failed with a service error; W34-B retained code and tests,
+    W35-A retained tests only, W35-B/C/D were clean. W35-B/C/D were redispatched
+    with narrower scopes, W35-A is coordinator-owned, W34-B is under read-only review.
+    Mission branch tip 0a633f6 is an ancestor of main, rev-list main..branch = 0.
+    Live process identity and operator switches remain outside this code checkpoint.
   foreign_shas:
     # Base commits of the full session above. They exist in the coordinator's
     # local history (183daa4 was its `main`), which was never pushed; the
@@ -581,7 +581,7 @@ tasks:
       у W28-A на reviewed-ветке: дубль активности между двумя деревьями.
     priority: high
     category: product
-    status: BLOCKED
+    status: "INTEGRATED"
     owner_role: "Foreign session (not dispatched from this queue)"
     owner_agent: "missions/t1-t4 session"
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -591,22 +591,23 @@ tasks:
       - tgfarm/llm/client.py
       - tgfarm/llm/reliability.py
     depends_on: [W28-A]
-    blocked_by: [W28-A]
+    blocked_by: []
     p_refs: [P5]
-    acceptance: "Пока не определена: артефакты не закоммичены, критериев в git нет"
+    acceptance: "Работа миссии сохранена в Git и интегрирована в main; прежнее описание незакоммиченного дерева ниже — исторический снимок."
     test_commands: []
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: "SELF_CHECKED_BY_COORDINATOR"
+    integration_status: "INTEGRATED"
     retry_count: 0
     attempt_limit: 1
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-09T22:09:14+00:00"
+    completed_at: "2026-11-09T22:09:14+00:00"
     evidence:
       - "OBSERVED: `git status --porcelain` основного дерева: ' M tgfarm/llm/client.py', '?? tgfarm/llm/reliability.py'"
       - "GIT_VERIFIED: branch missions/t1-t4-20261106 == main (rev-list main..branch = 0) — работа существует только как незакоммиченные файлы общего дерева"
-    next_action: "uncommitted in the shared main tree: либо сеанс коммитит в свою ветку, либо координатор гасит дубль с W28-A"
+      - "GIT_VERIFIED: git merge-base main missions/t1-t4-20261106 = 0a633f6f7922bb8b67ab6579c82a9be53b142e8a (tip миссии); git rev-list --count main..missions/t1-t4-20261106 = 0."
+    next_action: "Интеграция уже выполнена; не создавать повторный пакет и не удерживать файлы по старому снимку."
 
   - id: MISSIONS-T2
     title: "Миссия T2: cli/api (секреты и сбои) в общем дереве"
@@ -616,7 +617,7 @@ tasks:
       Пересекается с владельцем api.py у W23-A.
     priority: high
     category: product
-    status: BLOCKED
+    status: "INTEGRATED"
     owner_role: "Foreign session (not dispatched from this queue)"
     owner_agent: "missions/t1-t4 session"
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -629,19 +630,20 @@ tasks:
     depends_on: []
     blocked_by: []
     p_refs: []
-    acceptance: "Пока не определена: артефакты не закоммичены, критериев в git нет"
+    acceptance: "Работа миссии сохранена в Git и интегрирована в main; прежнее описание незакоммиченного дерева ниже — исторический снимок."
     test_commands: []
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: "SELF_CHECKED_BY_COORDINATOR"
+    integration_status: "INTEGRATED"
     retry_count: 0
     attempt_limit: 1
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-09T22:09:14+00:00"
+    completed_at: "2026-11-09T22:09:14+00:00"
     evidence:
       - "OBSERVED: ' M tgfarm/cli.py', ' M tgfarm/api.py', '?? tests/test_missions_cli_failure_secrets.py' в git status основного дерева"
-    next_action: "uncommitted in the shared main tree: требуется коммит в собственную ветку до любого ревью"
+      - "GIT_VERIFIED: git merge-base main missions/t1-t4-20261106 = 0a633f6f7922bb8b67ab6579c82a9be53b142e8a (tip миссии); git rev-list --count main..missions/t1-t4-20261106 = 0."
+    next_action: "Интеграция уже выполнена; не создавать повторный пакет и не удерживать файлы по старому снимку."
 
   - id: MISSIONS-T3
     title: "Миссия T3: editorial/plan/platform (отмена) в общем дереве"
@@ -652,7 +654,7 @@ tasks:
       W23-B (RECOVERY_REQUIRED) и с предметом REASON_NO_SLOT.
     priority: high
     category: product
-    status: BLOCKED
+    status: "INTEGRATED"
     owner_role: "Foreign session (not dispatched from this queue)"
     owner_agent: "missions/t1-t4 session"
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -664,21 +666,22 @@ tasks:
       - tgfarm/platform_editorial.py
       - tests/test_missions_editorial_cancellation.py
     depends_on: []
-    blocked_by: [W23-B]
+    blocked_by: []
     p_refs: [P108]
-    acceptance: "Пока не определена: артефакты не закоммичены, критериев в git нет"
+    acceptance: "Работа миссии сохранена в Git и интегрирована в main; прежнее описание незакоммиченного дерева ниже — исторический снимок."
     test_commands: []
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: "SELF_CHECKED_BY_COORDINATOR"
+    integration_status: "INTEGRATED"
     retry_count: 0
     attempt_limit: 1
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-09T22:09:14+00:00"
+    completed_at: "2026-11-09T22:09:14+00:00"
     evidence:
       - "OBSERVED: ' M tgfarm/editorial_plan.py', ' M tgfarm/plan_execution.py', ' M tgfarm/platform_editorial.py', '?? tests/test_missions_editorial_cancellation.py'"
-    next_action: "uncommitted in the shared main tree: согласовать с резервом W23-B, затем коммит в ветку"
+      - "GIT_VERIFIED: git merge-base main missions/t1-t4-20261106 = 0a633f6f7922bb8b67ab6579c82a9be53b142e8a (tip миссии); git rev-list --count main..missions/t1-t4-20261106 = 0."
+    next_action: "Интеграция уже выполнена; не создавать повторный пакет и не удерживать файлы по старому снимку."
 
   - id: MISSIONS-T4
     title: "Миссия T4: booking evidence и community policy в общем дереве"
@@ -689,7 +692,7 @@ tasks:
       проинтегрированным W29-C.
     priority: high
     category: product
-    status: BLOCKED
+    status: "INTEGRATED"
     owner_role: "Foreign session (not dispatched from this queue)"
     owner_agent: "missions/t1-t4 session"
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -703,19 +706,20 @@ tasks:
     depends_on: [W29-C]
     blocked_by: []
     p_refs: [P3]
-    acceptance: "Пока не определена: артефакты не закоммичены, критериев в git нет"
+    acceptance: "Работа миссии сохранена в Git и интегрирована в main; прежнее описание незакоммиченного дерева ниже — исторический снимок."
     test_commands: []
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: "SELF_CHECKED_BY_COORDINATOR"
+    integration_status: "INTEGRATED"
     retry_count: 0
     attempt_limit: 1
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:05:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-09T22:09:14+00:00"
+    completed_at: "2026-11-09T22:09:14+00:00"
     evidence:
       - "OBSERVED: '?? tgfarm/booking_evidence.py', ' M tgfarm/community_policy.py', два новых test_missions_* в git status основного дерева"
-    next_action: "uncommitted in the shared main tree: сверить с writer-пакетом W29-C@ec551c8 прежде, чем плодить второго владельца community_policy.py"
+      - "GIT_VERIFIED: git merge-base main missions/t1-t4-20261106 = 0a633f6f7922bb8b67ab6579c82a9be53b142e8a (tip миссии); git rev-list --count main..missions/t1-t4-20261106 = 0."
+    next_action: "Интеграция уже выполнена; не создавать повторный пакет и не удерживать файлы по старому снимку."
 
   # ------------------------------------------------------------- волна 24-S…31-D (BACKLOG, следующий набор координатора)
   - id: W24-S
@@ -916,7 +920,7 @@ tasks:
       следующий rebind (W23-A) меняет и повод, и судью одновременно.
     priority: medium
     category: product
-    status: RECOVERY_REQUIRED
+    status: "DEFERRED"
     owner_role: "Backend Engineer"
     owner_agent: null
     base_sha: 183daa4755d996f734212f06796d6bcaf91f954c
@@ -931,18 +935,19 @@ tasks:
     acceptance: "Закрытый словарь гейтов (12 ключей) обновляется без правок в читателе плана; мутант «гейт читает поле потребителя» краснеет"
     test_commands:
       - "python -m pytest -q tests/test_w29s_gate_independence.py"
-    review_status: NOT_STARTED
-    integration_status: RECOVERY_REQUIRED
+    review_status: "RETURNED_TO_COORDINATOR"
+    integration_status: "NOT_INTEGRATED"
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: null
-    updated_at: "2026-11-06T17:25:00+03:00"
+    updated_at: "2026-11-09T22:09:14+00:00"
     completed_at: null
     evidence:
       - "GIT_VERIFIED: словарь из 12 ключей и slot_booking_rebounded зафиксированы волной 22 (3ea795b, P107-P108) в docs/EXECUTION_PLAN.md на 183daa4"
       - "CI_VERIFIED: 78d019a не перенесён: 4 смысловых конфликта в s5_quality (оффлайн-черновик проходит по AI_*_OFFLINE, пакет делает это отказом)"
-    next_action: "Не начинать, пока миссия T3 держит editorial_plan.py незакоммиченно"
+      - "CODE_VERIFIED: карточка требует gate-independence, а test_review_integrity_w29s.py требует честного исхода AI-review; совпадение W29-S в имени не доказывает одинаковую acceptance. Миссия T3 уже интегрирована."
+    next_action: "Снять устаревший hold миссии T3. Словарь 12 ключей уже закреплён; отдельное утверждение независимости quality-gate от данных потребителя ещё не проверено мутантом. test_review_integrity_w29s.py проверяет другой предмет, поэтому не объявлять весь пакет дублем или завершённым."
 
   - id: W30-A
     title: "Синхронизация telegram-каналов: tg_chat_id пуст у всех девяти, enabled=0"
@@ -1414,7 +1419,7 @@ tasks:
       ослабляя их, и покрыть новое правило Telegram положительным тестом.
     priority: high
     category: release
-    status: RUNNING
+    status: "INTEGRATED"
     owner_role: "Test Integrity Engineer"
     owner_agent: "w34a"
     base_sha: 0352c3c5690d42f87eeeb9a5b636fd821b03eed9
@@ -1426,22 +1431,193 @@ tasks:
       - tests/test_maintenance_evidence_predicate_shared.py
     depends_on: []
     blocked_by: []
-    p_refs: []
+    p_refs: [P115]
     acceptance: "0 failed на полном прогоне; ни одно утверждение не удалено и не ослаблено; новое правило Telegram покрыто положительным тестом; продакшен-код не тронут"
     test_commands:
       - "python -m pytest -q -p no:randomly tests/test_w24a_sentinel_no_secret_leaks.py tests/test_telegram_and_sources.py tests/test_maintenance_evidence_predicate_shared.py"
       - "python -m pytest -q -p no:randomly"
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: "SELF_CHECKED_BY_COORDINATOR"
+    integration_status: "INTEGRATED"
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: "2026-11-09T22:35:00+03:00"
-    updated_at: "2026-11-09T22:50:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-09T22:09:14+00:00"
+    completed_at: "2026-11-09T22:09:14+00:00"
     evidence:
       - "CODE_VERIFIED: координатор воспроизвёл все 7 падений на трёх файлах вместе и седьмое — в одиночку; значит это не загрязнение порядка всего прогона"
       - "GIT_VERIFIED: git diff --stat 74025b7 HEAD показал, что maintenance.py, apiauth.py и оба теста неизменны с зелёного CI, а conftest.py (+90) и settings.py (+26) изменены коммитом bcda034"
       - "CODE_VERIFIED: apiauth.py:57 token_path() = get_settings().data_root() / TOKEN_FILENAME; data_root() берёт Path(self.data_dir) при непустом поле, поэтому патч DATA_DIR мёртв"
       - "CODE_VERIFIED: s7_publish has_publication_evidence получил ветку 'if platform == telegram: return False' с живым замером 15 строк / 0 askable; maintenance._row_has_publication_evidence делегирует владельцу, поэтому 9 telegram-расхождений исчезли по замыслу"
-    next_action: "Дождаться отчёта исполнителя, лично проверить diff и прогон; push заблокирован до зелёного сюиты"
+      - "CODE_VERIFIED: лично проверен diff трёх тестовых файлов; 68 passed на затронутых файлах; продакшен-код не изменён."
+      - "CODE_VERIFIED: полный прогон именно main eeb3c24, а не старой базы агента: 3906 passed, 4 xfailed, 12 warnings; PYTEST_EXIT=0, FAILED=0, ERROR=0."
+      - "GIT_VERIFIED: исходный коммит 45d0d51 перенесён в main как eeb3c24; tools/scan_secrets.py exit 0 (значения секретов не выведены)."
+    next_action: "Код принят в eeb3c24; отправить проверенный main в github и отдельно измерить CI."
+
+  - id: W34-B
+    title: Тайм-бюджет отдельной доставки crosspost
+    description: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма ничего
+      не интегрировать.
+    priority: high
+    category: reliability
+    status: RECOVERY_REQUIRED
+    owner_role: Recovery Engineer
+    owner_agent: w34b read-only recovery review
+    base_sha: d13b5640b36da0d5cd0af026620b547ff2b2e42f
+    worktree: .qoder/worktrees/w34b-delivery-budget
+    branch: w34b-delivery-budget
+    allowed_paths:
+    - tgfarm/s9_growth/__init__.py
+    - tests/test_crosspost_delivery_budget.py
+    depends_on: []
+    blocked_by: []
+    acceptance: Проверить сохранённый diff, доказать отсутствие слепого повтора и границы бюджета; до приёма ничего
+      не интегрировать.
+    test_commands:
+    - python -m pytest -q tests/test_crosspost_delivery_budget.py
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: RECOVERY_REQUIRED
+    retry_count: 1
+    attempt_limit: 3
+    started_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:09:14+00:00'
+    completed_at: null
+    evidence:
+    - 'OBSERVED: агент w34b завершился ошибкой сервиса; сохранены M __init__.py и новый тест, коммитов нет; независимый
+      read-only reviewer запущен.'
+    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+
+  - id: W35-A
+    title: 'S12: новейшее ограниченное окно ошибок вместо oldest-20'
+    description: Новейшие 20 строк, внутри окна newest-wins; сбой чтения видим оператору; старые строки за границей
+      не читаются.
+    priority: high
+    category: reliability
+    status: RUNNING
+    owner_role: Integrating Engineer
+    owner_agent: coordinator
+    base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
+    worktree: .qoder/worktrees/w35a-s12-window
+    branch: w35a-s12-window
+    allowed_paths:
+    - tgfarm/s12_learning/__init__.py
+    - tests/test_s12_mistake_window.py
+    - tests/test_s12_mistake_recency.py
+    depends_on: []
+    blocked_by: []
+    acceptance: Новейшие 20 строк, внутри окна newest-wins; сбой чтения видим оператору; старые строки за границей
+      не читаются.
+    test_commands:
+    - python -m pytest -q tests/test_s12_mistake_window.py
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    started_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:09:14+00:00'
+    completed_at: null
+    evidence:
+    - 'CODE_VERIFIED: исходный агент погиб, сохранив тест; координатор лично получил 3 failed до правки и 17 passed
+      после правки с соседними recency/format тестами. Коммита пока нет.'
+    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+
+  - id: W35-B
+    title: 'S8: отказ чтения ВК, неизвестный ERR и ограниченный SQL IN'
+    description: Ошибка всех чтений ВК не empty; ERR без просмотров null; SQL IN <=500 и последний снимок сохраняется.
+      Изменение PostMetrics.quality отложено отдельным остатком.
+    priority: high
+    category: reliability
+    status: RUNNING
+    owner_role: Recovery Engineer
+    owner_agent: w35b recovery
+    base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
+    worktree: .qoder/worktrees/w35b-s8-honesty
+    branch: w35b-s8-honesty
+    allowed_paths:
+    - tgfarm/s8_analytics/__init__.py
+    - tgfarm/s8_analytics/vk_stats.py
+    - tests/test_s8_metric_honesty.py
+    - tests/test_vk_stats_failure_status.py
+    depends_on: []
+    blocked_by: []
+    acceptance: Ошибка всех чтений ВК не empty; ERR без просмотров null; SQL IN <=500 и последний снимок сохраняется.
+      Изменение PostMetrics.quality отложено отдельным остатком.
+    test_commands:
+    - python -m pytest -q tests/test_s8_metric_honesty.py tests/test_vk_stats_failure_status.py
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    started_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:09:14+00:00'
+    completed_at: null
+    evidence:
+    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве с ограниченным предметом;
+      результата пока нет.'
+    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+
+  - id: W35-C
+    title: 'S11: единый deadline caption-encode и fallback'
+    description: Fallback получает только остаток бюджета; после исчерпания второй encode не запускается, partial
+      очищается. Провенанс cache остаётся отдельным остатком.
+    priority: high
+    category: reliability
+    status: RUNNING
+    owner_role: Recovery Engineer
+    owner_agent: w35c recovery
+    base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
+    worktree: .qoder/worktrees/w35c-video-cache
+    branch: w35c-video-cache
+    allowed_paths:
+    - tgfarm/s11_video/renderer.py
+    - tests/test_video_encode_deadline.py
+    depends_on: []
+    blocked_by: []
+    acceptance: Fallback получает только остаток бюджета; после исчерпания второй encode не запускается, partial очищается.
+      Провенанс cache остаётся отдельным остатком.
+    test_commands:
+    - python -m pytest -q tests/test_video_encode_deadline.py
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    started_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:09:14+00:00'
+    completed_at: null
+    evidence:
+    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве только для retry
+      deadline; результата пока нет.'
+    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
+
+  - id: W35-D
+    title: 'LockRegistry: владелец и реальное время удержания'
+    description: Чужой task/name/lock не освобождает удерживаемый lock; hold_seconds измеряет hold, не wait; отмена
+      waiter не крадёт lock. DailyQuota не подключать.
+    priority: medium
+    category: reliability
+    status: RUNNING
+    owner_role: Recovery Engineer
+    owner_agent: w35d recovery
+    base_sha: eeb3c24f4920a9e902426ece96ad3dd4a5dd12de
+    worktree: .qoder/worktrees/w35d-lock-owner
+    branch: w35d-lock-owner
+    allowed_paths:
+    - tgfarm/core/ratelimit.py
+    - tests/test_lock_registry_ownership.py
+    depends_on: []
+    blocked_by: []
+    acceptance: Чужой task/name/lock не освобождает удерживаемый lock; hold_seconds измеряет hold, не wait; отмена
+      waiter не крадёт lock. DailyQuota не подключать.
+    test_commands:
+    - python -m pytest -q tests/test_lock_registry_ownership.py
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 1
+    attempt_limit: 3
+    started_at: '2026-11-09T22:09:14+00:00'
+    updated_at: '2026-11-09T22:09:14+00:00'
+    completed_at: null
+    evidence:
+    - 'OBSERVED: исходный агент погиб без правок; повторный исполнитель запущен на чистом дереве; результата пока
+      нет. Production consumers LOCKS не найдены: эффект latent, не live.'
+    next_action: Дождаться проверяемого diff и команды тестов; лично проверить перед интеграцией.
