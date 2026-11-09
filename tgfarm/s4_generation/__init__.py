@@ -637,6 +637,9 @@ _NUMBER_RE = re.compile(
     re.I,
 )
 _DIGIT_STRIP = re.compile(r"[^\d]")
+#: A URL carries digits of its own (dates, article ids). Those are part of the
+#: link the reader can follow, not a numeric assertion the text makes.
+_URL_FOR_CLAIMS = re.compile(r"https?://\S+", re.I)
 
 
 def _normalise_number(token: str) -> str:
@@ -715,7 +718,9 @@ def _numeric_claim_sentences(draft: DraftPost) -> list[str]:
         sentence = " ".join(sentence.split()).strip()
         if not sentence:
             continue
-        checkable = _checkable_numbers(sentence)
+        # Digits inside a URL belong to the link, not to a numeric assertion:
+        # a cited source with a date in its path is not a claim to verify.
+        checkable = _checkable_numbers(_URL_FOR_CLAIMS.sub(" ", sentence))
         key = sentence.casefold()
         if checkable and key not in seen:
             seen.add(key)

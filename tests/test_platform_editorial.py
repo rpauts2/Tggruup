@@ -298,3 +298,53 @@ def test_native_rewrite_rejects_new_numbers_and_unapproved_urls(monkeypatch):
     assert payload.meta["editorial_adaptation"]["status"] == "deterministic_guardrail"
     assert payload.meta["editorial_adaptation"]["reason"] == result["reason"]
     assert finalized == [False]
+
+
+# ------------------------------------------- numeric guardrail and URLs
+def test_guardrail_ignores_numbers_that_are_part_of_an_allowed_url():
+    """A source URL with a date or article id is not a new numeric claim.
+
+    The guardrail compares numeric literals; an allowed link carries digits of
+    its own, so counting them rejected a rewrite that only cited the source.
+    """
+    from tgfarm.platform_editorial import _native_rewrite_guardrail
+
+    url = "https://cbr.ru/press/pr_detail/2026-11-09/147850/"
+    verdict = _native_rewrite_guardrail(
+        "Отчёт ЦБ", "Банк снизил ставку.", "Отчёт ЦБ", f"Банк снизил ставку. Источник: {url}", [url]
+    )
+    assert verdict == ""
+
+
+def test_guardrail_still_rejects_a_new_number_outside_urls():
+    from tgfarm.platform_editorial import _native_rewrite_guardrail
+
+    url = "https://cbr.ru/press/pr_detail/2026-11-09/147850/"
+    verdict = _native_rewrite_guardrail(
+        "Отчёт ЦБ", "Банк снизил ставку.", "Отчёт ЦБ", "Банк снизил ставку на 2 п.п.", [url]
+    )
+    assert "2" in verdict
+
+
+def test_guardrail_still_rejects_a_foreign_url_carrying_numbers():
+    from tgfarm.platform_editorial import _native_rewrite_guardrail
+
+    url = "https://cbr.ru/press/pr_detail/2026-11-09/147850/"
+    verdict = _native_rewrite_guardrail(
+        "Отчёт ЦБ", "Банк снизил ставку.", "Отчёт ЦБ", "См. https://evil.example/2026/x", [url]
+    )
+    assert "URL" in verdict
+
+
+def test_numeric_claim_sentences_ignore_digits_inside_a_cited_url():
+    """A source URL's date/id is a link, not an assertion the text makes."""
+    from tgfarm.core.schemas import DraftPost
+    from tgfarm.s4_generation import _numeric_claim_sentences
+
+    url = "https://cbr.ru/press/pr_detail/2026-11-09/147850/"
+    cited = DraftPost(hook="Отчёт ЦБ.", body=f"Банк снизил ставку. Источник: {url}",
+                      sources=[{"title": "t", "url": url}])
+    asserted = DraftPost(hook="Отчёт ЦБ.", body=f"Ставка снизилась на 2 п.п. Источник: {url}",
+                         sources=[{"title": "t", "url": url}])
+    assert _numeric_claim_sentences(cited) == []
+    assert _numeric_claim_sentences(asserted) == ["Ставка снизилась на 2 п.п."]

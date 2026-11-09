@@ -799,7 +799,10 @@ def _native_rewrite_guardrail(
     from tgfarm.s4_generation import _checkable_numbers
 
     source_numbers = set(_checkable_numbers(f"{source_title}\n{source_body}"))
-    rewritten_numbers = set(_checkable_numbers(f"{rewritten_title}\n{rewritten_body}"))
+    # Numbers inside a URL are part of the link, not a new claim: an allowed
+    # source URL with a date or an article id must not fail the numeric check.
+    rewritten_text = _URL_RE.sub(" ", f"{rewritten_title}\n{rewritten_body}")
+    rewritten_numbers = set(_checkable_numbers(rewritten_text))
     added_numbers = sorted(rewritten_numbers - source_numbers)
     if added_numbers:
         return "Нативный редактор добавил числовые значения, которых нет в исходном материале: " + ", ".join(added_numbers[:5])
