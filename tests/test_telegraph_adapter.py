@@ -113,6 +113,67 @@ async def test_telegraph_adapter_marks_unconfirmed_timeout_as_unknown(monkeypatc
     assert "secret" not in str(result.error)
 
 
+@pytest.mark.asyncio
+async def test_telegraph_adapter_marks_an_unconfirmed_server_error_as_unknown(monkeypatch):
+    """`createPage` may have created the page before the gateway gave up.
+
+    Telegraph used to answer `failed` for every 5xx and `permanent` for a 408.
+    `failed` is the status the planner re-offers on a timer, so a 502 that had
+    already created the page produced a second one on the next tick; `permanent`
+    for a 408 threw away a retryable timeout. Both now read like every other
+    adapter: 5xx/408/425 are ambiguous, 4xx is a definite rejection, 429 is a
+    rate limit.
+    """
+    from tgfarm.s9_growth import adapters
+
+    def _client_raising(code: int):
+        class StatusClient(FakeTelegraphClient):
+            async def post(self, url, **kwargs):
+                request = httpx.Request("POST", url)
+                raise httpx.HTTPStatusError(
+                    "Telegraph HTTP error",
+                    request=request,
+                    response=httpx.Response(code, request=request),
+                )
+
+        return StatusClient
+
+    for code in (500, 502, 503, 408, 425):
+        monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+            telegraph_access_token="telegraph-token-secret",
+        ))
+        monkeypatch.setattr(httpx, "AsyncClient", _client_raising(code))
+
+        result = await adapters.ADAPTERS["telegraph"].publish(CrosspostPayload(
+            platform="telegraph", title="Test", text="Text"
+        ))
+        assert result.status == "unknown", f"HTTP {code} was classified {result.status}"
+
+
+@pytest.mark.asyncio
+async def test_telegraph_adapter_still_rejects_a_client_error_permanently(monkeypatch):
+    """A 401/400 is a definite rejection: the page was not created."""
+    from tgfarm.s9_growth import adapters
+
+    class UnauthorizedClient(FakeTelegraphClient):
+        async def post(self, url, **kwargs):
+            raise httpx.HTTPStatusError(
+                "Telegraph HTTP error",
+                request=httpx.Request("POST", url),
+                response=httpx.Response(401, request=httpx.Request("POST", url)),
+            )
+
+    monkeypatch.setattr(adapters, "get_settings", lambda: SimpleNamespace(
+        telegraph_access_token="telegraph-token-secret",
+    ))
+    monkeypatch.setattr(httpx, "AsyncClient", UnauthorizedClient)
+
+    result = await adapters.ADAPTERS["telegraph"].publish(CrosspostPayload(
+        platform="telegraph", title="Test", text="Text"
+    ))
+    assert result.status == "permanent"
+
+
 def test_telegraph_adapter_uses_a_safe_utf8_character_cap():
     from tgfarm.s9_growth.adapters import ADAPTERS
 

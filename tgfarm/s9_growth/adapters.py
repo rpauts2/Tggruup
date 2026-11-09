@@ -1769,11 +1769,23 @@ class TelegraphAdapter:
                 data = response.json()
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
+            # createPage is the side effect, so its failure code has to be read
+            # the way every other adapter reads one: a 5xx or a 408 may have
+            # created the page before the gateway gave up on the response, and
+            # `failed` is the status the planner re-offers on a timer. Telegraph
+            # used to answer `failed` for every 5xx and `permanent` for a 408 —
+            # both wrong, and both a duplicate page waiting to happen.
+            status = crosspost_error_status(exc)
             return CrosspostResult(
                 platform=self.platform,
-                status="permanent" if 400 <= code < 500 and code != 429 else "failed",
-                error=f"Telegraph API returned HTTP {code}.",
-                retry_after_seconds=60 if code == 429 or code >= 500 else None,
+                status=status,
+                error=(
+                    f"Telegraph API returned HTTP {code}; verify telegra.ph before "
+                    "retrying, the page may already exist."
+                    if status == "unknown"
+                    else f"Telegraph API returned HTTP {code}."
+                ),
+                retry_after_seconds=crosspost_retry_after_seconds(exc),
             )
         except (httpx.TimeoutException, httpx.TransportError):
             return CrosspostResult(
