@@ -83,24 +83,39 @@ class LockRegistry:
         self._locks: dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()
         self._spans: dict[str, float] = defaultdict(float)
+        self._owners: dict[str, asyncio.Task | None] = {}
+        self._held_since: dict[str, float] = {}
 
     async def acquire(self, name: str, timeout: float = 60.0) -> asyncio.Lock:
+        owner = asyncio.current_task()  # wait_for may acquire in a child task.
         async with self._guard:
             lock = self._locks.setdefault(name, asyncio.Lock())
-        started = time.monotonic()
         try:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)
         except TimeoutError as exc:
             raise TimeoutError(f"could not acquire lock {name!r} in {timeout}s") from exc
-        self._spans[name] += time.monotonic() - started
+        self._owners[name] = owner
+        self._held_since[name] = time.monotonic()
         return lock
 
     def release(self, name: str, lock: asyncio.Lock) -> None:
-        if lock.locked():
-            lock.release()
+        if (
+            self._locks.get(name) is not lock
+            or name not in self._owners
+            or self._owners[name] is not asyncio.current_task()
+            or not lock.locked()
+        ):
+            raise RuntimeError(f"lock {name!r} is not held by the current task")
+        self._spans[name] += time.monotonic() - self._held_since.pop(name)
+        del self._owners[name]
+        lock.release()
 
     def hold_seconds(self, name: str) -> float:
-        return self._spans.get(name, 0.0)
+        elapsed = self._spans.get(name, 0.0)
+        started = self._held_since.get(name)
+        if started is not None:
+            elapsed += time.monotonic() - started
+        return elapsed
 
 
 class RateLimiters:
