@@ -309,3 +309,43 @@ def test_draft_post_caps_sources_and_hashtags():
     assert len(d.sources) == 3
     assert len(d.hashtags) == 6
     assert all(not h.startswith("#") for h in d.hashtags)
+
+
+# ------------------------------------------- the text that actually ships (D3-D5)
+def test_vocabulary_gate_checks_cta():
+    """A banned word in CTA must not ship just because it is not in hook/body."""
+    d = draft(cta="Не пропустите революция в отчётности!")
+    assert not gate_vocabulary(d, BASE_PERSONA).passed
+
+
+def test_cliches_gate_checks_cta():
+    """A stock phrase in CTA is part of the published text."""
+    from tgfarm.s5_quality import gate_cliches
+
+    d = draft(cta="На сегодняшний день это главное событие.")
+    assert not gate_cliches(d, BASE_PERSONA).passed
+
+
+def test_vocabulary_gate_checks_hashtags():
+    d = draft(hashtags=["революция"])
+    assert not gate_vocabulary(d, BASE_PERSONA).passed
+
+
+def test_links_gate_checks_cta():
+    """A link in the CTA is a link we publish and must be checked."""
+    from tgfarm.db.models import BlocklistEntry
+    from tgfarm.db.session import session_scope
+
+    with session_scope() as session:
+        session.add(BlocklistEntry(scope="domain", value="spam.example", reason="test"))
+    d = draft(cta="Подробности: https://spam.example/a")
+    assert not gate_links(d, BASE_PERSONA).passed
+
+
+def test_emoji_budget_applies_to_personas_above_one():
+    """A non-max_1 persona still has a nine-emoji cap; the branch used to be dead."""
+    persona = Persona(**{**BASE_PERSONA.__dict__, "emoji_policy": "max_9"})
+    ten = draft(hook="Регулятор 🔥🚀💥🎯📈📉💰🎉🏆😀 обновил требования к отчётности.")
+    nine = draft(hook="Регулятор 🔥🚀💥🎯📈📉💰🎉🏆 обновил требования к отчётности.")
+    assert not gate_structure(ten, persona).passed
+    assert gate_structure(nine, persona).passed

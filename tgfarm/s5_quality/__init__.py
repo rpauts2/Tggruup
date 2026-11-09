@@ -158,6 +158,19 @@ def _blocked_domains() -> set[str]:
 
 
 # --------------------------------------------------------------------- gates
+def _gated_text(draft: DraftPost) -> str:
+    """Everything the reader will actually see, not only the two long fields.
+
+    `DraftPost.text` publishes hook, body, sources, CTA and hashtags together, so
+    a banned word or a stock phrase that lives in the CTA is not a preview
+    artifact — it ships. The gates that scan for phrases have to read the same
+    span.
+    """
+    return " ".join(
+        part for part in (draft.hook, draft.body, draft.cta or "", " ".join(draft.hashtags)) if part
+    )
+
+
 def gate_links(draft: DraftPost, persona: Persona) -> GateOutcome:
     blocked = _blocked_domains()
     if not draft.sources:
@@ -167,6 +180,8 @@ def gate_links(draft: DraftPost, persona: Persona) -> GateOutcome:
 
     urls: list[str] = []
     urls.extend(re.findall(r"https?://\S+", draft.body))
+    # The CTA ships with the post, so a link placed there is a link we publish.
+    urls.extend(re.findall(r"https?://\S+", draft.cta or ""))
     urls.extend(s["url"] for s in draft.sources if s.get("url"))
 
     for url in urls:
@@ -241,7 +256,7 @@ def gate_source_freshness(draft: DraftPost, persona: Persona) -> GateOutcome:
 
 
 def gate_vocabulary(draft: DraftPost, persona: Persona) -> GateOutcome:
-    haystack = (draft.hook + " " + draft.body).lower()
+    haystack = _gated_text(draft).lower()
     hits = [word for word in persona.banned_words if word.lower() in haystack]
     if hits:
         return GateOutcome(False, "vocabulary", f"banned terms: {', '.join(hits[:5])}")
@@ -270,7 +285,7 @@ def gate_cliches(draft: DraftPost, persona: Persona) -> GateOutcome:
     Banned words catch hype; this catches the filler that survives every other
     check and makes a feed feel templated — exactly what Dzen demotes.
     """
-    haystack = f"{draft.hook} {draft.body}".lower().replace("\n", " ")
+    haystack = _gated_text(draft).lower().replace("\n", " ")
     haystack = " ".join(haystack.split())
     hits = [phrase for phrase in CLICHE_PHRASES if phrase in haystack]
     if hits:
@@ -748,14 +763,11 @@ def gate_structure(draft: DraftPost, persona: Persona) -> GateOutcome:
     emoji_max = 1 if persona.emoji_policy == "max_1" else 9
     if getattr(draft, "post_format", "") == "flash":
         emoji_max = 0
-    if emoji_max <= 1:
-        emoji = re.findall(
-            "[\U0001f300-\U0001faff☀-➿️]", draft.hook + draft.body
-        )
-        if len(emoji) > emoji_max:
-            return GateOutcome(
-                False, "structure", f"{len(emoji)} emojis, max {emoji_max}"
-            )
+    emoji = re.findall(
+        "[\U0001f300-\U0001faff☀-➿️]", draft.hook + draft.body
+    )
+    if len(emoji) > emoji_max:
+        return GateOutcome(False, "structure", f"{len(emoji)} emojis, max {emoji_max}")
     return GateOutcome(True, scores={"structure": 1.0})
 
 
