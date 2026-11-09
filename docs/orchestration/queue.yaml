@@ -1017,3 +1017,431 @@ tasks:
       - "GIT_VERIFIED: buildinfo живёт только на w24br-build-review/coordinator/w2425-integration (14c165a..015305e / 183c031..fbefd22), на main ещё нет — пакет стартует после приёмки W24-BR"
       - "CI_VERIFIED: cherry-pick ace5aad 68cd272"
     next_action: "Ждёт приёмки W24-BR; миссия T2 трогает cli.py незакоммиченно"
+
+  # ------------------------------------------------------------- wave 32 (seven executors, operator cap)
+  # Operator instruction 2026-11-08: "запускай 7 агентов не больше". Seven
+  # executors were dispatched on base f47322c, the clean merge of the operator's
+  # 20-commit defect-fix wave (github/main 74025b7) onto local W29-S cd818a4.
+  # Branch/worktree prefixes are w30* because the trees were created before this
+  # registry was read; W30-A and W31-D were already taken, so the wave is W32.
+  # Every allowed_paths set below is disjoint from the other six.
+
+  - id: W32-A
+    title: "Производитель снимков правил: community_rules_scheduler на живом потребителе"
+    description: >
+      Замер mode=ro живой SQLite: community_policy_snapshots = 0 строк, поэтому
+      гейт W29-B не имеет доказательств правил ни для одной площадки. Спасённый
+      rescue/w26rw-rules-snapshot (9c79303) несёт производитель на 719 строк, но
+      писался под a8ec394; с тех пор оператор изменил семантику потребителя
+      (a28a0fa, 0c75575, 7c929c9). Портировать поверх текущего community_policy.
+    priority: high
+    category: product
+    status: CANCELLED
+    owner_role: "Backend Integration Engineer"
+    owner_agent: "w30a"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30a-rules-snapshot"
+    branch: w30a-rules-snapshot
+    allowed_paths:
+      - tgfarm/community_rules_scheduler.py
+      - tests/test_w26rw_rules_snapshots.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Модуль и его тесты зелёные на f47322c; тесты потребителя не сломаны; координатору передана точная точка wiring в pipeline.py"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_w26rw_rules_snapshots.py"
+      - "python -m pytest -q -p no:randomly tests/test_w29b_target_selection.py tests/test_w29c_community_policy_snapshots.py"
+    review_status: RETURNED_TO_AUTHOR
+    integration_status: NOT_APPLICABLE
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: исполнитель сдал d8df896 (+1360, два новых файла); координатор cherry-pick 9983b85, 21 тест зелёный"
+      - "CODE_VERIFIED: ОТКЛОНЕНО как дубль. tgfarm/maintenance.py:1227 watch_destination_rules уже делает эту работу и УЖЕ стоит в расписании: run_cycle (pipeline.py:1509-1593) -> _maintenance_stage (1457) -> run_maintenance -> ('rules_watch', _rules_watch) (maintenance.py:1582), job id='cycle' (pipeline.py:2793)"
+      - "CODE_VERIFIED: существующий производитель строго полнее — 3 читателя (reddit/pikabu/vc) против 2, уважает rules_watch_switch (согласие оператора), богаче счётчики, есть CLI и 43 зелёных теста"
+      - "GIT_VERIFIED: revert 0352c3c; работа исполнителя сохранена на ветке w30a-rules-snapshot и в истории 9983b85 — отказ обратим"
+      - "OBSERVED: community_policy_snapshots = 0 строк не дефект кода: оба сообщественных выключателя выключены в этом развёртывании, а _watched_rule_destinations читает только ту таблицу, которую пишет — первый адрес называет оператор или клик проверки правил в панели"
+    next_action: "Закрыто: второй производитель не нужен. Включение pikabu/reddit — решение оператора (§0.3), координатор его не принимает"
+
+  - id: W32-B
+    title: "Честность рецензии S5: сведение W29-S, аудита оператора и спасённого refusal"
+    description: >
+      На базе уже живут cd818a4 (provenance/review_status) и операторские
+      audit_provider/audit_model/billed в четырёх policy.finalize. Спасённый
+      rescue/w26s5-s5-refusal (a578811, +331/-35) писался под a8ec394 и не должен
+      затереть ни то ни другое. Плюс незакоммиченный
+      tests/test_review_integrity_w29s.py: замер 3 failed / 19 passed / 3 errors —
+      дефекты фикстур (Channel INSERT и hook, не проходящий structure-гейт).
+    priority: high
+    category: product
+    status: INTEGRATED
+    owner_role: "Quality-Gate Engineer"
+    owner_agent: "coordinator"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30b-s5-integrity"
+    branch: w30b-s5-integrity
+    allowed_paths:
+      - tgfarm/s5_quality/__init__.py
+      - tests/test_review_integrity_w29s.py
+      - tests/test_w26s5_refusal.py
+      - tests/test_w29s_quality_gate.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Все четыре тестовых файла зелёные; audit_provider остаётся 4; офлайн-конвейер продолжает выпускать пост, но review_board.status никогда не passed без онлайн-критика"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_review_integrity_w29s.py tests/test_w26s5_refusal.py tests/test_w29s_quality_gate.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "OBSERVED: исполнитель умер от лимита кредитов на 29 вызовах, оставив незакоммиченные M tgfarm/s5_quality/__init__.py и ?? tests/test_review_integrity_w29s.py"
+      - "GIT_VERIFIED: байт-безопасное спасение временным индексом (read-tree/write-tree/commit-tree) = rescue/w30b-s5-integrity 4f2ec8b; рабочее дерево и настоящий индекс не тронуты"
+      - "CODE_VERIFIED: оператор независимо закоммитил f8df7a1 (341 строка) и починил ровно два дефекта фикстур, которые координатор замерил (hook против structure-гейта и коллизия public_id); тесты W29-S зелёные"
+      - "CODE_VERIFIED: спасённый _critic_score был определён, но НЕ вызывался — исполнитель не успел. Дефект живой на b3779c0: нечитаемый вердикт приводился к offline-default 8.0/7.0/7.5 (все >= порога) и помечался provenance='online'; отсутствующий score становился 0.0 и печатался как 'critic 0.0/10'"
+      - "GIT_VERIFIED: координатор довел работу сам — 856821e, 51/12 строк, CRLF сохранён; 55 из 64 новых случаев красные на b3779c0, 9 зелёных — контроли; 129 passed вместе с W29-S и quality; ruff 1 старое finding, 0 новых"
+    next_action: "Завершено координатором после смерти исполнителя; аудиторские audit_provider/billed оператора сохранены (4 и 4 вхождения)"
+
+  - id: W32-C
+    title: "Telegram message_id: атрибуция 617 публикаций при 22 строках post_stats"
+    description: >
+      Замер mode=ro: posts.published = 617, post_stats = 22 строки. Без сохранённого
+      message_id сборщик S8 не может сопоставить снимок с публикацией. Портировать
+      w26tg-tg-message-id (68d4da3, s7_publish +97) поверх текущего main, не затерев
+      операторскую работу по Retry-After и классификации повторов.
+    priority: high
+    category: product
+    status: INTEGRATED
+    owner_role: "Publishing-Pipeline Engineer"
+    owner_agent: "w30c"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30c-tg-message-id"
+    branch: w30c-tg-message-id
+    allowed_paths:
+      - tgfarm/s7_publish/__init__.py
+      - tests/test_w26tg_message_id.py
+      - tests/test_publish_gate_matrix.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Оба тестовых файла зелёные; срез publish/s7/gate_matrix/crosspost без регрессий; граница с db-моделью или pipeline названа координатору точно"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_w26tg_message_id.py tests/test_publish_gate_matrix.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: c0afd32 исполнителя, merge 842c7b9; _recordable_message_id принимает только настоящий положительный int, send_video -> int | None"
+      - "CODE_VERIFIED: операторские _ScheduleClaim(int) и hunnik передачи плана в unpublish сохранены — diff w30c->68d4da3 показывает именно этот hunnik откатываемым"
+    next_action: "Принято и интегрировано"
+
+  - id: W32-D
+    title: "Доказательство восстановления: backup_snapshot + recovery на временных БД"
+    description: >
+      Портировать w28k-restore-proof (b1f24c6, base 7e58455): backup_snapshot.py
+      336 новых строк, recovery.py +932/-65 и три тестовых файла. Крупнейший пакет
+      волны (~2135 строк). recovery.py на main уже изменился — портировать поверх,
+      не checkout'ом. Репетиция восстановления только на временных копиях.
+    priority: high
+    category: reliability
+    status: INTEGRATED
+    owner_role: "Data-Durability Engineer"
+    owner_agent: "w30d"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30d-restore-proof"
+    branch: w30d-restore-proof
+    allowed_paths:
+      - tgfarm/db/backup_snapshot.py
+      - tgfarm/db/recovery.py
+      - tests/test_w28k_backup_writer.py
+      - tests/test_w28k_readonly_probe.py
+      - tests/test_w28k_verdict_truth.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Три тестовых файла зелёные; read-only зонд доказуемо не пишет; репетиция backup→restore на двух временных путях с совпадающим числом строк и контрольной суммой; живой tgfarm.db не открыт на запись"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_w28k_backup_writer.py tests/test_w28k_readonly_probe.py tests/test_w28k_verdict_truth.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: 729168c исполнителя, merge de56825 — backup_snapshot.py (336) и три тестовых файла (478/229/225)"
+      - "GIT_VERIFIED: вторая половина (recovery.py) уже в HEAD через f7c3be8 'test+fix(db): W26-R restore proof against the real backup path, WAL-aware'; файл 922 строки, merge-base --is-ancestor подтверждает"
+      - "OBSERVED: повторный исполнитель w32d2 не стартовал — 0 токенов / 559 мс, лимит кредитов; порт не понадобился, работа уже была в дереве"
+    next_action: "Закрыто: обе половины в HEAD"
+
+  - id: W32-E
+    title: "Независимость порядка тестов: test_ideas + test_pipeline_stage_counters"
+    description: >
+      Два перекрывающихся источника: rescue/w26or-order-independence (55a5ac8,
+      test_ideas +93/-11 и stage_counters +160/-7) и w26or-order-independence
+      (494d860, только stage_counters +160/-7). Свести объединение поверх main и
+      доказать зелёный прогон в прямом, обратном, одиночном и случайном порядке.
+    priority: medium
+    category: testing
+    status: INTEGRATED
+    owner_role: "Test-Infrastructure Engineer"
+    owner_agent: "coordinator"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30e-order-independence"
+    branch: w30e-order-independence
+    allowed_paths:
+      - tests/test_ideas.py
+      - tests/test_pipeline_stage_counters.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Пять прогонов зелёные с реальными счётчиками; корневая причина вне зоны названа координатору с файлом/символом/строкой, а не замаскирована"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_ideas.py tests/test_pipeline_stage_counters.py"
+      - "python -m pytest -q tests/test_ideas.py tests/test_pipeline_stage_counters.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "OBSERVED: исполнитель умер от лимита кредитов на 48 вызовах, но успел закоммитить 5715ca6; дерево чистое"
+      - "GIT_VERIFIED: cherry-pick c763756 (+253/-18); test_ideas.py и test_pipeline_stage_counters.py не менялись оператором между f47322c и HEAD, поэтому применено чисто"
+      - "CODE_VERIFIED: утверждения УСИЛЕНЫ, не ослаблены: '>= 1' стало точным == 1 с атрибуцией по гейтам; publish_due._last_dzen — настоящий атрибут-кэш (s7_publish:2123-2127), а не мёртвая строка"
+      - "CI_VERIFIED: независимость порядка замерена в трёх порядках — оба файла 24 passed, обратный порядок 24 passed, каждый файл отдельно 12 passed"
+    next_action: "Принято и интегрировано координатором"
+
+  - id: W32-F
+    title: "Планировщик диспетчеризации: dispatch_plan поверх текущего queue_check"
+    description: >
+      Портировать tools/dispatch_plan.py (374) и tests/test_w26qm_dispatch_plan.py
+      (310) из w26qm-dispatch-plan (50671b5). Хаки к queue_check.py (+6) и
+      test_w25a_queue.py (+80/-18) НЕ портируются: оператор переписал оба
+      (7c929c9, eb078e4, f2f3b49), ими владеет координатор. Планировщик обязан
+      остаться честным помощником, а не фиктивным Agent Dispatcher.
+    priority: medium
+    category: orchestration
+    status: INTEGRATED
+    owner_role: "Orchestration-Tooling Engineer"
+    owner_agent: "w30f"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30f-dispatch-plan"
+    branch: w30f-dispatch-plan
+    allowed_paths:
+      - tools/dispatch_plan.py
+      - tests/test_w26qm_dispatch_plan.py
+      - docs/orchestration/README.md
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Тесты планировщика зелёные; test_w25a_queue остаётся зелёным без правок; queue.yaml не мутирован (git status пуст); AST-страж распространён на новый инструмент координатором"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_w26qm_dispatch_plan.py tests/test_w25a_queue.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: 4354be2 исполнителя, merge c99f678 — dispatch_plan.py (387) + тест (389) + README (+44)"
+      - "CODE_VERIFIED: собственный AST-страж запрещает планировщику диспетчеризовать или менять репозиторий; набор импортов ровно {__future__, argparse, sys, pathlib, typing, queue_check}"
+      - "GIT_VERIFIED: 0 изменённых строк в queue_check.py / test_w25a_queue.py / queue.yaml"
+    next_action: "Принято и интегрировано"
+
+  - id: W32-G
+    title: "Ручные пакеты 13 площадок: честность и корректность manual_drafts"
+    description: >
+      Замер mode=ro: реальные публикации есть только у vk (545) и dzen (37); у
+      остальных площадок crosspost_logs = 0. Значит 13 направлений
+      MANUAL_DESTINATIONS действительно ручные, и пакет обязан быть корректным,
+      но без спекулятивных API-интеграций. Проверить семь подозреваемых дефектов
+      (порча __init__ при снятии Markdown, срез последней строки, лимиты
+      заголовков, отбрасывание http-источников, коллизия имён медиа, подстрочный
+      CTA, молчаливое усечение) и починить только подтверждённые.
+    priority: medium
+    category: product
+    status: INTEGRATED
+    owner_role: "Platform-Adaptation Engineer"
+    owner_agent: "w30g"
+    base_sha: f47322cf6cc9649ec5f65148c1cf104f11f95e00
+    worktree: ".qoder/worktrees/w30g-manual-platforms"
+    branch: w30g-manual-platforms
+    allowed_paths: []
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Каждый исправленный дефект имеет тест, падавший до правки; параметрический тест на все 13 площадок пиннит manual_only/publish_action=none; новый числовой лимит только с официальным источником"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_manual_drafts.py tests/test_manual_drafts_platforms.py"
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-08T12:10:00+00:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: исполнитель сдал 352561b (+105/-16 в manual_drafts.py, +240 новый тест); 7 подозреваемых дефектов подтверждены настоящими"
+      - "CODE_VERIFIED: оператор независимо закоммитил 57c13ab (+32/-8) — другой дефект в том же файле: лимит пакета теперь владеет editorial-профиль, а не жёсткая константа (vk_clips 500 -> пакет 4994)"
+      - "CODE_VERIFIED: сверку выполнил W33-A: все 7 дефектов портированы поверх профиля оператора, _body_limit() оператора байт-неизменен; добавлена атрибуция применённого лимита (_body_limit_source) и раскрытие обрезки"
+      - "GIT_VERIFIED: cherry-pick 5f532f7 (257/0 новый тест, 116/13 модуль); tests/test_manual_drafts.py байт-идентичен базе (git diff --exit-code = 0)"
+      - "CODE_VERIFIED: координатор лично прогнал гейт в дереве исполнителя — 134 passed, PYTEST_EXIT=0 (не 149 из отчёта исполнителя; засчитан замер координатора)"
+    next_action: "Закрыто через W33-A: цель пакета в main как 5f532f7; allowed_paths очищен, владелец байтов — W33-A"
+  # ------------------------------------------------------------- wave 33 (reconciliation + coordinator seams)
+  # W33-A finishes what W32-G could not: the operator's 57c13ab and the executor's
+  # 352561b both edited manual_drafts.py, so the port had to keep the operator's
+  # profile-owned body limit as the source of truth. W33-B is the coordinator's own
+  # secret-gate repair, registered so the queue does not hide coordinator commits.
+  - id: W33-A
+    title: "Сверка ручного пакета: порт 352561b поверх профильных лимитов оператора"
+    description: >
+      W32-G вернулся координатору: исполнитель и оператор независимо правили
+      tgfarm/manual_drafts.py. Портировать семь подтверждённых дефектов ручной
+      передачи, сохранив _body_limit() оператора байт-неизменным, и не тронуть
+      tests/test_manual_drafts.py и операторский test_manual_package_every_destination.py.
+    priority: high
+    category: product
+    status: INTEGRATED
+    owner_role: "Backend Integration Engineer"
+    owner_agent: "w33a"
+    base_sha: b3779c0c4ebed082c27b76d6c8fa9a4e4f5597c1
+    worktree: ".qoder/worktrees/w33a-manual-reconcile"
+    branch: w33a-manual-reconcile
+    allowed_paths:
+      - tgfarm/manual_drafts.py
+      - tests/test_manual_drafts_platforms.py
+    depends_on: [W32-G]
+    blocked_by: []
+    p_refs: []
+    acceptance: "Все семь дефектов порта покрыты красными->зелёными тестами; профиль оператора остаётся владельцем лимита; операторские тесты байт-идентичны и зелёные"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_manual_drafts.py tests/test_manual_drafts_platforms.py tests/test_manual_package_every_destination.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: 57
+    started_at: "2026-11-09T21:43:00+03:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: исполнитель сдал 83dffe4 на базе b3779c0; cherry-pick координатора 5f532f7, numstat 257/0 и 116/13 — без перезаписи CRLF"
+      - "CODE_VERIFIED: координатор лично прогнал гейт в дереве исполнителя — 134 passed, PYTEST_EXIT=0; отчёт исполнителя называл 149, засчитан собственный замер"
+      - "CODE_VERIFIED: git diff --exit-code b3779c0 HEAD -- tests/test_manual_drafts.py = 0; исполнитель тронул ровно два файла своей зоны"
+      - "CODE_VERIFIED: _body_limit_source читает настоящий ключ PROFILES[platform]['max_chars'] (platform_editorial.py), поэтому профильный лимит атрибутируется, а внутренний потолок помечается неподтверждённым"
+      - "CODE_VERIFIED: исполнитель замерил красное 43 failed / 39 passed на базовом коде и зелёное 82/82; полный прогон в его дереве дал те же 7 падений, что и дерево координатора — падения не от этого порта"
+      - "DOCUMENTED_ONLY: лимит заголовка Twitch 140 подтверждён dev.twitch.tv/docs/api/reference; официальные лимиты остальных 12 площадок UNKNOWN и раскрыты в notes как непроверенные"
+    next_action: "Закрыто; 5f532f7 в main, ждёт общего прогона и push"
+
+  - id: W33-B
+    title: "Гейт секретов: красная чистая выборка, crash на cp1252 и печать ключевого материала"
+    description: >
+      tools/scan_secrets.py обходил 174 связанных worktree, поэтому чистая выборка
+      всегда была красной; печатал найденный литерал целиком в лог; падал
+      UnicodeEncodeError на собственной русской заметке; а тест гейта проверял
+      неверный предикат. Починить гейт и его тест, не ослабляя проверку.
+    priority: high
+    category: release
+    status: INTEGRATED
+    owner_role: "DevOps / Release Engineer"
+    owner_agent: "coordinator"
+    base_sha: c763756952a235102ce1bd0ee937d4c230fc68b7
+    worktree: null
+    branch: null
+    allowed_paths:
+      - tools/scan_secrets.py
+      - tests/test_scan_secrets_gate.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "Гейт возвращает 0 на чистой выборке, не печатает ключевой материал, не обходит чужие worktree и различает .env от .env.example"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_scan_secrets_gate.py tests/test_ideas2.py"
+      - "python tools/scan_secrets.py"
+    review_status: SELF_CHECKED_BY_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-09T20:30:00+03:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: "2026-11-09T22:50:00+03:00"
+    evidence:
+      - "GIT_VERIFIED: afff7ae, numstat 59/20 (гейт) и 100/7 (тест); обход scan_secrets стал os.walk с отсечением связанных worktree по маркеру gitdir: и подстроке /worktrees/"
+      - "CODE_VERIFIED: строка находки теперь редактирована — 'key-shaped literal', сам литерал не печатается; findings_outside_env общий предикат для гейта и теста"
+      - "CODE_VERIFIED: 24 passed вместе с test_ideas2.py (второй потребитель сканера); скан занимает ~1 с вместо зависания на 174 деревьях"
+      - "OBSERVED: зафиксирована потенциальная экспозиция — префикс живого ключа попал в лог pytest при красном прогоне, и четыре копии .env лежат в .qoder/worktrees/agent-general-purpose-*. Ротацию НЕ выполнял (§0.3/§9): рекомендация оператору вынесена в отчёт"
+    next_action: "Закрыто; ротация ключа — решение оператора, координатор её не выполняет"
+
+  # ------------------------------------------------------------- wave 34 (red suite blocks the push)
+  # CI was last green at 74025b7. The operator's bcda034 isolation fix and the
+  # intentional Telegram evidence tightening both landed after it, so seven tests
+  # are red at HEAD for reasons that are now proven, not guessed. This package is
+  # the critical path: nothing is pushed until the suite is green.
+  - id: W34-A
+    title: "Семь красных тестов на HEAD: мёртвая константа DATA_DIR и устаревшее ожидание по Telegram"
+    description: >
+      Полный прогон на 0352c3c дал 7 failed / 3816 passed / 4 xfailed. Шесть падений —
+      регрессия от bcda034: data_root() теперь читает поле Settings.data_dir, а тесты
+      патчат мёртвую константу settings_mod.DATA_DIR; корень изоляции называется data0,
+      поэтому литеральная проверка части пути 'data' тоже неверна. Седьмое — устаревшее
+      ожидание: оператор намеренно ужесточил has_publication_evidence (Telegram только
+      по message id), и 9 telegram-расхождений исчезли по замыслу. Починить тесты, не
+      ослабляя их, и покрыть новое правило Telegram положительным тестом.
+    priority: high
+    category: release
+    status: RUNNING
+    owner_role: "Test Integrity Engineer"
+    owner_agent: "w34a"
+    base_sha: 0352c3c5690d42f87eeeb9a5b636fd821b03eed9
+    worktree: ".qoder/worktrees/w34a-red-suite"
+    branch: w34a-red-suite
+    allowed_paths:
+      - tests/test_w24a_sentinel_no_secret_leaks.py
+      - tests/test_telegram_and_sources.py
+      - tests/test_maintenance_evidence_predicate_shared.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: "0 failed на полном прогоне; ни одно утверждение не удалено и не ослаблено; новое правило Telegram покрыто положительным тестом; продакшен-код не тронут"
+    test_commands:
+      - "python -m pytest -q -p no:randomly tests/test_w24a_sentinel_no_secret_leaks.py tests/test_telegram_and_sources.py tests/test_maintenance_evidence_predicate_shared.py"
+      - "python -m pytest -q -p no:randomly"
+    review_status: NOT_STARTED
+    integration_status: NOT_INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: "2026-11-09T22:35:00+03:00"
+    updated_at: "2026-11-09T22:50:00+03:00"
+    completed_at: null
+    evidence:
+      - "CODE_VERIFIED: координатор воспроизвёл все 7 падений на трёх файлах вместе и седьмое — в одиночку; значит это не загрязнение порядка всего прогона"
+      - "GIT_VERIFIED: git diff --stat 74025b7 HEAD показал, что maintenance.py, apiauth.py и оба теста неизменны с зелёного CI, а conftest.py (+90) и settings.py (+26) изменены коммитом bcda034"
+      - "CODE_VERIFIED: apiauth.py:57 token_path() = get_settings().data_root() / TOKEN_FILENAME; data_root() берёт Path(self.data_dir) при непустом поле, поэтому патч DATA_DIR мёртв"
+      - "CODE_VERIFIED: s7_publish has_publication_evidence получил ветку 'if platform == telegram: return False' с живым замером 15 строк / 0 askable; maintenance._row_has_publication_evidence делегирует владельцу, поэтому 9 telegram-расхождений исчезли по замыслу"
+    next_action: "Дождаться отчёта исполнителя, лично проверить diff и прогон; push заблокирован до зелёного сюиты"
