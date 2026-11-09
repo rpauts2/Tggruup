@@ -29,11 +29,28 @@ SENTINEL = "SENTINEL-token-must-never-reach-output-0f3a"
 
 @pytest.fixture()
 def sentinel_configured(monkeypatch, tmp_path) -> Path:
-    """A token file holding the sentinel, and settings that read it from there."""
+    """A token file holding the sentinel, and settings that read it from there.
+
+    The live mechanism is the `data_dir` field, not the module constant:
+    `apiauth.token_path()` resolves `get_settings().data_root() / TOKEN_FILENAME`,
+    and `data_root()` falls back to `settings.DATA_DIR` only while the field is
+    empty. `tests/conftest.py`'s session isolation sets that field for the whole
+    run, so patching the constant redirected nothing: every test here shared one
+    `data0/api_token`, and one test's `ensure_token()` satisfied the next — which
+    is how `token_source()` answered "file" where "generated" was meant.
+    `get_settings()` is `lru_cache(maxsize=1)`, so this is the very instance
+    production reads, and `tmp_path` is per-test: each test owns its token file.
+    """
     settings = settings_mod.get_settings()
     monkeypatch.setattr(settings, "api_token", "", raising=False)
-    monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path), raising=False)
     token_file = tmp_path / apiauth.TOKEN_FILENAME
+    # Aim the patch at the mechanism, not at a name that may stop being it: if
+    # `token_path()` ever resolves elsewhere, this fixture must fail rather than
+    # write a sentinel nobody reads and let the assertions pass vacuously.
+    assert apiauth.token_path() == token_file, (
+        "the patch missed the live mechanism: production reads a different token file"
+    )
     token_file.write_text(SENTINEL, encoding="utf-8")
     token_file.chmod(0o600)
     return token_file
@@ -87,16 +104,25 @@ def test_a_generated_token_is_reported_as_generated_before_it_exists(
     in play is a random string the test never knew. This is not hypothetical — the
     first version of this file had exactly that hole, and a leaked-value mutant
     survived it.
+
+    The root is this test's own `tmp_path` and the file must not exist yet: a
+    neighbour's `ensure_token()` landing in a shared root would answer "file"
+    here and the branch under test would never run.
     """
     settings = settings_mod.get_settings()
     monkeypatch.setattr(settings, "api_token", "", raising=False)
-    monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path), raising=False)
     monkeypatch.setattr(apiauth.secrets, "token_urlsafe", lambda *_a, **_k: SENTINEL)
+    token_file = tmp_path / apiauth.TOKEN_FILENAME
+    assert apiauth.token_path() == token_file, (
+        "the patch missed the live mechanism: production reads a different token file"
+    )
+    assert not token_file.exists(), "a previous test's token bled into this one"
 
     assert apiauth.token_source() == "generated"
     out, _err = _run_serve_output(monkeypatch, capsys)
 
-    assert (tmp_path / apiauth.TOKEN_FILENAME).read_text(encoding="utf-8") == SENTINEL, (
+    assert token_file.read_text(encoding="utf-8") == SENTINEL, (
         "the sentinel never became the token, so this test could not have seen a leak"
     )
     assert "создан только что" in out, "a freshly created secret is not distinguished"
@@ -136,13 +162,19 @@ def test_rotate_replaces_the_exposed_value_and_says_where(
 def test_source_names_the_environment_before_the_file(monkeypatch, tmp_path) -> None:
     """Three states are three different operator actions; two of them must not collapse."""
     settings = settings_mod.get_settings()
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path), raising=False)
+    token_file = tmp_path / apiauth.TOKEN_FILENAME
+    assert apiauth.token_path() == token_file, (
+        "the patch missed the live mechanism: production reads a different token file"
+    )
+
     monkeypatch.setattr(settings, "api_token", SENTINEL, raising=False)
     assert apiauth.token_source() == "env"
 
     monkeypatch.setattr(settings, "api_token", "", raising=False)
-    monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
+    assert not token_file.exists(), "a previous test's token bled into this one"
     assert apiauth.token_source() == "generated"
-    (tmp_path / apiauth.TOKEN_FILENAME).write_text("x", encoding="utf-8")
+    token_file.write_text("x", encoding="utf-8")
     assert apiauth.token_source() == "file"
 
 

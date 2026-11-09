@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -83,11 +84,25 @@ def test_read_only_closes_the_underlying_client():
 
 
 def test_session_lives_outside_the_repository():
-    """The session file is the account; it must not sit where git can see it."""
+    """The session file is the account; it must not sit where git can see it.
+
+    Asserted as the property, not as a directory name. The root is
+    `Settings.data_root()`, which `tests/conftest.py`'s session isolation points at
+    a per-run temporary directory, so the leaf is no longer literally `data`. The
+    old `"data" in path.parts` check named the fallback constant's spelling and
+    went red the moment isolation started working: it was testing a name rather
+    than the account's safety. What has to hold is that the session sits inside
+    the data root the operator configures and outside the repository git tracks.
+    """
+    from tgfarm.core.settings import get_settings
     from tgfarm.tguser import session_path
 
-    path = session_path()
-    assert "data" in path.parts
+    repo_root = Path(__file__).resolve().parents[1]
+    data_root = get_settings().data_root().resolve()
+    path = session_path().resolve()
+
+    assert path.is_relative_to(data_root), "the session left the data root the operator configures"
+    assert not path.is_relative_to(repo_root), "the account session sits where git can see it"
     assert path.suffix != ".py"
 
 

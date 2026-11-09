@@ -7,7 +7,9 @@ the owner of it. Three copies existed:
 1. `tgfarm/s7_publish.has_publication_evidence` — the predicate the publisher applies
    *before* it writes `published`. Three facts OR'd: a telegram message id; a remote
    id that is not the dry-run placeholder the off-mode adapters invent; an accepted
-   `crosspost_logs` row for the pair;
+   `crosspost_logs` row for the pair. One carve-out, added 2026-11-06: on telegram the
+   first fact is the *only* fact — the owner returns `False` for a row without a
+   message id before it reads the other two;
 2. `tgfarm/s8_analytics/formats.EVIDENCE_RULES` — per platform, *which* of those facts
    is that platform's own proof;
 3. `tgfarm/maintenance.publication_evidence_repair` — a paraphrase: for telegram only
@@ -48,23 +50,40 @@ publication, so the identifier read excludes the entries the journal's *own* voc
 classifies as never-sent (`crosspost_journal.JournalStatusClass.REOPEN`) instead of
 spelling a status.
 
-The matrix is 168 cells — 4 platforms x 42 — and the two predicates disagree on 25 of
-them: 9 telegram, 8 dzen, 8 vk. 5 of those are the copy ignoring an accepted journal
-entry (all telegram: its rule named only the message id) and 20 are the copy ignoring a
-recorded identifier (4 telegram, 8 dzen, 8 vk: the owner's second fact, which neither
-branch of the paraphrase ever weighed).
+The matrix is 168 cells — 4 platforms x 42 — and the two predicates disagree on 16 of
+them: 0 telegram, 8 dzen, 8 vk. None of the 16 is the copy ignoring an accepted journal
+entry; all 16 are the copy ignoring a recorded identifier (8 dzen, 8 vk: the owner's
+second fact, which neither branch of the paraphrase ever weighed). These counts are
+measured on the seeded matrix, not estimated. The telegram half of the previous count
+— 9 cells, 5 an ignored accepted entry and 4 an ignored identifier, 25 divergences in
+total — vanished when the owner was narrowed to the message id alone; the dated note
+below says what that narrowing does to the historical measurement.
 
 Read-only live measurement (2026-11-05, `mode=ro`; 477 `published` rows over telegram
 15 / dzen 57 / vk 405; no `history_import` publications at all): the baseline paraphrase
 and the delegated predicate select **the same 37 rows** — telegram 15, dzen 22, vk 0 —
-so none of the 25 divergent cells above has been reached by the farm's own writes yet.
-The same read-only session counts the shapes behind that: 0 telegram published rows
-with a journal entry (`crosspost_logs` names only dzen/max/vk/x), and 413 journal rows
-carrying a non-`dry-*` identifier, every one of them a `posted` entry belonging to a
-dzen or vk post, so no journal-ruled published row has yet reached the
+so none of the divergent cells above had been reached by the farm's own writes at that
+date. The same read-only session counts the shapes behind that: 0 telegram published
+rows with a journal entry (`crosspost_logs` names only dzen/max/vk/x), and 413 journal
+rows carrying a non-`dry-*` identifier, every one of them a `posted` entry belonging to
+a dzen or vk post, so no journal-ruled published row had yet reached the
 `scheduled`/`failed` + real-identifier cell either. Same session, same counters:
 `posted_without_id` 27, and 0.16 s to classify all 477 rows with the delegated
-predicate.
+predicate. This paragraph is a past observation; it is not re-measured here.
+
+Dated note (2026-11-06, the owner was narrowed): the telegram half of that measurement
+now means something different, and the difference is stated rather than quietly
+re-dating the numbers. On 2026-11-05 the two copies agreed on those 15 telegram rows
+*because* the live journal held no telegram entry at all, so the owner's second and
+third facts never fired — the agreement was contingent on an empty journal. The owner
+now returns `False` for a telegram row with no message id without consulting the
+journal, so the same 15 rows would still be selected and the 37 would still be 37, but
+the agreement is structural: a telegram `posted` entry appearing in the live base
+would have changed the 2026-11-05 answer and cannot change it now. The dzen/vk half is
+untouched by the narrowing. What the narrowing does change is the claim the sweep may
+make about a telegram row — an accepted journal entry carrying a real identifier is no
+longer allowed to spare one — and that is pinned positively by
+:func:`test_a_telegram_journal_entry_cannot_vouch_for_a_missing_message_id`.
 """
 
 from __future__ import annotations
@@ -312,11 +331,19 @@ def _expected_divergences() -> set[str]:
     * **an unruled platform**: the sweep does not ask about it at all, from either
       copy, so it has no divergence to declare —
       :func:`test_the_unruled_platform_is_never_swept_by_either_copy` holds that;
-    * **telegram** (`RULE_MESSAGE_ID`) — the paraphrase weighed the message id and
-      nothing else. An accepted journal entry (the owner's third fact) or an
-      identifier on an entry the journal does not disclaim (its second) are evidence
-      the owner sees and the copy did not, so every such row *without* a message id
-      diverges. With a message id both say "evidenced", whatever the journal says;
+    * **telegram** (`RULE_MESSAGE_ID`) — no divergence is possible any more, and
+      that is derived from the rule rather than from a list of names. The owner
+      holds this platform to the message id *alone*: `has_publication_evidence`
+      returns `False` for a telegram row without one before it ever reads
+      `remote_id` or the journal, because `s9_growth.adapters.ADAPTERS` has no
+      `telegram` key and `tg_sync.collect_post_stats` pairs `(chat id,
+      tg_message_id)`, so such a row stays unmeasurable whatever a journal entry
+      asserts. The paraphrase weighed that same single fact, so the two agree on
+      every telegram cell. Until the owner was narrowed on 2026-11-06 an accepted
+      entry or a recorded identifier did vouch here and 9 cells diverged;
+      :func:`test_a_telegram_journal_entry_cannot_vouch_for_a_missing_message_id`
+      pins the new rule positively, so re-widening the owner fails there and in
+      the matrix equality alike;
     * **dzen / vk** (`RULE_JOURNAL`) — the paraphrase weighed the accepted entry and
       nothing else. An entry the journal does not disclaim but that never reached
       `posted` — a `scheduled` or `failed` row that still carries the identifier the
@@ -334,9 +361,15 @@ def _expected_divergences() -> set[str]:
         # another platform's placeholder shape is not a placeholder here.
         recorded_identifier = cell["kind"] in ("real", "other_placeholder")
         if rule == RULE_MESSAGE_ID:
-            if cell["message_id"] is None and (accepted_entry or recorded_identifier):
-                expected.add(cell["name"])
-        elif not accepted_entry and recorded_identifier:
+            # The owner's fact set on this platform is exactly the paraphrase's:
+            # the message id, and nothing else. Neither `accepted_entry` nor
+            # `recorded_identifier` can vouch for it, so no cell here diverges.
+            # Stated as a property of the rule, not as nine deleted names: if the
+            # owner is ever loosened to consult the journal again, the matrix grows
+            # telegram divergences this set does not contain and the equality
+            # assertion in the deliverable below fails loudly.
+            continue
+        if not accepted_entry and recorded_identifier:
             expected.add(cell["name"])
     return expected
 
@@ -382,6 +415,115 @@ def test_the_two_predicates_differ_exactly_where_the_paraphrase_dropped_a_fact()
     # to rewrite into `publish_unknown` while the publisher's own predicate vouched
     # for it. That is the operator-visible cost of the copy, and the owner is right.
     assert all(verdicts[name][2] for name in divergent), divergent
+
+
+def _seed_telegram_row_with_accepted_entry(message_id: int | None) -> dict:
+    """One `published` telegram row whose journal entry is as strong as it gets.
+
+    Seeded outside the matrix so the rule below is asserted on a single row an
+    operator could actually hold, and registered with :func:`_drop_own_rows` so it
+    leaves no residue in the shared session database. The entry is `posted` and its
+    identifier is the fixture's `real` kind — a value the owner's second fact accepts
+    on any platform it is allowed to weigh.
+    """
+    suffix = _slug()
+    channel_id = f"ev_tgrule_{suffix}"
+    public_id = f"evt{suffix}"
+    _seeded_channels.append(channel_id)
+    _seeded_public_ids.append(public_id)
+    with session_scope() as session:
+        session.add(Channel(id=channel_id, title="Telegram rule", niche="test", platform="telegram"))
+        post = Post(
+            public_id=public_id,
+            channel_id=channel_id,
+            hook="Заголовок",
+            body="Тело поста.",
+            status="published",
+            published_at=datetime.now(UTC) - timedelta(minutes=90),
+            tg_message_id=message_id,
+            generation_provider="offline",
+        )
+        session.add(post)
+        session.flush()
+        post_id = int(post.id)
+        remote_id = _remote_id({"platform": "telegram", "kind": "real"}, post_id)
+        session.add(
+            CrosspostLog(
+                post_public_id=public_id,
+                platform="telegram",
+                status="posted",
+                remote_id=remote_id,
+                url=None,
+            )
+        )
+    return {
+        "post_id": post_id,
+        "public_id": public_id,
+        "message_id": message_id,
+        "remote_id": remote_id,
+    }
+
+
+def test_a_telegram_journal_entry_cannot_vouch_for_a_missing_message_id():
+    """The narrowed telegram rule, pinned positively rather than merely tolerated.
+
+    The divergence set lost its 9 telegram cells because the owner stopped
+    consulting the journal for telegram at all. An empty expectation would go just
+    as green if the owner were *deleted*, so this asserts the rule itself: a
+    `published` telegram row with no `tg_message_id` has no publication evidence even
+    when the journal holds an accepted `posted` entry carrying a real remote id, and
+    the same row *with* a message id does. Asked through the production owner and
+    through the sweep's delegate, so loosening either fails here loudly.
+
+    Why the owner is right: `s9_growth.adapters.ADAPTERS` has no `telegram` key (the
+    bot path is the only Telegram publisher), so a telegram `posted` row can only be
+    legacy or hand-written; and `tg_sync.collect_post_stats` pairs `(chat id,
+    tg_message_id)`, so a publication with no id stays unmeasurable whatever the
+    journal asserts.
+    """
+    rule = EVIDENCE_RULES["telegram"]
+    assert rule == RULE_MESSAGE_ID
+
+    for message_id, evidenced in ((None, False), (4242, True)):
+        row = _seed_telegram_row_with_accepted_entry(message_id)
+        # The premise, so a False below is the rule and not a row that never existed:
+        # the identifier is real, i.e. not the placeholder the owner discounts.
+        assert row["remote_id"]
+        assert row["remote_id"] != _dry_run_remote_id("telegram", row["post_id"])
+        with session_scope() as session:
+            stored = session.execute(
+                select(Post).where(Post.public_id == row["public_id"])
+            ).scalar_one()
+            assert stored.status == "published"
+            assert stored.tg_message_id == message_id
+            recorded = _journal_recorded_identifiers(session, "telegram", [row["public_id"]])
+            identifiers = recorded.get(row["public_id"])
+            assert identifiers == [row["remote_id"]], identifiers
+
+            owner = has_publication_evidence(
+                session,
+                public_id=row["public_id"],
+                platform="telegram",
+                post_id=row["post_id"],
+                message_id=message_id,
+                remote_id=identifiers[0],
+            )
+            delegated = _row_has_publication_evidence(
+                session,
+                platform="telegram",
+                rule=rule,
+                post_id=row["post_id"],
+                public_id=row["public_id"],
+                message_id=message_id,
+                identifiers=identifiers,
+            )
+        assert owner is evidenced, (message_id, owner)
+        assert delegated is evidenced, (message_id, delegated)
+        assert delegated == owner, (message_id, delegated, owner)
+        # The two copies agree on this cell now, and that agreement is what removed
+        # the telegram divergences — asserted here rather than assumed.
+        cell = {"platform": "telegram", "message_id": message_id, "status": "posted"}
+        assert _paraphrase_candidate(cell) is (not delegated), message_id
 
 
 def test_dry_run_entries_are_never_mistaken_for_proof():
