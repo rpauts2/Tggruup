@@ -136,6 +136,92 @@ def _fields(platform_id: str) -> list[dict[str, str]]:
     return rows
 
 
+#: Where the chosen destination lives in settings, per platform.
+DESTINATION_FIELDS: dict[str, tuple[str, ...]] = {
+    "vk": ("VK_GROUP_ID",),
+    "max": ("MAX_CHANNEL_ID", "MAX_CHANNEL_NAME"),
+    "telegram": ("TELEGRAM_CHANNELS",),
+    "reddit": ("REDDIT_SUBREDDIT",),
+    "pinterest": ("PINTEREST_BOARD_ID",),
+    "facebook": ("FACEBOOK_PAGE_ID",),
+    "youtube": ("YOUTUBE_CHANNEL_ID",),
+    "linkedin": ("LINKEDIN_MEMBER_ID",),
+    "mastodon": ("MASTODON_INSTANCE",),
+    "tumblr": ("TUMBLR_BLOG_NAME",),
+    "discord": ("DISCORD_WEBHOOK_URL",),
+}
+
+
+def _destination_state(platform_id: str) -> tuple[str, str]:
+    """(state, label) for the concrete place a publication would go to."""
+    settings = get_settings()
+    fields = DESTINATION_FIELDS.get(platform_id, ())
+    for key in fields:
+        value = str(getattr(settings, key.lower(), "") or "").strip()
+        if value:
+            return "selected", value if len(value) <= 40 else value[:40] + "…"
+    if fields:
+        return "missing", ""
+    return "unknown", ""
+
+
+def platform_statuses(
+    platform_id: str,
+    *,
+    mode: str,
+    authorized: Any,
+    keys_present: bool,
+    session_verified: bool = False,
+    profile_saved: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Four independent statuses instead of one green tick.
+
+    ``auth`` answers "did the account sign in", ``api`` "is an API path usable",
+    ``destination`` "is a concrete channel/page chosen", ``publish`` "can the farm
+    actually deliver there". A platform is never ``publish: ready`` without the
+    first three.
+    """
+    capability = capability_of(platform_id)
+    if authorized is True:
+        auth = {"state": "ready", "label": "Авторизован"}
+    elif session_verified:
+        auth = {"state": "ready", "label": "Сессия браузера активна"}
+    elif authorized is False:
+        auth = {"state": "failed", "label": "Вход не прошёл"}
+    elif keys_present or profile_saved:
+        auth = {"state": "pending", "label": "Сохранено, не проверено"}
+    else:
+        auth = {"state": "none", "label": "Не подключено"}
+
+    if capability != "publish":
+        api = {"state": "manual", "label": "API-публикации нет"}
+    elif authorized is True or keys_present:
+        api = {"state": "ready", "label": "API готов"}
+    elif mode in {"oauth", "vkhost", "token"}:
+        api = {"state": "missing", "label": "Нужен доступ API"}
+    else:
+        api = {"state": "unknown", "label": "По сессии браузера"}
+
+    dest_state, dest_label = _destination_state(platform_id)
+    destination = {
+        "state": "ready" if dest_state == "selected" else dest_state,
+        "label": ("Назначено: " + dest_label) if dest_state == "selected" else (
+            "Нужно выбрать назначение" if dest_state == "missing" else "Назначение не задаётся"
+        ),
+    }
+
+    if capability != "publish":
+        publish = {"state": "manual", "label": "Только вручную"}
+    elif api["state"] == "ready" and destination["state"] in {"ready", "unknown"}:
+        publish = {"state": "ready", "label": "Готово к публикации"}
+    elif auth["state"] == "failed":
+        publish = {"state": "blocked", "label": "Публикация заблокирована"}
+    else:
+        publish = {"state": "blocked", "label": "Рано публиковать"}
+
+    return {"auth": auth, "api": api, "destination": destination, "publish": publish}
+
+
 def auth_matrix() -> dict[str, Any]:
     """Every destination with the exact way it is connected on this machine."""
     checks = _read_auth_checks()
@@ -175,6 +261,14 @@ def auth_matrix() -> dict[str, Any]:
                 "login_url": PLATFORM_LOGIN_URLS.get(pid, "") if mode == "browser" else "",
                 "fields": _fields(pid),
                 "capability": capability_of(pid),
+                "statuses": platform_statuses(
+                    pid,
+                    mode=mode,
+                    authorized=authorized,
+                    keys_present=keys_present,
+                    session_verified=bool(session.get("verified")),
+                    profile_saved=bool(session.get("profile_saved")),
+                ),
                 "authorized": authorized,
                 "account": check.get("account") or "",
                 "checked_at": check.get("checked_at") or "",
