@@ -6525,7 +6525,7 @@
       return;
     }
     const values = {};
-    $("#connect-dialog-body [data-connect-field]").forEach((input) => {
+    $$("#connect-dialog-body [data-connect-field]").forEach((input) => {
       const value = String(input.value || "").trim();
       if (value) values[input.dataset.connectField] = value;
     });
