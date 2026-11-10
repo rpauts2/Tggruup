@@ -26,6 +26,8 @@
       <button class="tab" data-view="review" role="tab"><span class="tab-label">Требует внимания</span><span class="tab-counter" id="review-nav-count">0</span></button>
 
       <div class="nav-group">Редакция</div>
+      <button class="tab" data-view="team" role="tab"><span class="tab-label">AI-команда</span></button>
+      <button class="tab" data-view="studio" role="tab"><span class="tab-label">Контент-студия</span></button>
       <button class="tab" data-view="plan" role="tab"><span class="tab-label">Планирование</span></button>
       <button class="tab" data-view="posts" role="tab"><span class="tab-label">Очередь публикаций</span></button>
       <button class="tab" data-view="trends" role="tab"><span class="tab-label">Тренды</span></button>
@@ -35,6 +37,9 @@
       <button class="tab" data-view="channels" role="tab"><span class="tab-label">Каналы</span></button>
       <button class="tab" data-view="platforms" role="tab"><span class="tab-label">Центр площадок</span><span class="tab-counter" id="platforms-nav-count">5</span></button>
       <button class="tab" data-view="connect" role="tab"><span class="tab-label">Подключения</span><span class="tab-counter" id="connect-nav-count">0</span></button>
+
+      <div class="nav-group">Аналитика</div>
+      <button class="tab" data-view="analytics" role="tab"><span class="tab-label">Результаты и рост</span></button>
 
       <div class="nav-group">Система</div>
       <button class="tab" data-view="sources" role="tab"><span class="tab-label">Источники</span></button>
@@ -255,6 +260,80 @@
   </section>
 
   <!-- ============================================================== TRENDS -->
+
+  <!-- ============================================================ AI TEAM -->
+  <section class="view" data-view="team">
+    <div class="page-hero">
+      <div><div class="section-kicker">EDITORIAL OPERATIONS</div><h2>Редакционная команда</h2>
+        <p>Реальные этапы конвейера и сохранённые решения агентов. Без декоративных статусов «онлайн».</p></div>
+      <button class="btn btn-ghost" id="team-refresh" type="button">↻ Обновить</button>
+    </div>
+    <div class="team-summary" id="team-summary"><div class="empty">Загружаю журнал работы…</div></div>
+    <article class="card team-flow-card">
+      <header class="card-head"><div><h2>Последний цикл конвейера</h2><span class="card-sub">Состояния из журнала PipelineRun</span></div><span class="card-sub" id="team-run-meta">Нет данных</span></header>
+      <div class="team-stage-grid" id="team-stage-grid"><div class="empty">Ожидание журнала</div></div>
+    </article>
+    <article class="card">
+      <header class="card-head"><div><h2>Роли и решения</h2><span class="card-sub">Trace последнего материала, где он сохранён</span></div><span class="card-sub" id="team-trace-meta">Нет trace</span></header>
+      <div class="team-role-grid" id="team-role-grid"><div class="empty">Загружаю сохранённые trace…</div></div>
+    </article>
+    <article class="card">
+      <header class="card-head"><h2>Последние прогоны</h2><span class="card-sub">Фактические статусы этапов</span></header>
+      <div class="list" id="team-run-list"><div class="empty">Журнал пуст</div></div>
+    </article>
+  </section>
+
+  <!-- ======================================================== EDITORIAL STUDIO -->
+  <section class="view" data-view="studio">
+    <div class="page-hero">
+      <div><div class="section-kicker">EDITORIAL WORKSPACE</div><h2>Контент-студия</h2>
+        <p>Материал, источники, проверки и платформенная версия в одном рабочем пространстве. Изменения проходят через quality gates.</p></div>
+      <button class="btn btn-ghost" id="studio-refresh" type="button">↻ Обновить</button>
+    </div>
+    <div class="studio-layout">
+      <aside class="card studio-queue">
+        <header class="card-head"><div><h2>Материалы</h2><span class="card-sub" id="studio-count">Последние черновики и публикации</span></div></header>
+        <div class="studio-post-list" id="studio-post-list"><div class="empty">Загружаю материалы…</div></div>
+      </aside>
+      <section class="card studio-main">
+        <header class="card-head"><div><h2 id="studio-title">Выбери материал</h2><span class="card-sub" id="studio-subtitle">Редакторский просмотр</span></div><span class="card-sub" id="studio-post-status">—</span></header>
+        <div class="studio-content" id="studio-content"><div class="empty">Выбери материал слева.</div></div>
+        <div class="studio-toolbar" id="studio-toolbar"></div>
+        <div class="studio-native-preview">
+          <div class="studio-preview-head"><div><strong>Платформенная версия</strong><span>Предпросмотр не публикует материал</span></div>
+            <div class="studio-preview-controls">
+              <select id="studio-platform-select" aria-label="Площадка для предпросмотра"><option value="">Загрузка площадок…</option></select>
+              <button class="btn btn-primary btn-sm" id="studio-preview" type="button" disabled>Собрать версию</button>
+            </div>
+          </div>
+          <div id="studio-preview-result" class="studio-preview-result"><div class="empty">Для проверенного опубликованного материала можно собрать нативный preview.</div></div>
+        </div>
+      </section>
+      <aside class="card studio-inspector">
+        <header class="card-head"><div><h2>Инспектор</h2><span class="card-sub">Доказательства и история</span></div></header>
+        <div id="studio-inspector" class="studio-inspector-body"><div class="empty">Источники, claims и trace появятся здесь.</div></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ================================================================ ANALYTICS -->
+  <section class="view" data-view="analytics">
+    <div class="page-hero">
+      <div><div class="section-kicker">MEASURED GROWTH</div><h2>Аналитика и развитие</h2>
+        <p>Опубликовано, измерено и актуально остаются разными показателями. Отсутствие данных не превращается в ноль.</p></div>
+      <div class="analytics-actions"><select id="analytics-days" aria-label="Период аналитики"><option value="7">7 дней</option><option value="14">14 дней</option><option value="30" selected>30 дней</option></select><button class="btn btn-ghost" id="analytics-refresh" type="button">↻ Обновить</button></div>
+    </div>
+    <div class="analytics-kpis" id="analytics-kpis"><div class="empty">Загружаю измерения…</div></div>
+    <div class="analytics-grid">
+      <article class="card"><header class="card-head"><div><h2>Эффективность по форматам</h2><span class="card-sub" id="analytics-format-meta">Ожидание отчёта</span></div></header><div id="analytics-formats" class="analytics-table"><div class="empty">Нет отчёта по форматам</div></div></article>
+      <article class="card"><header class="card-head"><div><h2>Доставка по площадкам</h2><span class="card-sub" id="analytics-platform-meta">Ожидание журнала</span></div></header><div id="analytics-platforms" class="analytics-table"><div class="empty">Нет данных о доставке</div></div></article>
+    </div>
+    <div class="analytics-grid">
+      <article class="card"><header class="card-head"><div><h2>Использование AI</h2><span class="card-sub">Вызовы и fallback, не денежная стоимость</span></div></header><div id="analytics-ai" class="analytics-detail"><div class="empty">Нет данных</div></div></article>
+      <article class="card"><header class="card-head"><div><h2>Свежесть измерений</h2><span class="card-sub">Актуальность сохранённых метрик</span></div></header><div id="analytics-freshness" class="analytics-detail"><div class="empty">Нет данных</div></div></article>
+    </div>
+  </section>
+
   <!-- ============================================================= CONNECT -->
   <section class="view" data-view="connect">
     <div class="connect-head">
