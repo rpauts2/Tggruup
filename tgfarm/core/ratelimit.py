@@ -87,11 +87,17 @@ class LockRegistry:
         self._held_since: dict[str, float] = {}
 
     async def acquire(self, name: str, timeout: float = 60.0) -> asyncio.Lock:
-        owner = asyncio.current_task()  # wait_for may acquire in a child task.
+        owner = asyncio.current_task()
         async with self._guard:
             lock = self._locks.setdefault(name, asyncio.Lock())
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            # Preserve wait_for's refusal to start even a free acquisition at <= 0.
+            if timeout is not None and timeout <= 0:
+                raise TimeoutError
+            # Python 3.11 wait_for can swallow cancellation after a child grants
+            # the lock. Acquire in the caller so Lock handles cancelled handoffs.
+            async with asyncio.timeout(timeout):
+                await lock.acquire()
         except TimeoutError as exc:
             raise TimeoutError(f"could not acquire lock {name!r} in {timeout}s") from exc
         self._owners[name] = owner

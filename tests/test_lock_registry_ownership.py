@@ -22,14 +22,14 @@ def clock(monkeypatch):
 def _watch_waiter(monkeypatch, lock):
     """Signal entry into the real lock's blocked acquisition; do not replace it."""
     queued = asyncio.Event()
-    acquire = asyncio.Lock.acquire
+    acquire = lock.acquire
 
-    async def observed_acquire(self):
-        if self is lock and self.locked():
+    async def observed_acquire():
+        if lock.locked():
             queued.set()
-        return await acquire(self)
+        return await acquire()
 
-    monkeypatch.setattr(asyncio.Lock, "acquire", observed_acquire)
+    monkeypatch.setattr(lock, "acquire", observed_acquire)
     return queued
 
 
@@ -202,7 +202,10 @@ async def test_cancelled_waiter_cannot_steal_or_leak_lock(handoff, monkeypatch, 
     assert not held.locked()
 
 
-async def test_timed_out_queued_waiter_cannot_replace_holder_or_leak_lock(monkeypatch, clock):
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_timed_out_queued_waiter_cannot_replace_holder_or_leak_lock(
+    external_cancel, monkeypatch, clock,
+):
     locks = LockRegistry()
     held = await locks.acquire("channel")
     queued = _watch_waiter(monkeypatch, held)
@@ -218,11 +221,13 @@ async def test_timed_out_queued_waiter_cannot_replace_holder_or_leak_lock(monkey
     monkeypatch.setattr(loop, "call_at", capture_deadline)
 
     async def timed_out_waiter():
-        with pytest.raises(TimeoutError):
+        try:
             await locks.acquire("channel", timeout=60.0)
-        for _ in range(2):
-            with pytest.raises(RuntimeError):
-                locks.release("channel", held)
+        except (TimeoutError, asyncio.CancelledError):
+            for _ in range(2):
+                with pytest.raises(RuntimeError):
+                    locks.release("channel", held)
+            raise
 
     task = asyncio.create_task(timed_out_waiter())
     await queued.wait()
@@ -231,7 +236,14 @@ async def test_timed_out_queued_waiter_cannot_replace_holder_or_leak_lock(monkey
     (timer, callback, args, context), = deadlines
     timer.cancel()
     loop.call_soon(callback, *args, context=context)
-    await task
+    if external_cancel:
+        # Both callbacks run before the waiter resumes: external cancellation wins.
+        loop.call_soon(task.cancel)
+    expected = asyncio.CancelledError if external_cancel else TimeoutError
+    with pytest.raises(expected) as exc:
+        await task
+    if not external_cancel:
+        assert str(exc.value) == "could not acquire lock 'channel' in 60.0s"
     assert held.locked()
     assert locks.hold_seconds("channel") == 3.0
     locks.release("channel", held)
@@ -242,19 +254,80 @@ async def test_timed_out_queued_waiter_cannot_replace_holder_or_leak_lock(monkey
     assert not recovered.locked()
 
 
-async def test_owner_is_caller_even_when_wait_for_uses_child_task(monkeypatch, clock):
-    wait_for = asyncio.wait_for
-
-    async def child_wait_for(awaitable, timeout):
-        return await wait_for(asyncio.create_task(awaitable), timeout=timeout)
-
-    monkeypatch.setattr(asyncio, "wait_for", child_wait_for)
+async def test_owner_is_caller_with_native_acquisition(clock):
     locks = LockRegistry()
     held = await locks.acquire("channel")
     clock.now = 2.0
     locks.release("channel", held)
     assert not held.locked()
     assert locks.hold_seconds("channel") == 2.0
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0])
+async def test_nonpositive_timeout_cannot_grant_free_lock(timeout, clock):
+    locks = LockRegistry()
+    held = await locks.acquire("channel")
+    locks.release("channel", held)
+    clock.now = 5.0
+    with pytest.raises(TimeoutError) as exc:
+        await locks.acquire("channel", timeout=timeout)
+    assert str(exc.value) == f"could not acquire lock 'channel' in {timeout}s"
+    assert not held.locked()
+    assert locks.hold_seconds("channel") == 0.0
+    recovered = await locks.acquire("channel")
+    clock.now = 7.0
+    locks.release("channel", recovered)
+    assert locks.hold_seconds("channel") == 2.0
+
+
+async def test_cancelled_handoff_wakes_next_waiter_without_releasing_its_lock(monkeypatch, clock):
+    locks = LockRegistry()
+    held = await locks.acquire("channel")
+    queued = _watch_waiter(monkeypatch, held)
+    acquired = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def cancelled_waiter():
+        try:
+            await locks.acquire("channel")
+        except asyncio.CancelledError:
+            with pytest.raises(RuntimeError):
+                locks.release("channel", held)
+            raise
+
+    async def next_owner():
+        lock = await locks.acquire("channel")
+        try:
+            acquired.set()
+            await finish.wait()
+        finally:
+            locks.release("channel", lock)
+
+    task = asyncio.create_task(cancelled_waiter())
+    await queued.wait()
+    queued.clear()
+    successor = asyncio.create_task(next_owner())
+    try:
+        await queued.wait()
+        clock.now = 4.0
+        locks.release("channel", held)
+        assert task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await acquired.wait()
+        assert held.locked()
+        clock.now = 6.0
+        with pytest.raises(RuntimeError):
+            locks.release("channel", held)
+        assert held.locked()
+        assert locks.hold_seconds("channel") == 6.0
+    finally:
+        finish.set()
+        if not acquired.is_set():
+            successor.cancel()
+        await asyncio.gather(task, successor, return_exceptions=True)
+    assert not held.locked()
+    assert locks.hold_seconds("channel") == 6.0
 
 
 async def test_hold_seconds_adds_completed_and_current_holds_not_idle_time(clock):
