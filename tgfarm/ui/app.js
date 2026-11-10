@@ -6192,6 +6192,286 @@
     }
   }
 
+  /* ------------------------------------------------------------ connections */
+  const CONNECT_MODES = { oauth: "OAuth", vkhost: "VK", browser: "Браузер", token: "Токен", manual: "Вручную" };
+
+  function connectStatusOf(row) {
+    if (row.authorized === true) {
+      return { key: "ready", label: row.account ? "Подключено · " + row.account : "Подключено" };
+    }
+    if (row.authorized === false) return { key: "failed", label: "Вход не прошёл" };
+    if (row.profile_saved || row.session_verified) return { key: "pending", label: "Сессия сохранена, нужна проверка" };
+    if (row.keys_present) return { key: "pending", label: "Ключи сохранены, нужна проверка" };
+    return { key: "needs", label: "Требует входа" };
+  }
+
+  function connectMatches(row, filter) {
+    if (!filter) return true;
+    if (["ready", "needs", "failed", "pending"].includes(filter)) return connectStatusOf(row).key === filter;
+    return row.mode === filter;
+  }
+
+  async function loadConnections(force = false) {
+    if (state.connectBusy && !force) return;
+    state.connectBusy = true;
+    const grid = $("#connect-grid");
+    if (grid && !state.connections) grid.innerHTML = '<div class="empty">Читаю площадки…</div>';
+    try {
+      const data = await api("/api/connect/matrix");
+      state.connections = data || { platforms: [] };
+      state.connectLoaded = true;
+      renderConnections();
+    } catch (error) {
+      if (grid) grid.innerHTML = '<div class="empty">Не удалось получить список площадок: ' + esc(error?.message || error) + "</div>";
+      toast("Подключения не загрузились: " + (error?.message || error), "err");
+    } finally {
+      state.connectBusy = false;
+    }
+  }
+
+  const CONNECT_BRAND = {
+    vk: "#0077ff", vk_clips: "#0077ff", telegram: "#2aabee", dzen: "#f44336", max: "#7d5cff",
+    x: "#e7eaf0", reddit: "#ff4500", youtube: "#ff0033", tiktok: "#fe2c55", instagram: "#e1306c",
+    threads: "#8a8f98", facebook: "#1877f2", linkedin: "#0a66c2", pinterest: "#e60023",
+    odnoklassniki: "#ee8208", rutube: "#1f9e4a", discord: "#5865f2", mastodon: "#6364ff",
+    bluesky: "#1185fe", medium: "#f4f4f4", vc_ru: "#3d68ff", pikabu: "#5fa93a", habr: "#6f9ad1",
+    tenchat: "#f5c518", twitch: "#9146ff", tumblr: "#36465d", telegraph: "#4a9eda",
+    snapchat: "#fffc00", wechat: "#07c160", douyin: "#fe2c55", rednote: "#ff2442",
+    whatsapp_channels: "#25d366",
+  };
+
+  const CONNECT_GROUPS = [
+    { key: "ready", title: "Подключено", hint: "Доступ подтверждён площадкой" },
+    { key: "pending", title: "Ждёт проверки", hint: "Сессия или ключи сохранены, доступ ещё не подтверждён" },
+    { key: "failed", title: "Вход не прошёл", hint: "Площадка отклонила доступ — нужно повторить" },
+    { key: "needs", title: "Не подключено", hint: "Нажми «Подключить» на карточке" },
+  ];
+
+  function connectCard(row) {
+    const status = connectStatusOf(row);
+    const mode = CONNECT_MODES[row.mode] || row.mode;
+    const brand = CONNECT_BRAND[row.id] || "#5b8cff";
+    const monogram = String(row.name || row.id).replace(/[^A-Za-zА-Яа-я0-9]/g, "").slice(0, 2).toUpperCase() || "??";
+    const primary = status.key === "ready" ? "Переподключить" : "Подключить";
+    const monogramStyle = "color:" + brand + ";border-color:" + brand + ";background:color-mix(in srgb, " + brand + " 14%, transparent)";
+    const pill = status.key === "needs"
+      ? '<span class="connect-mode-chip">' + esc(mode) + "</span>"
+      : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
+    return '<article class="connect-card connect-card--' + esc(status.key) + '">'
+      + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
+      + '<div class="connect-card-title"><strong>' + esc(row.name || row.id) + "</strong>"
+      + "<span>" + esc(row.category || "") + "</span></div>"
+      + pill + "</div>"
+      + '<p class="connect-hint">' + esc(row.hint || "") + "</p>"
+      + '<div class="connect-actions">'
+      + '<button class="btn ' + (status.key === "ready" ? "btn-ghost" : "btn-primary") + ' btn-sm" type="button" data-connect-start="'
+      + esc(row.id) + '">' + primary + "</button>"
+      + '<button class="btn btn-ghost btn-sm" type="button" data-connect-check="' + esc(row.id) + '">Проверить</button>'
+      + "</div></article>";
+  }
+
+  function renderConnections() {
+    const grid = $("#connect-grid");
+    const data = state.connections || { platforms: [] };
+    const rows = data.platforms || [];
+    const counts = { ready: 0, pending: 0, needs: 0, failed: 0 };
+    rows.forEach((row) => { counts[connectStatusOf(row).key] += 1; });
+    const counter = $("#connect-nav-count");
+    if (counter) counter.textContent = String(counts.ready);
+    const stats = $("#connect-stats");
+    if (stats) {
+      stats.innerHTML =
+        '<span class="connect-stat connect-stat--ok">' + counts.ready + " подключено</span>"
+        + '<span class="connect-stat connect-stat--warn">' + (counts.needs + counts.pending) + " без доступа</span>"
+        + (counts.failed ? '<span class="connect-stat connect-stat--err">' + counts.failed + " с ошибкой</span>" : "");
+    }
+    if (!grid) return;
+    grid.classList.add("connect-grid--sections");
+    const filter = state.connectFilter || "";
+    const visible = rows.filter((row) => connectMatches(row, filter));
+    if (!visible.length) {
+      grid.innerHTML = '<div class="empty">Под этот фильтр площадок нет.</div>';
+      return;
+    }
+    const sections = filter
+      ? [{ key: "filter", title: "", hint: "", rows: visible }]
+      : CONNECT_GROUPS.map((group) => ({
+          ...group,
+          rows: visible.filter((row) => connectStatusOf(row).key === group.key),
+        })).filter((group) => group.rows.length);
+    grid.innerHTML = sections.map((section) => {
+      const head = section.title
+        ? '<div class="connect-section"><div class="connect-section-head"><strong>' + esc(section.title)
+          + "</strong><span>" + section.rows.length + "</span></div>"
+          + (section.hint ? '<p class="connect-section-hint">' + esc(section.hint) + "</p>" : "")
+          + "</div>"
+        : "";
+      return '<section class="connect-section-wrap">' + head
+        + '<div class="connect-section-grid">' + section.rows.map((row) => connectCard(row)).join("") + "</div></section>";
+    }).join("");
+  }
+
+  function connectDialog() { return $("#connect-dialog"); }
+
+  function openConnectDialog(platformId) {
+    const rows = (state.connections || {}).platforms || [];
+    const row = rows.find((item) => item.id === platformId);
+    if (!row) return;
+    state.connectTarget = row;
+    const dialog = connectDialog();
+    if (!dialog) return;
+    $("#connect-dialog-title").textContent = row.name || row.id;
+    $("#connect-dialog-sub").textContent = (CONNECT_MODES[row.mode] || row.mode) + " · " + (row.category || "");
+    const body = $("#connect-dialog-body");
+    if (row.mode === "token") {
+      const fields = (row.fields || []).map((field) =>
+        '<label class="connect-field"><span>' + esc(field.label) + "</span>"
+        + '<input type="' + (field.secret ? "password" : "text") + '" data-connect-field="' + esc(field.key) + '" '
+        + 'autocomplete="off" spellcheck="false" placeholder="' + esc(field.key) + '"></label>'
+      ).join("");
+      body.innerHTML = '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + fields
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-save="' + esc(row.id) + '">Сохранить и проверить</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>'
+        + '<p class="connect-dialog-note">Значения уходят только в локальный .env и никогда не возвращаются в интерфейс.</p>';
+    } else if (row.mode === "oauth") {
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется страница согласия площадки.</li>'
+        + "<li>Подтверди доступ — площадка сама вернёт токен.</li>"
+        + "<li>Панель подхватит его и обновит статус карточки.</li></ol>"
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Открыть страницу согласия</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+    } else if (row.mode === "vkhost") {
+      body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ — токен перехватится и сохранится автоматически.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+    } else if (row.mode === "browser") {
+      const extra = row.id === "dzen"
+        ? '<p class="connect-dialog-note">У Дзена отдельный профиль: используй кнопку «Дзен: войти» на вкладке «Площадки».</p>'
+        : "";
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
+        + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
+        + "<li>Панель проверит сессию и сохранит её для публикаций.</li></ol>"
+        + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+    } else {
+      body.innerHTML = '<p class="connect-dialog-text">Автоматического входа нет: материал для площадки готовится вручную.</p>';
+    }
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "open");
+  }
+
+  function closeConnectDialog() {
+    const dialog = connectDialog();
+    if (!dialog) return;
+    if (typeof dialog.close === "function" && dialog.open) dialog.close();
+    else dialog.removeAttribute("open");
+    state.connectTarget = null;
+  }
+
+  async function runBrowserConnect(platformId) {
+    const status = $("#connect-dialog-status");
+    const button = document.querySelector('[data-connect-browser="' + CSS.escape(platformId) + '"]');
+    if (status) status.textContent = "Открыл окно браузера. Войди в аккаунт — я жду подтверждения…";
+    if (button) { button.disabled = true; button.classList.add("is-busy"); }
+    try {
+      const result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
+      if (status) status.textContent = (result.detail || "Готово") + (result.account ? " · " + result.account : "");
+      toast("Вход: " + platformId + " — " + (result.state || "ok"), "ok");
+      await loadConnections(true);
+    } catch (error) {
+      if (status) status.textContent = "Не удалось завершить вход: " + (error?.message || error);
+      toast("Вход не завершён: " + (error?.message || error), "err");
+    } finally {
+      if (button) { button.disabled = false; button.classList.remove("is-busy"); }
+    }
+  }
+
+  async function runOauthConnect(platformId) {
+    const status = $("#connect-dialog-status");
+    const button = document.querySelector('[data-connect-oauth="' + CSS.escape(platformId) + '"]');
+    if (button) { button.disabled = true; button.classList.add("is-busy"); }
+    try {
+      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/start", {});
+      const url = safeExternalUrl(result.authorize_url);
+      if (!url) throw new Error("площадка не выдала адрес согласия");
+      window.open(url, "_blank", "noopener,noreferrer");
+      if (status) status.textContent = "Ждём подтверждения на стороне площадки…";
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const state = await api("/api/connect/" + encodeURIComponent(platformId) + "/status");
+        if (state.authorized === true) {
+          if (status) status.textContent = "Готово" + (state.account ? " · " + state.account : "");
+          toast("Подключено: " + platformId, "ok");
+          await loadConnections(true);
+          return;
+        }
+      }
+      if (status) status.textContent = "Подтверждение не пришло за 5 минут. Можно закрыть окно и повторить.";
+    } catch (error) {
+      if (status) status.textContent = "OAuth не запустился: " + (error?.message || error);
+      toast("OAuth не запустился: " + (error?.message || error), "err");
+    } finally {
+      if (button) { button.disabled = false; button.classList.remove("is-busy"); }
+    }
+  }
+
+  async function saveConnectTokens(platformId) {
+    const values = {};
+    document.querySelectorAll("[data-connect-field]").forEach((input) => {
+      const value = String(input.value || "").trim();
+      if (value) values[input.dataset.connectField] = value;
+    });
+    const status = $("#connect-dialog-status");
+    if (!Object.keys(values).length) {
+      if (status) status.textContent = "Заполни хотя бы одно поле — пустые поля не затирают сохранённое.";
+      toast("Заполни хотя бы одно поле", "warn");
+      return;
+    }
+    const button = document.querySelector('[data-connect-save="' + CSS.escape(platformId) + '"]');
+    if (button) { button.disabled = true; button.classList.add("is-busy"); button.textContent = "Сохраняю…"; }
+    if (status) status.textContent = "Сохраняю ключи в локальный .env…";
+    try {
+      await put("/api/platforms/" + encodeURIComponent(platformId) + "/credentials", { values });
+    } catch (error) {
+      if (status) status.textContent = "Не сохранено: " + (error?.message || error) + ". Окно открыто, значение можно поправить.";
+      toast("Не удалось сохранить ключи: " + (error?.message || error), "err");
+      if (button) { button.disabled = false; button.classList.remove("is-busy"); button.textContent = "Сохранить и проверить"; }
+      return false;
+    }
+    const keys = Object.keys(values).join(", ");
+    if (status) status.textContent = "Сохранено: " + keys + ". Закрываю окно и проверяю доступ в фоне…";
+    toast("Ключи сохранены: " + platformId, "ok");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    closeConnectDialog();
+    await loadConnections(true);
+    // The check may take a network timeout on a blocked platform: run it after the
+    // dialog is gone so the operator never waits in front of a spinner.
+    checkConnect(platformId, false).then((check) => {
+      if (check && check.authorized === true) {
+        toast("Доступ подтверждён: " + platformId, "ok");
+      } else if (check) {
+        toast("Ключи сохранены, но доступ не подтверждён: " + platformId, "warn");
+      }
+    });
+    return true;
+  }
+
+  async function checkConnect(platformId, quiet = false) {
+    try {
+      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/check", {});
+      const ok = result.authorized === true;
+      if (!quiet) toast((ok ? "Доступ подтверждён: " : "Доступ не подтверждён: ") + platformId, ok ? "ok" : "warn");
+      const status = $("#connect-dialog-status");
+      if (status && result.detail) status.textContent = String(result.detail).slice(0, 200);
+      return result;
+    } catch (error) {
+      if (!quiet) toast("Проверка не удалась: " + (error?.message || error), "err");
+      return null;
+    } finally {
+      await loadConnections(true);
+    }
+  }
+
   /* ---------------------------------------------------------------- wiring */
   function switchView(view) {
     state.view = view;
@@ -6200,6 +6480,7 @@
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
     if (view === "sources") loadSourcesHealth();
+    if (view === "connect" && !state.connectLoaded) loadConnections();
     if (view === "sources") loadReprintBackfill();
   }
 
@@ -6262,6 +6543,47 @@
       resetSourceCooldown(button.dataset.sourceReset);
     });
   }
+  const connectGrid = $("#connect-grid");
+  if (connectGrid) {
+    connectGrid.addEventListener("click", (event) => {
+      const start = event.target.closest("[data-connect-start]");
+      if (start) {
+        event.preventDefault();
+        openConnectDialog(start.dataset.connectStart);
+        return;
+      }
+      const check = event.target.closest("[data-connect-check]");
+      if (check) {
+        event.preventDefault();
+        checkConnect(check.dataset.connectCheck);
+      }
+    });
+  }
+  const connectFilters = $("#connect-filters");
+  if (connectFilters) {
+    connectFilters.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-connect-mode]");
+      if (!button) return;
+      state.connectFilter = button.dataset.connectMode || "";
+      connectFilters.querySelectorAll("button").forEach((item) => item.classList.toggle("is-active", item === button));
+      renderConnections();
+    });
+  }
+  const connectDialogEl = $("#connect-dialog");
+  if (connectDialogEl) {
+    connectDialogEl.addEventListener("click", (event) => {
+      if (event.target === connectDialogEl) { closeConnectDialog(); return; }
+      const browser = event.target.closest("[data-connect-browser]");
+      if (browser) { event.preventDefault(); runBrowserConnect(browser.dataset.connectBrowser); return; }
+      const oauth = event.target.closest("[data-connect-oauth]");
+      if (oauth) { event.preventDefault(); runOauthConnect(oauth.dataset.connectOauth); return; }
+      const save = event.target.closest("[data-connect-save]");
+      if (save) { event.preventDefault(); saveConnectTokens(save.dataset.connectSave); }
+    });
+  }
+  const connectClose = $("#connect-dialog-close");
+  if (connectClose) connectClose.addEventListener("click", () => closeConnectDialog());
+
   const reviewRefresh = $("#review-refresh");
   if (reviewRefresh) reviewRefresh.addEventListener("click", () => loadReviewBoard(true));
   const reviewRequeue = $("#review-requeue");

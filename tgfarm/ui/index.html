@@ -21,6 +21,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
+    <button class="tab" data-view="connect" role="tab">Подключения <span class="tab-counter" id="connect-nav-count">0</span></button>
     <button class="tab" data-view="plan" role="tab">План тем</button>
     <button class="tab" data-view="trends" role="tab">Тренды</button>
     <button class="tab" data-view="posts" role="tab">Посты</button>
@@ -230,6 +231,28 @@
   </section>
 
   <!-- ============================================================== TRENDS -->
+  <!-- ============================================================= CONNECT -->
+  <section class="view" data-view="connect">
+    <div class="connect-head">
+      <div>
+        <h2>Подключения</h2>
+        <p class="connect-lead">Один клик: панель откроет сайт площадки, ты войдёшь — сессия и токены сохранятся сами.</p>
+      </div>
+      <div class="connect-stats" id="connect-stats"></div>
+    </div>
+    <div class="connect-filters" id="connect-filters">
+      <button class="is-active" data-connect-mode="">Все</button>
+      <button data-connect-mode="ready">Работают</button>
+      <button data-connect-mode="needs">Требуют входа</button>
+      <button data-connect-mode="failed">Ошибка</button>
+      <button data-connect-mode="oauth">OAuth</button>
+      <button data-connect-mode="browser">Браузер</button>
+      <button data-connect-mode="token">Токен</button>
+      <button data-connect-mode="vkhost">VK</button>
+    </div>
+    <div id="connect-grid" class="connect-grid"></div>
+  </section>
+
   <section class="view" data-view="plan">
     <article class="card">
       <header class="card-head">
@@ -545,6 +568,20 @@
     </article>
   </section>
 </main>
+
+<dialog id="connect-dialog" class="connect-dialog" aria-labelledby="connect-dialog-title">
+  <div class="connect-dialog-box">
+    <header class="connect-dialog-head">
+      <div>
+        <h3 id="connect-dialog-title">Подключение</h3>
+        <p class="connect-dialog-sub" id="connect-dialog-sub"></p>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" id="connect-dialog-close">Закрыть</button>
+    </header>
+    <div id="connect-dialog-body" class="connect-dialog-body"></div>
+  </div>
+</dialog>
+
 
 <dialog id="platform-auth-dialog" class="platform-auth-dialog" aria-labelledby="platform-auth-title">
   <form id="platform-auth-form" method="dialog">

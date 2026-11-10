@@ -89,7 +89,7 @@ button { font-family: inherit; }
   border-bottom: 1px solid var(--line-soft);
 }
 
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .brand-mark {
   width: 32px; height: 32px;
   border-radius: 10px;
@@ -101,7 +101,8 @@ button { font-family: inherit; }
 .brand p  { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
 
 .tabs { display: flex; gap: 2px; margin-left: auto; background: var(--bg-elev);
-        border: 1px solid var(--line-soft); border-radius: 11px; padding: 3px; }
+        border: 1px solid var(--line-soft); border-radius: 11px; padding: 3px;
+        flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .tab {
   appearance: none; border: 0; cursor: pointer;
   padding: 7px 14px; border-radius: 8px;
@@ -890,10 +891,15 @@ main {
 
 .platform-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 306px), 1fr));
+  /* A plain absolute minimum: `min(100%, 306px)` resolved against an indefinite
+     width inside the desktop webview and collapsed the cards into one-character
+     columns. The mobile rule below handles narrow windows explicitly. */
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 13px;
   align-items: stretch;
+  min-width: 0;
 }
+.platform-grid > * { min-width: 0; }
 .platform-card {
   position: relative; display: flex; flex-direction: column; min-width: 0;
   padding: 17px 17px 0; border: 1px solid var(--line-soft); border-radius: 15px;
@@ -1893,3 +1899,253 @@ main {
 .plan-entry-reasons:not(ul) { padding-left: 0; }
 .plan-hold { opacity: 0.75; }
 .plan-history { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 13px; }
+
+/* ========================================================== CONNECTIONS */
+.connect-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.connect-head h2 { font-size: 22px; letter-spacing: -0.02em; }
+.connect-lead {
+  margin-top: 6px;
+  max-width: 62ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.connect-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.connect-stat {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  background: rgba(255,255,255,.02);
+  white-space: nowrap;
+}
+.connect-stat--ok { color: var(--ok); border-color: rgba(52,211,153,.32); background: var(--ok-soft); }
+.connect-stat--warn { color: var(--warn); border-color: rgba(251,191,36,.3); background: var(--warn-soft); }
+.connect-stat--err { color: var(--err); border-color: rgba(248,113,113,.32); background: var(--err-soft); }
+
+.connect-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.connect-filters button {
+  appearance: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-dim);
+  transition: color .15s, border-color .15s, background .15s;
+}
+.connect-filters button:hover { color: var(--text); border-color: var(--accent-line); }
+.connect-filters button.is-active {
+  color: #fff;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.connect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+.connect-grid > * { min-width: 0; }
+/* With grouped sections the outer container is a block; the grid lives inside. */
+.connect-grid--sections { display: block; }
+.connect-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 16px 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,.008));
+  box-shadow: var(--shadow-sm);
+  transition: transform .16s ease, border-color .16s ease;
+}
+.connect-card::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 14px; bottom: 14px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--line);
+}
+.connect-card:hover { transform: translateY(-2px); border-color: var(--line-soft); }
+.connect-card--ready::before { background: var(--ok); }
+.connect-card--needs::before { background: var(--warn); }
+.connect-card--pending::before { background: var(--accent); }
+.connect-card--failed::before { background: var(--err); }
+
+.connect-card-top { display: flex; align-items: center; gap: 11px; }
+.connect-monogram {
+  flex: none;
+  width: 38px; height: 38px;
+  display: grid; place-items: center;
+  border-radius: 11px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.connect-card-title { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.connect-card-title strong { font-size: 14.5px; letter-spacing: -0.01em; }
+.connect-card-title span { font-size: 11.5px; color: var(--text-faint); }
+.connect-pill {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.connect-pill--ready { color: var(--ok); border-color: rgba(52,211,153,.32); background: var(--ok-soft); }
+.connect-pill--needs { color: var(--warn); border-color: rgba(251,191,36,.3); background: var(--warn-soft); }
+.connect-pill--failed { color: var(--err); border-color: rgba(248,113,113,.32); background: var(--err-soft); }
+.connect-pill--pending { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.connect-hint { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+.connect-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+
+.connect-dialog {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0;
+  width: min(560px, 92vw);
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.connect-dialog::backdrop { background: rgba(3, 5, 10, .72); backdrop-filter: blur(6px); }
+.connect-dialog-box { padding: 20px 22px 22px; }
+.connect-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.connect-dialog-head h3 { font-size: 18px; }
+.connect-dialog-sub { margin-top: 4px; font-size: 12px; color: var(--text-faint); }
+.connect-dialog-body { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.connect-dialog-text { font-size: 13px; line-height: 1.6; color: var(--text-dim); }
+.connect-dialog-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.connect-dialog-status { font-size: 12px; color: var(--text-dim); min-height: 18px; }
+.connect-dialog-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.connect-field { display: flex; flex-direction: column; gap: 6px; }
+.connect-field span { font-size: 11.5px; color: var(--text-dim); }
+.connect-field input {
+  appearance: none;
+  background: rgba(0,0,0,.24);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13px;
+  color: var(--text);
+  font-family: var(--mono);
+}
+.connect-field input:focus { outline: none; border-color: var(--accent-line); }
+
+/* Legibility pass: the dashboard was dense; these are deliberate, small bumps. */
+.item-meta { font-size: 12px; }
+.card-sub { font-size: 12.5px; }
+.tab { font-size: 13px; }
+.item-title { font-size: 14px; }
+.drawer-meta { font-size: 12px; }
+
+/* Narrow windows (the desktop webview can be small): one column, no squeezing. */
+@media (max-width: 760px) {
+  main { padding: 16px 14px 48px; }
+  .platform-grid,
+  .connect-grid { grid-template-columns: 1fr; }
+  .platform-card,
+  .connect-card { padding: 14px; }
+  .platform-auth-actions,
+  .platform-badge-row,
+  .connect-actions,
+  .platform-card-head { flex-wrap: wrap; }
+  .topbar { flex-wrap: wrap; }
+  .tabs { overflow-x: auto; flex-wrap: nowrap; }
+}
+
+/* Long words inside narrow cards must break instead of turning into a column. */
+.platform-card,
+.connect-card,
+.platform-card-title h3,
+.connect-card-title strong { overflow-wrap: anywhere; word-break: normal; }
+
+/* Sections inside the connections hub */
+.connect-section-wrap { display: block; margin-bottom: 26px; }
+.connect-section { margin: 0 0 12px; }
+.connect-section-head { display: flex; align-items: baseline; gap: 10px; }
+.connect-section-head strong { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); }
+.connect-section-head span {
+  font-size: 11px; color: var(--text-faint);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px;
+}
+.connect-section-hint { margin: 5px 0 0; font-size: 12px; color: var(--text-faint); }
+.connect-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+.connect-section-grid > * { min-width: 0; }
+.connect-mode-chip {
+  margin-left: auto; flex: none;
+  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--text-faint);
+}
+.connect-card { background: linear-gradient(180deg, rgba(255,255,255,.032), rgba(255,255,255,.006)); }
+.connect-card--ready { border-color: rgba(52,211,153,.22); }
+.connect-card--needs:hover { border-color: var(--accent-line); }
+.connect-monogram { transition: transform .16s ease; }
+.connect-card:hover .connect-monogram { transform: scale(1.04); }
+
+/* Dialog steps */
+.connect-steps {
+  margin: 0;
+  padding: 12px 14px 12px 32px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255,255,255,.02);
+  display: flex; flex-direction: column; gap: 7px;
+  font-size: 12.5px; line-height: 1.5; color: var(--text-dim);
+}
+.connect-steps li::marker { color: var(--accent); font-weight: 700; }
+.connect-dialog { width: min(600px, 94vw); }
+.connect-dialog-status {
+  min-height: 34px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.connect-dialog-status:empty { display: none; }
+.connect-field input { font-size: 13.5px; }
+
+/* Slightly calmer, larger shell typography */
+h2 { font-size: 21px; }
+.tab { padding: 8px 13px; }
+.tab.is-active { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* The header never lets the tab row cover the brand again. */
+.tabs::-webkit-scrollbar { height: 0; }
+.brand h1, .brand p { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1500px) {
+  .brand p { display: none; }
+}
+@media (max-width: 1180px) {
+  .topbar { gap: 12px; padding: 0 14px; }
+}

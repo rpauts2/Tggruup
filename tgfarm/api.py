@@ -3667,6 +3667,46 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         plan = await io(build_distribution_plan)
         return {"ok": True, "mode": mode, "plan": plan}
 
+    # ---------------------------------------------------------- connections
+    # A separate "connect" namespace on purpose: `/api/platforms/{id}` would
+    # otherwise swallow `/api/platforms/auth/matrix` as a platform named "auth".
+    @app.get("/api/connect/matrix")
+    async def connect_matrix() -> dict:
+        """Every platform and the exact way it is connected on this machine."""
+        from tgfarm.platform_authorize import auth_matrix
+
+        return await io(auth_matrix)
+
+    @app.post("/api/connect/{platform_id}/authorize")
+    async def connect_authorize(platform_id: str, timeout: int = Query(420, ge=60, le=1800)) -> dict:
+        """Start OAuth, VKHost, a browser profile or a token form for one platform."""
+        from tgfarm.platform_authorize import authorize
+
+        platform_id = str(platform_id or "").strip().lower()
+        try:
+            result = await authorize(platform_id, timeout_s=timeout)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=240)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=408, detail=redact_sensitive_text(exc, limit=240)) from exc
+        except Exception as exc:  # noqa: BLE001 - never leak tokens or provider bodies
+            log.warning("authorize failed for %s (%s)", platform_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось завершить вход. Проверь окно браузера, сеть и журнал диагностики.",
+            ) from exc
+        _operator("platform-authorize", platform_id, str(result.get("state") or ""))
+        return result
+
+    @app.get("/api/connect/{platform_id}/status")
+    async def connect_status(platform_id: str) -> dict:
+        from tgfarm.platform_authorize import authorize_status
+
+        try:
+            return await io(authorize_status, platform_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.get("/api/platforms")
     async def platforms() -> dict:
         from tgfarm.platforms import get_platform_catalog
