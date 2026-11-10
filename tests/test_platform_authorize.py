@@ -187,3 +187,20 @@ def test_all_oauth_providers_expose_only_their_application_setup_fields():
         assert {field["key"] for field in row["fields"]} == required
         assert all(isinstance(field["has_value"], bool) for field in row["fields"])
         assert all("value" not in field for field in row["fields"])
+
+
+def test_dzen_auth_check_unlocks_its_dedicated_browser_delivery(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    # Dzen's own login endpoint records a verified auth check from
+    # DzenWebPublisher; it does not use the generic browser profile directory.
+    ready = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=True,
+        keys_present=False,
+        profile_saved=False,
+        session_verified=False,
+    )
+    assert ready["auth"]["state"] == "ready"
+    assert ready["api"]["state"] == "ready"
+    assert ready["publish"]["state"] == "ready"
