@@ -11,7 +11,7 @@ What it adds over `tgfarm serve`:
 * a native window with a menu, instead of a browser tab;
 * close-to-tray, so shutting the window does not stop publishing;
 * the scheduler owned by this process, started with the window;
-* a random port on loopback, so several installs cannot collide;
+* a stable per-install port on loopback, so OAuth callback URLs survive restarts;
 * a token handed to the page in-process, never written to disk by the app.
 
 The heavy dependencies (pywebview, pystray) are imported lazily so the rest of
@@ -110,6 +110,38 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _port_available(port: int) -> bool:
+    """Return whether the loopback port can be bound right now."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+
+
+def stable_desktop_port(data_root: Path) -> int:
+    """Reuse one per-install loopback port so OAuth redirect URIs stay stable."""
+    root = Path(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "desktop.port"
+    try:
+        saved = int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        saved = 0
+    if 1024 < saved < 65536 and _port_available(saved):
+        return saved
+    selected = free_port()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(str(selected), encoding="ascii")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(path)
+    return selected
+
+
 @dataclass
 class RunningServer:
     port: int
@@ -195,6 +227,24 @@ class DesktopApi:
             return _reveal(env)
         example = Path.cwd() / ".env.example"
         return _reveal(example) if example.exists() else "нет .env — скопируйте .env.example"
+
+    def open_url(self, url: str) -> str:
+        """Open a validated HTTP(S) destination in the user's system browser."""
+        from urllib.parse import urlsplit
+        import webbrowser
+
+        value = str(url or "").strip()
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("Разрешены только HTTP(S) ссылки без встроенных учётных данных.")
+        if not webbrowser.open(value, new=2, autoraise=True):
+            raise RuntimeError("Операционная система не подтвердила открытие браузера.")
+        return "ok"
 
     def notify(self, title: str, message: str) -> str:
         self._app.notify(title, message)
@@ -513,6 +563,8 @@ class DesktopApp:
                   f"работающий процесс (pid в {lock_path}).")
             return 1
 
+        if self.port is None:
+            self.port = stable_desktop_port(get_settings().data_root())
         self.server = start_server(port=self.port, with_scheduler=self.with_scheduler)
         self.port = self.server.port
         threading.Thread(target=self._supervise, name="tgfarm-supervisor", daemon=True).start()

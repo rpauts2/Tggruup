@@ -241,7 +241,59 @@ def test_desktop_bridge_exposes_the_expected_surface():
     from tgfarm.desktop import DesktopApi
 
     surface = {m for m in dir(DesktopApi) if not m.startswith("_")}
-    assert {"info", "launch_cycle", "notify", "open_data_dir", "quit"} <= surface
+    assert {"info", "launch_cycle", "notify", "open_data_dir", "open_url", "quit"} <= surface
+
+
+def test_desktop_open_url_accepts_http_and_https(monkeypatch):
+    import webbrowser
+    from tgfarm.desktop import DesktopApi, DesktopApp
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, new=0, autoraise=True: opened.append(url) or True)
+    bridge = DesktopApi(DesktopApp())
+    assert bridge.open_url("https://accounts.example.test/authorize") == "ok"
+    assert bridge.open_url("http://127.0.0.1:43121/callback") == "ok"
+    assert opened == [
+        "https://accounts.example.test/authorize",
+        "http://127.0.0.1:43121/callback",
+    ]
+
+
+@pytest.mark.parametrize("url", [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,hello",
+    "https://user:pass@example.test/",
+    "/relative/path",
+])
+def test_desktop_open_url_rejects_non_web_or_embedded_credentials(url):
+    from tgfarm.desktop import DesktopApi, DesktopApp
+
+    with pytest.raises(ValueError):
+        DesktopApi(DesktopApp()).open_url(url)
+
+
+def test_desktop_oauth_port_is_stable_between_restarts(tmp_path):
+    from tgfarm.desktop import stable_desktop_port
+
+    first = stable_desktop_port(tmp_path)
+    second = stable_desktop_port(tmp_path)
+    assert 1024 < first < 65536
+    assert second == first
+    assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(first)
+
+
+def test_desktop_oauth_port_replaces_a_port_already_in_use(tmp_path):
+    import socket
+    from tgfarm.desktop import stable_desktop_port
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        blocked = occupied.getsockname()[1]
+        (tmp_path / "desktop.port").write_text(str(blocked), encoding="ascii")
+        selected = stable_desktop_port(tmp_path)
+        assert selected != blocked
+        assert 1024 < selected < 65536
 
 
 def test_desktop_module_imports_without_a_display():
