@@ -5322,15 +5322,17 @@
   }
 
   window.tgfarmDzenLogin = async () => {
-    if (!confirm("Откроется окно Дзена. Войди в Яндекс там — ферма подождёт до 7 минут.")) return;
+    if (!confirm("Откроется окно Дзена. Войди в Яндекс там — ферма подождёт до 7 минут.")) return false;
     toast("Открываю окно входа в Дзен…");
     try {
       const res = await fetch("/api/dzen/login?timeout=420", { method: "POST", headers: authHeaders() });
       const data = await res.json();
       toast(data.ok ? "Дзен: сессия сохранена" : "Вход не завершён: " + (data.error || ""), data.ok ? "ok" : "err");
       refresh();
+      return data.ok === true;
     } catch (e) {
       toast("Вход не удался: " + e.message, "err");
+      return false;
     }
   };
 
@@ -6440,7 +6442,11 @@
     try {
       let result;
       if (platformId === "dzen" && typeof window.tgfarmDzenLogin === "function") {
-        await window.tgfarmDzenLogin();
+        const completed = await window.tgfarmDzenLogin();
+        if (completed !== true) {
+          if (status) status.textContent = "Вход в Дзен отменён или не завершён.";
+          return;
+        }
         result = { state: "browser_flow_completed", detail: "Окно входа в Дзен завершило работу. Перепроверяю сессию." };
       } else {
         result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
@@ -6715,9 +6721,11 @@
     const data = state.teamData || {};
     const runs = data.runs || [];
     const posts = data.posts || [];
-    const latestCycle = runs.find((item) => item.stage === "cycle");
-    const latestRunId = latestCycle ? latestCycle.run_id : (runs[0] ? runs[0].run_id : "");
-    const stages = latestRunId ? runs.filter((item) => item.run_id === latestRunId && item.stage !== "cycle") : [];
+    // PipelineRun records stages, not a synthetic "cycle" event. The newest row
+    // identifies the newest real run; all rows with that run_id form its trace.
+    const latestStage = runs[0] || null;
+    const latestRunId = latestStage ? latestStage.run_id : "";
+    const stages = latestRunId ? runs.filter((item) => item.run_id === latestRunId) : [];
     const counts = { ok: 0, error: 0, cancelled: 0 };
     stages.forEach((item) => { counts[item.status] = (counts[item.status] || 0) + 1; });
     const summary = $("#team-summary");
@@ -6726,7 +6734,7 @@
       const roles = team.roles && typeof team.roles === "object" ? Object.keys(team.roles).length : 0;
       const platformRoles = team.platform_edits && typeof team.platform_edits === "object" ? Object.keys(team.platform_edits).length : 0;
       const cards = [
-        ["Последний цикл", latestCycle ? dt(latestCycle.at) : "Нет журнала", latestCycle ? "есть запись" : "ещё не запускался"],
+        ["Последний прогон", latestStage ? dt(latestStage.at) : "Нет журнала", latestStage ? (TEAM_STAGE_META[latestStage.stage] || [latestStage.stage])[0] : "ещё не запускался"],
         ["Этапы завершены", n(counts.ok || 0), stages.length + " этапов в последнем цикле"],
         ["Ошибки / отмены", n((counts.error || 0) + (counts.cancelled || 0)), "по журналу конвейера"],
         ["Trace ролей", n(roles + platformRoles), data.traceId ? "последний материал с trace" : "trace пока не сохранён"],
@@ -6734,7 +6742,7 @@
       summary.innerHTML = cards.map((item) => '<div class="team-summary-card"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong><small>' + esc(item[2]) + "</small></div>").join("");
     }
     const meta = $("#team-run-meta");
-    if (meta) meta.textContent = latestRunId ? latestRunId + " · " + (latestCycle ? dt(latestCycle.at) : "дата не записана") : "Нет запусков";
+    if (meta) meta.textContent = latestRunId ? latestRunId + " · " + dt(latestStage && latestStage.at) : "Нет запусков";
     const stageRoot = $("#team-stage-grid");
     if (stageRoot) {
       stageRoot.innerHTML = stages.length ? stages.map((item) => {
@@ -7006,15 +7014,31 @@
     ];
     $("#analytics-kpis").innerHTML = kpis.map((item) => '<div class="analytics-kpi"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong><small>' + esc(item[2]) + "</small></div>").join("");
     const formatRows = Object.entries(formats.formats || {});
+    const measurement = formats.measurement || {};
+    const publication = formats.publication || {};
+    const reliableCount = formatRows.filter(([, row]) => row && row.reliable === true).length;
     $("#analytics-format-meta").textContent = typeof formats.published_total === "number"
-      ? n(formats.published_total) + " опубликовано · " + n(formats.measured_total) + " измерено · " + (formats.reliable_total === undefined ? "надёжность не рассчитана" : n(formats.reliable_total) + " надёжных")
+      ? n(formats.published_total) + " опубликовано · " + n(formats.measured_total) + " измерено · "
+        + n(formats.fresh_measured_total) + " свежих · " + n(formats.stale_measured_total) + " устаревших"
+        + " · " + reliableCount + " надёжных форматов"
+        + " · подтверждённость: " + (formats.evidence_status || "нет отчёта")
       : "Отчёт форматов не получен";
     $("#analytics-formats").innerHTML = formatRows.length ? formatRows.map(([key, row]) => {
+      const fresh = measurement[key] || {};
       const published = typeof row.published === "number" ? n(row.published) : "—";
       const measured = typeof row.measured === "number" ? n(row.measured) : "—";
-      const er = typeof row.avg_engagement === "number" ? row.avg_engagement.toFixed(1) : "нет замеров";
-      return '<div class="analytics-row"><strong>' + esc(FORMAT_RU[key] || key) + '</strong><span>' + esc(published) + ' опубликовано</span><span>' + esc(measured) + ' измерено</span><b>' + esc(er) + "</b></div>";
-    }).join("") : '<div class="empty">Нет отчёта по форматам. Неполученные данные не заменяются нулями.</div>';
+      const average = typeof row.avg_engagement === "number" ? row.avg_engagement.toFixed(1) : "нет замеров";
+      const live = typeof fresh.fresh === "number" ? n(fresh.fresh) + " свежих / " + n(fresh.stale || 0) + " устаревших" : "свежесть неизвестна";
+      const signal = row.reliable === true ? "достаточная выборка" : "мало измерений";
+      return '<div class="analytics-row analytics-format-row"><strong>' + esc(FORMAT_RU[key] || key) + '</strong>'
+        + '<span>' + esc(published) + ' опубликовано · ' + esc(measured) + ' измерено</span>'
+        + '<b>' + esc(average) + ' среднее взаимодействие</b>'
+        + '<small>' + esc(live) + ' · ' + esc(signal) + '</small></div>';
+    }).join("") + '<p class="analytics-evidence-note">Подтверждённые: ' + n(publication.published_evidenced || 0)
+      + ' · без подтверждения: ' + n(publication.published_unevidenced || 0)
+      + ' · без правила проверки: ' + n(publication.published_unrulled || 0)
+      + ' · неизвестный результат: ' + n(publication.publish_unknown || 0) + "</p>"
+      : '<div class="empty">Нет отчёта по форматам. Неполученные данные не заменяются нулями.</div>';
     const platforms = delivery.platforms || [];
     $("#analytics-platform-meta").textContent = delivery.generated_at ? "Срез " + dt(delivery.generated_at) : "Дата измерения не передана";
     $("#analytics-platforms").innerHTML = platforms.length ? platforms.map((item) => {
@@ -7035,10 +7059,15 @@
     const summary = freshness.summary || {};
     const freshnessRows = [
       ["Снимков", freshness.snapshots_total],
-      ["Площадок с данными", summary.platforms_with_data],
-      ["Актуальные измерения", summary.fresh],
-      ["Устаревшие измерения", summary.stale],
-      ["Последнее обновление", freshness.generated_at ? dt(freshness.generated_at) : null],
+      ["Площадок в каталоге", summary.platforms_total],
+      ["Площадки со свежими данными", summary.ok],
+      ["Устаревшие снимки площадок", summary.stale],
+      ["Пока нет снимков", summary.never],
+      ["Сборщики со свежими данными", summary.collectors_ok],
+      ["Устаревшие сборщики", summary.collectors_stale],
+      ["Сборщики без отчёта", summary.collectors_no_report],
+      ["Самый свежий снимок", summary.freshest && summary.freshest.collected_at ? dt(summary.freshest.collected_at) : null],
+      ["Последнее обновление отчёта", freshness.generated_at ? dt(freshness.generated_at) : null],
     ].filter((item) => item[1] !== undefined && item[1] !== null);
     $("#analytics-freshness").innerHTML = freshnessRows.length
       ? freshnessRows.map((item) => '<div class="analytics-detail-row"><span>' + esc(item[0]) + '</span><strong>' + esc(typeof item[1] === "number" ? n(item[1]) : item[1]) + "</strong></div>").join("")
