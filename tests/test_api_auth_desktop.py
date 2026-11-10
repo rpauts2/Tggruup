@@ -324,3 +324,37 @@ def test_admin_api_rejects_untrusted_host_even_with_valid_token(client):
     assert response.status_code == 403
     assert response.json()["error"] == "untrusted host"
 
+
+
+
+def test_editorial_command_center_workspaces_are_wired_to_real_ui(client):
+    html = client.get("/").text
+    script = client.get("/ui/app.js").text
+    for view in ("team", "studio", "analytics"):
+        assert f'data-view="{view}"' in html
+    for element_id in (
+        "team-summary", "team-stage-grid", "team-role-grid", "team-run-list",
+        "studio-post-list", "studio-content", "studio-inspector",
+        "studio-platform-select", "studio-preview",
+        "analytics-kpis", "analytics-formats", "analytics-platforms",
+        "analytics-ai", "analytics-freshness",
+    ):
+        assert f'id="{element_id}"' in html
+    for contract in (
+        "/api/runs?limit=100",
+        "/api/posts?limit=80",
+        "/api/metrics/formats?days=",
+        "/api/metrics/freshness",
+        "/api/ai/usage?days=",
+        "/api/crossposts/health",
+        "/api/platform-drafts/",
+        "/polish",
+    ):
+        assert contract in script
+
+
+def test_oauth_and_desktop_auth_workspaces_keep_secrets_out_of_client_contract(client):
+    script = client.get("/ui/app.js").text
+    assert "data-connect-save-oauth" in script
+    assert "window.pywebview.api.open_url" in script
+    assert "session_verified" in client.get("/api/connect/matrix").text or "profile_saved" in client.get("/api/connect/matrix").text

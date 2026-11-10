@@ -162,3 +162,28 @@ def test_oauth_matrix_returns_only_setup_fields_and_presence_flags():
     }
     assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
     assert "REDDIT_ACCESS_TOKEN" not in {field["key"] for field in reddit["fields"]}
+
+
+
+def test_all_oauth_providers_expose_only_their_application_setup_fields():
+    expected = {
+        "reddit": {"REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"},
+        "x": {"X_OAUTH_CLIENT_ID", "X_OAUTH_CLIENT_SECRET"},
+        "threads": {"THREADS_APP_ID", "THREADS_APP_SECRET"},
+        "facebook": {"FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"},
+        "instagram": {"INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET"},
+        "pinterest": {"PINTEREST_APP_ID", "PINTEREST_APP_SECRET"},
+        "youtube": {"YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"},
+        "tiktok": {"TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"},
+        "mastodon": {"MASTODON_INSTANCE"},
+        "linkedin": {"LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"},
+        "tumblr": {"TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET"},
+        "douyin": {"DOUYIN_CLIENT_KEY", "DOUYIN_CLIENT_SECRET"},
+    }
+    rows = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    for platform_id, required in expected.items():
+        row = rows[platform_id]
+        assert row["mode"] == "oauth"
+        assert {field["key"] for field in row["fields"]} == required
+        assert all(isinstance(field["has_value"], bool) for field in row["fields"])
+        assert all("value" not in field for field in row["fields"])

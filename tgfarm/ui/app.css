@@ -2442,3 +2442,8 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
 .connect-field-help { display:block; margin-top:5px; color:var(--text-faint); font-size:10px; line-height:1.5; }
 .connect-field small { color:#86efc6; font-size:9px; font-weight:600; }
 @media (max-width:540px) { .connect-proof-grid { grid-template-columns:1fr; } }
+
+.analytics-format-row { grid-template-columns:minmax(90px,1fr) minmax(130px,1.2fr) minmax(120px,auto) minmax(150px,1fr); }
+.analytics-format-row small { color:var(--text-faint); font-size:10px; text-align:right; line-height:1.4; }
+.analytics-evidence-note { margin:12px 0 3px; padding:10px 12px; border:1px solid var(--line-soft); border-radius:9px; color:var(--text-dim); font-size:10.5px; line-height:1.5; background:rgba(0,0,0,.12); }
+@media (max-width:700px) { .analytics-format-row { grid-template-columns:1fr 1fr; } .analytics-format-row small { text-align:left; } }
