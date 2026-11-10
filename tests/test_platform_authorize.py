@@ -28,6 +28,12 @@ def test_modes_match_the_real_mechanism():
     ]
     assert matrix["pikabu"]["mode"] == "browser"
     assert matrix["pikabu"]["login_url"].startswith("https://")
+    # Medium still supports an existing legacy token, not a generic browser login.
+    assert matrix["medium"]["mode"] == "token"
+    # WeChat Official Account requires App ID/Secret, not a saved website session.
+    assert matrix["wechat"]["mode"] == "token"
+    assert matrix["medium"]["keys_absent"] == ["MEDIUM_ACCESS_TOKEN"]
+    assert matrix["wechat"]["keys_absent"] == ["WECHAT_APP_ID", "WECHAT_APP_SECRET"]
 
 
 def test_token_flow_does_not_call_the_network():
@@ -106,3 +112,53 @@ def test_status_reports_what_is_known(monkeypatch):
     status = pa.authorize_status("vk")
     assert status["mode"] == "vkhost"
     assert status["account"] == "Всякая всячина"
+
+
+
+def test_saved_token_is_not_reported_as_verified_api_access(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    statuses = pa.platform_statuses(
+        "telegram",
+        mode="token",
+        authorized=None,
+        keys_present=True,
+    )
+    assert statuses["auth"]["state"] == "pending"
+    assert statuses["api"]["state"] == "pending"
+    assert statuses["publish"]["state"] == "blocked"
+
+
+def test_browser_publisher_requires_a_verified_session(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    pending = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=None,
+        keys_present=False,
+        profile_saved=True,
+        session_verified=False,
+    )
+    assert pending["api"]["state"] == "pending"
+    assert pending["publish"]["state"] == "blocked"
+
+    ready = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=None,
+        keys_present=False,
+        profile_saved=True,
+        session_verified=True,
+    )
+    assert ready["auth"]["state"] == "ready"
+    assert ready["api"]["state"] == "ready"
+    assert ready["publish"]["state"] == "ready"
+
+
+def test_oauth_matrix_returns_only_setup_fields_and_presence_flags():
+    rows = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    reddit = rows["reddit"]
+    assert {field["key"] for field in reddit["fields"]} == {
+        "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"
+    }
+    assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
+    assert "REDDIT_ACCESS_TOKEN" not in {field["key"] for field in reddit["fields"]}
