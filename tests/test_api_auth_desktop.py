@@ -357,4 +357,6 @@ def test_oauth_and_desktop_auth_workspaces_keep_secrets_out_of_client_contract(c
     script = client.get("/ui/app.js").text
     assert "data-connect-save-oauth" in script
     assert "window.pywebview.api.open_url" in script
-    assert "session_verified" in client.get("/api/connect/matrix").text or "profile_saved" in client.get("/api/connect/matrix").text
+    matrix = client.get("/api/connect/matrix", headers={apiauth.HEADER: ensure_token()})
+    assert matrix.status_code == 200
+    assert "profile_saved" in matrix.text
