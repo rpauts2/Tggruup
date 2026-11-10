@@ -240,7 +240,11 @@ def platform_statuses(
     if capability != "publish":
         api = {"state": "manual", "label": "API-публикации нет"}
     elif mode == "browser":
-        if session_verified:
+        # Dzen uses its dedicated DzenWebPublisher profile rather than the
+        # generic Playwright profile. Its successful login is recorded through
+        # record_auth_check(), so the verified platform check is authoritative
+        # even when browser_session_status() has no generic profile to inspect.
+        if authorized is True or session_verified:
             api = {"state": "ready", "label": "Браузерная доставка доступна"}
         elif profile_saved:
             api = {"state": "pending", "label": "Сессия сохранена, нужна проверка"}
