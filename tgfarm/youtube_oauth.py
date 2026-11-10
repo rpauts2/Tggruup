@@ -6,6 +6,8 @@ Secrets and provider responses are never logged.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import secrets
 import threading
 import time
@@ -74,13 +76,20 @@ async def begin_youtube_oauth(
         raise ValueError("Параметры Google OAuth имеют недопустимый размер.")
 
     state = secrets.token_urlsafe(32)
+    # Google desktop OAuth clients are public clients: PKCE is mandatory.
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+    created_at = time.time()
     with _PENDING_LOCK:
-        _prune_pending(time.time())
+        _prune_pending(created_at)
         _PENDING[state] = {
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uri": redirect_uri,
-            "created_at": time.time(),
+            "code_verifier": code_verifier,
+            "created_at": created_at,
         }
     query = urlencode(
         {
@@ -92,6 +101,8 @@ async def begin_youtube_oauth(
             "include_granted_scopes": "true",
             "prompt": "consent",
             "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
     )
     return {
@@ -173,6 +184,7 @@ async def complete_youtube_oauth(state: str, code: str) -> dict[str, str]:
     client_id = str(transaction["client_id"])
     client_secret = str(transaction["client_secret"])
     redirect_uri = str(transaction["redirect_uri"])
+    code_verifier = str(transaction["code_verifier"])
     token = await _exchange_token(
         {
             "client_id": client_id,
@@ -180,6 +192,7 @@ async def complete_youtube_oauth(state: str, code: str) -> dict[str, str]:
             "code": code,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
         }
     )
     access_token = str(token.get("access_token") or "")
