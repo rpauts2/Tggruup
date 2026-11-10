@@ -6233,13 +6233,21 @@
   const CONNECT_MODES = { oauth: "OAuth", vkhost: "VK", browser: "Браузер", token: "Токен", manual: "Вручную" };
 
   function connectStatusOf(row) {
-    if (row.authorized === true) {
-      return { key: "ready", label: row.account ? "Подключено · " + row.account : "Подключено" };
+    const proof = row.statuses || {};
+    if (proof.auth && proof.auth.state === "failed") return { key: "failed", label: proof.auth.label || "Вход не прошёл" };
+    if (proof.publish && proof.publish.state === "ready") {
+      return { key: "ready", label: row.account ? "Готово · " + row.account : (proof.publish.label || "Готово к публикации") };
     }
-    if (row.authorized === false) return { key: "failed", label: "Вход не прошёл" };
-    if (row.profile_saved || row.session_verified) return { key: "pending", label: "Сессия сохранена, нужна проверка" };
-    if (row.keys_present) return { key: "pending", label: "Ключи сохранены, нужна проверка" };
-    return { key: "needs", label: "Требует входа" };
+    if ((proof.auth && proof.auth.state === "ready") || row.authorized === true) {
+      const reason = proof.destination && proof.destination.state === "missing"
+        ? "Аккаунт подключён, нужно выбрать назначение"
+        : (proof.api && proof.api.label) || "Аккаунт подключён, проверяем возможность публикации";
+      return { key: "pending", label: reason };
+    }
+    if (row.profile_saved || row.keys_present || (proof.auth && proof.auth.state === "pending")) {
+      return { key: "pending", label: "Данные сохранены, ожидается проверка" };
+    }
+    return { key: "needs", label: (proof.publish && proof.publish.state === "manual") ? "Нужна ручная подготовка" : "Требует подключения" };
   }
 
   function connectMatches(row, filter) {
@@ -6294,12 +6302,20 @@
     const pill = status.key === "needs"
       ? '<span class="connect-mode-chip">' + esc(mode) + "</span>"
       : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
+    const proof = row.statuses || {};
+    const proofNames = { auth: "Аккаунт", api: "API", destination: "Назначение", publish: "Публикация" };
+    const proofHtml = Object.keys(proofNames).map((key) => {
+      const item = proof[key] || {};
+      const stateKey = ["ready", "manual", "failed", "pending", "missing", "none", "unknown", "blocked"].includes(item.state) ? item.state : "unknown";
+      return '<span class="connect-proof connect-proof--' + stateKey + '" title="' + esc(item.label || "Статус не получен") + '"><i></i>' + esc(proofNames[key]) + ': ' + esc(item.label || "неизвестно") + "</span>";
+    }).join("");
     return '<article class="connect-card connect-card--' + esc(status.key) + '">'
       + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
       + '<div class="connect-card-title"><strong>' + esc(row.name || row.id) + "</strong>"
       + "<span>" + esc(row.category || "") + "</span></div>"
       + pill + "</div>"
       + '<p class="connect-hint">' + esc(row.hint || "") + "</p>"
+      + '<div class="connect-proof-grid">' + proofHtml + "</div>"
       + '<div class="connect-actions">'
       + '<button class="btn ' + (status.key === "ready" ? "btn-ghost" : "btn-primary") + ' btn-sm" type="button" data-connect-start="'
       + esc(row.id) + '">' + primary + "</button>"
@@ -6350,6 +6366,13 @@
 
   function connectDialog() { return $("#connect-dialog"); }
 
+  function connectInputField(field) {
+    return '<label class="connect-field"><span>' + esc(field.label || field.key) + (field.has_value ? ' <small>сохранено</small>' : "") + "</span>"
+      + '<input type="' + (field.secret ? "password" : "text") + '" data-connect-field="' + esc(field.key) + '" '
+      + 'autocomplete="off" spellcheck="false" placeholder="' + esc(field.has_value ? "Сохранено. Оставь пустым, чтобы не менять." : (field.placeholder || field.key)) + '">'
+      + (field.help ? '<small class="connect-field-help">' + esc(field.help) + "</small>" : "") + "</label>";
+  }
+
   function openConnectDialog(platformId) {
     const rows = (state.connections || {}).platforms || [];
     const row = rows.find((item) => item.id === platformId);
@@ -6360,38 +6383,42 @@
     $("#connect-dialog-title").textContent = row.name || row.id;
     $("#connect-dialog-sub").textContent = (CONNECT_MODES[row.mode] || row.mode) + " · " + (row.category || "");
     const body = $("#connect-dialog-body");
+    const docsUrl = safeExternalUrl(row.docs_url);
+    const docs = docsUrl ? '<a class="connect-doc-link" href="' + esc(docsUrl) + '" target="_blank" rel="noopener noreferrer">Официальная документация ↗</a>' : "";
     if (row.mode === "token") {
-      const fields = (row.fields || []).map((field) =>
-        '<label class="connect-field"><span>' + esc(field.label) + "</span>"
-        + '<input type="' + (field.secret ? "password" : "text") + '" data-connect-field="' + esc(field.key) + '" '
-        + 'autocomplete="off" spellcheck="false" placeholder="' + esc(field.key) + '"></label>'
-      ).join("");
+      const fields = (row.fields || []).map(connectInputField).join("");
       body.innerHTML = '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + fields
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-save="' + esc(row.id) + '">Сохранить и проверить</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>'
-        + '<p class="connect-dialog-note">Значения уходят только в локальный .env и никогда не возвращаются в интерфейс.</p>';
+        + '<p class="connect-dialog-note">Пустые поля не меняют ранее сохранённые значения. Секреты остаются на локальном backend.</p>' + docs;
     } else if (row.mode === "oauth") {
-      body.innerHTML = '<ol class="connect-steps"><li>Откроется страница согласия площадки.</li>'
-        + "<li>Подтверди доступ — площадка сама вернёт токен.</li>"
-        + "<li>Панель подхватит его и обновит статус карточки.</li></ol>"
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Открыть страницу согласия</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
-    } else if (row.mode === "vkhost") {
-      body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ — токен перехватится и сохранится автоматически.</p>'
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
-    } else if (row.mode === "browser") {
-      const extra = row.id === "dzen"
-        ? '<p class="connect-dialog-note">У Дзена отдельный профиль: используй кнопку «Дзен: войти» на вкладке «Площадки».</p>'
+      const fields = (row.fields || []).map(connectInputField).join("");
+      const callback = window.location.origin.replace(/\/$/, "") + "/api/platforms/" + encodeURIComponent(row.id) + "/auth/callback";
+      const setup = (row.fields || []).length
+        ? '<div class="connect-oauth-setup"><h4>Настройка приложения</h4><p class="connect-dialog-note">Это реквизиты приложения разработчика, а не пароль личного аккаунта. Заполни их один раз.</p>'
+          + fields + (row.keys_present ? '<p class="connect-dialog-note">Реквизиты приложения сохранены.</p>' : '<button class="btn btn-primary btn-sm" type="button" data-connect-save-oauth="' + esc(row.id) + '">Сохранить и продолжить</button>') + "</div>"
         : "";
-      body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
-        + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
-        + "<li>Панель проверит сессию и сохранит её для публикаций.</li></ol>"
-        + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+      const oauthButton = row.keys_present
+        ? '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Войти на ' + esc(row.name || row.id) + "</button></div>"
+        : "";
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется официальный сайт площадки.</li><li>Войди в аккаунт и подтверди необходимые разрешения.</li><li>TgFarm примет callback, сохранит токены на backend и проверит API.</li></ol>'
+        + setup + '<div class="connect-callback"><span>Redirect URI для кабинета разработчика</span><code>' + esc(callback) + '</code></div>'
+        + docs + oauthButton + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+    } else if (row.mode === "vkhost") {
+      body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ, TgFarm перехватит только официальный OAuth redirect и сохранит токен на backend.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
+    } else if (row.mode === "browser") {
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется отдельный профиль браузера для этой площадки.</li>'
+        + "<li>Войди на официальном сайте. Пароль вводится только на самом сайте.</li>"
+        + "<li>Профиль сохранится локально, TgFarm проверит доступную сессию.</li></ol>"
+        + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>"
+        + '<p class="connect-dialog-note">Сохранённая browser session не считается API-токеном. Статус публикации зависит от реального адаптера и прав.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">' + (row.id === "dzen" ? "Войти в Яндекс / Дзен" : "Открыть окно входа") + "</button></div>"
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
     } else {
-      body.innerHTML = '<p class="connect-dialog-text">Автоматического входа нет: материал для площадки готовится вручную.</p>';
+      body.innerHTML = '<p class="connect-dialog-text">' + esc(row.requirements || "Для этой площадки нет автоматического способа авторизации.") + "</p>"
+        + '<p class="connect-dialog-note">Открытие сайта не подтверждает API-доступ и не включает автопубликацию.</p>' + docs;
     }
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "open");
@@ -6408,47 +6435,113 @@
   async function runBrowserConnect(platformId) {
     const status = $("#connect-dialog-status");
     const button = document.querySelector('[data-connect-browser="' + CSS.escape(platformId) + '"]');
-    if (status) status.textContent = "Открыл окно браузера. Войди в аккаунт — я жду подтверждения…";
+    if (status) status.textContent = "Открываю отдельный профиль. Войди на сайте, не закрывая TgFarm…";
     if (button) { button.disabled = true; button.classList.add("is-busy"); }
     try {
-      const result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
-      if (status) status.textContent = (result.detail || "Готово") + (result.account ? " · " + result.account : "");
-      toast("Вход: " + platformId + " — " + (result.state || "ok"), "ok");
+      let result;
+      if (platformId === "dzen" && typeof window.tgfarmDzenLogin === "function") {
+        await window.tgfarmDzenLogin();
+        result = { state: "browser_flow_completed", detail: "Окно входа в Дзен завершило работу. Перепроверяю сессию." };
+      } else {
+        result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
+      }
       await loadConnections(true);
+      const latest = ((state.connections || {}).platforms || []).find((item) => item.id === platformId);
+      const ready = latest && latest.statuses && latest.statuses.publish && latest.statuses.publish.state === "ready";
+      const saved = result && (result.profile_saved || result.state === "authorized" || result.authorized);
+      if (status) status.textContent = (result.detail || "Проверка завершена.") + (result.account ? " · " + result.account : "")
+        + (ready ? " · Публикация подтверждена." : " · Сессия не означает автоматически разрешение API-публикации.");
+      toast(ready ? "Площадка готова к публикации: " + platformId : (saved ? "Сессия сохранена, проверь разрешения и назначение: " : "Вход не подтверждён: ") + platformId, ready ? "ok" : "warn");
     } catch (error) {
-      if (status) status.textContent = "Не удалось завершить вход: " + (error?.message || error);
-      toast("Вход не завершён: " + (error?.message || error), "err");
+      if (status) status.textContent = "Не удалось завершить вход: " + (error && error.message || error);
+      toast("Вход не завершён: " + (error && error.message || error), "err");
     } finally {
       if (button) { button.disabled = false; button.classList.remove("is-busy"); }
     }
   }
 
-  async function runOauthConnect(platformId) {
+  async function runOauthConnect(platformId, existingPopup = null) {
     const status = $("#connect-dialog-status");
     const button = document.querySelector('[data-connect-oauth="' + CSS.escape(platformId) + '"]');
+    const desktop = !!(window.pywebview && window.pywebview.api && window.pywebview.api.open_url);
+    let popup = existingPopup;
+    if (!desktop && !popup) popup = window.open("about:blank", "_blank");
+    if (!desktop && !popup) {
+      if (status) status.textContent = "Браузер заблокировал новое окно. Разреши всплывающие окна для TgFarm и повтори.";
+      return;
+    }
     if (button) { button.disabled = true; button.classList.add("is-busy"); }
+    if (status) status.textContent = "Создаю OAuth-транзакцию и готовлю официальный вход…";
     try {
-      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/start", {});
+      const row = (((state.connections || {}).platforms || []).find((item) => item.id === platformId)) || {};
+      const payload = platformId === "mastodon" ? { instance_url: row.instance_url || "" } : {};
+      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/start", payload);
       const url = safeExternalUrl(result.authorize_url);
-      if (!url) throw new Error("площадка не выдала адрес согласия");
-      window.open(url, "_blank", "noopener,noreferrer");
-      if (status) status.textContent = "Ждём подтверждения на стороне площадки…";
+      if (!url) throw new Error("Площадка не выдала безопасный адрес согласия.");
+      if (desktop) {
+        const opened = await window.pywebview.api.open_url(url);
+        if (opened !== "ok") throw new Error("Не удалось открыть системный браузер: " + String(opened || "ошибка"));
+      } else {
+        popup.location.replace(url);
+      }
+      if (status) status.textContent = "Ожидаю callback. Войди на официальном сайте и подтверди доступ…";
       for (let attempt = 0; attempt < 100; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        const state = await api("/api/connect/" + encodeURIComponent(platformId) + "/status");
-        if (state.authorized === true) {
-          if (status) status.textContent = "Готово" + (state.account ? " · " + state.account : "");
-          toast("Подключено: " + platformId, "ok");
+        const current = await api("/api/connect/" + encodeURIComponent(platformId) + "/status");
+        if (current.authorized === true) {
           await loadConnections(true);
+          const latest = ((state.connections || {}).platforms || []).find((item) => item.id === platformId);
+          const publishReady = latest && latest.statuses && latest.statuses.publish && latest.statuses.publish.state === "ready";
+          const missingTarget = latest && latest.statuses && latest.statuses.destination && latest.statuses.destination.state === "missing";
+          const message = "Авторизация подтверждена" + (current.account ? " · " + current.account : "")
+            + (missingTarget ? ". Теперь выбери страницу, канал или доску в Центре площадок." : (publishReady ? ". Публикация готова." : ". Проверь API-доступ и права."));
+          if (status) status.textContent = message;
+          toast(publishReady ? "Подключено и готово к публикации: " + platformId : "Аккаунт авторизован: " + platformId, publishReady ? "ok" : "warn");
           return;
         }
       }
-      if (status) status.textContent = "Подтверждение не пришло за 5 минут. Можно закрыть окно и повторить.";
+      if (status) status.textContent = "Callback не пришёл за 5 минут. Проверь Redirect URI и разрешения приложения, затем повтори.";
     } catch (error) {
-      if (status) status.textContent = "OAuth не запустился: " + (error?.message || error);
-      toast("OAuth не запустился: " + (error?.message || error), "err");
+      if (popup && !popup.closed) popup.close();
+      if (status) status.textContent = "OAuth не запустился: " + (error && error.message || error);
+      toast("OAuth не запустился: " + (error && error.message || error), "err");
     } finally {
       if (button) { button.disabled = false; button.classList.remove("is-busy"); }
+    }
+  }
+
+  async function saveConnectOAuthSetup(platformId) {
+    const status = $("#connect-dialog-status");
+    const desktop = !!(window.pywebview && window.pywebview.api && window.pywebview.api.open_url);
+    const popup = desktop ? null : window.open("about:blank", "_blank");
+    if (!desktop && !popup) {
+      if (status) status.textContent = "Браузер заблокировал окно. Разреши всплывающие окна и повтори.";
+      return;
+    }
+    const values = {};
+    $("#connect-dialog-body [data-connect-field]").forEach((input) => {
+      const value = String(input.value || "").trim();
+      if (value) values[input.dataset.connectField] = value;
+    });
+    if (!Object.keys(values).length) {
+      if (popup) popup.close();
+      if (status) status.textContent = "Введи недостающие Client ID / Secret. Пустые значения не заменяют сохранённые.";
+      return;
+    }
+    const button = document.querySelector('[data-connect-save-oauth="' + CSS.escape(platformId) + '"]');
+    if (button) { button.disabled = true; button.textContent = "Сохраняю…"; }
+    try {
+      await put("/api/platforms/" + encodeURIComponent(platformId) + "/credentials", { values: values });
+      await loadConnections(true);
+      const latest = (((state.connections || {}).platforms || []).find((item) => item.id === platformId)) || {};
+      if (latest.keys_present !== true) throw new Error("Не все обязательные реквизиты приложения сохранены.");
+      if (status) status.textContent = "Настройки приложения сохранены. Открываю официальный вход…";
+      await runOauthConnect(platformId, popup);
+    } catch (error) {
+      if (popup && !popup.closed) popup.close();
+      if (status) status.textContent = "Не удалось настроить OAuth: " + (error && error.message || error);
+      toast("Настройка OAuth не завершена: " + (error && error.message || error), "err");
+      if (button) { button.disabled = false; button.textContent = "Сохранить и продолжить"; }
     }
   }
 
@@ -7102,6 +7195,8 @@
       if (browser) { event.preventDefault(); runBrowserConnect(browser.dataset.connectBrowser); return; }
       const oauth = event.target.closest("[data-connect-oauth]");
       if (oauth) { event.preventDefault(); runOauthConnect(oauth.dataset.connectOauth); return; }
+      const saveOAuth = event.target.closest("[data-connect-save-oauth]");
+      if (saveOAuth) { event.preventDefault(); saveConnectOAuthSetup(saveOAuth.dataset.connectSaveOauth); return; }
       const save = event.target.closest("[data-connect-save]");
       if (save) { event.preventDefault(); saveConnectTokens(save.dataset.connectSave); }
     });
