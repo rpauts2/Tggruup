@@ -360,3 +360,39 @@ def test_oauth_and_desktop_auth_workspaces_keep_secrets_out_of_client_contract(c
     matrix = client.get("/api/connect/matrix", headers={apiauth.HEADER: ensure_token()})
     assert matrix.status_code == 200
     assert "profile_saved" in matrix.text
+
+
+def test_desktop_listener_reserves_the_selected_oauth_port(tmp_path):
+    import socket
+
+    from tgfarm.desktop import _bind_desktop_socket
+
+    listener = _bind_desktop_socket(tmp_path, None)
+    try:
+        selected = int(listener.getsockname()[1])
+        assert 1024 < selected < 65536
+        assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(selected)
+        # A second listener cannot steal the port while Uvicorn has not started.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            with pytest.raises(OSError):
+                probe.bind(("127.0.0.1", selected))
+    finally:
+        listener.close()
+
+
+def test_desktop_listener_falls_back_if_saved_port_is_claimed(tmp_path):
+    import socket
+
+    from tgfarm.desktop import _bind_desktop_socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        blocked = int(occupied.getsockname()[1])
+        listener = _bind_desktop_socket(tmp_path, blocked)
+        try:
+            selected = int(listener.getsockname()[1])
+            assert selected != blocked
+            assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(selected)
+        finally:
+            listener.close()
