@@ -120,6 +120,20 @@ def _port_available(port: int) -> bool:
         return False
 
 
+def _store_desktop_port(data_root: Path, port: int) -> None:
+    """Persist the actual listener port atomically for the next desktop start."""
+    root = Path(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "desktop.port"
+    temp = path.with_suffix(".tmp")
+    temp.write_text(str(int(port)), encoding="ascii")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(path)
+
+
 def stable_desktop_port(data_root: Path) -> int:
     """Reuse one per-install loopback port so OAuth redirect URIs stay stable."""
     root = Path(data_root)
@@ -132,14 +146,44 @@ def stable_desktop_port(data_root: Path) -> int:
     if 1024 < saved < 65536 and _port_available(saved):
         return saved
     selected = free_port()
-    temp = path.with_suffix(".tmp")
-    temp.write_text(str(selected), encoding="ascii")
-    try:
-        temp.chmod(0o600)
-    except OSError:
-        pass
-    temp.replace(path)
+    _store_desktop_port(root, selected)
     return selected
+
+
+def _bind_desktop_socket(data_root: Path, preferred_port: int | None) -> socket.socket:
+    """Bind the loopback listener before starting Uvicorn, closing the port race.
+
+    If another process takes the remembered port between the preliminary check
+    and this bind, fall back to an OS-assigned port and persist the port that is
+    actually reserved. The returned socket stays open and is handed to Uvicorn.
+    """
+    root = Path(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    def bind(port: int) -> socket.socket:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", int(port)))
+            listener.listen(socket.SOMAXCONN)
+            listener.setblocking(False)
+            return listener
+        except OSError:
+            listener.close()
+            raise
+
+    try:
+        listener = bind(int(preferred_port or 0))
+    except OSError:
+        if preferred_port:
+            log.warning(
+                "saved desktop OAuth port %s was claimed before bind; selecting a new loopback port",
+                preferred_port,
+            )
+        listener = bind(0)
+
+    actual_port = int(listener.getsockname()[1])
+    _store_desktop_port(root, actual_port)
+    return listener
 
 
 @dataclass
@@ -159,7 +203,11 @@ def start_server(port: int | None = None, with_scheduler: bool = True) -> Runnin
 
     from tgfarm.api import create_app
 
-    port = port or free_port()
+    data_root = get_settings().data_root()
+    preferred_port = port if port is not None else stable_desktop_port(data_root)
+    listener = _bind_desktop_socket(data_root, preferred_port)
+    port = int(listener.getsockname()[1])
+
     # The token is generated once and handed straight to the page in the URL, so
     # a desktop install never has to read a secret off disk.
     token = ensure_token()
@@ -172,15 +220,24 @@ def start_server(port: int | None = None, with_scheduler: bool = True) -> Runnin
         access_log=False,
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, name="tgfarm-api", daemon=True)
+    thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [listener]},
+        name="tgfarm-api",
+        daemon=True,
+    )
     thread.start()
 
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if getattr(server, "started", False):
             break
+        if not thread.is_alive():
+            listener.close()
+            raise RuntimeError("admin API stopped before the listener became ready")
         time.sleep(0.1)
     else:
+        listener.close()
         raise RuntimeError("admin API did not start within 30s")
 
     log.info("admin API on %s", f"http://127.0.0.1:{port}")
