@@ -51,7 +51,8 @@ class FakeTikTokOAuthClient:
 async def test_tiktok_oauth_uses_state_and_verifies_creator_publish_scope(monkeypatch):
     from tgfarm import tiktok_oauth
 
-    tiktok_oauth._PENDING.clear()
+    with tiktok_oauth._PENDING_LOCK:
+        tiktok_oauth._PENDING.clear()
     FakeTikTokOAuthClient.calls = []
     monkeypatch.setattr(tiktok_oauth.httpx, "AsyncClient", FakeTikTokOAuthClient)
     redirect = "http://127.0.0.1:8765/api/platforms/tiktok/auth/callback"
@@ -69,6 +70,14 @@ async def test_tiktok_oauth_uses_state_and_verifies_creator_publish_scope(monkey
     assert query["response_type"] == ["code"]
     assert query["scope"] == ["user.info.basic,video.publish"]
     assert query["state"] and len(query["state"][0]) >= 32
+    assert query["code_challenge_method"] == ["S256"]
+    assert len(query["code_challenge"][0]) == 64
+    assert all(char in "0123456789abcdef" for char in query["code_challenge"][0])
+    pending = tiktok_oauth._PENDING[query["state"][0]]
+    verifier = pending["code_verifier"]
+    assert 43 <= len(verifier) <= 128
+    import hashlib
+    assert hashlib.sha256(verifier.encode("ascii")).hexdigest() == query["code_challenge"][0]
 
     credentials = await tiktok_oauth.complete_tiktok_oauth(
         query["state"][0], "one-time-code"
@@ -82,6 +91,7 @@ async def test_tiktok_oauth_uses_state_and_verifies_creator_publish_scope(monkey
         key: value for key, value in credentials.items() if key != "access_token"
     })
     assert FakeTikTokOAuthClient.calls[0][1] == tiktok_oauth.TOKEN_URL
+    assert FakeTikTokOAuthClient.calls[0][2]["data"]["code_verifier"] == verifier
     creator_call = FakeTikTokOAuthClient.calls[1]
     assert creator_call[1] == tiktok_oauth.CREATOR_INFO_URL
     assert creator_call[2]["headers"]["Authorization"] == "Bearer tiktok-access-private"
