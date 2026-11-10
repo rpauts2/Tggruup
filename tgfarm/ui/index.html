@@ -10,38 +10,62 @@
 <body>
 <div class="bg-grid" aria-hidden="true"></div>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <div>
-      <h1>tgfarm</h1>
-      <p id="brand-sub">автономная ферма каналов</p>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-copy">
+        <h1>tgfarm</h1>
+        <p id="brand-sub">AI editorial command center</p>
+      </div>
     </div>
-  </div>
 
-  <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-view="overview" role="tab">Обзор</button>
-    <button class="tab" data-view="connect" role="tab">Подключения <span class="tab-counter" id="connect-nav-count">0</span></button>
-    <button class="tab" data-view="plan" role="tab">План тем</button>
-    <button class="tab" data-view="trends" role="tab">Тренды</button>
-    <button class="tab" data-view="posts" role="tab">Посты</button>
-    <button class="tab" data-view="review" role="tab">Сверка <span class="tab-counter" id="review-nav-count">0</span></button>
-    <button class="tab" data-view="memory" role="tab">Память</button>
-    <button class="tab" data-view="channels" role="tab">Каналы</button>
-    <button class="tab" data-view="platforms" role="tab">Площадки <span class="tab-counter" id="platforms-nav-count">5</span></button>
-    <button class="tab" data-view="sources" role="tab">Источники</button>
-    <button class="tab" data-view="runs" role="tab">Прогоны</button>
-  </nav>
+    <nav class="tabs" role="tablist">
+      <div class="nav-group">Главная</div>
+      <button class="tab is-active" data-view="overview" role="tab"><span class="tab-label">Command Center</span></button>
+      <button class="tab" data-view="review" role="tab"><span class="tab-label">Требует внимания</span><span class="tab-counter" id="review-nav-count">0</span></button>
 
-  <div class="topbar-right">
-    <span class="pill" id="mode-pill">—</span>
-    <span class="pill pill-quiet" id="clock">—</span>
-    <span class="pill" id="farm-pill">Ферма: —</span>
-    <button class="btn btn-primary" id="run-cycle">
-      <span class="spinner" aria-hidden="true"></span><span>Запустить цикл</span>
-    </button>
-  </div>
-</header>
+      <div class="nav-group">Редакция</div>
+      <button class="tab" data-view="plan" role="tab"><span class="tab-label">Планирование</span></button>
+      <button class="tab" data-view="posts" role="tab"><span class="tab-label">Очередь публикаций</span></button>
+      <button class="tab" data-view="trends" role="tab"><span class="tab-label">Тренды</span></button>
+      <button class="tab" data-view="memory" role="tab"><span class="tab-label">Память публикаций</span></button>
+
+      <div class="nav-group">Распространение</div>
+      <button class="tab" data-view="channels" role="tab"><span class="tab-label">Каналы</span></button>
+      <button class="tab" data-view="platforms" role="tab"><span class="tab-label">Центр площадок</span><span class="tab-counter" id="platforms-nav-count">5</span></button>
+      <button class="tab" data-view="connect" role="tab"><span class="tab-label">Подключения</span><span class="tab-counter" id="connect-nav-count">0</span></button>
+
+      <div class="nav-group">Система</div>
+      <button class="tab" data-view="sources" role="tab"><span class="tab-label">Источники</span></button>
+      <button class="tab" data-view="runs" role="tab"><span class="tab-label">Запуски</span></button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="sidebar-status">
+        <span class="pill" id="farm-pill">Ферма: —</span>
+        <span class="pill pill-quiet" id="clock">—</span>
+      </div>
+      <div class="sidebar-meta">
+        <span class="pill" id="mode-pill">—</span>
+        <span class="sidebar-version">v1.2.0</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="workspace">
+    <header class="workbar">
+      <div class="workbar-title">
+        <h2 id="view-title">Command Center</h2>
+        <p id="view-sub">Состояние фермы, команда и площадки в одном окне</p>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-primary" id="run-cycle">
+          <span class="spinner" aria-hidden="true"></span><span>Запустить цикл</span>
+        </button>
+      </div>
+    </header>
+
 
 <main>
   <!-- ============================================================ OVERVIEW -->
@@ -568,6 +592,8 @@
     </article>
   </section>
 </main>
+  </div>
+</div>
 
 <dialog id="connect-dialog" class="connect-dialog" aria-labelledby="connect-dialog-title">
   <div class="connect-dialog-box">

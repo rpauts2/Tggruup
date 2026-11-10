@@ -5326,6 +5326,8 @@
     let box = $("#alert-banner");
     if (!alerts.length) {
       if (box) box.remove();
+      const counter = $("#review-nav-count");
+      if (counter) counter.textContent = "0";
       return;
     }
     if (!box) {
@@ -5333,10 +5335,31 @@
       box.id = "alert-banner";
       kpis.parentElement.insertBefore(box, kpis);
     }
-    box.className = "alert-banner";
-    box.innerHTML = alerts.map((a) =>
-      `<div class="alert alert-${a.level === "error" ? "err" : "warn"}">
-         <b>${esc(a.code)}</b> — ${esc(a.message)}</div>`).join("");
+    const errors = alerts.filter((a) => a.level === "error").length;
+    const counter = $("#review-nav-count");
+    if (counter) counter.textContent = String(alerts.length);
+    const shown = state.alertsExpanded ? alerts : alerts.slice(0, 3);
+    box.className = "attention-panel";
+    box.innerHTML =
+      '<div class="attention-head"><div><strong>Требует внимания</strong>'
+      + '<span class="attention-count">' + alerts.length + "</span>"
+      + (errors ? '<span class="attention-errors">' + errors + " критичных</span>" : "") + "</div>"
+      + '<button class="btn btn-ghost btn-sm" type="button" id="attention-toggle">'
+      + (state.alertsExpanded ? "Свернуть" : "Показать все") + "</button></div>"
+      + '<div class="attention-list">'
+      + shown.map((a) =>
+          '<div class="attention-row attention-row--' + (a.level === "error" ? "err" : "warn") + '">'
+          + '<span class="attention-dot"></span>'
+          + '<div class="attention-text"><strong>' + esc(a.code) + "</strong>"
+          + "<span>" + esc(String(a.message || "").slice(0, 220)) + "</span></div></div>").join("")
+      + "</div>";
+    const toggle = $("#attention-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        state.alertsExpanded = !state.alertsExpanded;
+        renderAlerts(alerts);
+      });
+    }
   }
 
   // «Что вообще можно было измерить» — второй вопрос к тому же покрытию.
@@ -6473,10 +6496,31 @@
   }
 
   /* ---------------------------------------------------------------- wiring */
+  const VIEW_TITLES = {
+    overview: ["Command Center", "Состояние фермы, команда и площадки в одном окне"],
+    connect: ["Подключения", "Один клик: сайт площадки, вход, сохранение сессии и токенов"],
+    platforms: ["Центр площадок", "Каталог площадок, статусы подключения и готовность к публикации"],
+    plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
+    trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
+    posts: ["Очередь публикаций", "Материалы, их статусы и расписание"],
+    review: ["Требует внимания", "Неопределённые результаты, финальные отказы и материалы без слота"],
+    memory: ["Память публикаций", "Что уже вышло и что нельзя повторять"],
+    channels: ["Каналы", "Подключённые каналы и их персона"],
+    sources: ["Источники", "Флот сборщиков и их здоровье"],
+    runs: ["Запуски", "Журнал прогонов конвейера по стадиям"],
+  };
+
   function switchView(view) {
     state.view = view;
     $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    const meta = VIEW_TITLES[view];
+    if (meta) {
+      const title = $("#view-title");
+      const sub = $("#view-sub");
+      if (title) title.textContent = meta[0];
+      if (sub) sub.textContent = meta[1];
+    }
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
     if (view === "sources") loadSourcesHealth();
