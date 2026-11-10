@@ -34,6 +34,39 @@ def test_modes_match_the_real_mechanism():
     assert matrix["wechat"]["mode"] == "token"
     assert matrix["medium"]["keys_absent"] == ["MEDIUM_ACCESS_TOKEN"]
     assert matrix["wechat"]["keys_absent"] == ["WECHAT_APP_ID", "WECHAT_APP_SECRET"]
+    # Odnoklassniki publishes through its API credentials, not a saved website session.
+    assert matrix["odnoklassniki"]["mode"] == "token"
+    assert matrix["odnoklassniki"]["keys_absent"] == [
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
+    ]
+    assert {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN",
+        "OK_SESSION_SECRET_KEY", "OK_GROUP_ID",
+    } <= {field["key"] for field in matrix["odnoklassniki"]["fields"]}
+
+
+def test_odnoklassniki_authorization_uses_api_credentials():
+    result = asyncio.run(pa.authorize("odnoklassniki"))
+    assert result["mode"] == "token"
+    assert result["state"] == "awaiting_token"
+    assert {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
+    } <= {field["key"] for field in result["fields"]}
+
+
+def test_odnoklassniki_group_is_reported_as_the_destination(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(pa, "get_settings", lambda: SimpleNamespace(ok_group_id="123456789"))
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    statuses = pa.platform_statuses(
+        "odnoklassniki",
+        mode="token",
+        authorized=True,
+        keys_present=True,
+    )
+    assert statuses["destination"]["state"] == "ready"
+    assert statuses["destination"]["label"] == "Назначено: 123456789"
 
 
 def test_token_flow_does_not_call_the_network():

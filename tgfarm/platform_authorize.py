@@ -54,7 +54,7 @@ OAUTH_PLATFORMS: frozenset[str] = frozenset(
 #: Token/webhook and legacy-credential platforms. A browser session is not a
 #: substitute for these explicit API credentials.
 TOKEN_PLATFORMS: frozenset[str] = frozenset(
-    {"telegram", "max", "bluesky", "telegraph", "discord", "medium", "wechat"}
+    {"telegram", "max", "bluesky", "telegraph", "discord", "medium", "wechat", "odnoklassniki"}
 )
 
 #: Destinations whose current publishing path depends on an isolated browser
@@ -193,6 +193,7 @@ DESTINATION_FIELDS: dict[str, tuple[str, ...]] = {
     "mastodon": ("MASTODON_INSTANCE",),
     "tumblr": ("TUMBLR_BLOG_NAME",),
     "discord": ("DISCORD_WEBHOOK_URL",),
+    "odnoklassniki": ("OK_GROUP_ID",),
 }
 
 
