@@ -1,6 +1,8 @@
 """LinkedIn member OAuth 2.0 and access-token lifecycle."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import secrets
 import threading
 import time
@@ -11,6 +13,7 @@ import httpx
 STATE_TTL_SECONDS = 600
 SCOPES = "openid profile w_member_social"
 AUTHORIZE_URL = "https://www.linkedin.com/oauth/v2/authorization"
+NATIVE_AUTHORIZE_URL = "https://www.linkedin.com/oauth/native-pkce/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 _PENDING: dict[str, dict[str, object]] = {}
@@ -65,26 +68,47 @@ async def begin_linkedin_oauth(client_id: str, client_secret: str, redirect_uri:
         raise ValueError("Сначала сохрани LinkedIn Client ID и Client Secret.")
     if len(client_id) > 1024 or len(client_secret) > 4096:
         raise ValueError("Параметры LinkedIn OAuth-приложения имеют недопустимый размер.")
+    parsed_redirect = urlsplit(redirect_uri)
+    native_pkce = (parsed_redirect.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+    code_verifier = secrets.token_urlsafe(64) if native_pkce else ""
+    code_challenge = ""
+    if native_pkce:
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).decode("ascii").rstrip("=")
+
     state = secrets.token_urlsafe(32)
+    created_at = time.time()
     with _PENDING_LOCK:
-        _prune_pending(time.time())
+        _prune_pending(created_at)
         _PENDING[state] = {
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uri": redirect_uri,
-            "created_at": time.time(),
+            "native_pkce": native_pkce,
+            "code_verifier": code_verifier,
+            "created_at": created_at,
         }
-    query = urlencode({
+    params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "state": state,
         "scope": SCOPES,
-    })
+    }
+    authorize_url = AUTHORIZE_URL
+    if native_pkce:
+        # LinkedIn's native flow requires PKCE and a loopback listener. LinkedIn
+        # must enable native PKCE for this app before the provider accepts it.
+        authorize_url = NATIVE_AUTHORIZE_URL
+        params["code_challenge"] = code_challenge
+        params["code_challenge_method"] = "S256"
+    query = urlencode(params)
     return {
-        "authorize_url": f"{AUTHORIZE_URL}?{query}",
+        "authorize_url": f"{authorize_url}?{query}",
         "redirect_uri": redirect_uri,
         "expires_in_s": STATE_TTL_SECONDS,
+        "flow": "native_pkce" if native_pkce else "web",
     }
 
 
@@ -109,17 +133,22 @@ async def complete_linkedin_oauth(state: str, code: str) -> dict[str, str]:
     client_id = str(transaction["client_id"])
     client_secret = str(transaction["client_secret"])
     redirect_uri = str(transaction["redirect_uri"])
+    native_pkce = bool(transaction.get("native_pkce"))
+    token_data_request = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+    }
+    if native_pkce:
+        token_data_request["code_verifier"] = str(transaction["code_verifier"])
+    else:
+        token_data_request["client_secret"] = client_secret
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
             token_response = await client.post(
                 TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                },
+                data=token_data_request,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if token_response.status_code >= 400:

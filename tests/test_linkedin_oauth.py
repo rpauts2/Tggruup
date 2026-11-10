@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -70,10 +72,16 @@ async def test_linkedin_oauth_state_scope_code_exchange_and_profile(monkeypatch)
     query = parse_qs(parsed.query)
     assert parsed.scheme == "https"
     assert parsed.hostname == "www.linkedin.com"
+    assert parsed.path == "/oauth/native-pkce/authorization"
     assert query["response_type"] == ["code"]
     assert query["scope"] == ["openid profile w_member_social"]
     assert query["redirect_uri"] == [redirect_uri]
     assert query["state"] and len(query["state"][0]) >= 32
+    assert query["code_challenge_method"] == ["S256"]
+    verifier = linkedin_oauth._PENDING[query["state"][0]]["code_verifier"]
+    assert 43 <= len(verifier) <= 128
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+    assert query["code_challenge"] == [challenge]
 
     credentials = await linkedin_oauth.complete_linkedin_oauth(
         query["state"][0], "one-time-code"
@@ -91,7 +99,8 @@ async def test_linkedin_oauth_state_scope_code_exchange_and_profile(monkeypatch)
     assert exchange[1] == "https://www.linkedin.com/oauth/v2/accessToken"
     assert exchange[2]["data"]["grant_type"] == "authorization_code"
     assert exchange[2]["data"]["client_id"] == "linkedin-client-id"
-    assert exchange[2]["data"]["client_secret"] == "linkedin-client-secret"
+    assert "client_secret" not in exchange[2]["data"]
+    assert exchange[2]["data"]["code_verifier"] == verifier
     assert exchange[2]["data"]["redirect_uri"] == redirect_uri
 
     profile = FakeLinkedInOAuthClient.calls[1]
@@ -100,6 +109,21 @@ async def test_linkedin_oauth_state_scope_code_exchange_and_profile(monkeypatch)
 
     with pytest.raises(ValueError, match="истекла или уже использована"):
         await linkedin_oauth.complete_linkedin_oauth(query["state"][0], "replay-code")
+
+
+@pytest.mark.asyncio
+async def test_linkedin_https_callback_uses_registered_web_oauth_flow():
+    from tgfarm import linkedin_oauth
+
+    started = await linkedin_oauth.begin_linkedin_oauth(
+        "linkedin-client-id", "linkedin-client-secret",
+        "https://farm.example/api/platforms/linkedin/auth/callback",
+    )
+    query = parse_qs(urlsplit(started["authorize_url"]).query)
+    assert urlsplit(started["authorize_url"]).path == "/oauth/v2/authorization"
+    assert "code_challenge" not in query
+    assert started["flow"] == "web"
+    linkedin_oauth.cancel_linkedin_oauth(query["state"][0])
 
 
 @pytest.mark.asyncio

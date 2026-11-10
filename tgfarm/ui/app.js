@@ -35,6 +35,20 @@
     shortVideoBusy: new Set(),
     agentBenchmarkCluster: "",
     agentBenchmarkBusy: false,
+    teamLoaded: false,
+    teamBusy: false,
+    teamData: null,
+    studioLoaded: false,
+    studioBusy: false,
+    studioPosts: [],
+    studioSelectedId: "",
+    studioDetail: null,
+    studioTrace: null,
+    studioCatalog: [],
+    studioPreviewBusy: false,
+    studioPreview: null,
+    analyticsBusy: false,
+    analyticsData: null,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -5308,15 +5322,17 @@
   }
 
   window.tgfarmDzenLogin = async () => {
-    if (!confirm("Откроется окно Дзена. Войди в Яндекс там — ферма подождёт до 7 минут.")) return;
+    if (!confirm("Откроется окно Дзена. Войди в Яндекс там — ферма подождёт до 7 минут.")) return false;
     toast("Открываю окно входа в Дзен…");
     try {
       const res = await fetch("/api/dzen/login?timeout=420", { method: "POST", headers: authHeaders() });
       const data = await res.json();
       toast(data.ok ? "Дзен: сессия сохранена" : "Вход не завершён: " + (data.error || ""), data.ok ? "ok" : "err");
       refresh();
+      return data.ok === true;
     } catch (e) {
       toast("Вход не удался: " + e.message, "err");
+      return false;
     }
   };
 
@@ -6219,13 +6235,21 @@
   const CONNECT_MODES = { oauth: "OAuth", vkhost: "VK", browser: "Браузер", token: "Токен", manual: "Вручную" };
 
   function connectStatusOf(row) {
-    if (row.authorized === true) {
-      return { key: "ready", label: row.account ? "Подключено · " + row.account : "Подключено" };
+    const proof = row.statuses || {};
+    if (proof.auth && proof.auth.state === "failed") return { key: "failed", label: proof.auth.label || "Вход не прошёл" };
+    if (proof.publish && proof.publish.state === "ready") {
+      return { key: "ready", label: row.account ? "Готово · " + row.account : (proof.publish.label || "Готово к публикации") };
     }
-    if (row.authorized === false) return { key: "failed", label: "Вход не прошёл" };
-    if (row.profile_saved || row.session_verified) return { key: "pending", label: "Сессия сохранена, нужна проверка" };
-    if (row.keys_present) return { key: "pending", label: "Ключи сохранены, нужна проверка" };
-    return { key: "needs", label: "Требует входа" };
+    if ((proof.auth && proof.auth.state === "ready") || row.authorized === true) {
+      const reason = proof.destination && proof.destination.state === "missing"
+        ? "Аккаунт подключён, нужно выбрать назначение"
+        : (proof.api && proof.api.label) || "Аккаунт подключён, проверяем возможность публикации";
+      return { key: "pending", label: reason };
+    }
+    if (row.profile_saved || row.keys_present || (proof.auth && proof.auth.state === "pending")) {
+      return { key: "pending", label: "Данные сохранены, ожидается проверка" };
+    }
+    return { key: "needs", label: (proof.publish && proof.publish.state === "manual") ? "Нужна ручная подготовка" : "Требует подключения" };
   }
 
   function connectMatches(row, filter) {
@@ -6280,12 +6304,20 @@
     const pill = status.key === "needs"
       ? '<span class="connect-mode-chip">' + esc(mode) + "</span>"
       : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
+    const proof = row.statuses || {};
+    const proofNames = { auth: "Аккаунт", api: "API", destination: "Назначение", publish: "Публикация" };
+    const proofHtml = Object.keys(proofNames).map((key) => {
+      const item = proof[key] || {};
+      const stateKey = ["ready", "manual", "failed", "pending", "missing", "none", "unknown", "blocked"].includes(item.state) ? item.state : "unknown";
+      return '<span class="connect-proof connect-proof--' + stateKey + '" title="' + esc(item.label || "Статус не получен") + '"><i></i>' + esc(proofNames[key]) + ': ' + esc(item.label || "неизвестно") + "</span>";
+    }).join("");
     return '<article class="connect-card connect-card--' + esc(status.key) + '">'
       + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
       + '<div class="connect-card-title"><strong>' + esc(row.name || row.id) + "</strong>"
       + "<span>" + esc(row.category || "") + "</span></div>"
       + pill + "</div>"
       + '<p class="connect-hint">' + esc(row.hint || "") + "</p>"
+      + '<div class="connect-proof-grid">' + proofHtml + "</div>"
       + '<div class="connect-actions">'
       + '<button class="btn ' + (status.key === "ready" ? "btn-ghost" : "btn-primary") + ' btn-sm" type="button" data-connect-start="'
       + esc(row.id) + '">' + primary + "</button>"
@@ -6336,6 +6368,13 @@
 
   function connectDialog() { return $("#connect-dialog"); }
 
+  function connectInputField(field) {
+    return '<label class="connect-field"><span>' + esc(field.label || field.key) + (field.has_value ? ' <small>сохранено</small>' : "") + "</span>"
+      + '<input type="' + (field.secret ? "password" : "text") + '" data-connect-field="' + esc(field.key) + '" '
+      + 'autocomplete="off" spellcheck="false" placeholder="' + esc(field.has_value ? "Сохранено. Оставь пустым, чтобы не менять." : (field.placeholder || field.key)) + '">'
+      + (field.help ? '<small class="connect-field-help">' + esc(field.help) + "</small>" : "") + "</label>";
+  }
+
   function openConnectDialog(platformId) {
     const rows = (state.connections || {}).platforms || [];
     const row = rows.find((item) => item.id === platformId);
@@ -6346,38 +6385,42 @@
     $("#connect-dialog-title").textContent = row.name || row.id;
     $("#connect-dialog-sub").textContent = (CONNECT_MODES[row.mode] || row.mode) + " · " + (row.category || "");
     const body = $("#connect-dialog-body");
+    const docsUrl = safeExternalUrl(row.docs_url);
+    const docs = docsUrl ? '<a class="connect-doc-link" href="' + esc(docsUrl) + '" target="_blank" rel="noopener noreferrer">Официальная документация ↗</a>' : "";
     if (row.mode === "token") {
-      const fields = (row.fields || []).map((field) =>
-        '<label class="connect-field"><span>' + esc(field.label) + "</span>"
-        + '<input type="' + (field.secret ? "password" : "text") + '" data-connect-field="' + esc(field.key) + '" '
-        + 'autocomplete="off" spellcheck="false" placeholder="' + esc(field.key) + '"></label>'
-      ).join("");
+      const fields = (row.fields || []).map(connectInputField).join("");
       body.innerHTML = '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + fields
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-save="' + esc(row.id) + '">Сохранить и проверить</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>'
-        + '<p class="connect-dialog-note">Значения уходят только в локальный .env и никогда не возвращаются в интерфейс.</p>';
+        + '<p class="connect-dialog-note">Пустые поля не меняют ранее сохранённые значения. Секреты остаются на локальном backend.</p>' + docs;
     } else if (row.mode === "oauth") {
-      body.innerHTML = '<ol class="connect-steps"><li>Откроется страница согласия площадки.</li>'
-        + "<li>Подтверди доступ — площадка сама вернёт токен.</li>"
-        + "<li>Панель подхватит его и обновит статус карточки.</li></ol>"
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Открыть страницу согласия</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
-    } else if (row.mode === "vkhost") {
-      body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ — токен перехватится и сохранится автоматически.</p>'
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
-    } else if (row.mode === "browser") {
-      const extra = row.id === "dzen"
-        ? '<p class="connect-dialog-note">У Дзена отдельный профиль: используй кнопку «Дзен: войти» на вкладке «Площадки».</p>'
+      const fields = (row.fields || []).map(connectInputField).join("");
+      const callback = window.location.origin.replace(/\/$/, "") + "/api/platforms/" + encodeURIComponent(row.id) + "/auth/callback";
+      const setup = (row.fields || []).length
+        ? '<div class="connect-oauth-setup"><h4>Настройка приложения</h4><p class="connect-dialog-note">Это реквизиты приложения разработчика, а не пароль личного аккаунта. Заполни их один раз.</p>'
+          + fields + (row.keys_present ? '<p class="connect-dialog-note">Реквизиты приложения сохранены.</p>' : '<button class="btn btn-primary btn-sm" type="button" data-connect-save-oauth="' + esc(row.id) + '">Сохранить и продолжить</button>') + "</div>"
         : "";
-      body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
-        + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
-        + "<li>Панель проверит сессию и сохранит её для публикаций.</li></ol>"
-        + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
-        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
-        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+      const oauthButton = row.keys_present
+        ? '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Войти на ' + esc(row.name || row.id) + "</button></div>"
+        : "";
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется официальный сайт площадки.</li><li>Войди в аккаунт и подтверди необходимые разрешения.</li><li>TgFarm примет callback, сохранит токены на backend и проверит API.</li></ol>'
+        + setup + '<div class="connect-callback"><span>Redirect URI для кабинета разработчика</span><code>' + esc(callback) + '</code></div>'
+        + docs + oauthButton + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+    } else if (row.mode === "vkhost") {
+      body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ, TgFarm перехватит только официальный OAuth redirect и сохранит токен на backend.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
+    } else if (row.mode === "browser") {
+      body.innerHTML = '<ol class="connect-steps"><li>Откроется отдельный профиль браузера для этой площадки.</li>'
+        + "<li>Войди на официальном сайте. Пароль вводится только на самом сайте.</li>"
+        + "<li>Профиль сохранится локально, TgFarm проверит доступную сессию.</li></ol>"
+        + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>"
+        + '<p class="connect-dialog-note">Сохранённая browser session не считается API-токеном. Статус публикации зависит от реального адаптера и прав.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">' + (row.id === "dzen" ? "Войти в Яндекс / Дзен" : "Открыть окно входа") + "</button></div>"
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
     } else {
-      body.innerHTML = '<p class="connect-dialog-text">Автоматического входа нет: материал для площадки готовится вручную.</p>';
+      body.innerHTML = '<p class="connect-dialog-text">' + esc(row.requirements || "Для этой площадки нет автоматического способа авторизации.") + "</p>"
+        + '<p class="connect-dialog-note">Открытие сайта не подтверждает API-доступ и не включает автопубликацию.</p>' + docs;
     }
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "open");
@@ -6394,47 +6437,117 @@
   async function runBrowserConnect(platformId) {
     const status = $("#connect-dialog-status");
     const button = document.querySelector('[data-connect-browser="' + CSS.escape(platformId) + '"]');
-    if (status) status.textContent = "Открыл окно браузера. Войди в аккаунт — я жду подтверждения…";
+    if (status) status.textContent = "Открываю отдельный профиль. Войди на сайте, не закрывая TgFarm…";
     if (button) { button.disabled = true; button.classList.add("is-busy"); }
     try {
-      const result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
-      if (status) status.textContent = (result.detail || "Готово") + (result.account ? " · " + result.account : "");
-      toast("Вход: " + platformId + " — " + (result.state || "ok"), "ok");
+      let result;
+      if (platformId === "dzen" && typeof window.tgfarmDzenLogin === "function") {
+        const completed = await window.tgfarmDzenLogin();
+        if (completed !== true) {
+          if (status) status.textContent = "Вход в Дзен отменён или не завершён.";
+          return;
+        }
+        result = { state: "browser_flow_completed", detail: "Окно входа в Дзен завершило работу. Перепроверяю сессию." };
+      } else {
+        result = await post("/api/connect/" + encodeURIComponent(platformId) + "/authorize", {});
+      }
       await loadConnections(true);
+      const latest = ((state.connections || {}).platforms || []).find((item) => item.id === platformId);
+      const ready = latest && latest.statuses && latest.statuses.publish && latest.statuses.publish.state === "ready";
+      const saved = result && (result.profile_saved || result.state === "authorized" || result.authorized);
+      if (status) status.textContent = (result.detail || "Проверка завершена.") + (result.account ? " · " + result.account : "")
+        + (ready ? " · Публикация подтверждена." : " · Сессия не означает автоматически разрешение API-публикации.");
+      toast(ready ? "Площадка готова к публикации: " + platformId : (saved ? "Сессия сохранена, проверь разрешения и назначение: " : "Вход не подтверждён: ") + platformId, ready ? "ok" : "warn");
     } catch (error) {
-      if (status) status.textContent = "Не удалось завершить вход: " + (error?.message || error);
-      toast("Вход не завершён: " + (error?.message || error), "err");
+      if (status) status.textContent = "Не удалось завершить вход: " + (error && error.message || error);
+      toast("Вход не завершён: " + (error && error.message || error), "err");
     } finally {
       if (button) { button.disabled = false; button.classList.remove("is-busy"); }
     }
   }
 
-  async function runOauthConnect(platformId) {
+  async function runOauthConnect(platformId, existingPopup = null) {
     const status = $("#connect-dialog-status");
     const button = document.querySelector('[data-connect-oauth="' + CSS.escape(platformId) + '"]');
+    const desktop = !!(window.pywebview && window.pywebview.api && window.pywebview.api.open_url);
+    let popup = existingPopup;
+    if (!desktop && !popup) popup = window.open("about:blank", "_blank");
+    if (!desktop && !popup) {
+      if (status) status.textContent = "Браузер заблокировал новое окно. Разреши всплывающие окна для TgFarm и повтори.";
+      return;
+    }
     if (button) { button.disabled = true; button.classList.add("is-busy"); }
+    if (status) status.textContent = "Создаю OAuth-транзакцию и готовлю официальный вход…";
     try {
-      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/start", {});
+      const row = (((state.connections || {}).platforms || []).find((item) => item.id === platformId)) || {};
+      const payload = platformId === "mastodon" ? { instance_url: row.instance_url || "" } : {};
+      const result = await post("/api/platforms/" + encodeURIComponent(platformId) + "/auth/start", payload);
       const url = safeExternalUrl(result.authorize_url);
-      if (!url) throw new Error("площадка не выдала адрес согласия");
-      window.open(url, "_blank", "noopener,noreferrer");
-      if (status) status.textContent = "Ждём подтверждения на стороне площадки…";
+      if (!url) throw new Error("Площадка не выдала безопасный адрес согласия.");
+      if (desktop) {
+        const opened = await window.pywebview.api.open_url(url);
+        if (opened !== "ok") throw new Error("Не удалось открыть системный браузер: " + String(opened || "ошибка"));
+      } else {
+        popup.location.replace(url);
+      }
+      if (status) status.textContent = "Ожидаю callback. Войди на официальном сайте и подтверди доступ…";
       for (let attempt = 0; attempt < 100; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        const state = await api("/api/connect/" + encodeURIComponent(platformId) + "/status");
-        if (state.authorized === true) {
-          if (status) status.textContent = "Готово" + (state.account ? " · " + state.account : "");
-          toast("Подключено: " + platformId, "ok");
+        const current = await api("/api/connect/" + encodeURIComponent(platformId) + "/status");
+        if (current.authorized === true) {
           await loadConnections(true);
+          const latest = ((state.connections || {}).platforms || []).find((item) => item.id === platformId);
+          const publishReady = latest && latest.statuses && latest.statuses.publish && latest.statuses.publish.state === "ready";
+          const missingTarget = latest && latest.statuses && latest.statuses.destination && latest.statuses.destination.state === "missing";
+          const message = "Авторизация подтверждена" + (current.account ? " · " + current.account : "")
+            + (missingTarget ? ". Теперь выбери страницу, канал или доску в Центре площадок." : (publishReady ? ". Публикация готова." : ". Проверь API-доступ и права."));
+          if (status) status.textContent = message;
+          toast(publishReady ? "Подключено и готово к публикации: " + platformId : "Аккаунт авторизован: " + platformId, publishReady ? "ok" : "warn");
           return;
         }
       }
-      if (status) status.textContent = "Подтверждение не пришло за 5 минут. Можно закрыть окно и повторить.";
+      if (status) status.textContent = "Callback не пришёл за 5 минут. Проверь Redirect URI и разрешения приложения, затем повтори.";
     } catch (error) {
-      if (status) status.textContent = "OAuth не запустился: " + (error?.message || error);
-      toast("OAuth не запустился: " + (error?.message || error), "err");
+      if (popup && !popup.closed) popup.close();
+      if (status) status.textContent = "OAuth не запустился: " + (error && error.message || error);
+      toast("OAuth не запустился: " + (error && error.message || error), "err");
     } finally {
       if (button) { button.disabled = false; button.classList.remove("is-busy"); }
+    }
+  }
+
+  async function saveConnectOAuthSetup(platformId) {
+    const status = $("#connect-dialog-status");
+    const desktop = !!(window.pywebview && window.pywebview.api && window.pywebview.api.open_url);
+    const popup = desktop ? null : window.open("about:blank", "_blank");
+    if (!desktop && !popup) {
+      if (status) status.textContent = "Браузер заблокировал окно. Разреши всплывающие окна и повтори.";
+      return;
+    }
+    const values = {};
+    $$("#connect-dialog-body [data-connect-field]").forEach((input) => {
+      const value = String(input.value || "").trim();
+      if (value) values[input.dataset.connectField] = value;
+    });
+    if (!Object.keys(values).length) {
+      if (popup) popup.close();
+      if (status) status.textContent = "Введи недостающие Client ID / Secret. Пустые значения не заменяют сохранённые.";
+      return;
+    }
+    const button = document.querySelector('[data-connect-save-oauth="' + CSS.escape(platformId) + '"]');
+    if (button) { button.disabled = true; button.textContent = "Сохраняю…"; }
+    try {
+      await put("/api/platforms/" + encodeURIComponent(platformId) + "/credentials", { values: values });
+      await loadConnections(true);
+      const latest = (((state.connections || {}).platforms || []).find((item) => item.id === platformId)) || {};
+      if (latest.keys_present !== true) throw new Error("Не все обязательные реквизиты приложения сохранены.");
+      if (status) status.textContent = "Настройки приложения сохранены. Открываю официальный вход…";
+      await runOauthConnect(platformId, popup);
+    } catch (error) {
+      if (popup && !popup.closed) popup.close();
+      if (status) status.textContent = "Не удалось настроить OAuth: " + (error && error.message || error);
+      toast("Настройка OAuth не завершена: " + (error && error.message || error), "err");
+      if (button) { button.disabled = false; button.textContent = "Сохранить и продолжить"; }
     }
   }
 
@@ -6495,10 +6608,479 @@
     }
   }
 
+
+  /* ---------------------------------------------------------- editorial team */
+  const TEAM_STAGE_META = {
+    s1_collect: ["Разведка", "Сбор источников"],
+    s2_trends: ["Тренды", "Поиск сигналов"],
+    s3_route: ["Маршрутизация", "Выбор канала и угла"],
+    s4_generate: ["Автор и фактчек", "Генерация и проверка"],
+    s5_quality: ["Коллегия", "Проверка качества"],
+    s6_visual: ["Визуал", "Подготовка медиа"],
+    s7_publish: ["Публикация", "Основная доставка"],
+    s9_crosspost: ["Распространение", "Адаптация и кросспост"],
+    s8_analytics: ["Аналитика", "Сбор результатов"],
+    s12_learning: ["Обучение", "Память и выводы"],
+  };
+  const TEAM_ROLE_TITLES = {
+    topic_router: "Маршрутизатор тем",
+    format_planner: "Планировщик формата",
+    editorial_strategist: "Редакционный стратег",
+    writer: "Автор",
+    fact_checker: "Фактчекер",
+    review_board: "Коллегия качества",
+    platform_editor: "Нативный редактор",
+  };
+  const TEAM_STATUS_LABELS = {
+    planned: "План готов", skipped: "Пропущен", fallback: "Резервный сценарий",
+    completed: "Завершено", passed: "Принято", rejected: "Отклонено",
+    ai_native: "AI-версия готова", deterministic: "Базовая адаптация",
+    deterministic_guardrail: "Оставлен исходник", deterministic_fallback: "Резервный исходник",
+    special_workflow: "Отдельный процесс", blocked_missing_media: "Не хватает медиа",
+    unknown: "Неизвестно",
+  };
+  const TEAM_STAGE_STATUS = {
+    ok: ["Завершено", "stage-ok"], error: ["Ошибка", "stage-err"],
+    cancelled: ["Прервано", "stage-cancelled"], running: ["Выполняется", "stage-running"],
+    skipped: ["Пропущено", ""],
+  };
+
+  async function loadTeam(force = false) {
+    if (state.teamBusy && !force) return;
+    state.teamBusy = true;
+    const root = $("#team-role-grid");
+    if (root && !state.teamData) root.innerHTML = '<div class="empty">Собираю сохранённые trace команды…</div>';
+    try {
+      const results = await Promise.all([api("/api/runs?limit=100"), api("/api/posts?limit=80")]);
+      const runs = results[0].runs || [];
+      const posts = results[1].posts || [];
+      const traced = posts.find((item) => {
+        const team = (item.quality || {}).agent_team || {};
+        return (team.roles && Object.keys(team.roles).length)
+          || (team.platform_edits && Object.keys(team.platform_edits).length);
+      });
+      let detail = null;
+      if (traced && traced.id) {
+        try { detail = await api("/api/posts/" + encodeURIComponent(traced.id)); }
+        catch (_) { detail = traced; }
+      }
+      state.teamData = { runs: runs, posts: posts, trace: detail, traceId: traced ? traced.id : "" };
+      state.teamLoaded = true;
+      renderTeam();
+    } catch (error) {
+      if (root) root.innerHTML = '<div class="empty">Не удалось загрузить данные команды: ' + esc(error && error.message || error) + "</div>";
+      toast("Команда не обновилась: " + (error && error.message || error), "err");
+    } finally {
+      state.teamBusy = false;
+    }
+  }
+
+  function teamRoleFacts(key, role) {
+    if (!role || typeof role !== "object") return "";
+    const facts = [];
+    const add = (label, value) => {
+      if (value === null || value === undefined || String(value).trim() === "") return;
+      facts.push('<div class="team-role-fact"><span>' + esc(label) + '</span><strong>' + esc(value) + "</strong></div>");
+    };
+    if (key === "topic_router") {
+      add("Угол", role.angle);
+      add("Оценка", typeof role.score === "number" ? pct(role.score) : "—");
+      add("Обоснование", role.reason);
+    } else if (key === "format_planner") {
+      add("Формат", role.format);
+      add("Обоснование", role.reason);
+    } else if (key === "editorial_strategist") {
+      add("Польза читателю", role.reader_value);
+      add("Центральный вопрос", role.core_question);
+      add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
+      add("Причина fallback", role.reason);
+      if (Array.isArray(role.outline) && role.outline.length) add("План", role.outline.slice(0, 4).join(" · "));
+    } else if (key === "writer") {
+      add("Провайдер", role.provider);
+    } else if (key === "fact_checker") {
+      add("Проверено утверждений", role.claim_count);
+      add("Подтверждено", role.verified_count);
+    } else if (key === "review_board") {
+      add("Гейт", role.gate);
+      add("Причина", role.reason);
+      add("Переписываний", role.rewrites_used);
+      if (Array.isArray(role.issues) && role.issues.length) add("Замечания", role.issues.slice(0, 3).join(" · "));
+    } else if (key === "platform_editor") {
+      add("Площадка", PLATFORM_RU[role.platform] || role.platform);
+      add("Формат", role.format);
+      add("Адресат", role.destination);
+      add("Модель", [role.provider, role.model].filter(Boolean).join(" · "));
+      add("Причина / результат", role.reason);
+    } else {
+      add("Результат", role.reason || role.status);
+    }
+    return facts.join("");
+  }
+
+  function renderTeam() {
+    const data = state.teamData || {};
+    const runs = data.runs || [];
+    const posts = data.posts || [];
+    // PipelineRun records stages, not a synthetic "cycle" event. The newest row
+    // identifies the newest real run; all rows with that run_id form its trace.
+    const latestStage = runs[0] || null;
+    const latestRunId = latestStage ? latestStage.run_id : "";
+    const stages = latestRunId ? runs.filter((item) => item.run_id === latestRunId) : [];
+    const counts = { ok: 0, error: 0, cancelled: 0 };
+    stages.forEach((item) => { counts[item.status] = (counts[item.status] || 0) + 1; });
+    const summary = $("#team-summary");
+    if (summary) {
+      const team = (data.trace && data.trace.quality || {}).agent_team || {};
+      const roles = team.roles && typeof team.roles === "object" ? Object.keys(team.roles).length : 0;
+      const platformRoles = team.platform_edits && typeof team.platform_edits === "object" ? Object.keys(team.platform_edits).length : 0;
+      const cards = [
+        ["Последний прогон", latestStage ? dt(latestStage.at) : "Нет журнала", latestStage ? (TEAM_STAGE_META[latestStage.stage] || [latestStage.stage])[0] : "ещё не запускался"],
+        ["Этапы завершены", n(counts.ok || 0), stages.length + " этапов в последнем цикле"],
+        ["Ошибки / отмены", n((counts.error || 0) + (counts.cancelled || 0)), "по журналу конвейера"],
+        ["Trace ролей", n(roles + platformRoles), data.traceId ? "последний материал с trace" : "trace пока не сохранён"],
+      ];
+      summary.innerHTML = cards.map((item) => '<div class="team-summary-card"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong><small>' + esc(item[2]) + "</small></div>").join("");
+    }
+    const meta = $("#team-run-meta");
+    if (meta) meta.textContent = latestRunId ? latestRunId + " · " + dt(latestStage && latestStage.at) : "Нет запусков";
+    const stageRoot = $("#team-stage-grid");
+    if (stageRoot) {
+      stageRoot.innerHTML = stages.length ? stages.map((item) => {
+        const stage = TEAM_STAGE_META[item.stage] || [item.stage, "Этап конвейера"];
+        const status = TEAM_STAGE_STATUS[item.status] || [String(item.status || "Неизвестно"), ""];
+        const amount = typeof item.out === "number" ? n(item.out) + " на выходе" : "выход не измерялся";
+        return '<article class="team-stage-card ' + esc(status[1]) + '"><div class="team-stage-top"><span>' + esc(stage[0]) + '</span><b>' + esc(status[0]) + '</b></div><strong>' + esc(stage[1]) + '</strong><small>' + esc(amount) + " · " + esc(n(item.ms || 0)) + " мс</small>"
+          + (item.error ? '<p>' + esc(item.error) + "</p>" : "") + "</article>";
+      }).join("") : '<div class="empty">В журнале нет этапов последнего цикла. Статусы не будут придуманы.</div>';
+    }
+    const trace = data.trace && data.trace.quality ? data.trace.quality.agent_team || {} : {};
+    const roleEntries = trace.roles && typeof trace.roles === "object" ? Object.entries(trace.roles) : [];
+    const editEntries = trace.platform_edits && typeof trace.platform_edits === "object"
+      ? Object.entries(trace.platform_edits).map(([platform, role]) => ["platform_editor", Object.assign({}, role || {}, { platform: platform })]) : [];
+    const roleRoot = $("#team-role-grid");
+    const traceMeta = $("#team-trace-meta");
+    if (traceMeta) traceMeta.textContent = data.traceId ? (data.trace.hook || data.traceId) + " · " + (data.trace.status || "") : "Сохранённого trace нет";
+    if (roleRoot) {
+      const entries = roleEntries.concat(editEntries);
+      roleRoot.innerHTML = entries.length ? entries.map(([key, role]) => {
+        const status = TEAM_STATUS_LABELS[role && role.status] || (role && role.status) || "Статус не записан";
+        const title = TEAM_ROLE_TITLES[key] || key;
+        return '<article class="team-role-card"><div class="team-role-head"><strong>' + esc(title) + '</strong><span class="tag">' + esc(status) + '</span></div>'
+          + teamRoleFacts(key, role) + "</article>";
+      }).join("") : '<div class="empty">Для последних материалов пока нет сохранённых решений агентов. После следующего цикла здесь появятся только записанные роли.</div>';
+    }
+    const list = $("#team-run-list");
+    if (list) {
+      const byRun = new Map();
+      for (const item of runs) {
+        if (!byRun.has(item.run_id)) byRun.set(item.run_id, []);
+        byRun.get(item.run_id).push(item);
+      }
+      list.innerHTML = Array.from(byRun.entries()).slice(0, 8).map(([runId, rows]) => {
+        const names = rows.map((item) => {
+          const title = TEAM_STAGE_META[item.stage] ? TEAM_STAGE_META[item.stage][0] : item.stage;
+          const result = TEAM_STAGE_STATUS[item.status] ? TEAM_STAGE_STATUS[item.status][0] : (item.status || "—");
+          return title + ": " + result;
+        }).join(" · ");
+        return '<div class="item"><div class="item-main"><div class="item-title">' + esc(runId) + '</div><div class="item-meta">' + esc(names) + '</div></div><span class="tag">' + esc(dt(rows[0] && rows[0].at)) + "</span></div>";
+      }).join("") || '<div class="empty">Журнал запусков пока пуст.</div>';
+    }
+  }
+
+  /* ------------------------------------------------------------- editorial studio */
+  async function loadStudio(force = false) {
+    if (state.studioBusy && !force) return;
+    state.studioBusy = true;
+    const list = $("#studio-post-list");
+    if (list && !state.studioPosts.length) list.innerHTML = '<div class="empty">Загружаю публикации…</div>';
+    try {
+      const results = await Promise.all([
+        api("/api/posts?limit=80"),
+        state.platformData ? Promise.resolve(state.platformData) : api("/api/platforms"),
+      ]);
+      state.studioPosts = results[0].posts || [];
+      state.studioCatalog = results[1].platforms || [];
+      state.studioLoaded = true;
+      renderStudioPlatformOptions();
+      if (!state.studioPosts.some((item) => item.id === state.studioSelectedId)) {
+        state.studioSelectedId = state.studioPosts[0] ? state.studioPosts[0].id : "";
+      }
+      renderStudioList();
+      if (state.studioSelectedId) await loadStudioDetail(state.studioSelectedId);
+      else renderStudioEmpty();
+    } catch (error) {
+      if (list) list.innerHTML = '<div class="empty">Не удалось открыть студию: ' + esc(error && error.message || error) + "</div>";
+      toast("Контент-студия не загрузилась: " + (error && error.message || error), "err");
+    } finally {
+      state.studioBusy = false;
+    }
+  }
+
+  function renderStudioPlatformOptions() {
+    const select = $("#studio-platform-select");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">Выбери площадку</option>' + state.studioCatalog.map((item) =>
+      '<option value="' + esc(item.id) + '">' + esc(item.name || item.id) + "</option>").join("");
+    if (state.studioCatalog.some((item) => item.id === current)) select.value = current;
+  }
+
+  function renderStudioList() {
+    const root = $("#studio-post-list");
+    if (!root) return;
+    const posts = state.studioPosts || [];
+    const count = $("#studio-count");
+    if (count) count.textContent = posts.length + " последних материалов";
+    root.innerHTML = posts.length ? posts.map((item) => {
+      const active = item.id === state.studioSelectedId;
+      return '<button type="button" class="studio-post-row ' + (active ? "is-active" : "") + '" data-studio-post="' + esc(item.id) + '">'
+        + '<span class="studio-post-status"></span><strong>' + esc(item.hook || "Без заголовка") + "</strong>"
+        + '<small>' + esc(item.channel_title || item.channel_id || "") + " · " + esc(STATUS_RU[item.status] || item.status || "—") + "</small></button>";
+    }).join("") : '<div class="empty">Пока нет материалов. После первого цикла здесь появятся черновики и публикации.</div>';
+  }
+
+  function renderStudioEmpty() {
+    $("#studio-title").textContent = "Нет материалов";
+    $("#studio-subtitle").textContent = "Очередь пока пуста";
+    $("#studio-content").innerHTML = '<div class="empty">Сначала собери материалы в редакционном конвейере.</div>';
+    $("#studio-inspector").innerHTML = '<div class="empty">Пока нечего анализировать.</div>';
+    $("#studio-toolbar").innerHTML = "";
+  }
+
+  async function loadStudioDetail(postId) {
+    if (!postId) return;
+    state.studioSelectedId = postId;
+    state.studioPreview = null;
+    renderStudioList();
+    $("#studio-content").innerHTML = '<div class="empty">Загружаю материал и историю…</div>';
+    try {
+      const results = await Promise.all([
+        api("/api/posts/" + encodeURIComponent(postId)),
+        api("/api/posts/" + encodeURIComponent(postId) + "/trace").catch(() => null),
+      ]);
+      state.studioDetail = results[0];
+      state.studioTrace = results[1];
+      renderStudioDetail();
+    } catch (error) {
+      $("#studio-content").innerHTML = '<div class="empty">Не удалось открыть материал: ' + esc(error && error.message || error) + "</div>";
+    }
+  }
+
+  function renderStudioDetail() {
+    const p = state.studioDetail;
+    if (!p) return renderStudioEmpty();
+    const editable = ["draft", "gated", "rejected", "scheduled"].includes(p.status) && !p.tg_message_id;
+    $("#studio-title").textContent = p.hook || "Без заголовка";
+    $("#studio-subtitle").textContent = (p.channel_title || p.channel_id || "") + " · " + (FORMAT_RU[p.post_format] || p.post_format || "материал") + " · " + n(p.chars) + " символов";
+    $("#studio-post-status").textContent = STATUS_RU[p.status] || p.status || "—";
+    const cover = p.cover && p.cover.id ? '<img class="studio-cover" src="/api/media/' + encodeURIComponent(p.cover.id) + '" alt="Обложка материала">' : "";
+    const video = p.video && p.video.id ? '<video class="studio-video" src="/api/media/' + encodeURIComponent(p.video.id) + '" controls playsinline></video>' : "";
+    $("#studio-content").innerHTML = cover + video
+      + '<div class="studio-reading"><div class="studio-reading-kicker">МАТЕРИАЛ · ' + esc(p.post_format || "text") + '</div><h3>' + esc(p.hook || "Без заголовка") + '</h3><p>' + esc(p.body || p.excerpt || "Текст не сохранён.") + "</p>"
+      + (p.cta ? '<p class="studio-cta">' + esc(p.cta) + "</p>" : "")
+      + (Array.isArray(p.hashtags) && p.hashtags.length ? '<div class="studio-hashtags">' + p.hashtags.map((item) => '<span>#' + esc(String(item).replace(/^#/, "")) + "</span>").join("") + "</div>" : "")
+      + "</div>";
+    $("#studio-toolbar").innerHTML = editable
+      ? '<div><span>AI-переработка пройдёт повторную проверку качества</span><div class="studio-polish-actions">'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="shorter">Сократить</button>'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="funnier">Добавить иронию</button>'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="stricter">Сделать строже</button></div></div>'
+      : '<span>Материал только для просмотра. Опубликованный пост не редактируется через TgFarm.</span>';
+    const q = p.quality || {};
+    const team = q.agent_team || {};
+    const sourceItems = Array.isArray(p.sources) ? p.sources : [];
+    const claims = Array.isArray(p.claims) ? p.claims : [];
+    const events = state.studioTrace && Array.isArray(state.studioTrace.events) ? state.studioTrace.events : [];
+    const roles = team.roles && typeof team.roles === "object" ? Object.entries(team.roles) : [];
+    const platformEdits = team.platform_edits && typeof team.platform_edits === "object" ? Object.entries(team.platform_edits) : [];
+    const roleHtml = roles.map(([key, role]) => '<div class="studio-trace-row"><strong>' + esc(TEAM_ROLE_TITLES[key] || key) + '</strong><span>' + esc(TEAM_STATUS_LABELS[role && role.status] || (role && role.status) || "нет статуса") + "</span></div>").join("");
+    const platformHtml = platformEdits.map(([platform, role]) => '<div class="studio-trace-row"><strong>' + esc(PLATFORM_RU[platform] || platform) + '</strong><span>' + esc(TEAM_STATUS_LABELS[role && role.status] || (role && role.status) || "—") + "</span></div>").join("");
+    const claimHtml = claims.length ? '<ul>' + claims.slice(0, 12).map((item) => {
+      const value = typeof item === "string" ? item : (item.claim || item.text || "Утверждение");
+      return "<li>" + esc(value) + "</li>";
+    }).join("") + "</ul>" : '<p class="studio-muted">Отдельные claims не сохранены.</p>';
+    const sourceHtml = sourceItems.length ? sourceItems.slice(0, 12).map((item) => {
+      const url = String(item.url || "");
+      const valid = /^https:\/\//i.test(url);
+      return '<a class="studio-source" ' + (valid ? 'href="' + esc(url) + '" target="_blank" rel="noopener noreferrer"' : "") + '>' + esc(item.title || url || "Источник без названия") + "</a>";
+    }).join("") : '<p class="studio-muted">Источники не сохранены.</p>';
+    const eventHtml = events.length ? events.map((event) => '<div class="studio-event"><strong>' + esc(event.kind) + '</strong><span>' + esc(dt(event.at)) + '</span><p>' + esc(event.detail) + "</p></div>").join("") : '<p class="studio-muted">История событий недоступна.</p>';
+    $("#studio-inspector").innerHTML =
+      '<div class="studio-inspector-section"><h3>Качество</h3><div class="studio-inspector-kv">'
+      + '<span>Вердикт</span><strong>' + esc(q.gate || "нет сохранённого вердикта") + '</strong>'
+      + '<span>Причина</span><strong>' + esc(q.reason || p.reject_reason || "—") + "</strong></div></div>"
+      + '<div class="studio-inspector-section"><h3>Утверждения · ' + claims.length + '</h3>' + claimHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>Источники · ' + sourceItems.length + '</h3>' + sourceHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>Роли AI · ' + roles.length + '</h3>' + (roleHtml || '<p class="studio-muted">Trace ролей не сохранён.</p>') + platformHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>История материала</h3>' + eventHtml + "</div>";
+    const previewButton = $("#studio-preview");
+    if (previewButton) previewButton.disabled = p.status !== "published" || !$("#studio-platform-select").value;
+    const preview = $("#studio-preview-result");
+    if (preview && !state.studioPreview) {
+      preview.innerHTML = p.status === "published"
+        ? '<div class="empty">Выбери площадку и собери её редакторскую версию. Ничего не отправится.</div>'
+        : '<div class="empty">Preview доступен после подтверждённой публикации. Черновик можно улучшать через AI-проверку выше.</div>';
+    }
+  }
+
+  async function polishStudioPost(mode) {
+    const p = state.studioDetail;
+    if (!p || !["shorter", "funnier", "stricter"].includes(mode)) return;
+    const labels = { shorter: "сокращение", funnier: "ироничную редактуру", stricter: "более строгий стиль" };
+    if (!window.confirm("Применить " + labels[mode] + "? TgFarm перепишет черновик и повторно запустит проверки качества.")) return;
+    const buttons = $("#studio-toolbar [data-studio-polish]");
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      const result = await post("/api/posts/" + encodeURIComponent(p.id) + "/polish", { mode: mode });
+      toast(result.passed ? "Редактура прошла проверку качества" : "Редактура отклонена quality gates", result.passed ? "ok" : "warn");
+      await loadStudio(true);
+    } catch (error) {
+      toast("Не удалось переработать материал: " + (error && error.message || error), "err");
+    } finally {
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  async function buildStudioPreview() {
+    const p = state.studioDetail;
+    const platform = $("#studio-platform-select") && $("#studio-platform-select").value;
+    if (!p || p.status !== "published" || !platform || state.studioPreviewBusy) return;
+    state.studioPreviewBusy = true;
+    const button = $("#studio-preview");
+    const root = $("#studio-preview-result");
+    if (button) { button.disabled = true; button.textContent = "Готовлю…"; }
+    if (root) root.innerHTML = '<div class="empty">Собираю нативную версию, не публикую её…</div>';
+    try {
+      const result = await post("/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(p.id) + "/editorial", {});
+      state.studioPreview = result;
+      const draft = result.draft || {};
+      const detail = result.detail || (result.profile && result.profile.goal) || "Предпросмотр собран. Финальная публикация не запускалась.";
+      root.innerHTML = '<div class="studio-preview-status"><span class="tag">' + esc(result.status || "preview") + '</span><span class="studio-muted">' + esc(detail) + "</span></div>"
+        + (result.target && result.target.name ? '<div class="studio-target">Адресат: ' + esc(result.target.name) + "</div>" : "")
+        + (draft.title ? '<h3>' + esc(draft.title) + "</h3>" : "")
+        + (draft.body ? '<p class="studio-preview-text">' + esc(draft.body) + "</p>" : '<p class="studio-muted">Текст не вернулся. Проверь требования площадки.</p>')
+        + (result.publish_action === "none" ? '<p class="studio-no-publish">Предпросмотр. Публикация не запускалась.</p>' : "");
+    } catch (error) {
+      root.innerHTML = '<div class="alert alert-err">Предпросмотр не собран: ' + esc(error && error.message || error) + "</div>";
+      toast("Предпросмотр не собран: " + (error && error.message || error), "err");
+    } finally {
+      state.studioPreviewBusy = false;
+      if (button) { button.textContent = "Собрать версию"; button.disabled = !state.studioDetail || state.studioDetail.status !== "published" || !$("#studio-platform-select").value; }
+    }
+  }
+
+  /* ---------------------------------------------------------------- analytics */
+  async function loadAnalytics(force = false) {
+    if (state.analyticsBusy && !force) return;
+    state.analyticsBusy = true;
+    const days = Math.max(1, Math.min(90, Number($("#analytics-days").value || 30)));
+    const names = ["report", "formats", "freshness", "usage", "delivery"];
+    const paths = [
+      "/api/report?days=" + days,
+      "/api/metrics/formats?days=" + days,
+      "/api/metrics/freshness",
+      "/api/ai/usage?days=" + Math.min(30, days),
+      "/api/crossposts/health",
+    ];
+    try {
+      const results = await Promise.allSettled(paths.map((path) => api(path)));
+      const data = {};
+      results.forEach((result, index) => { if (result.status === "fulfilled") data[names[index]] = result.value; });
+      state.analyticsData = data;
+      renderAnalytics();
+      const failed = names.filter((key) => !Object.prototype.hasOwnProperty.call(data, key));
+      if (failed.length) toast("Часть аналитики недоступна: " + failed.join(", "), "warn");
+    } catch (error) {
+      toast("Аналитика не обновилась: " + (error && error.message || error), "err");
+    } finally {
+      state.analyticsBusy = false;
+    }
+  }
+
+  function renderAnalytics() {
+    const data = state.analyticsData || {};
+    const fleet = data.report && data.report.fleet || {};
+    const formats = data.formats || {};
+    const usage = data.usage || {};
+    const today = usage.today || {};
+    const totals = usage.totals || {};
+    const delivery = data.delivery || {};
+    const deliveryTotals = delivery.totals || {};
+    const kpis = [
+      ["Постов за период", typeof fleet.posts === "number" ? n(fleet.posts) : "нет отчёта", "учтённые публикации"],
+      ["Просмотры", typeof fleet.views_total === "number" ? n(fleet.views_total) : "нет отчёта", "фактические просмотры"],
+      ["Средний ER", typeof fleet.avg_er === "number" ? pct(fleet.avg_er) : "нет отчёта", "только измеренные посты"],
+      ["Доставки подтверждены", typeof deliveryTotals.posted === "number" ? n(deliveryTotals.posted) : "нет отчёта", "журнал кросспостинга"],
+    ];
+    $("#analytics-kpis").innerHTML = kpis.map((item) => '<div class="analytics-kpi"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong><small>' + esc(item[2]) + "</small></div>").join("");
+    const formatRows = Object.entries(formats.formats || {});
+    const measurement = formats.measurement || {};
+    const publication = formats.publication || {};
+    const reliableCount = formatRows.filter(([, row]) => row && row.reliable === true).length;
+    $("#analytics-format-meta").textContent = typeof formats.published_total === "number"
+      ? n(formats.published_total) + " опубликовано · " + n(formats.measured_total) + " измерено · "
+        + n(formats.fresh_measured_total) + " свежих · " + n(formats.stale_measured_total) + " устаревших"
+        + " · " + reliableCount + " надёжных форматов"
+        + " · подтверждённость: " + (formats.evidence_status || "нет отчёта")
+      : "Отчёт форматов не получен";
+    $("#analytics-formats").innerHTML = formatRows.length ? formatRows.map(([key, row]) => {
+      const fresh = measurement[key] || {};
+      const published = typeof row.published === "number" ? n(row.published) : "—";
+      const measured = typeof row.measured === "number" ? n(row.measured) : "—";
+      const average = typeof row.avg_engagement === "number" ? row.avg_engagement.toFixed(1) : "нет замеров";
+      const live = typeof fresh.fresh === "number" ? n(fresh.fresh) + " свежих / " + n(fresh.stale || 0) + " устаревших" : "свежесть неизвестна";
+      const signal = row.reliable === true ? "достаточная выборка" : "мало измерений";
+      return '<div class="analytics-row analytics-format-row"><strong>' + esc(FORMAT_RU[key] || key) + '</strong>'
+        + '<span>' + esc(published) + ' опубликовано · ' + esc(measured) + ' измерено</span>'
+        + '<b>' + esc(average) + ' среднее взаимодействие</b>'
+        + '<small>' + esc(live) + ' · ' + esc(signal) + '</small></div>';
+    }).join("") + '<p class="analytics-evidence-note">Подтверждённые: ' + n(publication.published_evidenced || 0)
+      + ' · без подтверждения: ' + n(publication.published_unevidenced || 0)
+      + ' · без правила проверки: ' + n(publication.published_unrulled || 0)
+      + ' · неизвестный результат: ' + n(publication.publish_unknown || 0) + "</p>"
+      : '<div class="empty">Нет отчёта по форматам. Неполученные данные не заменяются нулями.</div>';
+    const platforms = delivery.platforms || [];
+    $("#analytics-platform-meta").textContent = delivery.generated_at ? "Срез " + dt(delivery.generated_at) : "Дата измерения не передана";
+    $("#analytics-platforms").innerHTML = platforms.length ? platforms.map((item) => {
+      const label = PLATFORM_RU[item.platform] || item.platform;
+      const stateLabel = ({ healthy: "есть успешные доставки", attention: "нужно внимание", setup: "не настроено", not_tested: "не проверено", scheduled: "отложено", dry_run: "тестовый режим", working: "в работе" })[item.state] || item.state || "неизвестно";
+      return '<div class="analytics-row"><strong>' + esc(label) + '</strong><span>' + esc(stateLabel) + '</span><b>' + n(item.posted) + ' подтверждено</b><small>' + n(item.unknown) + ' сверка · ' + n(item.permanent) + ' отказов</small></div>';
+    }).join("") : '<div class="empty">В журнале пока нет подтверждённых доставок по площадкам.</div>';
+    const aiRows = [
+      ["Вызовы онлайн за период", typeof totals.used === "number" ? n(totals.used) : "нет отчёта"],
+      ["Fallback", typeof totals.fallbacks === "number" ? n(totals.fallbacks) : "нет отчёта"],
+      ["Вызовы сегодня", typeof today.charged === "number" ? n(today.charged) : "нет отчёта"],
+      ["Зависшие резервы", typeof today.stale_reservations === "number" ? n(today.stale_reservations) : "нет отчёта"],
+      ["Средняя задержка", typeof totals.average_latency_ms === "number" ? n(totals.average_latency_ms) + " мс" : "нет отчёта"],
+    ];
+    $("#analytics-ai").innerHTML = aiRows.map((item) => '<div class="analytics-detail-row"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + "</strong></div>").join("")
+      + '<p class="studio-muted">Журнал считает вызовы и задержку. Денежная стоимость и токены не рассчитываются, если backend их не измеряет.</p>';
+    const freshness = data.freshness || {};
+    const summary = freshness.summary || {};
+    const freshnessRows = [
+      ["Снимков", freshness.snapshots_total],
+      ["Площадок в каталоге", summary.platforms_total],
+      ["Площадки со свежими данными", summary.ok],
+      ["Устаревшие снимки площадок", summary.stale],
+      ["Пока нет снимков", summary.never],
+      ["Сборщики со свежими данными", summary.collectors_ok],
+      ["Устаревшие сборщики", summary.collectors_stale],
+      ["Сборщики без отчёта", summary.collectors_no_report],
+      ["Самый свежий снимок", summary.freshest && summary.freshest.collected_at ? dt(summary.freshest.collected_at) : null],
+      ["Последнее обновление отчёта", freshness.generated_at ? dt(freshness.generated_at) : null],
+    ].filter((item) => item[1] !== undefined && item[1] !== null);
+    $("#analytics-freshness").innerHTML = freshnessRows.length
+      ? freshnessRows.map((item) => '<div class="analytics-detail-row"><span>' + esc(item[0]) + '</span><strong>' + esc(typeof item[1] === "number" ? n(item[1]) : item[1]) + "</strong></div>").join("")
+      : '<div class="empty">Отчёт о свежести не содержит измеренных данных.</div>';
+  }
+
   /* ---------------------------------------------------------------- wiring */
   const VIEW_TITLES = {
     overview: ["Command Center", "Состояние фермы, команда и площадки в одном окне"],
-    connect: ["Подключения", "Один клик: сайт площадки, вход, сохранение сессии и токенов"],
+    team: ["AI-команда", "Фактические этапы, роли, результаты и сохранённые решения"],
+    studio: ["Контент-студия", "Материал, доказательства, AI-редактура и нативный предпросмотр"],
+    analytics: ["Аналитика и рост", "Доставка, измерения, эффективность форматов и использование AI"],
+    connect: ["Подключения", "Единый мастер OAuth, browser profile и API credentials"],
     platforms: ["Центр площадок", "Каталог площадок, статусы подключения и готовность к публикации"],
     plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
     trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
@@ -6521,6 +7103,9 @@
       if (title) title.textContent = meta[0];
       if (sub) sub.textContent = meta[1];
     }
+    if (view === "team") loadTeam();
+    if (view === "studio" && !state.studioLoaded) loadStudio();
+    if (view === "analytics") loadAnalytics();
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
     if (view === "sources") loadSourcesHealth();
@@ -6542,6 +7127,24 @@
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $("#team-refresh")?.addEventListener("click", () => loadTeam(true));
+  $("#studio-refresh")?.addEventListener("click", () => loadStudio(true));
+  $("#studio-post-list")?.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-studio-post]");
+    if (item) loadStudioDetail(item.dataset.studioPost);
+  });
+  $("#studio-toolbar")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-studio-polish]");
+    if (button) polishStudioPost(button.dataset.studioPolish);
+  });
+  $("#studio-preview")?.addEventListener("click", buildStudioPreview);
+  $("#studio-platform-select")?.addEventListener("change", () => {
+    const button = $("#studio-preview");
+    if (button) button.disabled = !state.studioDetail || state.studioDetail.status !== "published" || !$("#studio-platform-select").value;
+  });
+  $("#analytics-refresh")?.addEventListener("click", () => loadAnalytics(true));
+  $("#analytics-days")?.addEventListener("change", () => loadAnalytics(true));
+
   const reviewBoard = $("#review-board");
   if (reviewBoard) {
     reviewBoard.addEventListener("click", (event) => {
@@ -6621,6 +7224,8 @@
       if (browser) { event.preventDefault(); runBrowserConnect(browser.dataset.connectBrowser); return; }
       const oauth = event.target.closest("[data-connect-oauth]");
       if (oauth) { event.preventDefault(); runOauthConnect(oauth.dataset.connectOauth); return; }
+      const saveOAuth = event.target.closest("[data-connect-save-oauth]");
+      if (saveOAuth) { event.preventDefault(); saveConnectOAuthSetup(saveOAuth.dataset.connectSaveOauth); return; }
       const save = event.target.closest("[data-connect-save]");
       if (save) { event.preventDefault(); saveConnectTokens(save.dataset.connectSave); }
     });

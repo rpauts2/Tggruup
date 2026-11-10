@@ -72,6 +72,15 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
     assert query["response_type"] == ["code"]
     assert query["access_type"] == ["offline"]
     assert query["redirect_uri"] == [redirect_uri]
+    assert query["code_challenge_method"] == ["S256"]
+    assert len(query["code_challenge"][0]) == 43
+    pending = youtube_oauth._PENDING[query["state"][0]]
+    verifier = pending["code_verifier"]
+    assert 43 <= len(verifier) <= 128
+    import base64
+    import hashlib
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+    assert challenge == query["code_challenge"][0]
     scopes = set(query["scope"][0].split())
     assert scopes == set(youtube_oauth.SCOPES)
     assert "youtube.upload" in query["scope"][0]
@@ -87,6 +96,7 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
     assert exchange[1] == youtube_oauth.TOKEN_URL
     assert exchange[2]["data"]["code"] == "single-use-code"
     assert exchange[2]["data"]["redirect_uri"] == redirect_uri
+    assert exchange[2]["data"]["code_verifier"] == verifier
     channel_call = next(call for call in FakeGoogleOAuthClient.calls if call[0] == "GET")
     assert channel_call[1] == youtube_oauth.CHANNELS_URL
     assert channel_call[2]["params"] == {"part": "snippet", "mine": "true"}
