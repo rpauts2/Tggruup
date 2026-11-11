@@ -4941,7 +4941,7 @@
         ${p.status === "failed" && !p.tg_message_id ? `<button class="btn btn-primary btn-sm" onclick="tgfarmRetryFailed('${esc(p.id)}')">Повторить после исправления</button>` : ""}
         ${["draft", "gated", "scheduled", "rejected", "failed"].includes(p.status) ? `<button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="tgfarmCopyText('${esc(p.id)}')">Копировать текст</button>
-        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Трейс</button>
+        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">История</button>
         ${p.external_url ? `<a class="btn btn-ghost btn-sm" href="${esc(p.external_url)}" target="_blank" rel="noopener">Открыть оригинал</a>` : ""}
         ${EDITABLE.has(p.status) && !p.tg_message_id
           ? `<button class="btn btn-ghost btn-sm" id="btn-edit" onclick="tgfarmEditStart('${esc(p.id)}')">Редактировать</button>
@@ -5230,17 +5230,74 @@
     }
   };
 
+  const TRACE_KIND_LABELS = {
+    draft: "Черновик создан",
+    quality: "Проверка качества",
+    reject: "Материал отклонён",
+    scheduled: "Добавлен в расписание",
+    publish_error: "Ошибка публикации",
+    published: "Публикация подтверждена",
+  };
+
+  function traceKindLabel(kind) {
+    const value = String(kind || "");
+    if (TRACE_KIND_LABELS[value]) return TRACE_KIND_LABELS[value];
+    if (value.startsWith("crosspost:")) {
+      const platform = value.slice("crosspost:".length);
+      return "Попытка доставки · " + (PLATFORM_RU[platform] || platform || "площадка");
+    }
+    return value || "Событие без типа";
+  }
+
+  function traceTime(value) {
+    if (typeof value !== "string" || !value) return '<span class="trace-at">Время не записано</span>';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '<span class="trace-at">Время не распознано</span>';
+    return `<time class="trace-at" datetime="${esc(date.toISOString())}">${esc(date.toLocaleString("ru-RU", {
+      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    }))}</time>`;
+  }
+
   window.tgfarmTrace = async (id) => {
     const slot = $("#preview-slot");
     if (!slot) return;
-    slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Загрузка…</div></div>`;
+    slot.innerHTML = '<div class="drawer-block"><h4>История материала</h4><div class="empty">Загружаю события…</div></div>';
     try {
       const t = await api(`/api/posts/${encodeURIComponent(id)}/trace`);
-      const rows = t.events.map((e) =>
-        `<div class="trace-row"><span class="trace-at">${e.at || "—"}</span> <b>${esc(e.kind)}</b> <span>${esc(e.detail || "")}</span></div>`).join("");
-      slot.innerHTML = `<div class="drawer-block"><h4>Трейс · ${esc(t.status)} · медиа: ${t.media}</h4>${rows}</div>`;
+      const events = Array.isArray(t.events) ? t.events : [];
+      const status = t.status ? (STATUS_RU[t.status] || t.status) : "статус не получен";
+      const media = typeof t.media === "number" && Number.isFinite(t.media)
+        ? `${n(t.media)} файла` : "нет отчёта о медиа";
+      const rows = events.map((event) => {
+        const kind = String(event.kind || "");
+        const tone = ["published"].includes(kind) ? "trace-event--success"
+          : ["reject", "publish_error"].includes(kind) ? "trace-event--attention" : "";
+        return `<li class="trace-event ${tone}">
+          <span class="trace-event-marker" aria-hidden="true"></span>
+          <div class="trace-event-content">
+            <div class="trace-event-head">
+              <strong>${esc(traceKindLabel(kind))}</strong>
+              ${traceTime(event.at)}
+            </div>
+            <p>${esc(event.detail || "Подробности события не записаны.")}</p>
+          </div>
+        </li>`;
+      }).join("");
+      const timeline = rows
+        ? `<ol class="trace-timeline">${rows}</ol>`
+        : '<div class="empty">В журнале пока нет событий. Отсутствие записи само по себе не подтверждает отсутствие действия.</div>';
+      slot.innerHTML = `<section class="drawer-block trace-block" aria-label="История материала">
+        <h4>История материала</h4>
+        <div class="trace-summary">
+          <span class="tag">${esc(status)}</span>
+          <span class="tag">Событий: ${n(events.length)}</span>
+          <span class="tag">Медиа: ${esc(media)}</span>
+        </div>
+        ${timeline}
+      </section>`;
     } catch (e) {
-      slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Не удалось: ${esc(e.message)}</div></div>`;
+      slot.innerHTML = '<div class="drawer-block trace-block"><h4>История материала</h4>'
+        + '<div class="empty">Не удалось прочитать историю: ' + esc(e.message || e) + '</div></div>';
     }
   };
 
