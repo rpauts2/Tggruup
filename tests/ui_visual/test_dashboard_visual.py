@@ -399,10 +399,10 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         "excerpt": "Проверяем путь от черновика до доставки.",
         "chars": 420,
         "quality": {},
-        "status": "scheduled",
+        "status": "published",
         "created_at": "2026-11-11T19:00:00Z",
         "scheduled_at": "2026-11-11T20:00:00Z",
-        "published_at": None,
+        "published_at": "2026-11-11T19:10:00Z",
         "reject_reason": None,
         "cover": None,
         "video": None,
@@ -429,14 +429,15 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
     }
     trace = {
         "post": post["id"],
-        "status": "scheduled",
+        "status": "published",
         "media": 1,
         "stats": {"views": 0, "impressions": 0, "opens": 0},
         "events": [
             {"at": "2026-11-11T19:00:00", "kind": "draft", "detail": "формат=news · материал создан"},
             {"at": "2026-11-11T19:01:00", "kind": "quality", "detail": "gate=passed · проверки завершены"},
             {"at": "2026-11-11T19:05:00", "kind": "scheduled", "detail": "попыток: 0"},
-            {"at": "2026-11-11T19:10:00", "kind": "crosspost:vk", "detail": "scheduled · внешний ID пока не получен"},
+            {"at": "2026-11-11T19:09:00", "kind": "crosspost:vk", "detail": "posted · внешний ID получен"},
+            {"at": "2026-11-11T19:10:00", "kind": "published", "detail": "remote_message_id=post-remote-001"},
         ],
     }
 
@@ -467,12 +468,15 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         timeline = page.locator("#preview-slot .trace-block")
         timeline.wait_for(state="visible")
         assert timeline.get_by_role("heading", name="История материала").is_visible()
-        assert timeline.locator(".trace-event").count() == 4
+        assert timeline.locator(".trace-event").count() == 5
         assert timeline.get_by_text("Черновик создан").is_visible()
         assert timeline.get_by_text("Проверка качества").is_visible()
         assert timeline.get_by_text("Добавлен в расписание").is_visible()
         assert timeline.get_by_text("Попытка доставки · VK").is_visible()
+        assert timeline.get_by_text("Публикация подтверждена").is_visible()
         assert timeline.get_by_text("Медиа: 1 файла").is_visible()
-        assert timeline.locator("time[datetime]").count() == 4
+        assert timeline.locator("time[datetime]").count() == 5
+        assert page.get_by_role("heading", name="Короткие видео · Shorts / TikTok / VK Клипы").count() == 1
+        assert page.get_by_role("button", name="Создать вертикальное видео").count() == 1
 
         browser.close()
