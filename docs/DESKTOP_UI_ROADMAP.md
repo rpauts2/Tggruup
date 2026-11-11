@@ -51,6 +51,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Added explanatory editorial-role cards, explicitly separated from live execution telemetry.
 - Made connection cards show login method and connection health independently.
 - Corrected the connections introduction so it does not promise that every platform saves tokens or uses the same login flow.
+- Added explicit tab-to-panel ARIA relationships, named tab navigation, and synchronized selected/hidden states.
+- Added browser assertions for every tab/panel relationship and keyboard navigation (arrow keys, Home, End, focus synchronization).
 
 ## Next UI milestones
 
