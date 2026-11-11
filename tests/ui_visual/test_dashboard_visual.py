@@ -80,6 +80,61 @@ def _mock_api(route):
                 "crossposts": 8,
             },
         },
+        "/api/platforms": {
+            "summary": {
+                "total": 2, "supported": 2, "enabled": 1,
+                "configured": 1, "planned": 0, "needs_setup": 0,
+            },
+            "note": "Тестовый каталог возможностей.",
+            "platforms": [
+                {
+                    "id": "telegram", "name": "Telegram", "symbol": "TG",
+                    "category": "Мессенджеры", "market": "Россия и мир",
+                    "priority": "core", "description": "Основная очередь через Bot API.",
+                    "requirements": "Токен бота и целевой канал.",
+                    "docs_url": "https://core.telegram.org/bots/api",
+                    "supported": True, "enabled": True, "planned": False,
+                    "configured": True, "connection_detail": "Доступ настроен.",
+                    "status": "configured", "status_label": "Настройки найдены",
+                    "channel_count": 2, "roles_label": "Основная публикация",
+                    "automation_mode": "primary",
+                    "automation_note": "Основная очередь площадки.",
+                    "capability": "publish", "capability_label": "Публикует автоматически",
+                    "capability_note": "Материал доставляется адаптером без участия человека.",
+                    "auto_publish": True, "supports_draft": True,
+                    "supports_manual_package": True,
+                    "auth": {
+                        "method": "token", "status": "authorized",
+                        "status_label": "Доступ подтверждён", "detail": "Bot API доступен.",
+                        "fields": [], "browser_session": {"available": False, "profile_saved": False, "verified": False},
+                    },
+                    "editorial": None,
+                },
+                {
+                    "id": "tiktok", "name": "TikTok", "symbol": "TT",
+                    "category": "Видео", "market": "Мировые",
+                    "priority": "P1", "description": "Подготовка ролика с подтверждением владельца.",
+                    "requirements": "OAuth и явное согласие для каждой публикации.",
+                    "docs_url": "https://developers.tiktok.com/",
+                    "supported": True, "enabled": False, "planned": False,
+                    "configured": False, "connection_detail": "Подключение ещё не настроено.",
+                    "status": "paused", "status_label": "Выключена",
+                    "channel_count": 0, "roles_label": "Видео",
+                    "automation_mode": "manual",
+                    "automation_note": "Каждое видео требует отдельного согласия автора.",
+                    "capability": "manual_upload", "capability_label": "Ручная загрузка пакета",
+                    "capability_note": "Публикация требует участия человека.",
+                    "auto_publish": False, "supports_draft": True,
+                    "supports_manual_package": True,
+                    "auth": {
+                        "method": "oauth", "status": "needs_setup",
+                        "status_label": "Не настроено", "detail": "Нужен вход через OAuth.",
+                        "fields": [], "browser_session": {"available": False, "profile_saved": False, "verified": False},
+                    },
+                    "editorial": None,
+                },
+            ],
+        },
         "/api/connect/matrix": {
             "platforms": [
                 {
@@ -178,6 +233,13 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert page.get_by_role("heading", name="Очередь пока пуста").is_visible()
                     page.get_by_role("button", name="Открыть планирование").click()
                     assert page.locator('.view[data-view="plan"].is-active').is_visible()
+                if view == "platforms":
+                    assert page.locator(".platform-card").count() == 2
+                    assert page.get_by_text("2 канала", exact=True).is_visible()
+                    assert page.get_by_text("0 каналов", exact=True).is_visible()
+                    assert page.get_by_text("Публикует автоматически", exact=True).is_visible()
+                    assert page.get_by_text("Ручная загрузка пакета", exact=True).is_visible()
+                    assert page.get_by_text("Каждое видео требует отдельного согласия автора.", exact=True).is_visible()
                 if view == "connect":
                     assert page.locator(".connect-card").count() == 4
                     assert page.get_by_text("Подключено · @tgfarm_demo").count() == 1
@@ -249,6 +311,10 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
             full_page=True,
             animations="disabled",
         )
+        page.locator('#tab-platforms').click()
+        page.locator("#panel-platforms").wait_for(state="visible")
+        assert page.locator(".platform-card").count() == 2
+        assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
 
         browser.close()
 
