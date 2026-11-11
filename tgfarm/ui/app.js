@@ -1769,6 +1769,9 @@
           <p>Здесь появятся материалы после подготовки и проверки. Начни с редакционного плана, чтобы собрать темы и распределить публикации.</p>
           <button class="btn btn-primary btn-sm" type="button" data-goto="plan">Открыть планирование</button>
         </section>`;
+    $("#posts-grid [data-goto]")?.addEventListener("click", (event) => {
+      switchView(event.currentTarget.dataset.goto);
+    });
 
     const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
