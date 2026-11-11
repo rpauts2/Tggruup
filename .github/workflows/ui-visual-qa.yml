@@ -3,6 +3,8 @@ name: UI Visual QA
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [feature/desktop-command-center-ui]
   workflow_dispatch:
 
 permissions:
