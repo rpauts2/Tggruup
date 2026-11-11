@@ -170,6 +170,8 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator('.tab[data-view="overview"]').click()
         assert page.locator(".tabs").evaluate("(el) => getComputedStyle(el).flexWrap") == "nowrap"
+        assert page.locator('.tab[data-view="overview"]').get_attribute("aria-selected") == "true"
+        assert page.locator('.tab[data-view="team"]').get_attribute("aria-selected") == "false"
         assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
         assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
         page.locator('.tab[data-view="team"]').click()
