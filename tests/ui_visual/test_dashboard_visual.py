@@ -165,6 +165,22 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                         assert title.evaluate("(el) => el.getBoundingClientRect().width >= 120")
                         assert title.locator("strong").evaluate("(el) => el.getBoundingClientRect().width >= 70")
 
+        # Narrow webview: navigation stays in one horizontally scrollable row,
+        # and the page itself must not overflow the viewport horizontally.
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.locator('.tab[data-view="overview"]').click()
+        assert page.locator(".tabs").evaluate("(el) => getComputedStyle(el).flexWrap") == "nowrap"
+        assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
+        assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
+        page.locator('.tab[data-view="team"]').click()
+        assert page.locator('.view[data-view="team"].is-active').is_visible()
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        page.screenshot(
+            path=str(ARTIFACT_DIR / "390x844-team-mobile.png"),
+            full_page=True,
+            animations="disabled",
+        )
+
         browser.close()
 
     assert not failed_static_requests, f"static UI assets failed: {failed_static_requests}"
