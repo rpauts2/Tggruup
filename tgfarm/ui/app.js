@@ -6518,15 +6518,46 @@
     runs: ["Запуски", "Журнал прогонов конвейера по стадиям"],
   };
 
+  // Keep the tablist and its panels as one explicit accessibility contract.
+  // The sidebar's visual group labels are presentation-only children; every
+  // actual tab controls exactly one named panel.
+  function syncTabSemantics(selectedView = state.view) {
+    const tablist = $(".tabs");
+    if (tablist) tablist.setAttribute("aria-label", "Разделы TgFarm");
+    $(".nav-group", tablist || document).forEach((group) => {
+      group.setAttribute("role", "presentation");
+      group.setAttribute("aria-hidden", "true");
+    });
+    $(".tab").forEach((tab) => {
+      const view = tab.dataset.view;
+      const panel = view ? $(`.view[data-view="${view}"]`) : null;
+      if (!view || !panel) return;
+      const tabId = `tab-${view}`;
+      const panelId = `panel-${view}`;
+      tab.id = tabId;
+      tab.setAttribute("aria-controls", panelId);
+      panel.id = panelId;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+      panel.tabIndex = 0;
+      panel.setAttribute("aria-hidden", String(view !== selectedView));
+    });
+  }
+
   function switchView(view) {
     state.view = view;
+    syncTabSemantics(view);
     $(".tab").forEach((t) => {
       const selected = t.dataset.view === view;
       t.classList.toggle("is-active", selected);
       t.setAttribute("aria-selected", String(selected));
       t.tabIndex = selected ? 0 : -1;
     });
-    $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    $(".view").forEach((v) => {
+      const selected = v.dataset.view === view;
+      v.classList.toggle("is-active", selected);
+      v.setAttribute("aria-hidden", String(!selected));
+    });
     const meta = VIEW_TITLES[view];
     if (meta) {
       const title = $("#view-title");
@@ -6554,6 +6585,16 @@
   };
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
+  syncTabSemantics();
+  $(".view").forEach((panel) => {
+    const selected = panel.dataset.view === state.view;
+    panel.setAttribute("aria-hidden", String(!selected));
+  });
+  $(".tab").forEach((tab) => {
+    const selected = tab.dataset.view === state.view;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  });
   $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
 
   // WAI-ARIA tablist keyboard model: arrow keys move between views, while
