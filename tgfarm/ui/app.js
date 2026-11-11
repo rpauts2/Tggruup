@@ -13,6 +13,7 @@
     refreshTimer: null,
     inFlight: false,
     refreshIssueSignature: null,
+    lastFullRefreshAt: null,
     bestHour: null,
     memoryQuery: "",
     topicQuery: "",
@@ -5518,14 +5519,19 @@
     const announcement = $("#data-sync-announcement");
     if (!root || !label || !detail) return;
 
-    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const now = new Date();
+    const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     const names = failed.map((key) => REFRESH_SECTION_LABELS[key] || key);
     const signature = failed.length ? "failed:" + [...failed].sort().join("|") : "";
+    const lastFull = state.lastFullRefreshAt
+      ? "последний полный ответ " + state.lastFullRefreshAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+      : "полного ответа в этой сессии ещё не было";
     root.title = failed.length
-      ? "Разделы не обновились: " + names.join(", ")
+      ? "Разделы не обновились: " + names.join(", ") + "; " + lastFull
       : "Последний полный запрос завершился успешно";
 
     if (!failed.length) {
+      state.lastFullRefreshAt = now;
       root.dataset.state = "ok";
       label.textContent = "Данные обновлены";
       detail.textContent = `Все ${total} групп данных · ${time}`;
@@ -5543,11 +5549,11 @@
     root.dataset.state = allFailed ? "error" : "partial";
     label.textContent = allFailed ? "Нет связи с API" : "Часть данных устарела";
     if (allFailed) {
-      detail.textContent = `Не обновлено ни одного раздела · ${time}`;
+      detail.textContent = `Нет ответа на ${total} групп · ${lastFull}`;
     } else {
       const shown = names.slice(0, 3).join(", ");
       const rest = names.length > 3 ? ` и ещё ${names.length - 3}` : "";
-      detail.textContent = `Нет ответа: ${shown}${rest} · ${time}`;
+      detail.textContent = `Нет ответа: ${shown}${rest} · ${lastFull}`;
     }
 
     if (signature !== state.refreshIssueSignature) {
@@ -5609,7 +5615,8 @@
         agentBenchmark: "/api/agents/benchmark",
       };
       // One failing endpoint must not kill the whole dashboard: degraded
-      // sections keep their previous content and are reported in a toast.
+      // sections keep their previous content and the shared health indicator
+      // lists them. The warning toast is emitted only when the failure set changes.
       const settled = await Promise.allSettled(Object.values(endpoints).map((path) => api(path)));
       const data = {};
       const failed = [];
