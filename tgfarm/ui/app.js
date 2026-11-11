@@ -12,6 +12,7 @@
     data: {},
     refreshTimer: null,
     inFlight: false,
+    refreshIssueSignature: null,
     bestHour: null,
     memoryQuery: "",
     topicQuery: "",
@@ -5479,9 +5480,110 @@
       + " · окно " + attributionWindow(data.window_days) + ".</div>";
   }
 
+  const REFRESH_SECTION_LABELS = {
+    status: "состояние фермы",
+    report: "аналитика",
+    runs: "журнал прогонов",
+    trends: "тренды",
+    posts: "очередь публикаций",
+    channels: "каналы",
+    sources: "источники",
+    dzen: "состояние Дзена",
+    crossposts: "кросспосты",
+    deliveryHealth: "здоровье доставок",
+    memory: "память публикаций",
+    platforms: "центр площадок",
+    redditMetrics: "метрики Reddit",
+    aiUsage: "использование ИИ",
+    metricsFreshness: "свежесть метрик",
+    metricsCoverage: "покрытие метрик",
+    metricsAttribution: "атрибуция метрик",
+    backlog: "публикационный backlog",
+    metricsFormats: "эффективность форматов",
+    distributionPlan: "план распространения",
+    agentBenchmark: "эксперименты AI",
+  };
+
+  function setRefreshBusy(busy) {
+    const root = $("#data-sync");
+    const button = $("#refresh-data");
+    if (root) root.setAttribute("aria-busy", String(busy));
+    if (button) button.disabled = busy;
+  }
+
+  function updateRefreshIndicator(failed, total) {
+    const root = $("#data-sync");
+    const label = $("#data-sync-label");
+    const detail = $("#data-sync-detail");
+    const announcement = $("#data-sync-announcement");
+    if (!root || !label || !detail) return;
+
+    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const names = failed.map((key) => REFRESH_SECTION_LABELS[key] || key);
+    const signature = failed.length ? "failed:" + [...failed].sort().join("|") : "";
+    root.title = failed.length
+      ? "Разделы не обновились: " + names.join(", ")
+      : "Последний полный запрос завершился успешно";
+
+    if (!failed.length) {
+      root.dataset.state = "ok";
+      label.textContent = "Данные обновлены";
+      detail.textContent = `Все ${total} групп данных · ${time}`;
+      if (state.refreshIssueSignature) {
+        state.refreshIssueSignature = null;
+        if (announcement) announcement.textContent = "Связь восстановлена. Данные панели обновлены.";
+        toast("Связь восстановлена: все разделы обновлены", "ok");
+      } else {
+        state.refreshIssueSignature = null;
+      }
+      return;
+    }
+
+    const allFailed = failed.length === total;
+    root.dataset.state = allFailed ? "error" : "partial";
+    label.textContent = allFailed ? "Нет связи с API" : "Часть данных устарела";
+    if (allFailed) {
+      detail.textContent = `Не обновлено ни одного раздела · ${time}`;
+    } else {
+      const shown = names.slice(0, 3).join(", ");
+      const rest = names.length > 3 ? ` и ещё ${names.length - 3}` : "";
+      detail.textContent = `Нет ответа: ${shown}${rest} · ${time}`;
+    }
+
+    if (signature !== state.refreshIssueSignature) {
+      state.refreshIssueSignature = signature;
+      const message = allFailed
+        ? "Нет связи с API: данные панели не обновились"
+        : `Не обновились разделы: ${names.join(", ")}`;
+      if (announcement) announcement.textContent = message;
+      toast(message, allFailed ? "err" : "warn");
+    }
+  }
+
+  function updateRefreshError(error) {
+    const root = $("#data-sync");
+    const label = $("#data-sync-label");
+    const detail = $("#data-sync-detail");
+    const announcement = $("#data-sync-announcement");
+    if (!root || !label || !detail) return;
+    const message = String(error?.message || error || "неизвестная ошибка");
+    const signature = "exception:" + message;
+    root.dataset.state = "error";
+    root.title = message;
+    label.textContent = "Ошибка обновления";
+    detail.textContent = "Не удалось обновить панель · " +
+      new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    if (signature !== state.refreshIssueSignature) {
+      state.refreshIssueSignature = signature;
+      if (announcement) announcement.textContent = "Ошибка обновления данных панели.";
+      toast("Не удалось обновить данные: " + message, "err");
+    }
+  }
+
   async function refresh() {
     if (state.inFlight) return;
     state.inFlight = true;
+    setRefreshBusy(true);
     try {
       const endpoints = {
         status: "/api/status",
@@ -5544,8 +5646,11 @@
       // too — an old list of rows that have since been reconciled would be a lie.
       renderUnresolvedWorklist("backlog" in data ? data.backlog : null,
         "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
-      if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
-      if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
+      updateRefreshIndicator(failed, Object.keys(endpoints).length);
+      // With no successful response there is no fresh dashboard snapshot to
+      // render. Keep independent workspaces intact and leave the unavailable
+      // status visible instead of replacing every panel with empty placeholders.
+      if (failed.length === Object.keys(endpoints).length) return;
 
       if ("status" in data) {
         const mode = data.status.mode || "?";
@@ -5599,9 +5704,10 @@
         renderAgentBenchmark(data.agentBenchmark, "trends" in data ? data.trends.trends || [] : []);
       }
     } catch (e) {
-      toast("Не удалось обновить данные: " + e.message, "err");
+      updateRefreshError(e);
     } finally {
       state.inFlight = false;
+      setRefreshBusy(false);
     }
   }
 
@@ -6584,6 +6690,7 @@
     return runCycle();
   };
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
+  $("#refresh-data")?.addEventListener("click", () => refresh());
 
   syncTabSemantics();
   $$( ".view").forEach((panel) => {
