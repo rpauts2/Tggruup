@@ -193,6 +193,8 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         assert page.locator('.tab[data-view="overview"]').get_attribute("aria-selected") == "true"
         assert page.locator('.tab[data-view="team"]').get_attribute("aria-selected") == "false"
         assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
+        assert page.locator("#data-sync").is_visible()
+        assert page.locator("#refresh-data").is_visible()
         assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
         page.locator('.tab[data-view="team"]').evaluate("(el) => el.click()")
         assert page.locator('.view[data-view="team"].is-active').is_visible()
@@ -364,6 +366,7 @@ def test_dashboard_refresh_indicator_reports_partial_failure_and_recovers(dashbo
         page.locator('#data-sync[data-state="partial"]').wait_for(timeout=10000)
         assert page.locator("#data-sync-label").inner_text() == "Часть данных устарела"
         assert "тренды" in page.locator("#data-sync-detail").inner_text().lower()
+        page.wait_for_function("document.querySelector('#refresh-data')?.disabled === false")
         assert page.locator("#refresh-data").is_enabled()
         assert page.locator("#run-cycle").is_enabled()
 
@@ -375,6 +378,6 @@ def test_dashboard_refresh_indicator_reports_partial_failure_and_recovers(dashbo
         assert page.locator("#data-sync-label").inner_text() == "Данные обновлены"
         assert "все" in page.locator("#data-sync-detail").inner_text().lower()
         assert trend_requests >= 2
-        assert "Связь восстановлена" in page.locator("#data-sync-announcement").inner_text()
+        assert "Обновление панели восстановлено" in page.locator("#data-sync-announcement").inner_text()
 
         browser.close()
