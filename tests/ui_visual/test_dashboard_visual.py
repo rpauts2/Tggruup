@@ -97,6 +97,11 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
             for view in ("overview", "team", "posts", "connect", "platforms"):
                 _capture_view(page, view, viewport)
                 assert page.locator(f'.view[data-view="{view}"]').is_visible()
+                if view == "overview":
+                    grid = page.locator(".command-shortcuts-grid")
+                    assert grid.evaluate("(el) => getComputedStyle(el).display") == "grid"
+                    card = grid.locator("button").first
+                    assert card.evaluate("(el) => getComputedStyle(el).borderRadius") != "0px"
 
         browser.close()
 
