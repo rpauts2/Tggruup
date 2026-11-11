@@ -839,6 +839,21 @@ main {
   display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
   padding: 12px 20px 15px; border-top: 1px solid var(--line-soft);
 }
+.platform-capability-select {
+  display: flex;
+  flex: 0 1 205px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 170px;
+}
+.platform-capability-select > span {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.platform-capability-select select { width: 100%; min-width: 0; }
 .platform-search {
   display: flex; align-items: center; gap: 9px;
   flex: 1; min-width: 260px; max-width: 450px;
