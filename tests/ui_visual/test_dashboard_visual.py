@@ -240,6 +240,19 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert page.get_by_text("Публикует автоматически", exact=True).is_visible()
                     assert page.get_by_text("Ручная загрузка пакета", exact=True).is_visible()
                     assert page.get_by_text("Каждое видео требует отдельного согласия автора.", exact=True).is_visible()
+                    capability_filter = page.locator("#platform-capability-filter")
+                    capability_filter.select_option("publish")
+                    assert page.locator(".platform-card").count() == 1
+                    assert page.locator(".platform-card h3").inner_text() == "Telegram"
+                    capability_filter.select_option("manual_upload")
+                    assert page.locator(".platform-card").count() == 1
+                    assert page.locator(".platform-card h3").inner_text() == "TikTok"
+                    capability_filter.select_option("unsupported")
+                    assert page.locator(".platform-card").count() == 0
+                    assert page.locator(".platform-empty").is_visible()
+                    page.get_by_role("button", name="Сбросить фильтры").click()
+                    assert capability_filter.input_value() == "all"
+                    assert page.locator(".platform-card").count() == 2
                 if view == "connect":
                     assert page.locator(".connect-card").count() == 4
                     assert page.get_by_text("Подключено · @tgfarm_demo").count() == 1
