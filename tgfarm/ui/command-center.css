@@ -104,9 +104,13 @@ input, select, textarea { accent-color: var(--accent); }
   main { padding-top: 28px; }
 }
 @media (max-width: 1080px) {
-  .app-shell { grid-template-columns: 1fr; }
+  /* A no-wrap tab row must scroll inside the sidebar, never become the
+     grid track's min-content width and stretch the whole desktop shell. */
+  .app-shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar,
+  .workspace { min-width: 0; max-width: 100%; }
   .sidebar { position: static; height: auto; }
-  .tabs { gap: 5px; }
+  .tabs { min-width: 0; max-width: 100%; gap: 5px; }
   .tab { min-height: 34px; }
 }
 @media (max-width: 680px) {
