@@ -152,3 +152,16 @@ If pywebview meets the product requirements, keep it. If it fails measurable req
 - One failing API endpoint does not blank the entire application.
 - The app is usable at the supported Windows desktop size and at compact window sizes.
 - The old UI is not removed until the new workflow passes automated and manual verification.
+## Reference products and what their choices tell us
+
+- **Visual Studio Code:** Microsoft's official documentation describes VS Code as built on Electron, combining web technologies and Node.js with native desktop integration. This demonstrates the maturity of the web-UI desktop model, but does not mean every Python-first app should adopt Electron.
+- **Slack Desktop:** Slack Engineering documented its migration from direct DOM manipulation to React and its incremental move to TypeScript inside Electron. Its later desktop rewrite emphasized composable UI components, lazy/incomplete data models, and multi-workspace awareness. The transferable lesson for TgFarm is the component architecture and explicit data contracts, not Slack's exact process model.
+- **Notion Desktop:** Notion's public desktop UX documentation highlights workspace tabs, quick search, notifications, and fast context switching. These are useful interaction patterns for TgFarm's command palette, material workspaces, and persistent editorial context; the public help page does not establish Notion's internal framework, so no stack claim is made here.
+
+These examples reinforce the decision to modernize the frontend architecture independently from the native shell. React and TypeScript are proven for large desktop workspaces; Electron is one established host, not a mandatory dependency.
+
+Reference links:
+- https://code.visualstudio.com/docs/editor/whyvscode
+- https://slack.engineering/building-hybrid-applications-with-electron/
+- https://slack.engineering/rebuilding-slack-on-the-desktop/
+- https://www.notion.com/help/notion-for-desktop
