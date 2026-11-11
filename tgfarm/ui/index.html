@@ -25,6 +25,7 @@
       <div class="nav-group">Главная</div>
       <button class="tab is-active" data-view="overview" role="tab"><span class="tab-label">Command Center</span></button>
       <button class="tab" data-view="review" role="tab"><span class="tab-label">Требует внимания</span><span class="tab-counter" id="review-nav-count">0</span></button>
+      <button class="tab" data-view="team" role="tab"><span class="tab-label">AI Team</span></button>
 
       <div class="nav-group">Редакция</div>
       <button class="tab" data-view="plan" role="tab"><span class="tab-label">Планирование</span></button>
@@ -276,6 +277,45 @@
       <button data-connect-mode="vkhost">VK</button>
     </div>
     <div id="connect-grid" class="connect-grid"></div>
+  </section>
+
+  <section class="view" data-view="team">
+    <div class="team-hero">
+      <div class="team-hero-copy">
+        <span class="team-kicker">EDITORIAL OPERATIONS</span>
+        <h2>Редакционная команда</h2>
+        <p>Единая картина работы конвейера: от разведки тем до публикации и анализа результата. Здесь отображаются реальные стадии последнего прогона, а не выдуманные статусы отдельных агентов.</p>
+      </div>
+      <button class="btn btn-primary" type="button" data-goto="runs">Открыть журнал прогонов</button>
+    </div>
+    <div class="team-stage-intro">
+      <div><strong>Рабочий процесс</strong><span>Состояние последнего цикла по журналу TgFarm</span></div>
+      <span class="team-live-note"><i></i> Данные обновляются вместе с Command Center</span>
+    </div>
+    <article class="card team-pipeline-card">
+      <header class="card-head">
+        <h2>Стадии редакционного конвейера</h2>
+        <span class="card-sub">Сбор · стратегия · создание · проверка · доставка · обучение</span>
+      </header>
+      <div id="team-pipeline" class="pipeline team-pipeline">
+        <div class="empty">Ожидаю первый отчёт о прогоне.</div>
+      </div>
+    </article>
+    <div class="team-role-grid">
+      <article class="team-role-card"><span class="team-role-icon">⌕</span><div><strong>Исследователь</strong><p>Собирает сигналы, темы и материалы из источников.</p><small>Связанные стадии: S1 · S2</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✳</span><div><strong>Стратег</strong><p>Помогает выбрать угол подачи, приоритет и маршрут материала.</p><small>Редакционное планирование</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✎</span><div><strong>Автор и редактор</strong><p>Создаёт материал и адаптирует его под формат площадки.</p><small>Связанная стадия: S4</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✓</span><div><strong>Фактчекер и критик</strong><p>Проверяет качество, фактические утверждения и риски.</p><small>Связанная стадия: S5</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">▧</span><div><strong>Визуальный редактор</strong><p>Подготавливает визуальное сопровождение материала.</p><small>Связанная стадия: S6</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">↗</span><div><strong>Менеджер площадок</strong><p>Учитывает формат, правила и доступный способ доставки каждой сети.</p><small>Связанные стадии: S7 · S9</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">⌁</span><div><strong>Аналитик</strong><p>Собирает результаты и возвращает измеримые выводы в редакционный цикл.</p><small>Связанная стадия: S8</small></div></article>
+      <article class="team-role-card team-role-card--note"><span class="team-role-icon">◎</span><div><strong>Общий контекст</strong><p>Роли описывают редакционные функции. Фактические запуски, доступные инструменты и результаты определяются текущими модулями и журналом.</p><small>Без фиктивной индикации активности</small></div></article>
+    </div>
+    <article class="card team-quality-card">
+      <header class="card-head"><h2>Контроль качества команды</h2><span class="card-sub">Существующие парные эксперименты</span></header>
+      <p>В Command Center уже доступно сравнение обычного автора и версии со стратегом на одном материале и маршруте. Оно помогает оценивать практический эффект, не выдавая эксперимент за доказательство.</p>
+      <button class="btn btn-ghost btn-sm" type="button" data-goto="overview">Открыть эксперименты в Command Center</button>
+    </article>
   </section>
 
   <section class="view" data-view="plan">
