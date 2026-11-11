@@ -5240,9 +5240,9 @@
   function traceTime(value) {
     if (typeof value !== "string" || !value) return '<span class="trace-at">Время не записано</span>';
     const raw = value.trim();
-    const hasZone = /(?:Z|[+-]\\d{2}:\\d{2})$/i.test(raw);
+    const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw);
     if (!hasZone) {
-      const parts = raw.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/);
+      const parts = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       if (!parts) return '<span class="trace-at">Время не распознано</span>';
       const label = `${parts[3]}.${parts[2]}.${parts[1]} ${parts[4]}:${parts[5]} · часовой пояс не указан`;
       return `<time class="trace-at" datetime="${esc(raw)}" title="API не указал часовой пояс">${esc(label)}</time>`;
