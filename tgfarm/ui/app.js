@@ -6276,9 +6276,8 @@
     const monogram = String(row.name || row.id).replace(/[^A-Za-zА-Яа-я0-9]/g, "").slice(0, 2).toUpperCase() || "??";
     const primary = status.key === "ready" ? "Переподключить" : "Подключить";
     const monogramStyle = "color:" + brand + ";border-color:" + brand + ";background:color-mix(in srgb, " + brand + " 14%, transparent)";
-    const pill = status.key === "needs"
-      ? '<span class="connect-mode-chip">Вход: ' + esc(mode) + "</span>"
-      : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
+    const pill = '<span class="connect-mode-chip">Вход: ' + esc(mode) + "</span>"
+      + '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
     return '<article class="connect-card connect-card--' + esc(status.key) + '">'
       + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
       + '<div class="connect-card-title"><strong>' + esc(row.name || row.id) + "</strong>"
