@@ -154,6 +154,10 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     card = grid.locator("button").first
                     assert card.evaluate("(el) => getComputedStyle(el).borderRadius") != "0px"
                     assert page.locator("#kpis").get_by_text("из 67 активно").count() == 1
+                if view == "posts":
+                    assert page.get_by_role("heading", name="Очередь пока пуста").is_visible()
+                    page.get_by_role("button", name="Открыть планирование").click()
+                    assert page.locator('.view[data-view="plan"].is-active').is_visible()
                 if view == "connect":
                     assert page.locator(".connect-card").count() == 4
                     assert page.get_by_text("Подключено · @tgfarm_demo").count() == 1
