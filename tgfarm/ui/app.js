@@ -5239,7 +5239,15 @@
 
   function traceTime(value) {
     if (typeof value !== "string" || !value) return '<span class="trace-at">Время не записано</span>';
-    const date = new Date(value);
+    const raw = value.trim();
+    const hasZone = /(?:Z|[+-]\\d{2}:\\d{2})$/i.test(raw);
+    if (!hasZone) {
+      const parts = raw.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/);
+      if (!parts) return '<span class="trace-at">Время не распознано</span>';
+      const label = `${parts[3]}.${parts[2]}.${parts[1]} ${parts[4]}:${parts[5]} · часовой пояс не указан`;
+      return `<time class="trace-at" datetime="${esc(raw)}" title="API не указал часовой пояс">${esc(label)}</time>`;
+    }
+    const date = new Date(raw);
     if (Number.isNaN(date.getTime())) return '<span class="trace-at">Время не распознано</span>';
     return `<time class="trace-at" datetime="${esc(date.toISOString())}">${esc(date.toLocaleString("ru-RU", {
       day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
@@ -5254,8 +5262,10 @@
       const t = await api(`/api/posts/${encodeURIComponent(id)}/trace`);
       const events = Array.isArray(t.events) ? t.events : [];
       const status = t.status ? (STATUS_RU[t.status] || t.status) : "статус не получен";
-      const media = typeof t.media === "number" && Number.isFinite(t.media)
-        ? `${n(t.media)} файла` : "нет отчёта о медиа";
+      const mediaCount = typeof t.media === "number" && Number.isFinite(t.media) ? t.media : null;
+      const mediaForm = mediaCount === null ? "" : new Intl.PluralRules("ru-RU").select(mediaCount);
+      const mediaNoun = mediaForm === "one" ? "файл" : mediaForm === "few" ? "файла" : "файлов";
+      const media = mediaCount === null ? "нет отчёта о медиа" : `${n(mediaCount)} ${mediaNoun}`;
       const rows = events.map((event) => {
         const kind = String(event.kind || "");
         const tone = ["published"].includes(kind) ? "trace-event--success"
