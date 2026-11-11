@@ -906,10 +906,10 @@ main {
 
 .platform-grid {
   display: grid;
-  /* A plain absolute minimum: `min(100%, 306px)` resolved against an indefinite
-     width inside the desktop webview and collapsed the cards into one-character
-     columns. The mobile rule below handles narrow windows explicitly. */
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  /* Empty tracks collapse so a short catalog uses the available width;
+     additional destinations create new columns automatically. The mobile
+     rule below handles narrow windows explicitly. */
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 13px;
   align-items: stretch;
   min-width: 0;
