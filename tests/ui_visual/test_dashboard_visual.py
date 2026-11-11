@@ -147,6 +147,23 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         assert page.title().lower().startswith("tgfarm")
         page.locator(".tab[data-view='overview']").wait_for()
 
+        # The sidebar is a real tablist: every tab names one panel, and the
+        # selected state is mirrored by panel visibility for assistive tech.
+        tablist = page.locator(".tabs")
+        assert tablist.get_attribute("role") == "tablist"
+        assert tablist.get_attribute("aria-label") == "Разделы TgFarm"
+        tabs = page.locator(".tabs [role='tab']")
+        assert tabs.count() == page.locator(".view[role='tabpanel']").count()
+        for tab in tabs.all():
+            view = tab.get_attribute("data-view")
+            panel_id = tab.get_attribute("aria-controls")
+            assert panel_id == f"panel-{view}"
+            panel = page.locator(f"#{panel_id}")
+            assert panel.get_attribute("role") == "tabpanel"
+            assert panel.get_attribute("aria-labelledby") == tab.get_attribute("id")
+            selected = tab.get_attribute("aria-selected") == "true"
+            assert (panel.get_attribute("aria-hidden") == "false") == selected
+
         for viewport in ((1440, 960), (1280, 800)):
             for view in ("overview", "team", "posts", "connect", "platforms"):
                 _capture_view(page, view, viewport)
