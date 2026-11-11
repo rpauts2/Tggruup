@@ -381,3 +381,98 @@ def test_dashboard_refresh_indicator_reports_partial_failure_and_recovers(dashbo
         assert "Обновление панели восстановлено" in page.locator("#data-sync-announcement").inner_text()
 
         browser.close()
+
+
+def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
+    """The existing post trace API is readable in the material drawer."""
+    from playwright.sync_api import sync_playwright
+
+    post = {
+        "id": "trace-post-001",
+        "channel": "vk",
+        "channel_id": "vk",
+        "channel_title": "Основной канал VK",
+        "platform": "vk",
+        "angle": "Проверка истории материала",
+        "post_format": "news",
+        "hook": "Как материал прошёл конвейер",
+        "excerpt": "Проверяем путь от черновика до доставки.",
+        "chars": 420,
+        "quality": {},
+        "status": "scheduled",
+        "created_at": "2026-11-11T19:00:00Z",
+        "scheduled_at": "2026-11-11T20:00:00Z",
+        "published_at": None,
+        "reject_reason": None,
+        "cover": None,
+        "video": None,
+        "er": None,
+        "ctr": None,
+        "impressions": None,
+        "opens": None,
+        "views": None,
+        "tg_message_id": None,
+    }
+    detail = {
+        **post,
+        "text": "Полный текст материала для теста.",
+        "body": "Полный текст материала для теста.",
+        "cta": None,
+        "sources": [],
+        "claims": [],
+        "hashtags": [],
+        "format_reason": "Новостной формат выбран по контексту.",
+        "external_url": None,
+        "remote_id": None,
+        "external_platform": None,
+        "media": [],
+    }
+    trace = {
+        "post": post["id"],
+        "status": "scheduled",
+        "media": 1,
+        "stats": {"views": 0, "impressions": 0, "opens": 0},
+        "events": [
+            {"at": "2026-11-11T19:00:00", "kind": "draft", "detail": "формат=news · материал создан"},
+            {"at": "2026-11-11T19:01:00", "kind": "quality", "detail": "gate=passed · проверки завершены"},
+            {"at": "2026-11-11T19:05:00", "kind": "scheduled", "detail": "попыток: 0"},
+            {"at": "2026-11-11T19:10:00", "kind": "crosspost:vk", "detail": "scheduled · внешний ID пока не получен"},
+        ],
+    }
+
+    def mock_trace_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/posts":
+            payload = {"posts": [post]}
+        elif path == "/api/posts/trace-post-001":
+            payload = detail
+        elif path == "/api/posts/trace-post-001/trace":
+            payload = trace
+        else:
+            return _mock_api(route)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_trace_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="posts"]').click()
+        card = page.locator('.pcard[data-post="trace-post-001"]')
+        card.wait_for(state="visible", timeout=5000)
+        card.click()
+
+        page.locator("#drawer").wait_for(state="visible")
+        page.get_by_role("button", name="История").click()
+        timeline = page.locator("#preview-slot .trace-block")
+        timeline.wait_for(state="visible")
+        assert timeline.get_by_role("heading", name="История материала").is_visible()
+        assert timeline.locator(".trace-event").count() == 4
+        assert timeline.get_by_text("Черновик создан").is_visible()
+        assert timeline.get_by_text("Проверка качества").is_visible()
+        assert timeline.get_by_text("Добавлен в расписание").is_visible()
+        assert timeline.get_by_text("Попытка доставки · VK").is_visible()
+        assert timeline.get_by_text("Медиа: 1 файла").is_visible()
+        assert timeline.locator("time[datetime]").count() == 4
+
+        browser.close()
