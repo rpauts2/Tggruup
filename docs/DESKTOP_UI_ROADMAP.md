@@ -33,6 +33,35 @@ Channels, platform capability catalog, and connections. Platform cards should ev
 ### System
 Sources, run journal, and diagnostics.
 
+## Functional coverage map: S1–S12
+
+Navigation is organized around operator workflows, not one menu item per backend module. A stage may appear in more than one workspace: the Command Center summarizes it, its specialist workspace exposes the detail, and the post lifecycle keeps the relevant evidence together.
+
+| Product stage | Existing UI surface | Design rule and remaining direction |
+|---|---|---|
+| **S1 Research / sources** | Sources workspace, source-health summary, cooldown/reset action, reprint backfill status, source KPIs | Keep source health, last attempt, freshness and cooldown as separate facts. Grow this into a source registry with search, filters and source detail without turning the dashboard into a raw log. |
+| **S2 Trend intelligence** | Trends workspace, trend phase/acceleration, “why?” explanation and router-skip explanation | Keep trend evidence and confidence visible. A trend should open its dossier and related editorial decisions rather than ending at a heat score. |
+| **S3 Intelligent routing** | Distribution plan, platform catalog, community-target recommendations and rule history inside editorial flows | Show why a destination was selected or excluded, what rule snapshot was used, and whether its capability/access is actually sufficient. Do not collapse “platform enabled”, “account connected” and “destination eligible”. |
+| **S4 Editorial engine** | Editorial planning, AI Team pipeline, post details, native editorial preview and existing strategist/writer benchmark | Keep a material's brief, source set, claims, draft versions and review history connected. Role cards explain responsibility; execution status comes only from real run telemetry. |
+| **S5 Review board** | Needs-attention workspace, quality/review details and post drawer | Separate passed, skipped, fallback, rejected and failed checks. Make blockers and the next safe action understandable without treating missing AI review as approval. |
+| **S6 Visual media** | Cover/video references on post cards and details, platform preview and short-video preparation actions | Treat media as part of the material, with provenance, dimensions, processing state, licensing evidence and platform fit. Do not imply an asset is licensed or ready merely because a file exists. |
+| **S7 Scheduling and publishing** | Publication queue, review board, crosspost health, post trace, publish_unknown reconciliation | Make the material lifecycle the primary navigation path: draft → review → scheduled → delivery attempt → verified publication/unknown. Unknown outcomes must remain distinct and reconciliation-first. |
+| **S8 Analytics** | Command Center report, portfolio insights, AI usage, freshness, coverage, attribution and format-performance panels | Every metric needs source, measurement window, sample size and freshness. Unmeasured stays unknown; platform metrics stay separate unless explicitly normalized. |
+| **S9 Native crossposting** | Platform-specific editorial preview, draft/manual hand-off, per-platform delivery details | Treat each destination as its own editorial version. Show differences, constraints and adaptation provenance, not a generic “copy to all” action. |
+| **S10 Format planning** | Editorial plan entries, platform profiles, format-performance evidence | Show the chosen format and the evidence/reason behind it at the decision point. Do not present an experimental winner based on a tiny or unmeasured sample. |
+| **S11 Video studio** | Existing video/short-video preparation controls and media references in editorial flows | Keep the full video workflow attached to the material: script, scenes, assets, voice, subtitles, export and license gate. Do not invent a separate studio data model; reuse tgfarm/s11_video/. |
+| **S12 Learning and memory** | Publication memory, topic dossier, portfolio insights and format-learning summaries | Connect each lesson to its underlying publications and measurement evidence. Keep a recommendation distinguishable from an automatic strategy change. |
+
+### Cross-cutting operator workflows
+
+- **Account and delivery readiness:** connections explain the login method; the platform catalog explains supported delivery capabilities; the queue explains whether an individual post can actually proceed.
+- **Channel and network control:** channel enablement, per-platform limits and the global editorial plan belong together in distribution settings, with clear scope and impact before changes.
+- **Diagnostics and recovery:** run history, post trace, source health and delivery reconciliation should link to the affected material or subsystem. Operators should not have to search unrelated logs manually.
+- **Shared data trust:** every workspace must distinguish loading, empty, stale, partial failure, unknown and measured-zero states. The global refresh indicator summarizes the data snapshot; individual views retain their own domain-specific explanations.
+- **Extensibility:** new platforms and media types should be described by capability metadata and workflow contracts, not hard-coded assumptions that every network supports the same login, publishing or metrics API.
+
+This map describes UI surfaces present in the current dashboard and intended information architecture. It is not a claim that every stage is fully autonomous or every listed operation is available for every platform.
+
 ## Connection and delivery model
 
 The UI must distinguish these independent dimensions:
@@ -53,15 +82,18 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Corrected the connections introduction so it does not promise that every platform saves tokens or uses the same login flow.
 - Added explicit tab-to-panel ARIA relationships, named tab navigation, and synchronized selected/hidden states.
 - Added browser assertions for every tab/panel relationship and keyboard navigation (arrow keys, Home, End, focus synchronization).
+- Added a shared data-freshness indicator with manual refresh, partial-failure visibility, the last successful full snapshot time, and deduplicated recovery notifications.
+- Added a browser scenario that simulates one failed data endpoint, verifies that the dashboard identifies it as stale, and verifies recovery through the refresh control.
 
 ## Next UI milestones
 
-1. Improve Command Center information hierarchy and reduce dashboard overload.
-2. Make publication queue and delivery details navigable as a single material lifecycle.
-3. Improve platform cards with adapter-backed capability and delivery-method labels.
-4. Add agent activity only after a reliable backend event/status contract exists.
-5. Add clear empty, loading, stale, partial-error, and unknown states to every workspace.
-6. Validate at desktop widths and narrow webview widths; verify keyboard focus and reduced-motion behavior.
+1. Make the publication queue, post drawer, trace and delivery reconciliation navigable as one material lifecycle.
+2. Rework Command Center hierarchy around operator decisions: what is healthy, what is blocked, what needs attention, and what changed.
+3. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
+4. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
+5. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
+6. Add agent activity only after a reliable backend event/status contract exists.
+7. Validate desktop, compact webview, keyboard navigation and reduced-motion behavior.
 
 ## Acceptance criteria
 
