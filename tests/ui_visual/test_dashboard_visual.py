@@ -157,6 +157,9 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                 if view == "connect":
                     assert page.locator(".connect-card").count() == 4
                     assert page.get_by_text("Подключено · @tgfarm_demo").count() == 1
+                    for title in page.locator(".connect-card-title").all():
+                        assert title.evaluate("(el) => el.getBoundingClientRect().width >= 120")
+                        assert title.locator("strong").evaluate("(el) => el.getBoundingClientRect().width >= 70")
 
         browser.close()
 
