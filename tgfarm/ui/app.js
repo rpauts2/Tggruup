@@ -6554,7 +6554,23 @@
   };
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
-  $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+
+  // WAI-ARIA tablist keyboard model: arrow keys move between views, while
+  // Home/End jump to the first/last tab. Focus and selected state stay aligned.
+  $(".tab").forEach((tab) => tab.addEventListener("keydown", (event) => {
+    const tabs = $(".tab");
+    const index = tabs.indexOf(tab);
+    let next = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    tabs[next].focus();
+    switchView(tabs[next].dataset.view);
+  }));
   const reviewBoard = $("#review-board");
   if (reviewBoard) {
     reviewBoard.addEventListener("click", (event) => {
