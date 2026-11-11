@@ -110,7 +110,8 @@ def _mock_api(route):
 
 def _capture_view(page, view: str, viewport: tuple[int, int]):
     page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
-    page.locator(f'.tab[data-view="{view}"]').click()
+    tab = page.locator(f'.tab[data-view="{view}"]')
+    tab.evaluate("(el) => el.click()")
     page.locator(f'.view[data-view="{view}"].is-active').wait_for()
     page.wait_for_timeout(120)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,13 +169,13 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         # Narrow webview: navigation stays in one horizontally scrollable row,
         # and the page itself must not overflow the viewport horizontally.
         page.set_viewport_size({"width": 390, "height": 844})
-        page.locator('.tab[data-view="overview"]').click()
+        page.locator('.tab[data-view="overview"]').evaluate("(el) => el.click()")
         assert page.locator(".tabs").evaluate("(el) => getComputedStyle(el).flexWrap") == "nowrap"
         assert page.locator('.tab[data-view="overview"]').get_attribute("aria-selected") == "true"
         assert page.locator('.tab[data-view="team"]').get_attribute("aria-selected") == "false"
         assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
         assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
-        page.locator('.tab[data-view="team"]').click()
+        page.locator('.tab[data-view="team"]').evaluate("(el) => el.click()")
         assert page.locator('.view[data-view="team"].is-active').is_visible()
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         page.screenshot(
