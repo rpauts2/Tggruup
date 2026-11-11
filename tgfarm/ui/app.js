@@ -3074,6 +3074,7 @@
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
             <span class="platform-priority">${esc(automationLabel)}</span>
             ${item.capability ? `<span class="platform-capability capability-${esc(item.capability)}" title="${esc(item.capability_note || "")}">${esc(item.capability_label || item.capability)}</span>` : ""}
+            ${supported ? `<span class="platform-priority platform-channel-count" title="Количество включённых каналов и персон этой площадки">${typeof item.channel_count === "number" ? n(item.channel_count) + " каналов" : "каналы: нет отчёта"}</span>` : ""}
           </div>
           <div class="platform-connection">
             <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>
