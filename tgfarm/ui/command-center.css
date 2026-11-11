@@ -300,3 +300,67 @@ input, select, textarea { accent-color: var(--accent); }
   .command-shortcuts-heading p { text-align: left; }
   .command-shortcuts-grid { grid-template-columns: 1fr; }
 }
+
+
+/* Narrow desktop-webview / mobile navigation: keep the workspace usable
+   without turning the full sidebar into a tall stack of wrapped tabs. */
+@media (max-width: 680px) {
+  .sidebar {
+    gap: 9px;
+    padding: 10px 10px 8px;
+  }
+  .brand { padding: 1px 4px 3px; }
+  .brand-copy h1 { font-size: 14px; }
+  .tabs {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin: 0 -2px;
+    padding: 2px 2px 7px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 36px;
+    padding: 8px 11px;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .tab-counter { margin-left: 3px; }
+  .sidebar-foot {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 2px 0;
+  }
+  .sidebar-status,
+  .sidebar-meta {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+  .sidebar-status { flex-direction: row; }
+  .sidebar-foot .pill { min-width: 0; }
+  .sidebar-version { display: none; }
+  .workbar {
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .workbar-title { min-width: 0; }
+  .workbar-title h2 { font-size: 16px; }
+  .workbar-title p { max-width: 52ch; line-height: 1.45; }
+  main { padding: 12px 10px 36px; }
+  .team-hero { align-items: flex-start; flex-direction: column; padding: 20px 18px; }
+  .team-pipeline { grid-template-columns: 1fr; padding: 12px; }
+  .team-role-grid { grid-template-columns: 1fr; }
+  .command-shortcuts-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 380px) {
+  .command-shortcuts-grid { grid-template-columns: 1fr; }
+  .sidebar-status .pill { font-size: 9px; padding-inline: 6px; }
+}
