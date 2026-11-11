@@ -122,33 +122,60 @@ input, select, textarea { accent-color: var(--accent); }
 }
 
 
-/* Command Center quick workspace launchers */
-.command-shortcuts {
-  margin:18px 0 20px; padding:15px 16px 16px; border:1px solid var(--ui-border);
-  border-radius:16px; background:linear-gradient(115deg,rgba(17,24,40,.88),rgba(12,17,29,.72));
+/* Editorial Team workspace */
+.team-hero {
+  display:flex; align-items:flex-end; justify-content:space-between; gap:24px;
+  padding:26px 28px; margin-bottom:20px; border:1px solid rgba(112,145,220,.2);
+  border-radius:18px; background:
+    radial-gradient(ellipse at 90% 0%, rgba(91,140,255,.18), transparent 48%),
+    linear-gradient(135deg, rgba(22,31,53,.98), rgba(12,18,31,.96));
+  box-shadow:var(--ui-glow);
 }
-.command-shortcuts-heading { display:flex; align-items:baseline; justify-content:space-between; gap:14px; margin-bottom:12px; }
-.command-shortcuts-heading > div { display:flex; align-items:baseline; gap:10px; }
-.command-shortcuts-heading span { color:#8faaf0; font-size:9px; font-weight:800; letter-spacing:.16em; }
-.command-shortcuts-heading strong { font-size:13px; }
-.command-shortcuts-heading p { color:var(--text-faint); font-size:11px; }
-.command-shortcuts-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
-.command-shortcuts-grid button {
-  display:flex; align-items:center; gap:10px; min-width:0; padding:11px 12px;
-  border:1px solid rgba(145,166,210,.1); border-radius:12px; text-align:left;
-  color:var(--text); background:rgba(255,255,255,.018); cursor:pointer; transition:.16s ease;
+.team-hero-copy { max-width:780px; }
+.team-kicker { color:#91adf7; font-size:9px; font-weight:800; letter-spacing:.18em; }
+.team-hero h2 { margin-top:8px; font-size:26px; letter-spacing:-.045em; }
+.team-hero p { margin-top:8px; color:var(--text-dim); font-size:13px; line-height:1.65; }
+.team-stage-intro { display:flex; justify-content:space-between; align-items:center; gap:16px; margin:20px 2px 10px; }
+.team-stage-intro > div { display:flex; flex-direction:column; gap:3px; }
+.team-stage-intro strong { font-size:14px; }
+.team-stage-intro span { color:var(--text-faint); font-size:11px; }
+.team-live-note { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.team-live-note i { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 4px var(--ok-soft); }
+.team-pipeline-card { margin-bottom:18px; }
+.team-pipeline { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; padding:18px; }
+.team-pipeline .stage {
+  min-height:76px; display:flex; align-items:flex-start; gap:10px; padding:13px;
+  border:1px solid var(--ui-border); border-radius:12px; background:rgba(255,255,255,.018);
+  color:var(--text-dim); font-size:11px; line-height:1.5;
 }
-.command-shortcuts-grid button:hover { border-color:var(--ui-border-hover); background:rgba(91,140,255,.07); transform:translateY(-2px); }
-.shortcut-icon {
-  display:grid; place-items:center; flex:none; width:33px; height:33px; border-radius:10px;
-  color:#b7cbff; background:rgba(91,140,255,.12); border:1px solid rgba(91,140,255,.16); font-size:15px;
+.team-pipeline .stage b { color:var(--text); font-size:12px; text-transform:capitalize; }
+.team-pipeline .stage-dot { margin-top:4px; flex:none; }
+.team-role-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.team-role-card {
+  display:flex; align-items:flex-start; gap:12px; min-width:0; padding:16px;
+  border:1px solid var(--ui-border); border-radius:14px;
+  background:linear-gradient(145deg,rgba(20,28,46,.8),rgba(12,17,29,.94));
 }
-.command-shortcuts-grid button > span:nth-child(2) { display:flex; flex-direction:column; min-width:0; gap:2px; }
-.command-shortcuts-grid b { font-size:11.5px; }
-.command-shortcuts-grid small { color:var(--text-faint); font-size:10px; }
-.shortcut-arrow { margin-left:auto; color:var(--text-faint); font-size:13px; }
-@media(max-width:1100px) { .command-shortcuts-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media(max-width:600px) {
-  .command-shortcuts-heading { align-items:flex-start; flex-direction:column; gap:4px; }
-  .command-shortcuts-grid { grid-template-columns:1fr; }
+.team-role-icon {
+  display:grid; place-items:center; flex:none; width:36px; height:36px;
+  border-radius:11px; color:#a9c0ff; font-size:18px;
+  border:1px solid rgba(91,140,255,.2); background:rgba(91,140,255,.1);
+}
+.team-role-card strong { display:block; font-size:12.5px; }
+.team-role-card p { margin-top:5px; color:var(--text-dim); font-size:11.5px; line-height:1.5; }
+.team-role-card small { display:block; margin-top:10px; color:var(--text-faint); font-size:10px; }
+.team-role-card--note { border-style:dashed; background:rgba(255,255,255,.012); }
+.team-role-card--note .team-role-icon { color:#b8a6ff; background:rgba(155,92,246,.1); border-color:rgba(155,92,246,.2); }
+.team-quality-card { margin-top:18px; padding-bottom:16px; }
+.team-quality-card > p { max-width:850px; padding:0 19px 14px; color:var(--text-dim); font-size:12px; line-height:1.6; }
+.team-quality-card > button { margin-left:19px; }
+@media(max-width:1250px) {
+  .team-role-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .team-pipeline { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:720px) {
+  .team-hero { align-items:flex-start; flex-direction:column; padding:20px; }
+  .team-hero h2 { font-size:22px; }
+  .team-stage-intro { align-items:flex-start; flex-direction:column; }
+  .team-role-grid,.team-pipeline { grid-template-columns:1fr; }
 }
