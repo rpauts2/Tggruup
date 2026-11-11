@@ -2320,3 +2320,47 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   overflow-wrap: normal;
   word-break: keep-all;
 }
+
+
+/* Helpful queue empty state instead of a lone label in a blank workspace. */
+.posts-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 340px;
+  padding: 36px 24px;
+  border: 1px dashed rgba(125,160,255,.24);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(91,140,255,.09), transparent 58%),
+    linear-gradient(145deg, rgba(18,25,42,.72), rgba(11,16,28,.62));
+  text-align: center;
+}
+.posts-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(91,140,255,.26);
+  border-radius: 16px;
+  background: rgba(91,140,255,.12);
+  color: #b4c7ff;
+  font-size: 23px;
+}
+.posts-empty h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 720;
+}
+.posts-empty p {
+  max-width: 440px;
+  margin: 0 0 4px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.posts-empty .btn { margin-top: 2px; }
