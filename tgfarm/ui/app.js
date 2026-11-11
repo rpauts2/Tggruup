@@ -5537,8 +5537,8 @@
       detail.textContent = `Все ${total} групп данных · ${time}`;
       if (state.refreshIssueSignature) {
         state.refreshIssueSignature = null;
-        if (announcement) announcement.textContent = "Связь восстановлена. Данные панели обновлены.";
-        toast("Связь восстановлена: все разделы обновлены", "ok");
+        if (announcement) announcement.textContent = "Обновление панели восстановлено. Данные получены.";
+        toast("Обновление панели восстановлено: данные получены", "ok");
       } else {
         state.refreshIssueSignature = null;
       }
