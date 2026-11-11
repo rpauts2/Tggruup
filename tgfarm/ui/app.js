@@ -6524,11 +6524,11 @@
   function syncTabSemantics(selectedView = state.view) {
     const tablist = $(".tabs");
     if (tablist) tablist.setAttribute("aria-label", "Разделы TgFarm");
-    $(".nav-group", tablist || document).forEach((group) => {
+    $$( ".nav-group", tablist || document).forEach((group) => {
       group.setAttribute("role", "presentation");
       group.setAttribute("aria-hidden", "true");
     });
-    $(".tab").forEach((tab) => {
+    $$( ".tab").forEach((tab) => {
       const view = tab.dataset.view;
       const panel = view ? $(`.view[data-view="${view}"]`) : null;
       if (!view || !panel) return;
@@ -6547,13 +6547,13 @@
   function switchView(view) {
     state.view = view;
     syncTabSemantics(view);
-    $(".tab").forEach((t) => {
+    $$( ".tab").forEach((t) => {
       const selected = t.dataset.view === view;
       t.classList.toggle("is-active", selected);
       t.setAttribute("aria-selected", String(selected));
       t.tabIndex = selected ? 0 : -1;
     });
-    $(".view").forEach((v) => {
+    $$( ".view").forEach((v) => {
       const selected = v.dataset.view === view;
       v.classList.toggle("is-active", selected);
       v.setAttribute("aria-hidden", String(!selected));
@@ -6586,21 +6586,21 @@
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
 
   syncTabSemantics();
-  $(".view").forEach((panel) => {
+  $$( ".view").forEach((panel) => {
     const selected = panel.dataset.view === state.view;
     panel.setAttribute("aria-hidden", String(!selected));
   });
-  $(".tab").forEach((tab) => {
+  $$( ".tab").forEach((tab) => {
     const selected = tab.dataset.view === state.view;
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
   });
-  $(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  $$( ".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
 
   // WAI-ARIA tablist keyboard model: arrow keys move between views, while
   // Home/End jump to the first/last tab. Focus and selected state stay aligned.
-  $(".tab").forEach((tab) => tab.addEventListener("keydown", (event) => {
-    const tabs = $(".tab");
+  $$( ".tab").forEach((tab) => tab.addEventListener("keydown", (event) => {
+    const tabs = $$(".tab");
     const index = tabs.indexOf(tab);
     let next = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % tabs.length;
