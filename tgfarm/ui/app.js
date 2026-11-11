@@ -21,6 +21,7 @@
     platformData: null,
     platformQuery: "",
     platformFilter: "all",
+    platformCapabilityFilter: "all",
     platformCategory: "Все",
     platformBusy: new Set(),
     authPlatformId: "",
@@ -2951,6 +2952,8 @@
       if (state.platformFilter === "enabled" && !(item.supported && item.enabled)) return false;
       if (state.platformFilter === "setup" && !(item.supported && item.enabled && !item.configured)) return false;
       if (state.platformFilter === "planned" && !item.planned) return false;
+      if (state.platformCapabilityFilter !== "all"
+        && item.capability !== state.platformCapabilityFilter) return false;
       return true;
     }).sort((a, b) => {
       const group = (p) => p.supported ? (p.enabled ? 0 : 1) : (p.planned ? 2 : 3);
@@ -6992,6 +6995,10 @@
     state.platformQuery = event.target.value || "";
     renderPlatformCards();
   });
+  $("#platform-capability-filter")?.addEventListener("change", (event) => {
+    state.platformCapabilityFilter = event.target.value || "all";
+    renderPlatformCards();
+  });
   $("#platform-filters")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-platform-filter]");
     if (!button) return;
@@ -7052,8 +7059,10 @@
     if (event.target.closest("[data-platform-reset]")) {
       state.platformQuery = "";
       state.platformFilter = "all";
+      state.platformCapabilityFilter = "all";
       state.platformCategory = "Все";
       $("#platform-search").value = "";
+      if ($("#platform-capability-filter")) $("#platform-capability-filter").value = "all";
       $$("#platform-filters [data-platform-filter]").forEach((item) =>
         item.classList.toggle("is-active", item.dataset.platformFilter === "all"));
       renderPlatformCategories(state.platformData?.platforms || []);
