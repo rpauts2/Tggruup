@@ -2308,3 +2308,15 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   font-size: 10.5px; padding: 4px 8px; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
+
+
+/* Connection cards: keep platform names readable when status chips compete for row space. */
+.connect-card-top { flex-wrap: wrap; }
+.connect-card-title {
+  flex: 1 1 120px;
+  min-width: 120px;
+}
+.connect-card-title strong {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
