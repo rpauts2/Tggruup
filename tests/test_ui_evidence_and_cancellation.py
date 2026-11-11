@@ -584,7 +584,7 @@ def test_the_pipeline_strip_no_longer_folds_every_non_ok_into_an_error(client):
     # The counters of a cancelled stage still ride on `items()`, never on `n()`,
     # and the server's error string stays escaped.
     assert "items(stage.out, stage.counters_state)" in body
-    assert "esc((s.error || \"\").slice(0, 40))" in body
+    assert "esc((stage.error || \"\").slice(0, 40))" in body
     assert "${s.out}" not in body and "${s.in}" not in body
 
 
