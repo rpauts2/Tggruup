@@ -195,7 +195,27 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
         assert page.locator("#data-sync").is_visible()
         assert page.locator("#refresh-data").is_visible()
-        assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
+        overflow = page.locator("body").evaluate("""(body) => ({
+            bodyWidth: body.scrollWidth,
+            viewportWidth: window.innerWidth,
+            offenders: [...document.querySelectorAll("body *")]
+                .map((node) => {
+                    const rect = node.getBoundingClientRect();
+                    const style = getComputedStyle(node);
+                    return {
+                        tag: node.tagName,
+                        id: node.id,
+                        className: typeof node.className === "string" ? node.className : "",
+                        left: Math.round(rect.left),
+                        right: Math.round(rect.right),
+                        width: Math.round(rect.width),
+                        overflowX: style.overflowX,
+                    };
+                })
+                .filter((item) => item.width > 0 && item.right > window.innerWidth + 1)
+                .slice(0, 20),
+        })""")
+        assert overflow["bodyWidth"] <= overflow["viewportWidth"], overflow
         page.locator('.tab[data-view="team"]').evaluate("(el) => el.click()")
         assert page.locator('.view[data-view="team"].is-active').is_visible()
 
