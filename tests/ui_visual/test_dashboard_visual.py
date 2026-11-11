@@ -256,9 +256,11 @@ def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
         assert drawer.get_by_role("button", name="Повторить после исправления").count() == 0
 
         page.once("dialog", lambda dialog: dialog.accept())
-        drawer.get_by_role("button", name="Проверил: поста нет").click()
-        page.wait_for_function("window.__reconcileTestDone === true", timeout=1000) if False else None
-        page.wait_for_timeout(100)
+        with page.expect_request(
+            lambda request: request.method == "POST"
+            and urlsplit(request.url).path == "/api/posts/post-unknown-001/reconcile"
+        ):
+            drawer.get_by_role("button", name="Проверил: поста нет").click()
         assert reconcile_requests == [{"action": "retry_after_check", "confirm_not_published": True}]
         browser.close()
 
