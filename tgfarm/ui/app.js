@@ -1763,7 +1763,12 @@
   function renderPosts(posts) {
     $("#posts-grid").innerHTML = posts.length
       ? posts.map(postCard).join("")
-      : `<div class="empty">Постов нет</div>`;
+      : `<section class="posts-empty" aria-labelledby="posts-empty-title">
+          <span class="posts-empty-icon" aria-hidden="true">▤</span>
+          <h3 id="posts-empty-title">Очередь пока пуста</h3>
+          <p>Здесь появятся материалы после подготовки и проверки. Начни с редакционного плана, чтобы собрать темы и распределить публикации.</p>
+          <button class="btn btn-primary btn-sm" type="button" data-goto="plan">Открыть планирование</button>
+        </section>`;
 
     const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
