@@ -169,3 +169,85 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
 
     assert not failed_static_requests, f"static UI assets failed: {failed_static_requests}"
     assert not browser_errors, f"uncaught browser errors: {browser_errors}"
+
+
+def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
+    """An uncertain delivery must open an evidence-first drawer, never a blind retry."""
+    from playwright.sync_api import sync_playwright
+
+    post = {
+        "id": "post-unknown-001",
+        "channel": "telegram",
+        "channel_id": "telegram",
+        "channel_title": "Основной канал",
+        "platform": "telegram",
+        "angle": "Проверка безопасной сверки",
+        "post_format": "news",
+        "hook": "Пост с неопределённым результатом",
+        "excerpt": "Проверяем, не отправлен ли материал повторно.",
+        "chars": 420,
+        "quality": {},
+        "status": "publish_unknown",
+        "created_at": "2026-11-11T10:00:00Z",
+        "scheduled_at": None,
+        "published_at": None,
+        "reject_reason": None,
+        "cover": None,
+        "video": None,
+        "er": None,
+        "ctr": None,
+        "impressions": None,
+        "opens": None,
+        "views": None,
+        "tg_message_id": None,
+    }
+    detail = {
+        **post,
+        "text": "Полный текст тестовой публикации.",
+        "body": "Полный текст тестовой публикации.",
+        "cta": None,
+        "sources": [],
+        "claims": [],
+        "hashtags": [],
+        "format_reason": None,
+        "external_url": None,
+        "remote_id": None,
+        "external_platform": None,
+        "media": [],
+    }
+
+    def mock_unknown_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/posts":
+            payload = {"posts": [post]}
+        elif path == "/api/posts/post-unknown-001":
+            payload = detail
+        else:
+            payload = {}
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_unknown_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="posts"]').click()
+        card = page.locator('.pcard[data-post="post-unknown-001"]')
+        card.wait_for()
+        card.click()
+
+        drawer = page.locator("#drawer")
+        drawer.locator("text=Результат не подтверждён.").wait_for()
+        assert drawer.get_by_role("button", name="Да, пост уже есть").is_visible()
+        assert drawer.get_by_role("button", name="Проверил: поста нет").is_visible()
+        assert drawer.get_by_text(
+            "Не нажимайте повтор, пока не проверите, появился ли пост."
+        ).is_visible()
+        assert drawer.get_by_role("button", name="Опубликовать сейчас").count() == 0
+        assert drawer.get_by_role("button", name="Повторить после исправления").count() == 0
+        browser.close()
+
