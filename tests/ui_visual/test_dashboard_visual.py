@@ -53,8 +53,59 @@ def dashboard_url():
 
 
 def _mock_api(route):
-    """Use deterministic empty payloads; no account or live service is touched."""
-    route.fulfill(status=200, content_type="application/json", body=json.dumps({}))
+    """Use deterministic fixtures; no account or live service is touched."""
+    path = urlsplit(route.request.url).path
+    payload = {
+        "/api/status": {
+            "mode": "off",
+            "scheduler_running": False,
+            "channels": 2,
+            "sources": 67,
+            "embedder": "local",
+            "alerts": [],
+            "kpis": {
+                "sources": 54,
+                "sources_total": 67,
+                "ready_clusters": 3,
+                "clusters": 12,
+                "scheduled": 4,
+                "gated": 3,
+                "published": 18,
+                "posts": 25,
+                "rejected": 2,
+                "reject_rate": 0.08,
+                "avg_er": None,
+                "covers": 14,
+                "videos": 1,
+                "crossposts": 8,
+            },
+        },
+        "/api/connect/matrix": {
+            "platforms": [
+                {
+                    "id": "telegram", "name": "Telegram", "category": "Мессенджер",
+                    "mode": "token", "authorized": True, "account": "@tgfarm_demo",
+                    "hint": "Доступ подтверждён. Публикация через Bot API.",
+                },
+                {
+                    "id": "vk", "name": "VK", "category": "Социальная сеть",
+                    "mode": "vkhost", "authorized": False,
+                    "hint": "Нужен пользовательский токен для выбранных операций.",
+                },
+                {
+                    "id": "dzen", "name": "Дзен", "category": "Статьи и блоги",
+                    "mode": "browser", "profile_saved": True,
+                    "hint": "Браузерный профиль сохранён, требуется проверка сессии.",
+                },
+                {
+                    "id": "reddit", "name": "Reddit", "category": "Сообщества",
+                    "mode": "oauth", "authorized": None,
+                    "hint": "Подключение через OAuth и выбранные правила сообщества.",
+                },
+            ],
+        },
+    }.get(path, {})
+    route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
 
 
 def _capture_view(page, view: str, viewport: tuple[int, int]):
@@ -102,6 +153,10 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert grid.evaluate("(el) => getComputedStyle(el).display") == "grid"
                     card = grid.locator("button").first
                     assert card.evaluate("(el) => getComputedStyle(el).borderRadius") != "0px"
+                    assert page.locator("#kpis").get_by_text("из 67 активно").count() == 1
+                if view == "connect":
+                    assert page.locator(".connect-card").count() == 4
+                    assert page.get_by_text("Подключено · @tgfarm_demo").count() == 1
 
         browser.close()
 
