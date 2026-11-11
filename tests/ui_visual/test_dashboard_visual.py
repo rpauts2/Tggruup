@@ -330,3 +330,51 @@ def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
         assert reconcile_requests == [{"action": "retry_after_check", "confirm_not_published": True}]
         browser.close()
 
+
+
+def test_dashboard_refresh_indicator_reports_partial_failure_and_recovers(dashboard_url):
+    """A failed data source is visible, recoverable, and never mistaken for fresh."""
+    from playwright.sync_api import sync_playwright
+
+    trend_requests = 0
+    trend_available = {"value": False}
+
+    def mock_api_with_one_outage(route):
+        nonlocal trend_requests
+        path = urlsplit(route.request.url).path
+        if path == "/api/trends":
+            trend_requests += 1
+            if not trend_available["value"]:
+                route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body=json.dumps({"detail": "temporary test outage"}),
+                )
+                return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api_with_one_outage)
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        sync_status = page.locator("#data-sync")
+        sync_status.wait_for(state="visible")
+        page.locator('#data-sync[data-state="partial"]').wait_for(timeout=10000)
+        assert page.locator("#data-sync-label").inner_text() == "Часть данных устарела"
+        assert "тренды" in page.locator("#data-sync-detail").inner_text().lower()
+        assert page.locator("#refresh-data").is_enabled()
+        assert page.locator("#run-cycle").is_enabled()
+
+        # Restore the source and use the visible control, not an artificial
+        # page reload. All endpoints must be fetched again and the warning clear.
+        trend_available["value"] = True
+        page.locator("#refresh-data").click()
+        page.locator('#data-sync[data-state="ok"]').wait_for(timeout=10000)
+        assert page.locator("#data-sync-label").inner_text() == "Данные обновлены"
+        assert "все" in page.locator("#data-sync-detail").inner_text().lower()
+        assert trend_requests >= 2
+        assert "Связь восстановлена" in page.locator("#data-sync-announcement").inner_text()
+
+        browser.close()
