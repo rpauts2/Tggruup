@@ -6520,7 +6520,12 @@
 
   function switchView(view) {
     state.view = view;
-    $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
+    $(".tab").forEach((t) => {
+      const selected = t.dataset.view === view;
+      t.classList.toggle("is-active", selected);
+      t.setAttribute("aria-selected", String(selected));
+      t.tabIndex = selected ? 0 : -1;
+    });
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
     const meta = VIEW_TITLES[view];
     if (meta) {
