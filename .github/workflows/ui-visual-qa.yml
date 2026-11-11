@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ui-visual-qa-\${{ github.ref }}
+  group: ui-visual-qa-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tgfarm-ui-visual-\${{ github.run_number }}
+          name: tgfarm-ui-visual-${{ github.run_number }}
           path: artifacts/ui-visual/
           if-no-files-found: warn
           retention-days: 14
