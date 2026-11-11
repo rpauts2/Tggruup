@@ -179,6 +179,17 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         assert page.locator("body").evaluate("(el) => el.scrollWidth <= window.innerWidth")
         page.locator('.tab[data-view="team"]').evaluate("(el) => el.click()")
         assert page.locator('.view[data-view="team"].is-active').is_visible()
+
+        # Tablist keyboard contract: Right advances, Home returns to first tab.
+        team_tab = page.locator('.tab[data-view="team"]')
+        team_tab.focus()
+        team_tab.press("ArrowRight")
+        assert page.locator('.tab[data-view="plan"]').get_attribute("aria-selected") == "true"
+        assert page.locator('.view[data-view="plan"].is-active').is_visible()
+        page.locator('.tab[data-view="plan"]').press("Home")
+        assert page.locator('.tab[data-view="overview"]').get_attribute("aria-selected") == "true"
+        assert page.locator('.view[data-view="overview"].is-active').is_visible()
+
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         page.screenshot(
             path=str(ARTIFACT_DIR / "390x844-team-mobile.png"),
