@@ -197,15 +197,29 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         page.locator('.tab[data-view="team"]').evaluate("(el) => el.click()")
         assert page.locator('.view[data-view="team"].is-active').is_visible()
 
-        # Tablist keyboard contract: Right advances, Home returns to first tab.
+        # Tablist keyboard contract: arrows wrap through the ordered tabs;
+        # Home/End jump to boundaries, and focus always follows selection.
         team_tab = page.locator('.tab[data-view="team"]')
         team_tab.focus()
         team_tab.press("ArrowRight")
-        assert page.locator('.tab[data-view="plan"]').get_attribute("aria-selected") == "true"
-        assert page.locator('.view[data-view="plan"].is-active').is_visible()
-        page.locator('.tab[data-view="plan"]').press("Home")
-        assert page.locator('.tab[data-view="overview"]').get_attribute("aria-selected") == "true"
-        assert page.locator('.view[data-view="overview"].is-active').is_visible()
+        assert page.locator("#tab-plan").get_attribute("aria-selected") == "true"
+        assert page.evaluate("document.activeElement.id") == "tab-plan"
+        assert page.locator("#panel-plan").is_visible()
+        page.locator("#tab-plan").press("ArrowDown")
+        assert page.locator("#tab-posts").get_attribute("aria-selected") == "true"
+        assert page.evaluate("document.activeElement.id") == "tab-posts"
+        page.locator("#tab-posts").press("ArrowLeft")
+        assert page.locator("#tab-plan").get_attribute("aria-selected") == "true"
+        page.locator("#tab-plan").press("ArrowUp")
+        assert page.locator("#tab-team").get_attribute("aria-selected") == "true"
+        page.locator("#tab-team").press("End")
+        assert page.locator("#tab-runs").get_attribute("aria-selected") == "true"
+        assert page.locator("#panel-runs").is_visible()
+        assert page.evaluate("document.activeElement.id") == "tab-runs"
+        page.locator("#tab-runs").press("Home")
+        assert page.locator("#tab-overview").get_attribute("aria-selected") == "true"
+        assert page.locator("#panel-overview").is_visible()
+        assert page.evaluate("document.activeElement.id") == "tab-overview"
 
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         page.screenshot(
