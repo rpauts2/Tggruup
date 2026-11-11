@@ -86,6 +86,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Added a browser scenario that simulates one failed data endpoint, verifies that the dashboard identifies it as stale, and verifies recovery through the refresh control.
 - Turned the existing post trace into a readable lifecycle timeline with status labels, event timestamps and media count; timestamps without timezone information are shown without silently converting them to local time.
 - Removed duplicated short-video actions from published-post details so the same preparation controls appear only once.
+- Fixed the narrow-webview grid min-content overflow: the sidebar and workspace now stay within the viewport while the tab row scrolls internally. Browser QA passed at 390 px.
+- Added the active channel/persona count to supported platform cards, with Russian singular/plural forms and an honest no-report fallback. The visual fixture now covers both automatic publishing and owner-consent/manual-upload capability on desktop and mobile.
 
 ## Next UI milestones
 
