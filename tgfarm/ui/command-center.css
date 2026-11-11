@@ -1,0 +1,122 @@
+/* TgFarm Desktop Command Center visual layer
+   Additive UI-only refresh. Existing palette and component behavior are preserved. */
+:root {
+  --ui-panel: rgba(16, 22, 37, .88);
+  --ui-panel-strong: rgba(20, 28, 46, .96);
+  --ui-border: rgba(145, 166, 210, .13);
+  --ui-border-hover: rgba(125, 160, 255, .34);
+  --ui-glow: 0 16px 44px rgba(0, 0, 0, .24);
+}
+html { scroll-behavior: smooth; }
+body { letter-spacing: .005em; }
+.app-shell {
+  grid-template-columns: 252px minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.sidebar {
+  z-index: 35;
+  padding: 20px 13px 14px;
+  background: linear-gradient(180deg, rgba(14,19,32,.98), rgba(9,13,23,.97));
+  border-right: 1px solid var(--ui-border);
+  box-shadow: 10px 0 36px rgba(0,0,0,.12);
+}
+.brand { padding: 4px 9px 12px; gap: 12px; }
+.brand-mark {
+  width: 36px; height: 36px; border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 8px 24px rgba(91,140,255,.25);
+}
+.brand-copy h1 { font-size: 17px; font-weight: 750; letter-spacing: -.04em; }
+.brand-copy p { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.nav-group { padding: 17px 11px 7px; font-size: 9px; letter-spacing: .16em; }
+.tabs { gap: 3px; }
+.tab {
+  min-height: 38px; padding: 8px 11px; border-radius: 10px;
+  color: #a5b0c8; font-size: 12.5px; transition: background .18s, color .18s, transform .18s;
+}
+.tab:hover { transform: translateX(2px); background: rgba(255,255,255,.055); }
+.tab.is-active {
+  color: #edf3ff; background: linear-gradient(90deg, rgba(91,140,255,.19), rgba(91,140,255,.07));
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px rgba(91,140,255,.12);
+}
+.tab-counter { min-width: 22px; text-align: center; }
+.sidebar-foot { border-color: var(--ui-border); }
+.workspace { min-height: 100dvh; }
+.workbar {
+  min-height: 76px; padding: 13px clamp(18px, 2.2vw, 34px);
+  background: rgba(7,10,18,.78); border-color: var(--ui-border);
+}
+.workbar-title h2 { font-size: 19px; font-weight: 720; letter-spacing: -.035em; }
+.workbar-title p { font-size: 11.5px; }
+main { padding: 24px clamp(18px, 2.2vw, 34px) 70px; }
+.card {
+  border-color: var(--ui-border); border-radius: 16px;
+  background: linear-gradient(155deg, rgba(20,27,44,.94), rgba(12,17,29,.96));
+  box-shadow: var(--ui-glow); transition: border-color .18s, transform .18s, box-shadow .18s;
+}
+.card:hover { border-color: rgba(145,166,210,.22); }
+.card-head { padding: 16px 19px; border-color: rgba(145,166,210,.10); }
+.card-head h2 { font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
+.card-sub { line-height: 1.5; }
+.kpis { gap: 13px; }
+.kpi, .kpi-card { border-radius: 14px; }
+.btn { min-height: 36px; border-radius: 10px; font-weight: 620; }
+.btn-primary { box-shadow: 0 7px 22px rgba(63,111,230,.24); }
+.btn:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid rgba(125,160,255,.82); outline-offset: 2px;
+}
+input, select, textarea { accent-color: var(--accent); }
+.connect-head { margin-bottom: 18px; }
+.connect-head h2 { font-size: 22px; letter-spacing: -.035em; }
+.connect-lead { max-width: 720px; margin-top: 6px; color: var(--text-dim); line-height: 1.6; }
+.connect-filters {
+  display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 18px;
+}
+.connect-filters button, .segmented button {
+  border: 1px solid var(--ui-border); border-radius: 999px;
+  padding: 7px 12px; background: rgba(255,255,255,.025);
+  color: var(--text-dim); font-size: 11.5px; transition: .16s ease;
+}
+.connect-filters button:hover, .segmented button:hover { border-color: var(--ui-border-hover); color: var(--text); }
+.connect-filters button.is-active, .segmented button.is-active {
+  color: #eaf0ff; border-color: rgba(91,140,255,.38); background: rgba(91,140,255,.14);
+}
+.connect-section-grid { gap: 13px; }
+.connect-card {
+  min-height: 190px; padding: 16px; border-radius: 15px;
+  border-color: var(--ui-border); background: linear-gradient(145deg, rgba(23,31,51,.82), rgba(12,17,29,.94));
+  box-shadow: 0 8px 26px rgba(0,0,0,.13);
+}
+.connect-card:hover { transform: translateY(-3px); border-color: var(--ui-border-hover); box-shadow: 0 14px 34px rgba(0,0,0,.22); }
+.connect-monogram { width: 42px; height: 42px; border-radius: 13px; font-size: 14px; }
+.connect-card-title strong { font-size: 14px; }
+.connect-hint { line-height: 1.55; }
+.connect-pill { padding: 4px 9px; }
+.connect-actions { padding-top: 8px; }
+.connect-dialog { border-radius: 18px; border-color: rgba(145,166,210,.2); box-shadow: 0 28px 90px rgba(0,0,0,.58); }
+.connect-dialog-box { padding: 23px; }
+.connect-dialog-head h3 { font-size: 19px; letter-spacing: -.025em; }
+.connect-dialog-status { border-style: solid; background: rgba(255,255,255,.025); }
+.empty { border-radius: 12px; }
+.list > * + * { border-color: rgba(145,166,210,.08); }
+@media (min-width: 1500px) {
+  .app-shell { grid-template-columns: 264px minmax(0,1fr); }
+  .connect-section-grid { grid-template-columns: repeat(auto-fill, minmax(310px,1fr)); }
+  main { padding-top: 28px; }
+}
+@media (max-width: 1080px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; }
+  .tabs { gap: 5px; }
+  .tab { min-height: 34px; }
+}
+@media (max-width: 680px) {
+  .workbar { align-items: flex-start; flex-direction: column; }
+  .workbar .topbar-right { width: 100%; }
+  .workbar .btn { width: 100%; justify-content: center; }
+  .connect-head { align-items: flex-start; flex-direction: column; }
+  .connect-section-grid { grid-template-columns: 1fr; }
+  .card-head { align-items: flex-start; flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
