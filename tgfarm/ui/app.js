@@ -6278,7 +6278,7 @@
     const primary = status.key === "ready" ? "Переподключить" : "Подключить";
     const monogramStyle = "color:" + brand + ";border-color:" + brand + ";background:color-mix(in srgb, " + brand + " 14%, transparent)";
     const pill = status.key === "needs"
-      ? '<span class="connect-mode-chip">' + esc(mode) + "</span>"
+      ? '<span class="connect-mode-chip">Вход: ' + esc(mode) + "</span>"
       : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
     return '<article class="connect-card connect-card--' + esc(status.key) + '">'
       + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
@@ -6372,7 +6372,8 @@
         : "";
       body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
         + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
-        + "<li>Панель проверит сессию и сохранит её для публикаций.</li></ol>"
+        + "<li>Панель проверит доступность сессии и сохранит профиль.</li></ol>"
+        + '<p class="connect-dialog-note">Важно: успешный вход ещё не гарантирует возможность публикации. Отправка выполняется тем способом, который поддерживает адаптер площадки: API, браузерная сессия, штатный редактор или ручная подготовка.</p>';
         + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
