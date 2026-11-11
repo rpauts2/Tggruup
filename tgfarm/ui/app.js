@@ -6373,7 +6373,7 @@
       body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
         + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
         + "<li>Панель проверит доступность сессии и сохранит профиль.</li></ol>"
-        + '<p class="connect-dialog-note">Важно: успешный вход ещё не гарантирует возможность публикации. Отправка выполняется тем способом, который поддерживает адаптер площадки: API, браузерная сессия, штатный редактор или ручная подготовка.</p>';
+        + '<p class="connect-dialog-note">Важно: успешный вход ещё не гарантирует возможность публикации. Отправка выполняется тем способом, который поддерживает адаптер площадки: API, браузерная сессия, штатный редактор или ручная подготовка.</p>'
         + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
