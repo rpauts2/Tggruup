@@ -14,8 +14,10 @@ without requiring a React migration or a live TgFarm account.
 - Those screens are captured at 1440×960 and 1280×800.
 - Uncaught browser runtime exceptions and failed local UI asset requests fail
   the job.
-- API requests are intercepted and receive deterministic empty JSON responses.
-  No credentials, platform accounts, publishing actions, or external services
+- API requests are intercepted and receive deterministic demo fixtures for the
+  dashboard counters and four representative connection states; other endpoints
+  receive empty responses to exercise honest empty states.
+- No credentials, platform accounts, publishing actions, or external services
   are used.
 
 The screenshots are uploaded as the \`tgfarm-ui-visual-*\` GitHub Actions artifact
