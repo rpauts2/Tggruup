@@ -43,7 +43,12 @@
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
   const fmt = new Intl.NumberFormat("ru-RU");
+  const ruPluralRules = new Intl.PluralRules("ru-RU");
   const n = (v) => fmt.format(Math.round(Number(v) || 0));
+  const ruCountLabel = (value, forms) => {
+    const category = ruPluralRules.select(value);
+    return `${n(value)} ${forms[category] || forms.other || forms.many || ""}`.trim();
+  };
   const pct = (v) => `${((Number(v) || 0) * 100).toFixed(1)}%`;
   // Journal counters arrive as `int | null` (`tgfarm/api.py::_stage_counters`):
   // `null` is "nobody measured this", `0` is "measured: nothing happened".
@@ -3074,7 +3079,7 @@
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
             <span class="platform-priority">${esc(automationLabel)}</span>
             ${item.capability ? `<span class="platform-capability capability-${esc(item.capability)}" title="${esc(item.capability_note || "")}">${esc(item.capability_label || item.capability)}</span>` : ""}
-            ${supported ? `<span class="platform-priority platform-channel-count" title="Количество включённых каналов и персон этой площадки">${typeof item.channel_count === "number" ? n(item.channel_count) + " каналов" : "каналы: нет отчёта"}</span>` : ""}
+            ${supported ? `<span class="platform-priority platform-channel-count" title="Количество включённых каналов и персон этой площадки">${typeof item.channel_count === "number" ? ruCountLabel(item.channel_count, { one: "канал", few: "канала", many: "каналов" }) : "каналы: нет отчёта"}</span>` : ""}
           </div>
           <div class="platform-connection">
             <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>
