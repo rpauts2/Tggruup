@@ -474,8 +474,9 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         assert timeline.get_by_text("Добавлен в расписание").is_visible()
         assert timeline.get_by_text("Попытка доставки · VK").is_visible()
         assert timeline.get_by_text("Публикация подтверждена").is_visible()
-        assert timeline.get_by_text("Медиа: 1 файла").is_visible()
+        assert timeline.get_by_text("Медиа: 1 файл").is_visible()
         assert timeline.locator("time[datetime]").count() == 5
+        assert timeline.get_by_text("часовой пояс не указан").count() == 5
         assert page.get_by_role("heading", name="Короткие видео · Shorts / TikTok / VK Клипы").count() == 1
         assert page.get_by_role("button", name="Создать вертикальное видео").count() == 1
 
