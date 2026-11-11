@@ -62,10 +62,24 @@
         <p id="view-sub">Состояние фермы, команда и площадки в одном окне</p>
       </div>
       <div class="topbar-right">
+        <div class="data-sync" id="data-sync" data-state="loading" aria-busy="true"
+             role="group" aria-label="Состояние обновления данных">
+          <span class="data-sync-dot" aria-hidden="true"></span>
+          <span class="data-sync-copy">
+            <strong id="data-sync-label">Загружаю данные…</strong>
+            <small id="data-sync-detail">Проверяю состояние рабочих разделов</small>
+          </span>
+          <button class="data-sync-refresh" id="refresh-data" type="button"
+                  aria-label="Обновить данные" title="Обновить данные" disabled>
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
         <button class="btn btn-primary" id="run-cycle">
           <span class="spinner" aria-hidden="true"></span><span>Запустить цикл</span>
         </button>
       </div>
+      <div class="sr-only" id="data-sync-announcement" role="status"
+           aria-live="polite" aria-atomic="true"></div>
     </header>
 
 
