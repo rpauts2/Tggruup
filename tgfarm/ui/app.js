@@ -5561,8 +5561,8 @@
     redditMetrics: "метрики Reddit",
     aiUsage: "использование ИИ",
     metricsFreshness: "свежесть метрик",
-    metricsCoverage: "покрытие метрик",
-    metricsAttribution: "атрибуция метрик",
+    ["metricsCoverage"]: "покрытие метрик",
+    ["metricsAttribution"]: "атрибуция метрик",
     backlog: "публикационный backlog",
     metricsFormats: "эффективность форматов",
     distributionPlan: "план распространения",
@@ -5695,9 +5695,9 @@
       });
       // The publication card answers the one question the whole dashboard
       // exists for, so it is rendered before the all-failed throw below: when
-      // every endpoint is down the other sections keep their stale silence,
-      // but this one must say «сеть не отвечает» instead of freezing on an old
-      // verdict — and a failed read is re-rendered every pass, never cached.
+      // every endpoint is down the independent sections keep their last known
+      // content, while the decision card is explicitly marked unread on this pass.
+      // This happens before the all-failed early return below, never from stale cache.
       renderPublicationDecision("status" in data ? data.status : null,
         "status" in data ? null : reasons.status || new Error("статус не получен"));
       // Same rule as the publication card above: a read that died must be said
@@ -5719,8 +5719,10 @@
         "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
       updateRefreshIndicator(failed, Object.keys(endpoints).length);
       // With no successful response there is no fresh dashboard snapshot to
-      // render. Keep independent workspaces intact and leave the unavailable
-      // status visible instead of replacing every panel with empty placeholders.
+      // render. Keep independent workspaces intact; the cards above already show
+      // their own read failures, and the shared indicator explains the outage.
+      // Return normally instead of throwing into the generic exception handler,
+      // which would overwrite the more useful endpoint-level failure summary.
       if (failed.length === Object.keys(endpoints).length) return;
 
       if ("status" in data) {
