@@ -1567,6 +1567,7 @@
   };
 
   function renderPipeline(runs) {
+    const targets = ["#pipeline-visual", "#team-pipeline"].map((selector) => $(selector)).filter(Boolean);
     const byRun = new Map();
     for (const r of runs) {
       if (r.stage === "cycle") continue;
@@ -1582,25 +1583,23 @@
                     s9_crosspost: "кросспост", s8_analytics: "аналитика" };
 
     if (!stages.length) {
-      $("#pipeline-visual").innerHTML = `<div class="empty">Прогонов ещё не было</div>`;
+      targets.forEach((target) => { target.innerHTML = '<div class="empty">Прогонов ещё не было</div>'; });
       return;
     }
     const map = Object.fromEntries(stages.map((s) => [s.stage, s]));
-    $("#pipeline-visual").innerHTML = order.map((key) => {
-      const s = map[key];
-      const state = s ? (STAGE_STATUS[s.status] || { cls: "stage-err", word: null }) : null;
-      const cancelled = !!state && s.status === "cancelled";
-      const cls = !s ? "" : state.cls;
-      // A cancelled stage's `error` is the sentence the timer wrote
-      // ("cancelled after 4500ms"), so it is kept — but prefixed with what it
-      // actually was, and still through `esc()`: the string is server data.
-      const detail = s ? (cancelled ? `прерван · ${esc((s.error || "").slice(0, 40))}`
-        : s.status === "ok" ? `${items(s.out, s.counters_state)} · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
+    const markup = order.map((key) => {
+      const stage = map[key];
+      const status = stage ? (STAGE_STATUS[stage.status] || { cls: "stage-err", word: null }) : null;
+      const cancelled = !!status && stage.status === "cancelled";
+      const cls = !stage ? "" : status.cls;
+      // A cancelled stage's error is the timer's cancellation reason, not a publish failure.
+      const detail = stage ? (cancelled ? `прерван · ${esc((stage.error || "").slice(0, 40))}`
+        : stage.status === "ok" ? `${items(stage.out, stage.counters_state)} · ${stage.ms} мс` : esc((stage.error || "").slice(0, 40))) : "не запускался";
       return `<div class="stage ${cls}"><span class="stage-dot"></span>
                 <span><b>${names[key]}</b><br>${detail}</span></div>`;
     }).join("");
+    targets.forEach((target) => { target.innerHTML = markup; });
   }
-
   // S2 stores the *shape* of interest per cluster: `trend_phase` is this window
   // against the window before it, `acceleration` is the relative change. Both
   // can be legitimately absent — `unknown` means the farm never observed a
@@ -6500,6 +6499,7 @@
   const VIEW_TITLES = {
     overview: ["Command Center", "Состояние фермы, команда и площадки в одном окне"],
     connect: ["Подключения", "Один клик: сайт площадки, вход, сохранение сессии и токенов"],
+    team: ["AI Team", "Редакционные роли и реальные стадии работы конвейера"],
     platforms: ["Центр площадок", "Каталог площадок, статусы подключения и готовность к публикации"],
     plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
     trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
