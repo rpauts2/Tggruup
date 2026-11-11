@@ -408,7 +408,7 @@ def test_no_run_view_prints_a_raw_counter(client):
     script = _script(client)
     assert "${s.out}" not in script
     assert "${s.in}" not in script
-    detail = _chunk(script, "const detail = s ?", "return `<div class=\"stage")
-    assert "items(s.out, s.counters_state)" in detail
+    detail = _chunk(script, "const detail = stage ?", "return `<div class=\"stage")
+    assert "items(stage.out, stage.counters_state)" in detail
     runs_line = _chunk(script, '<div class="item-meta">${stages.map', "</div>")
     assert 'typeof s.out === "number"' in runs_line
