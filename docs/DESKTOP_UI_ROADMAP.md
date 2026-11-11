@@ -84,6 +84,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Added browser assertions for every tab/panel relationship and keyboard navigation (arrow keys, Home, End, focus synchronization).
 - Added a shared data-freshness indicator with manual refresh, partial-failure visibility, the last successful full snapshot time, and deduplicated recovery notifications.
 - Added a browser scenario that simulates one failed data endpoint, verifies that the dashboard identifies it as stale, and verifies recovery through the refresh control.
+- Turned the existing post trace into a readable lifecycle timeline with status labels, event timestamps and media count; timestamps without timezone information are shown without silently converting them to local time.
+- Removed duplicated short-video actions from published-post details so the same preparation controls appear only once.
 
 ## Next UI milestones
 
