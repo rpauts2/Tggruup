@@ -593,7 +593,7 @@ def test_a_cancelled_run_is_reported_as_cancelled_and_not_as_ok(client):
     script = _script(client)
     chip = _run_chip(script)
     assert 'stages.some((s) => s.status === "error")' in chip
-    assert 'stages.some((s) => stage.status === "cancelled")' in chip
+    assert 'stages.some((s) => s.status === "cancelled")' in chip
     assert "прерван" in chip
     classes = re.findall(r'class="tag ([a-z-]+)"', chip)
     assert len(classes) == 3 and len(set(classes)) == 3, classes
