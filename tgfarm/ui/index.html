@@ -505,6 +505,17 @@
           <input id="platform-search" type="search" placeholder="Найти сеть, например Reddit или VK…" autocomplete="off">
           <kbd>/</kbd>
         </label>
+        <label class="platform-capability-select">
+          <span>Возможность</span>
+          <select id="platform-capability-filter" class="input input-sm" aria-label="Фильтр по возможностям площадки">
+            <option value="all">Любой способ</option>
+            <option value="publish">Автопубликация</option>
+            <option value="draft_only">Черновик в редакторе</option>
+            <option value="manual_upload">Ручная загрузка / согласие</option>
+            <option value="read_only">Только чтение</option>
+            <option value="unsupported">Нет интеграции</option>
+          </select>
+        </label>
         <div class="segmented platform-filter-tabs" id="platform-filters" role="group" aria-label="Фильтр площадок">
           <button class="is-active" data-platform-filter="all">Все</button>
           <button data-platform-filter="enabled">Включены</button>
