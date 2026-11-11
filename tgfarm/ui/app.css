@@ -1255,7 +1255,24 @@ main {
 .platform-auth-block.is-pending .platform-auth-dot { background: #e2b562; box-shadow: 0 0 0 3px rgba(226,181,98,.1); }
 .platform-auth-block.is-not-integrated { border-style: dashed; }
 .platform-auth-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
-.platform-auth-actions .btn { white-space: nowrap; min-height: 32px; }
+/* Platform cards are intentionally information-dense. Keep the access
+   explanation on its own row so a long OAuth/setup action cannot crush the
+   status copy into one-letter columns at the 300px card minimum. */
+.platform-auth-block { flex-direction: column; align-items: stretch; }
+.platform-auth-copy { width: 100%; flex: 1 1 auto; }
+.platform-auth-copy > div { flex: 1 1 auto; }
+.platform-auth-actions {
+  width: 100%;
+  flex: 0 1 auto;
+  justify-content: flex-start;
+}
+.platform-auth-actions .btn {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+  min-height: 32px;
+}
 .platform-auth-button { color: #b8c5dc; border-color: rgba(150,172,211,.2); background: rgba(150,172,211,.04); }
 .platform-auth-check { border-color: rgba(91,140,255,.25); background: rgba(91,140,255,.1); color: #a9c5ff; }
 .platform-auth-dialog {
