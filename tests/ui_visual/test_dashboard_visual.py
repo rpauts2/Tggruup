@@ -59,6 +59,8 @@ def _mock_api(route):
         "/api/status": {
             "mode": "off",
             "scheduler_running": False,
+            "can_publish": False,
+            "cycle_health": {"state": "idle", "stale": False, "started_at": None, "finished_at": None},
             "channels": 2,
             "sources": 67,
             "embedder": "local",
@@ -234,6 +236,17 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     """)
                     assert positions == sorted(positions)
                     assert overview.get_by_role("heading", name="Состояние конвейера").is_visible()
+                    operations = overview.locator("#command-status")
+                    assert operations.is_visible()
+                    assert operations.get_by_role("heading", name="Состояние фермы").is_visible()
+                    assert operations.locator(".command-status-item").count() == 4
+                    assert operations.get_by_text("OFF", exact=True).is_visible()
+                    assert operations.get_by_text("Остановлен", exact=True).is_visible()
+                    assert operations.get_by_text("Заблокирована", exact=True).is_visible()
+                    assert operations.get_by_text("Не запускался", exact=True).is_visible()
+                    next_action = operations.locator("#command-next-action")
+                    assert next_action.get_attribute("data-goto") == "platforms"
+                    assert next_action.get_by_text("Проверить готовность площадок").is_visible()
                     assert overview.get_by_role("heading", name="Результаты редакции").is_visible()
                     grid = page.locator(".command-shortcuts-grid")
                     assert grid.evaluate("(el) => getComputedStyle(el).display") == "grid"
@@ -308,6 +321,8 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         assert page.locator(".tabs").evaluate("(el) => el.scrollWidth > el.clientWidth")
         assert page.locator("#data-sync").is_visible()
         assert page.locator("#refresh-data").is_visible()
+        assert page.locator("#command-status-grid").evaluate("(el) => getComputedStyle(el).gridTemplateColumns.split(' ').length") == 2
+        assert page.locator("#command-status").is_visible()
         overflow = page.locator("body").evaluate("""(body) => ({
             bodyWidth: body.scrollWidth,
             viewportWidth: window.innerWidth,

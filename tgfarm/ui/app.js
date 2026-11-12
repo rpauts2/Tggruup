@@ -157,6 +157,84 @@
     }
   }
 
+  function renderCommandStatus(status) {
+    const root = $("#command-status-grid");
+    const action = $("#command-next-action");
+    if (!root) return;
+    if (!status) {
+      root.innerHTML = '<div class="command-status-unavailable">Статус фермы не прочитан. Последнее состояние нельзя считать актуальным.</div>';
+      if (action) action.hidden = true;
+      return;
+    }
+    const cycle = status.cycle_health || {};
+    const mode = {
+      live: ["LIVE", "is-live", "Публикации могут выполняться в рабочем режиме"],
+      dry: ["DRY-RUN", "is-warn", "Цикл работает без реальной публикации"],
+      off: ["OFF", "is-muted", "Рабочий режим выключен"],
+    }[status.mode] || ["Неизвестно", "is-muted", "Сервер не сообщил режим"];
+    const schedulerKnown = typeof status.scheduler_running === "boolean";
+    const scheduler = !schedulerKnown
+      ? ["Неизвестно", "is-muted", "Нет подтверждённого ответа"]
+      : status.scheduler_running
+        ? ["Работает", "is-live", "Планировщик активен в этом процессе"]
+        : ["Остановлен", "is-warn", "Автоматический запуск по расписанию сейчас не выполняется"];
+    const publishing = status.can_publish === true
+      ? ["Разрешена", "is-live", "Сервер разрешает публикацию в текущей конфигурации"]
+      : status.can_publish === false
+        ? ["Заблокирована", "is-warn", "Текущая конфигурация не разрешает публикацию"]
+        : ["Неизвестно", "is-muted", "Сервер не сообщил право публикации"];
+    const cycleStates = {
+      idle: ["Не запускался", "is-muted"],
+      running: ["Выполняется", "is-live"],
+      ok: ["Завершён", "is-live"],
+      partial: ["Завершён с ошибками", "is-warn"],
+      failed: ["Сбой", "is-error"],
+      timeout: ["Тайм-аут", "is-error"],
+      cancelled: ["Отменён", "is-warn"],
+    };
+    const cycleView = cycleStates[cycle.state] || ["Неизвестно", "is-muted"];
+    if (cycle.stale === true) cycleView[0] = "Зависший цикл";
+    const cycleStamp = cycle.state === "running" ? cycle.started_at : cycle.finished_at;
+    const cycleDetail = cycle.stale === true
+      ? "Цикл превысил допустимое время — нужна диагностика"
+      : cycleStamp
+        ? (cycle.state === "running" ? "Запущен " : "Завершён ") + dt(cycleStamp)
+        : "Нет подтверждённого времени последнего цикла";
+    const cards = [
+      ["Режим работы", mode[0], mode[2], mode[1]],
+      ["Планировщик", scheduler[0], scheduler[2], scheduler[1]],
+      ["Право публикации", publishing[0], publishing[2], publishing[1]],
+      ["Последний цикл", cycleView[0], cycleDetail, cycle.stale === true ? "is-error" : cycleView[1]],
+    ];
+    root.innerHTML = cards.map(([label, value, detail, tone]) =>
+      '<article class="command-status-item ' + tone + '">'
+      + '<span>' + esc(label) + '</span>'
+      + '<strong>' + esc(value) + '</strong>'
+      + '<small>' + esc(detail) + '</small>'
+      + '</article>'
+    ).join("");
+    if (action) {
+      let target = "posts";
+      let label = "Открыть очередь";
+      if ((status.alerts || []).length) {
+        target = "review";
+        label = "Разобрать проблемы";
+      } else if (cycle.stale === true || ["failed", "timeout", "partial"].includes(cycle.state)) {
+        target = "runs";
+        label = "Проверить последний цикл";
+      } else if (status.can_publish === false) {
+        target = "platforms";
+        label = "Проверить готовность площадок";
+      } else if (status.scheduler_running === false) {
+        target = "plan";
+        label = "Открыть планирование";
+      }
+      action.dataset.goto = target;
+      action.innerHTML = esc(label) + ' <span aria-hidden="true">↗</span>';
+      action.hidden = false;
+    }
+  }
+
   function renderKPIs(s) {
     const fleet = s.fleet || {};
     const items = [
@@ -5917,6 +5995,7 @@
         }
         $("#brand-sub").textContent =
           `${data.status.channels} каналов · ${data.status.sources} источников · ${data.status.embedder}`;
+        renderCommandStatus(data.status);
         renderAlerts(data.status.alerts || []);
         renderKPIs(data.status.kpis || data.status);
       }

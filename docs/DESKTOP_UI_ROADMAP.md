@@ -129,3 +129,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Isolated material-detail reads with a monotonically increasing request identity. If an operator opens material B before material A finishes loading, or closes the drawer while a read is pending, the older response/error is ignored and cannot replace the current drawer contents.
 - Added a browser regression scenario for closing a pending material A, opening material B, resolving B first and A last; the late response must not replace B or reopen the drawer.
 - The queue visible status set is now: all, gate-passed, scheduled, uncertain delivery, failed, draft, published and rejected.
+
+
+## Command Center — live operational snapshot
+
+The overview now has a dedicated operational status strip, separate from aggregate KPIs. It renders only facts from `/api/status`: configured run mode, scheduler state, publication permission, and the cycle watchdog state/timestamps. Unknown values remain explicitly unknown; the cycle state distinguishes idle, running, successful, partial, failed, timed out, cancelled and stale. Its single next-action link is selected from actual alerts and blocking conditions and navigates to the relevant existing workspace. It does not start a cycle, alter settings, or publish anything.
