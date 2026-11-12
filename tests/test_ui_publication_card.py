@@ -183,6 +183,30 @@ def test_refresh_renders_the_card_before_the_all_failed_return(client):
     assert "Promise.allSettled(" in body
 
 
+def test_review_board_does_not_turn_missing_age_or_attempts_into_zero(client):
+    script = _script(client)
+    body = _chunk(script, "function renderReviewCard(item)", "function renderReviewBoard()")
+    assert "typeof item.age_hours === \"number\"" in body
+    assert "возраст не измерен" in body
+    assert "typeof item.attempts === \"number\"" in body
+    assert "попыток: нет отчёта" in body
+    assert "Number(item.age_hours || 0)" not in body
+    assert "Number(item.attempts || 0)" not in body
+
+
+def test_review_board_confirms_every_operator_action(client):
+    script = _script(client)
+    body = _chunk(script, "async function runReviewAction(", "// Rows one click may return to the queue")
+    for phrase in (
+        "Подтверждаете, что этот пост уже появился",
+        "Вы лично проверили целевую площадку",
+        "Повторить доставку этого материала",
+        "Отправить этот материал на публикацию сейчас",
+        "Отклонить этот материал",
+    ):
+        assert phrase in body
+
+
 # ------------------------------------------------------------------- the hygiene
 def test_publication_rows_reuse_the_existing_item_layout(client):
     """No bespoke block: the card is the same .item/.item-main/.item-side family."""
