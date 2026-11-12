@@ -115,3 +115,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Every button performs a real action or is clearly disabled with an explanation.
 - The app remains navigable when one data endpoint fails.
 - Live publishing and retry actions remain explicit and recoverable.
+
+
+### Publication queue status coverage
+- Added direct queue filters for failed publications and drafts. The labels correspond to existing Post.status values and use the existing /api/posts?status=... query; no publishing or retry behavior changes.
+- The queue visible status set is now: all, gate-passed, scheduled, uncertain delivery, failed, draft, published and rejected.
