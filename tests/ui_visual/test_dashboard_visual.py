@@ -1048,3 +1048,105 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
         assert fresh_page.locator("#sources-freshness").get_by_text("Данные раздела недоступны").is_visible()
 
         browser.close()
+
+def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(dashboard_url):
+    """The delivery journal and health snapshot never masquerade as current."""
+    from playwright.sync_api import sync_playwright
+
+    available = {"crossposts": True, "health": True}
+    entries = [{
+        "post": "Материал для проверки доставки",
+        "platform": "vk",
+        "status": "posted",
+        "at": "2026-11-12T08:00:00Z",
+        "remote_id": "vk-123",
+        "url": "https://vk.com/wall-1_123",
+    }]
+    health = {
+        "state": "healthy",
+        "generated_at": "2026-11-12T08:00:00Z",
+        "totals": {"targets": 1, "posted": 1, "needs_attention": 0, "claims": 0, "stale_claims": 0},
+        "platforms": [{
+            "platform": "vk", "state": "healthy", "posted": 1,
+            "scheduled": 0, "unknown": 0, "permanent": 0,
+        }],
+    }
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        if path in ("/api/crossposts", "/api/crossposts/health"):
+            key = "crossposts" if path == "/api/crossposts" else "health"
+            if not available[key]:
+                route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body=json.dumps({"detail": f"{key} test outage"}),
+                )
+                return
+            payload = {"crossposts": entries} if key == "crossposts" else health
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="posts"]').click()
+
+        journal_notice = page.locator("#crossposts-freshness")
+        health_notice = page.locator("#crosspost-health-freshness")
+        page.locator("#crossposts-list").get_by_text("Материал для проверки доставки").wait_for()
+        page.locator("#crosspost-health").get_by_text("есть успешные доставки").wait_for()
+        assert journal_notice.is_hidden()
+        assert health_notice.is_hidden()
+
+        available["crossposts"] = False
+        available["health"] = False
+        page.locator("#refresh-data").click()
+        page.wait_for_function(
+            "() => document.querySelector('#crossposts-freshness')?.dataset.state === 'stale' "
+            "&& document.querySelector('#crosspost-health-freshness')?.dataset.state === 'stale'",
+            timeout=10000,
+        )
+        assert journal_notice.is_visible()
+        assert health_notice.is_visible()
+        assert journal_notice.get_by_text("Данные устарели").is_visible()
+        assert health_notice.get_by_text("Данные устарели").is_visible()
+        assert "503" in journal_notice.inner_text()
+        assert "503" in health_notice.inner_text()
+        assert page.locator("#crossposts-list").get_by_text("Материал для проверки доставки").is_visible()
+        assert page.locator("#crosspost-health").get_by_text("есть успешные доставки").is_visible()
+
+        available["crossposts"] = True
+        available["health"] = True
+        page.locator("#refresh-data").click()
+        page.wait_for_function(
+            "() => document.querySelector('#crossposts-freshness')?.hidden "
+            "&& document.querySelector('#crosspost-health-freshness')?.hidden",
+            timeout=10000,
+        )
+
+        # A successful empty journal is a real empty state, not a stale one.
+        entries.clear()
+        page.locator("#refresh-data").click()
+        page.locator("#crossposts-list").get_by_text("Кросспостов пока нет").wait_for()
+        assert journal_notice.is_hidden()
+
+        # First-read failures have no last-known-good snapshot to preserve.
+        available["crossposts"] = False
+        available["health"] = False
+        fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
+        fresh_page.route("**/api/**", mock_api)
+        fresh_page.goto(dashboard_url, wait_until="networkidle")
+        fresh_page.locator('.tab[data-view="posts"]').click()
+        fresh_page.wait_for_function(
+            "() => document.querySelector('#crossposts-freshness')?.dataset.state === 'error' "
+            "&& document.querySelector('#crosspost-health-freshness')?.dataset.state === 'error'",
+            timeout=10000,
+        )
+        assert fresh_page.locator("#crossposts-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#crosspost-health-freshness").get_by_text("Данные раздела недоступны").is_visible()
+
+        browser.close()
