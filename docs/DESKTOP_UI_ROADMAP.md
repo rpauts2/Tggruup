@@ -103,6 +103,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 
 ## Next UI milestones
 
+- Platform catalog freshness is now a safety boundary: the last successful catalog remains visible after a failed read, receives an explicit stale notice, and platform-changing / authorization entry points refuse to run until a fresh catalog response arrives. A first-read failure is shown as unavailable rather than as an empty registry.
+
 1. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
 2. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
 3. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
