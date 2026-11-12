@@ -478,8 +478,6 @@ def test_command_status_marks_retained_snapshot_stale_and_first_failure_unavaila
         assert page.locator("#command-status-freshness").get_by_text(
             "Показан последний успешный снимок", exact=False
         ).is_visible()
-        browser.close()
-
         first_failure = browser.new_page(viewport={"width": 1440, "height": 960})
         first_failure.route("**/api/**", _mock_api)
         first_failure.route(
