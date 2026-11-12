@@ -512,7 +512,7 @@ def test_dashboard_refresh_indicator_reports_partial_failure_and_recovers(dashbo
 
 
 def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
-    """The existing post trace API is readable in the material drawer."""
+    """The material drawer loads and refreshes its lifecycle trace automatically."""
     from playwright.sync_api import sync_playwright
 
     post = {
@@ -591,11 +591,15 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         card.wait_for(state="visible", timeout=5000)
         card.click()
 
-        page.locator("#drawer").wait_for(state="visible")
-        page.get_by_role("button", name="История").click()
-        timeline = page.locator("#preview-slot .trace-block")
+        drawer = page.locator("#drawer")
+        drawer.wait_for(state="visible")
+        timeline = drawer.locator("#trace-slot .trace-block")
         timeline.wait_for(state="visible")
         assert timeline.get_by_role("heading", name="История материала").is_visible()
+        # Trace is loaded automatically with the material; the explicit button
+        # remains available to refresh it after a manual destination check.
+        page.get_by_role("button", name="Обновить историю").click()
+        timeline.wait_for(state="visible")
         assert timeline.locator(".trace-event").count() == 5
         assert timeline.get_by_text("Черновик создан").is_visible()
         assert timeline.get_by_text("Проверка качества").is_visible()
