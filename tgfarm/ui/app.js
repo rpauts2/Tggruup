@@ -140,7 +140,6 @@
       state.workspaceFreshness[key] = { lastSuccessAt: new Date().toISOString() };
       root.hidden = true;
       root.dataset.state = "fresh";
-    if (section) section.dataset.state = "fresh";
       root.textContent = "";
       return;
     }
@@ -154,7 +153,6 @@
         + 'Обновление не удалось: ' + esc(failure.message || failure);
     } else {
       root.dataset.state = "error";
-      if (section) section.dataset.state = "error";
       root.innerHTML = '<strong>Данные раздела недоступны.</strong> '
         + 'Успешный снимок ещё не получен. ' + esc(failure.message || failure);
     }
@@ -198,6 +196,7 @@
         return;
       }
       root.dataset.state = "error";
+      if (section) section.dataset.state = "error";
       root.innerHTML = '<div class="command-status-unavailable">Статус ещё не получен. Состояние фермы неизвестно.</div>';
       if (freshness) {
         freshness.hidden = false;
@@ -210,6 +209,7 @@
     }
     state.commandStatusLoaded = true;
     root.dataset.state = "fresh";
+    if (section) section.dataset.state = "fresh";
     if (freshness) {
       freshness.hidden = true;
       freshness.textContent = "";
