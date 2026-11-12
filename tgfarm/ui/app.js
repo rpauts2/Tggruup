@@ -40,6 +40,7 @@
     agentBenchmarkBusy: false,
     drawerReturnFocus: null,
     drawerRequestId: 0,
+    workspaceFreshness: {},
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -126,6 +127,31 @@
   }
 
   /* ------------------------------------------------------------- rendering */
+  function renderWorkspaceFreshness(key, rootId, failure) {
+    const root = $("#" + rootId);
+    if (!root) return;
+    if (!failure) {
+      state.workspaceFreshness[key] = { lastSuccessAt: new Date().toISOString() };
+      root.hidden = true;
+      root.dataset.state = "fresh";
+      root.textContent = "";
+      return;
+    }
+
+    const lastSuccessAt = state.workspaceFreshness[key]?.lastSuccessAt;
+    root.hidden = false;
+    if (lastSuccessAt) {
+      root.dataset.state = "stale";
+      root.innerHTML = '<strong>Данные устарели.</strong> '
+        + 'Показан последний успешный снимок: ' + esc(dt(lastSuccessAt)) + '. '
+        + 'Обновление не удалось: ' + esc(failure.message || failure);
+    } else {
+      root.dataset.state = "error";
+      root.innerHTML = '<strong>Данные раздела недоступны.</strong> '
+        + 'Успешный снимок ещё не получен. ' + esc(failure.message || failure);
+    }
+  }
+
   function renderKPIs(s) {
     const fleet = s.fleet || {};
     const items = [
@@ -5762,6 +5788,10 @@
       // too — an old list of rows that have since been reconciled would be a lie.
       renderUnresolvedWorklist("backlog" in data ? data.backlog : null,
         "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
+      renderWorkspaceFreshness("trends", "trends-freshness",
+        "trends" in data ? null : reasons.trends || new Error("тренды не получены"));
+      renderWorkspaceFreshness("sources", "sources-freshness",
+        "sources" in data ? null : reasons.sources || new Error("источники не получены"));
       updateRefreshIndicator(failed, Object.keys(endpoints).length);
       // With no successful response there is no fresh dashboard snapshot to
       // render. Keep independent workspaces intact; the cards above already show
