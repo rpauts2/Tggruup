@@ -352,3 +352,33 @@ def test_platform_catalog_freshness_blocks_stale_state_changes(client):
         body = _chunk(script, guard, "\n  }")
         assert "if (!state.platformCatalogFresh)" in body
         assert "return" in body
+
+
+def test_editorial_plan_sources_have_independent_freshness_and_apply_gate(client):
+    html = client.get("/").text
+    for notice, anchor in (
+        ("plan-freshness", 'id="plan-meta"'),
+        ("plan-open-orders-freshness", 'id="plan-entries"'),
+        ("plan-history-freshness", 'id="plan-history"'),
+    ):
+        assert f'id="{notice}"' in html
+        assert html.index(f'id="{notice}"') < html.index(anchor)
+    assert 'id="plan-apply" type="button" disabled' in html
+
+    script = _script(client)
+    loader = _chunk(script, "async function loadEditorialPlan(force = false)", "function renderEditorialPlan(plan)")
+    assert "Promise.allSettled" in loader
+    assert 'renderWorkspaceFreshness("editorialPlan", "plan-freshness"' in loader
+    assert 'renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness"' in loader
+    assert "Array.isArray(planResult.value.entries)" in loader
+    assert "Array.isArray(historyResult.value.plans)" in loader
+
+    queue = _chunk(script, "async function loadOpenOrderQueue()", "window.tgfarmSetRuntimeMode")
+    assert 'renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness"' in queue
+    assert "hadSnapshot" in queue
+    assert "if (!hadSnapshot) renderOpenOrderQueue(null, error)" in queue
+
+    actions = _chunk(script, 'const planRefresh = $("#plan-refresh")', '$$("[data-goto]")')
+    assert "if (!state.editorialPlanFresh" in actions
+    assert 'toast("План не подтверждён актуальным чтением. Обнови его перед фиксацией."' in actions
+    assert "syncEditorialPlanActions();" in actions
