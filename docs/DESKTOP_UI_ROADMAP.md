@@ -92,6 +92,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Hardened the review board as an operator decision surface: missing age and attempt measurements stay explicitly unknown instead of rendering as zero; reconciliation, retry, immediate publish and rejection actions require a confirmation step.
 - Added browser coverage proving that dismissing the «Проверил: поста нет» confirmation sends no reconciliation request, and that absent age/attempt fields remain unknown.
 - Connected both the review board and the Command Center's unresolved-delivery worklist to the same material drawer. Operators can open the full post, editorial context and lifecycle trace before deciding; existing reconciliation actions remain separate and confirmation-gated.
+- Unified queue cards, overview rows and review cards around the same material drawer. Queue entries are keyboard-operable; opening a material loads its delivery trace automatically in a separate slot, so editorial previews cannot overwrite lifecycle evidence.
+- Made the material drawer an accessible modal workspace: focus moves to its close control, stays inside while open, Escape closes it, and focus returns to the exact queue/review entry. The detail-read error state retains an explicit close action; trace reads are guarded against late responses from a previously opened material.
 - Added unit and browser coverage for opening a material from the review board, while retaining the cancel-confirmation test that proves no reconciliation request is sent when the operator backs out.
 - Reprioritized the Command Center's four primary shortcuts around operator work: «Требует внимания», planning, publication queue and connections. AI Team remains available in primary navigation, while the highest-risk review path is now one click from the overview.
 - Reordered the overview so the real pipeline state and editorial results come first, followed immediately by the last publish decision and per-platform backlog. Portfolio, AI-usage and measurement analytics remain available below the operational workspace rather than competing with daily delivery decisions.
@@ -99,12 +101,11 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 
 ## Next UI milestones
 
-1. Make the publication queue, post drawer, trace and delivery reconciliation navigable as one material lifecycle.
-2. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
-3. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
-4. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
-5. Add agent activity only after a reliable backend event/status contract exists.
-6. Validate desktop, compact webview, keyboard navigation and reduced-motion behavior.
+1. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
+2. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
+3. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
+4. Add agent activity only after a reliable backend event/status contract exists.
+5. Validate the complete material lifecycle in the Windows pywebview shell, including keyboard/focus behavior and reduced-motion settings.
 
 ## Acceptance criteria
 
