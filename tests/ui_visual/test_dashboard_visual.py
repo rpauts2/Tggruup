@@ -975,24 +975,33 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
 
         trends_notice = page.locator("#trends-freshness")
         sources_notice = page.locator("#sources-freshness")
+        page.locator('.tab[data-view="trends"]').click()
         page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").wait_for()
-        page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").wait_for()
         assert trends_notice.is_hidden()
+        page.locator('.tab[data-view="sources"]').click()
+        page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").wait_for()
         assert sources_notice.is_hidden()
 
         available["trends"] = False
         available["sources"] = False
         page.locator("#refresh-data").click()
-        trends_notice.wait_for(state="visible", timeout=10000)
-        sources_notice.wait_for(state="visible", timeout=10000)
-        page.locator('#trends-freshness[data-state="stale"]').wait_for()
-        page.locator('#sources-freshness[data-state="stale"]').wait_for()
-        assert trends_notice.get_by_text("Данные устарели").is_visible()
-        assert sources_notice.get_by_text("Данные устарели").is_visible()
-        assert "503" in trends_notice.inner_text()
-        assert "503" in sources_notice.inner_text()
+        page.wait_for_function(
+            "() => document.querySelector('#trends-freshness')?.dataset.state === 'stale' "
+            "&& document.querySelector('#sources-freshness')?.dataset.state === 'stale'",
+            timeout=10000,
+        )
+
         # Last good content remains available for inspection, but is labelled stale.
+        page.locator('.tab[data-view="trends"]').click()
+        assert trends_notice.is_visible()
+        assert trends_notice.get_by_text("Данные устарели").is_visible()
+        assert "503" in trends_notice.inner_text()
         assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").is_visible()
+
+        page.locator('.tab[data-view="sources"]').click()
+        assert sources_notice.is_visible()
+        assert sources_notice.get_by_text("Данные устарели").is_visible()
+        assert "503" in sources_notice.inner_text()
         assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").is_visible()
 
         available["trends"] = True
@@ -1002,19 +1011,24 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
             "() => document.querySelector('#trends-freshness')?.hidden "
             "&& document.querySelector('#sources-freshness')?.hidden"
         )
+        page.locator('.tab[data-view="trends"]').click()
+        assert trends_notice.is_hidden()
         assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").is_visible()
+        page.locator('.tab[data-view="sources"]').click()
+        assert sources_notice.is_hidden()
         assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").is_visible()
 
         # A successful empty response is not an outage and must not inherit a stale badge.
         trends.clear()
         sources.clear()
         page.locator("#refresh-data").click()
-        page.locator("#trends-list").get_by_text("Трендов нет — тепло ниже порога").wait_for()
         page.locator("#sources-list").get_by_text("Источники не заданы").wait_for()
-        assert trends_notice.is_hidden()
         assert sources_notice.is_hidden()
-        assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").count() == 0
         assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").count() == 0
+        page.locator('.tab[data-view="trends"]').click()
+        page.locator("#trends-list").get_by_text("Трендов нет — тепло ниже порога").wait_for()
+        assert trends_notice.is_hidden()
+        assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").count() == 0
 
         # A first-read failure has no old snapshot to preserve; report unavailable, not stale.
         available["trends"] = False
@@ -1022,10 +1036,15 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
         fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
         fresh_page.route("**/api/**", mock_api)
         fresh_page.goto(dashboard_url, wait_until="networkidle")
-        fresh_page.locator('#trends-freshness[data-state="error"]').wait_for(timeout=10000)
-        fresh_page.locator('#sources-freshness[data-state="error"]').wait_for(timeout=10000)
+        fresh_page.wait_for_function(
+            "() => document.querySelector('#trends-freshness')?.dataset.state === 'error' "
+            "&& document.querySelector('#sources-freshness')?.dataset.state === 'error'",
+            timeout=10000,
+        )
+        fresh_page.locator('.tab[data-view="trends"]').click()
         assert fresh_page.locator("#trends-freshness").get_by_text("Данные раздела недоступны").is_visible()
-        assert fresh_page.locator("#sources-freshness").get_by_text("Данные раздела недоступны").is_visible()
         assert fresh_page.locator("#trends-freshness").get_by_text("Данные устарели").count() == 0
+        fresh_page.locator('.tab[data-view="sources"]').click()
+        assert fresh_page.locator("#sources-freshness").get_by_text("Данные раздела недоступны").is_visible()
 
         browser.close()
