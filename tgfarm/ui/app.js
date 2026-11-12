@@ -20,6 +20,10 @@
     topicDossier: null,
     platformData: null,
     platformCatalogFresh: false,
+    editorialPlanFresh: false,
+    editorialPlanBusy: false,
+    editorialPlanApplyBusy: false,
+    editorialRequests: { plan: 0, history: 0, openOrders: 0 },
     platformQuery: "",
     platformFilter: "all",
     platformCapabilityFilter: "all",
@@ -2006,39 +2010,77 @@
   };
 
   // ── План тем (глобальный редакционный план) ─────────────────────────────
-  async function loadEditorialPlan(force = false) {
-    if (force) state.planLoaded = false;
-    // Read independently of the plan itself: whether the consumer runs does not
-    // depend on this process being able to serialize the plan.
-    loadPlanExecution();
-    // The same argument in the other direction: booking fidelity is a fact about
-    // stored rows, not about the plan snapshot this call is building, and it keeps
-    // its own request so a failed one cannot be reported as the other.
-    loadBookingFidelity();
-    // And the third independent read: which topics the plan has already ordered a
-    // draft for but has not booked a slot to yet. `/api/editorial` answers it out of
-    // `editorial.queue`, so this is neither the consumer's state nor the snapshot's
-    // — it is the queue's own answer, and it keeps its own request so that a dead
-    // one cannot be reported as the other.
-    loadOpenOrderQueue();
-    try {
-      const [plan, history] = await Promise.all([
-        api("/api/editorial/plan"),
-        api("/api/editorial/plan/history?limit=10"),
-      ]);
-      renderEditorialPlan(plan || {}, (history && history.plans) || []);
-      state.planLoaded = true;
-    } catch (err) {
-      const meta = $("#plan-meta");
-      if (meta) meta.textContent = "План недоступен: " + (err && err.message ? err.message : String(err));
+  function syncEditorialPlanActions() {
+    const refresh = $("#plan-refresh");
+    const apply = $("#plan-apply");
+    if (refresh) refresh.disabled = state.editorialPlanBusy || state.editorialPlanApplyBusy;
+    if (apply) {
+      apply.disabled = !state.editorialPlanFresh
+        || state.editorialPlanBusy || state.editorialPlanApplyBusy;
+      apply.title = state.editorialPlanFresh
+        ? "Зафиксировать текущий редакционный план"
+        : "Сначала получи актуальный план";
     }
   }
 
-  function renderEditorialPlan(plan, history) {
+  async function loadEditorialPlan(force = false) {
+    if (force) state.planLoaded = false;
+    const planRequestId = ++state.editorialRequests.plan;
+    const historyRequestId = ++state.editorialRequests.history;
+    state.editorialPlanBusy = true;
+    syncEditorialPlanActions();
+
+    // Each endpoint is its own source of truth. A history outage must not hide a
+    // successfully read plan, and a plan outage must not erase a good history.
+    loadPlanExecution();
+    loadBookingFidelity();
+    loadOpenOrderQueue();
+
+    const [planResult, historyResult] = await Promise.allSettled([
+      api("/api/editorial/plan"),
+      api("/api/editorial/plan/history?limit=10"),
+    ]);
+
+    if (planRequestId === state.editorialRequests.plan) {
+      if (planResult.status === "fulfilled"
+        && planResult.value && typeof planResult.value === "object"
+        && Array.isArray(planResult.value.entries)) {
+        renderEditorialPlan(planResult.value);
+        renderWorkspaceFreshness("editorialPlan", "plan-freshness", null);
+        state.editorialPlanFresh = true;
+        state.planLoaded = true;
+      } else {
+        const error = planResult.status === "rejected"
+          ? planResult.reason : new Error("Ответ плана не содержит список entries.");
+        renderWorkspaceFreshness("editorialPlan", "plan-freshness", error);
+        state.editorialPlanFresh = false;
+        state.planLoaded = false;
+      }
+    }
+
+    if (historyRequestId === state.editorialRequests.history) {
+      if (historyResult.status === "fulfilled"
+        && historyResult.value && Array.isArray(historyResult.value.plans)) {
+        renderPlanHistory(historyResult.value.plans);
+        renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness", null);
+      } else {
+        const error = historyResult.status === "rejected"
+          ? historyResult.reason : new Error("Ответ истории не содержит список plans.");
+        renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness", error);
+      }
+    }
+
+    if (planRequestId === state.editorialRequests.plan) {
+      state.editorialPlanBusy = false;
+      syncEditorialPlanActions();
+    }
+  }
+
+
+  function renderEditorialPlan(plan) {
     const meta = $("#plan-meta");
     const chips = $("#plan-summary");
     const rows = $("#plan-entries");
-    const hist = $("#plan-history");
     if (!meta || !rows) return;
 
     const summary = plan.summary || {};
@@ -2136,6 +2178,11 @@
         }).join("")}</ul>`
       : `<p class="plan-entry-reasons">Материалов нет — запустите сбор тем или обновите план.</p>`;
 
+  }
+
+  function renderPlanHistory(history) {
+    const hist = $("#plan-history");
+    if (!hist) return;
     hist.innerHTML = history.length
       ? `<ul class="plan-history">${history.map((h) => {
           const s = h.summary || {};
@@ -2144,6 +2191,7 @@
         }).join("")}</ul>`
       : `<p class="plan-entry-reasons">Зафиксированных планов пока нет.</p>`;
   }
+
 
   // ── Исполнитель плана: работает ли потребитель и что он уже сделал ───────
   const EXECUTION_UNKNOWN = "неизвестно";
@@ -2902,10 +2950,20 @@
   async function loadOpenOrderQueue() {
     const root = openOrdersMount();
     if (!root) return;
+    const requestId = ++state.editorialRequests.openOrders;
     try {
-      renderOpenOrderQueue(await api(OPEN_ORDERS_ENDPOINT), null);
+      const payload = await api(OPEN_ORDERS_ENDPOINT);
+      if (!payload || !Array.isArray(payload.queue)) {
+        throw new Error("Ответ редакционной очереди не содержит список queue.");
+      }
+      if (requestId !== state.editorialRequests.openOrders) return;
+      renderOpenOrderQueue(payload, null);
+      renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness", null);
     } catch (error) {
-      renderOpenOrderQueue(null, error);
+      if (requestId !== state.editorialRequests.openOrders) return;
+      const hadSnapshot = Boolean(state.workspaceFreshness.editorialOpenOrders?.lastSuccessAt);
+      renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness", error);
+      if (!hadSnapshot) renderOpenOrderQueue(null, error);
     }
   }
 
@@ -7040,7 +7098,12 @@
   if (planRefresh) planRefresh.addEventListener("click", () => loadEditorialPlan(true));
   const planApply = $("#plan-apply");
   if (planApply) planApply.addEventListener("click", async () => {
-    planApply.disabled = true;
+    if (!state.editorialPlanFresh || state.editorialPlanBusy || state.editorialPlanApplyBusy) {
+      toast("План не подтверждён актуальным чтением. Обнови его перед фиксацией.", "warn");
+      return;
+    }
+    state.editorialPlanApplyBusy = true;
+    syncEditorialPlanActions();
     try {
       const res = await fetch(API + "/api/editorial/plan/refresh", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error("HTTP " + res.status);
@@ -7049,9 +7112,11 @@
     } catch (err) {
       toast("Не удалось зафиксировать план: " + (err && err.message ? err.message : err), "err");
     } finally {
-      planApply.disabled = false;
+      state.editorialPlanApplyBusy = false;
+      syncEditorialPlanActions();
     }
   });
+  syncEditorialPlanActions();
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
   $("#crosspost-filter")?.addEventListener("change", (event) => {
