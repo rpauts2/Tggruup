@@ -262,6 +262,8 @@ def test_material_drawer_is_modal_and_loads_trace_separately(client):
     drawer = _chunk(script, "function closeDrawer()", "function setTikTokPublishStatus")
     assert "state.drawerReturnFocus = document.activeElement" in drawer
     assert 'data-drawer-close' in drawer
+    assert 'drawer.setAttribute("aria-labelledby", "drawer-title")' in drawer
+    assert '<h3 id="drawer-title">' in drawer
     assert 'closeButton.focus()' in drawer
     assert 'window.tgfarmTrace(p.id)' in drawer
     assert 'id="trace-slot" aria-live="polite"' in drawer
