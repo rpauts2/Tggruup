@@ -119,4 +119,5 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 
 ### Publication queue status coverage
 - Added direct queue filters for failed publications and drafts. The labels correspond to existing Post.status values and use the existing /api/posts?status=... query; no publishing or retry behavior changes.
+- Isolated material-detail reads with a monotonically increasing request identity. If an operator opens material B before material A finishes loading, or closes the drawer while a read is pending, the older response/error is ignored and cannot replace the current drawer contents.
 - The queue visible status set is now: all, gate-passed, scheduled, uncertain delivery, failed, draft, published and rejected.
