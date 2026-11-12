@@ -1171,6 +1171,7 @@ def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashbo
                         "niche": "технологии", "heat": 0.8, "score": 75,
                         "awaiting_booking": True, "queue_position": 1}]}
     apply_calls = []
+    fail_plan_after_apply = False
 
     def mock_api(route):
         path = urlsplit(route.request.url).path
@@ -1190,6 +1191,8 @@ def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashbo
         if path == "/api/editorial/plan/refresh" and route.request.method == "POST":
             apply_calls.append(path)
             route.fulfill(status=200, content_type="application/json", body=json.dumps(plan))
+            if fail_plan_after_apply:
+                available["plan"] = False
             return
         _mock_api(route)
 
@@ -1252,6 +1255,23 @@ def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashbo
             "&& document.querySelector('#plan-open-orders-freshness')?.hidden"
         )
         assert page.locator("#plan-apply").is_enabled()
+
+        # A successful POST is not enough to announce a verified current plan
+        # when the immediate follow-up read fails. Keep the stale notice and
+        # avoid the ordinary success toast.
+        fail_plan_after_apply = True
+        page.locator("#plan-apply").click()
+        page.wait_for_function(
+            "() => document.querySelector('#plan-freshness')?.dataset.state === 'stale'"
+        )
+        assert apply_calls == ["/api/editorial/plan/refresh"]
+        assert page.locator("#toasts").get_by_text(
+            "Сервер ответил успешно, но повторное чтение плана не подтвердило результат. "
+            "Состояние помечено устаревшим; обнови его перед следующим действием.",
+            exact=True,
+        ).is_visible()
+        assert page.locator("#toasts").get_by_text("План зафиксирован и повторно прочитан").count() == 0
+        assert page.locator("#plan-apply").is_disabled()
 
         fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
         available.update({"plan": False, "history": False, "queue": False})
