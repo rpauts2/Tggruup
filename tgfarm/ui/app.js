@@ -1800,7 +1800,7 @@
     } else if (posts.length) {
       title.textContent = "Последние публикации";
       $("#overview-queue").innerHTML = posts.slice(0, 6).map((p) => `
-      <div class="item" data-post="${esc(p.id)}">
+      <div class="item" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.published_at ? clock(p.published_at) : "—"}</div>
