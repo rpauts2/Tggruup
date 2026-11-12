@@ -39,6 +39,7 @@
     agentBenchmarkCluster: "",
     agentBenchmarkBusy: false,
     drawerReturnFocus: null,
+    drawerRequestId: 0,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -4685,6 +4686,7 @@
     const drawer = $("#drawer");
     if (!drawer || drawer.hidden) return;
     drawer.hidden = true;
+    state.drawerRequestId += 1;
     const restore = state.drawerReturnFocus;
     state.drawerReturnFocus = null;
     if (restore && restore.isConnected && typeof restore.focus === "function") restore.focus();
@@ -4694,6 +4696,7 @@
     if (!postId) return;
     const drawer = $("#drawer");
     const inner = $("#drawer-inner");
+    const requestId = ++state.drawerRequestId;
     if (drawer.hidden) state.drawerReturnFocus = document.activeElement;
     inner.innerHTML = `<div class="empty">Загрузка материала…</div>`;
     drawer.hidden = false;
@@ -4703,7 +4706,9 @@
     let p;
     try {
       p = await api(`/api/posts/${encodeURIComponent(postId)}`);
+      if (requestId !== state.drawerRequestId || drawer.hidden) return;
     } catch (e) {
+      if (requestId !== state.drawerRequestId || drawer.hidden) return;
       inner.innerHTML = `<div class="drawer-head">
         <h3 id="drawer-title">Материал не удалось загрузить</h3>
         <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
