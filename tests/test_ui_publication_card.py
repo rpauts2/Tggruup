@@ -263,6 +263,9 @@ def test_material_drawer_is_modal_and_loads_trace_separately(client):
     script = _script(client)
     drawer = _chunk(script, "function closeDrawer()", "function setTikTokPublishStatus")
     assert "state.drawerReturnFocus = document.activeElement" in drawer
+    assert "const requestId = ++state.drawerRequestId" in drawer
+    assert "requestId !== state.drawerRequestId || drawer.hidden" in drawer
+    assert "state.drawerRequestId += 1" in drawer
     assert 'data-drawer-close' in drawer
     assert 'drawer.setAttribute("aria-labelledby", "drawer-title")' in drawer
     assert '<h3 id="drawer-title">' in drawer
