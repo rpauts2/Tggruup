@@ -3165,6 +3165,10 @@
   }
 
   async function registerMaxWebhook(button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед настройкой webhook.", "warn");
+      return;
+    }
     if (button) {
       button.disabled = true;
       button.textContent = "Подключаю webhook…";
@@ -3188,6 +3192,10 @@
   }
 
   async function discoverPlatformDestinations(platformId, button) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед поиском адресатов.", "warn");
+      return;
+    }
     const root = document.getElementById("platform-destination-" + platformId);
     if (!root) return;
     const isFacebook = platformId === "facebook";
@@ -3693,6 +3701,10 @@
   }
 
   async function startPlatformBrowserLogin(platformId, button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед входом.", "warn");
+      return;
+    }
     if (!platformId || state.platformBusy.has(platformId)) return;
     state.platformBusy.add(platformId);
     if (button) button.disabled = true;
@@ -3751,6 +3763,10 @@
 
   async function savePlatformCredentials(event) {
     event?.preventDefault();
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед сохранением настроек.", "warn");
+      return;
+    }
     if (state.authSaving || !state.authPlatformId) return;
     const platformId = state.authPlatformId;
     const values = {};
