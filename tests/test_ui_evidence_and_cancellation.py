@@ -470,11 +470,16 @@ def test_the_new_cards_are_dispatched_through_the_shared_refresh(client):
     assert 'if ("metricsFormats" in data) renderMetricsFormats(data.metricsFormats);' in body
     assert 'if ("metricsCoverage" in data) renderMetricsCoverage(data.metricsCoverage);' in body
     assert "Promise.allSettled(" in body
-    # The Dzen attribution is re-rendered on every pass, before the all-failed
-    # throw, so a fully dead backend says so instead of freezing on last pass's
-    # attribution — the rule the publication card already follows.
+    # Both decision cards are refreshed before the full-outage early return.
+    # A fully failed read must not enter the generic exception handler, which
+    # would overwrite the endpoint-level unavailable state.
+    assert "renderPublicationDecision(" in body
     assert "renderDzenAttribution(" in body
-    assert body.index("renderDzenAttribution(") < body.index('throw new Error("API недоступен")')
+    full_outage_return = 'if (failed.length === Object.keys(endpoints).length) return;'
+    assert full_outage_return in body
+    assert body.index("renderDzenAttribution(") < body.index(full_outage_return)
+    assert body.index("renderPublicationDecision(") < body.index(full_outage_return)
+    assert 'throw new Error("API недоступен")' not in body
 
 
 # ------------------------------------------------------------------ attribution
