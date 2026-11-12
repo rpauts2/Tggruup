@@ -4703,7 +4703,14 @@
     try {
       p = await api(`/api/posts/${encodeURIComponent(postId)}`);
     } catch (e) {
-      inner.innerHTML = `<div class="empty">Не удалось загрузить пост</div>`;
+      inner.innerHTML = `<div class="drawer-head">
+        <h3>Материал не удалось загрузить</h3>
+        <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
+      </div>
+      <div class="empty" role="alert">Не удалось прочитать материал: ${esc(e.message || e)}</div>`;
+      const closeButton = inner.querySelector("[data-drawer-close]");
+      closeButton?.addEventListener("click", closeDrawer);
+      closeButton?.focus();
       return;
     }
 
@@ -4957,7 +4964,7 @@
         ${p.status === "failed" && !p.tg_message_id ? `<button class="btn btn-primary btn-sm" onclick="tgfarmRetryFailed('${esc(p.id)}')">Повторить после исправления</button>` : ""}
         ${["draft", "gated", "scheduled", "rejected", "failed"].includes(p.status) ? `<button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="tgfarmCopyText('${esc(p.id)}')">Копировать текст</button>
-        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">История</button>
+        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Обновить историю</button>
         ${p.external_url ? `<a class="btn btn-ghost btn-sm" href="${esc(p.external_url)}" target="_blank" rel="noopener">Открыть оригинал</a>` : ""}
         ${EDITABLE.has(p.status) && !p.tg_message_id
           ? `<button class="btn btn-ghost btn-sm" id="btn-edit" onclick="tgfarmEditStart('${esc(p.id)}')">Редактировать</button>
