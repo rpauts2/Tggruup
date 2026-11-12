@@ -207,6 +207,21 @@ def test_review_board_confirms_every_operator_action(client):
         assert phrase in body
 
 
+def test_review_and_unresolved_worklists_open_the_shared_material_drawer(client):
+    script = _script(client)
+    review = _chunk(script, "function renderReviewCard(item)", "function renderReviewBoard()")
+    assert 'data-review-open="' in review
+    assert "Открыть материал" in review
+    handlers = _chunk(script, 'const reviewBoard = $("#review-board")', 'const trendsList = $("#trends-list")')
+    assert 'closest("[data-review-open]")' in handlers
+    assert "openDrawer(open.dataset.reviewOpen)" in handlers
+    unresolved = _chunk(script, "function renderUnresolvedWorklist(payload, failure)", "const NICHE_COLOR")
+    assert 'data-unresolved-open="' in unresolved
+    assert "Открыть материал" in unresolved
+    assert 'closest("[data-unresolved-open]")' in handlers
+    assert "openDrawer(open.dataset.unresolvedOpen)" in handlers
+
+
 # ------------------------------------------------------------------- the hygiene
 def test_publication_rows_reuse_the_existing_item_layout(client):
     """No bespoke block: the card is the same .item/.item-main/.item-side family."""
