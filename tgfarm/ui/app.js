@@ -7108,7 +7108,11 @@
       const res = await fetch(API + "/api/editorial/plan/refresh", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error("HTTP " + res.status);
       await loadEditorialPlan(true);
-      toast("План зафиксирован", "ok");
+      if (!state.editorialPlanFresh) {
+        toast("Сервер ответил успешно, но повторное чтение плана не подтвердило результат. Состояние помечено устаревшим; обнови его перед следующим действием.", "warn");
+        return;
+      }
+      toast("План зафиксирован и повторно прочитан", "ok");
     } catch (err) {
       toast("Не удалось зафиксировать план: " + (err && err.message ? err.message : err), "err");
     } finally {
