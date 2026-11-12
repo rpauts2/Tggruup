@@ -5792,6 +5792,10 @@
         "trends" in data ? null : reasons.trends || new Error("тренды не получены"));
       renderWorkspaceFreshness("sources", "sources-freshness",
         "sources" in data ? null : reasons.sources || new Error("источники не получены"));
+      renderWorkspaceFreshness("crossposts", "crossposts-freshness",
+        "crossposts" in data ? null : reasons.crossposts || new Error("журнал доставок не получен"));
+      renderWorkspaceFreshness("deliveryHealth", "crosspost-health-freshness",
+        "deliveryHealth" in data ? null : reasons.deliveryHealth || new Error("сводка доставок не получена"));
       updateRefreshIndicator(failed, Object.keys(endpoints).length);
       // With no successful response there is no fresh dashboard snapshot to
       // render. Keep independent workspaces intact; the cards above already show
