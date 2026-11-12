@@ -229,6 +229,12 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     card = grid.locator("button").first
                     assert card.evaluate("(el) => getComputedStyle(el).borderRadius") != "0px"
                     assert page.locator("#kpis").get_by_text("из 67 активно").count() == 1
+                    attention_shortcut = page.locator('.command-shortcuts-grid [data-goto="review"]')
+                    assert attention_shortcut.get_by_text("Требует внимания").is_visible()
+                    attention_shortcut.click()
+                    assert page.locator('.view[data-view="review"].is-active').is_visible()
+                    page.locator('.tab[data-view="overview"]').click()
+                    assert page.locator('.view[data-view="overview"].is-active').is_visible()
                 if view == "posts":
                     assert page.get_by_role("heading", name="Очередь пока пуста").is_visible()
                     page.get_by_role("button", name="Открыть планирование").click()
