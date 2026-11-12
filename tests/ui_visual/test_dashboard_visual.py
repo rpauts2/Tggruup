@@ -1093,7 +1093,7 @@ def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(da
         page = browser.new_page(viewport={"width": 1440, "height": 960})
         page.route("**/api/**", mock_api)
         page.goto(dashboard_url, wait_until="networkidle")
-        page.locator('.tab[data-view="posts"]').click()
+        page.locator('.view[data-view="overview"].is-active').wait_for(state="visible")
 
         journal_notice = page.locator("#crossposts-freshness")
         health_notice = page.locator("#crosspost-health-freshness")
@@ -1140,7 +1140,7 @@ def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(da
         fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
         fresh_page.route("**/api/**", mock_api)
         fresh_page.goto(dashboard_url, wait_until="networkidle")
-        fresh_page.locator('.tab[data-view="posts"]').click()
+        fresh_page.locator('.view[data-view="overview"].is-active').wait_for(state="visible")
         fresh_page.wait_for_function(
             "() => document.querySelector('#crossposts-freshness')?.dataset.state === 'error' "
             "&& document.querySelector('#crosspost-health-freshness')?.dataset.state === 'error'",
