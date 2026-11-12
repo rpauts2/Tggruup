@@ -1098,7 +1098,7 @@ def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(da
         journal_notice = page.locator("#crossposts-freshness")
         health_notice = page.locator("#crosspost-health-freshness")
         page.locator("#crossposts-list").get_by_text("Материал для проверки доставки").wait_for()
-        page.locator("#crosspost-health").get_by_text("есть успешные доставки").wait_for()
+        page.locator("#crosspost-health").get_by_text("есть успешные доставки").first.wait_for()
         assert journal_notice.is_hidden()
         assert health_notice.is_hidden()
 
@@ -1117,7 +1117,7 @@ def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(da
         assert "503" in journal_notice.inner_text()
         assert "503" in health_notice.inner_text()
         assert page.locator("#crossposts-list").get_by_text("Материал для проверки доставки").is_visible()
-        assert page.locator("#crosspost-health").get_by_text("есть успешные доставки").is_visible()
+        assert page.locator("#crosspost-health").get_by_text("есть успешные доставки").first.is_visible()
 
         available["crossposts"] = True
         available["health"] = True
