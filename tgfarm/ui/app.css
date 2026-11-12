@@ -2397,3 +2397,19 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   line-height: 1.65;
 }
 .posts-empty .btn { margin-top: 2px; }
+
+
+/* Queue cards are keyboard-operable entry points to the shared material drawer. */
+.pcard { cursor: pointer; }
+.pcard:focus-visible,
+.item[role="button"]:focus-visible {
+  outline: 2px solid rgba(125,160,255,.86);
+  outline-offset: 3px;
+  position: relative;
+  z-index: 1;
+}
+.drawer[role="dialog"] { outline: none; }
+.drawer-close:focus-visible {
+  outline: 2px solid rgba(125,160,255,.9);
+  outline-offset: 3px;
+}
