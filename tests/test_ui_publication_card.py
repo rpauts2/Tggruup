@@ -243,3 +243,32 @@ def test_publication_text_reaches_the_dom_escaped(client):
         assert field in body
     for raw in ("${decision.", "${code}", "+ code", "${label}", "${counters"):
         assert raw not in body, f"raw interpolation of {raw!r}"
+
+
+def test_queue_cards_and_overview_rows_are_keyboard_entry_points(client):
+    script = _script(client)
+    card = _chunk(script, "function postCard(p)", "function renderPosts(posts)")
+    assert 'role="button" tabindex="0" aria-label="Открыть материал:' in card
+    rows = _chunk(script, "function renderPosts(posts)", "// «Ближайшие публикации»")
+    assert 'role="button" tabindex="0" aria-label="Открыть материал:' in rows
+    assert 'event.key !== "Enter" && event.key !== " "' in rows
+    assert 'openDrawer(el.dataset.post)' in rows
+
+
+def test_material_drawer_is_modal_and_loads_trace_separately(client):
+    html = client.get("/").text
+    assert 'id="drawer" hidden role="dialog" aria-modal="true"' in html
+    script = _script(client)
+    drawer = _chunk(script, "function closeDrawer()", "function setTikTokPublishStatus")
+    assert "state.drawerReturnFocus = document.activeElement" in drawer
+    assert 'data-drawer-close' in drawer
+    assert 'closeButton.focus()' in drawer
+    assert 'window.tgfarmTrace(p.id)' in drawer
+    assert 'id="trace-slot" aria-live="polite"' in drawer
+    trace = _chunk(script, "window.tgfarmTrace = async (id)", "window.tgfarmPolish =")
+    assert 'const slot = $("#trace-slot")' in trace
+    assert "slot.isConnected" in trace
+    assert "slot.dataset.tracePostId !== tracePostId" in trace
+    assert 'if (!drawer.hidden && e.key === "Tab")' in script
+    assert 'if (!drawer.hidden && e.key === "Escape")' in script
+    assert "if (restore && restore.isConnected" in drawer
