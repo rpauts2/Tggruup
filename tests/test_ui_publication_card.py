@@ -319,3 +319,15 @@ def test_specialist_workspaces_expose_local_freshness_states(client):
     refresh = _chunk(script, "async function refresh()", "async function runCycle()")
     assert 'renderWorkspaceFreshness("trends"' in refresh
     assert 'renderWorkspaceFreshness("sources"' in refresh
+
+def test_delivery_workspace_exposes_independent_freshness_states(client):
+    html = client.get("/").text
+    assert 'id="crossposts-freshness"' in html
+    assert 'id="crosspost-health-freshness"' in html
+    assert html.index('id="crossposts-freshness"') < html.index('id="crosspost-health"')
+    assert html.index('id="crosspost-health-freshness"') < html.index('id="crosspost-health"')
+
+    script = _script(client)
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("crossposts"' in refresh
+    assert 'renderWorkspaceFreshness("deliveryHealth"' in refresh
