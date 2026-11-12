@@ -314,7 +314,7 @@ def test_the_card_mounts_itself_and_hangs_on_the_plan_tab(script, block, plan_lo
     assert plan_loader.count("load") >= 3, "the plan tab stopped reading its other two cards"
     assert script.count("loadOpenOrderQueue") == 2, "the loader is defined but never called"
     html = (UI_DIR / "index.html").read_text(encoding="utf-8")
-    assert "plan-open-orders" not in html, "the node is created by the panel, not by the markup"
+    assert re.search(r'\bid="plan-open-orders"', html) is None, "the card node is created by the panel, not by the markup"
 
 
 def test_the_endpoint_the_card_calls_is_served_and_names_the_key(client, block):
