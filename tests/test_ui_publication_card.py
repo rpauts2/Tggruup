@@ -347,7 +347,7 @@ def test_platform_catalog_freshness_blocks_stale_state_changes(client):
         "async function updatePlatformSwitch(platformId, enabled)",
         "async function updatePlatformPlan(platformId)",
         "async function openPlatformAuthorization(platformId, forceCredentials = false)",
-        "async function checkPlatformAuthorization(platformId, button)",
+        "async function checkPlatformAuthorization(platformId, button = null)",
     ):
         body = _chunk(script, guard, "\n  }")
         assert "if (!state.platformCatalogFresh)" in body
