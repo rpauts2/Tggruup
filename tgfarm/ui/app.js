@@ -1813,7 +1813,7 @@
       $("#overview-queue").innerHTML = `<div class="empty">Постов пока нет</div>`;
     }
 
-    $(".pcard, #overview-queue .item").forEach((el) => {
+    $$(".pcard, #overview-queue .item").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.post));
       el.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
