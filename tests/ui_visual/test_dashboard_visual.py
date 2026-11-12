@@ -478,6 +478,13 @@ def test_command_status_marks_retained_snapshot_stale_and_first_failure_unavaila
         assert page.locator("#command-status-freshness").get_by_text(
             "Показан последний успешный снимок", exact=False
         ).is_visible()
+        status_failed = False
+        page.evaluate("window.tgfarmRefresh()")
+        page.wait_for_function(
+            "document.querySelector('#command-status')?.dataset.state === 'fresh' "
+            "&& document.querySelector('#command-status-freshness')?.hidden === true"
+        )
+        assert page.locator("#command-status").get_by_text("LIVE", exact=True).is_visible()
         first_failure = browser.new_page(viewport={"width": 1440, "height": 960})
         first_failure.route("**/api/**", _mock_api)
         first_failure.route(
