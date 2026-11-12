@@ -3138,9 +3138,13 @@
     const platforms = Array.isArray(payload.platforms) ? payload.platforms : [];
     const supported = platforms.filter((item) => item.supported);
     const enabled = supported.filter((item) => item.enabled);
-    const authorized = supported.filter((item) => (item.auth || {}).status === "authorized");
-    const needsSetup = enabled.filter((item) => !item.configured);
-    const failed = enabled.filter((item) => (item.auth || {}).status === "failed");
+    const accessStatus = (item) => item.id === "dzen" && state.dzenStatus
+      && typeof state.dzenStatus.authorized === "boolean"
+      ? (state.dzenStatus.authorized ? "authorized" : "needs_setup")
+      : (item.auth || {}).status;
+    const authorized = supported.filter((item) => accessStatus(item) === "authorized");
+    const needsSetup = enabled.filter((item) => !item.configured || accessStatus(item) === "needs_setup");
+    const failed = enabled.filter((item) => accessStatus(item) === "failed");
     const manual = enabled.filter((item) => item.automation_mode === "manual");
     const attention = [...new Map([...failed, ...needsSetup].map((item) => [item.id, item])).values()];
     const stats = [
