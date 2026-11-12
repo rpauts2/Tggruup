@@ -2432,3 +2432,17 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   outline: 2px solid rgba(125,160,255,.9);
   outline-offset: 3px;
 }
+
+/* When the platform registry read fails, keep the last snapshot visible but make its controls inert. */
+.platform-grid.is-stale [data-platform-toggle],
+.platform-grid.is-stale [data-platform-plan],
+.platform-grid.is-stale [data-platform-auth],
+.platform-grid.is-stale [data-platform-auth-config],
+.platform-grid.is-stale [data-platform-auth-check],
+.platform-grid.is-stale [data-platform-browser-auth],
+.platform-grid.is-stale [data-platform-destinations],
+.platform-grid.is-stale [data-platform-max-webhook] {
+  pointer-events: none;
+  opacity: .48;
+  cursor: not-allowed;
+}
