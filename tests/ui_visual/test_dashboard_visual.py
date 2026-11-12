@@ -1150,3 +1150,122 @@ def test_delivery_workspace_marks_journal_and_health_stale_on_refresh_failure(da
         assert fresh_page.locator("#crosspost-health-freshness").get_by_text("Данные раздела недоступны").is_visible()
 
         browser.close()
+
+
+def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashboard_url):
+    """Plan, revision history and open-order queue fail and recover independently."""
+    from playwright.sync_api import sync_playwright
+
+    available = {"plan": True, "history": True, "queue": True}
+    plan = {
+        "status": "active", "public_id": "plan-current-001",
+        "created_at": "2026-11-12T08:00:00Z", "horizon_days": 7,
+        "summary": {"total": 1, "produce": 1, "schedule": 0, "hold": 0, "coverage_note": "Покрытие измерено."},
+        "entries": [{"priority": 1, "action": "produce", "title": "Тестовый плановый материал",
+                     "platform": "telegram", "channel_title": "Редакционный канал", "format": "post",
+                     "reasons": ["Проверка актуальности"]}],
+    }
+    history = {"plans": [{"public_id": "history-revision-001", "created_at": "2026-11-11T08:00:00Z",
+                          "summary": {"total": 3, "produce": 2, "hold": 1}}]}
+    queue = {"queue": [{"label": "Тема ждёт бронирования", "cluster_public_id": "cluster-queue-001",
+                        "niche": "технологии", "heat": 0.8, "score": 75,
+                        "awaiting_booking": True, "queue_position": 1}]}
+    apply_calls = []
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        mapping = {
+            "/api/editorial/plan": ("plan", plan),
+            "/api/editorial/plan/history": ("history", history),
+            "/api/editorial": ("queue", queue),
+        }
+        if path in mapping:
+            key, payload = mapping[path]
+            if not available[key]:
+                route.fulfill(status=503, content_type="application/json",
+                              body=json.dumps({"detail": f"{key} test outage"}))
+                return
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        if path == "/api/editorial/plan/refresh" and route.request.method == "POST":
+            apply_calls.append(path)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(plan))
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="plan"]').click()
+        page.locator("#plan-entries").get_by_text("Тестовый плановый материал").wait_for()
+        page.locator("#plan-history").get_by_text("history-revision-001").wait_for()
+        page.locator("#plan-open-orders").get_by_text("Тема ждёт бронирования").wait_for()
+        notices = {
+            "plan": page.locator("#plan-freshness"),
+            "history": page.locator("#plan-history-freshness"),
+            "queue": page.locator("#plan-open-orders-freshness"),
+        }
+        for notice in notices.values():
+            assert notice.is_hidden()
+        assert page.locator("#plan-apply").is_enabled()
+
+        available["plan"] = False
+        page.locator("#plan-refresh").click()
+        page.wait_for_function("() => document.querySelector('#plan-freshness')?.dataset.state === 'stale'")
+        assert notices["plan"].is_visible()
+        assert "503" in notices["plan"].inner_text()
+        assert page.locator("#plan-entries").get_by_text("Тестовый плановый материал").is_visible()
+        assert page.locator("#plan-apply").is_disabled()
+        assert notices["history"].is_hidden()
+        assert notices["queue"].is_hidden()
+        page.locator("#plan-apply").evaluate("(el) => el.click()")
+        assert apply_calls == []
+
+        available["plan"] = True
+        available["history"] = False
+        page.locator("#plan-refresh").click()
+        page.wait_for_function("() => document.querySelector('#plan-history-freshness')?.dataset.state === 'stale'")
+        assert notices["plan"].is_hidden()
+        assert notices["history"].is_visible()
+        assert "503" in notices["history"].inner_text()
+        assert page.locator("#plan-history").get_by_text("history-revision-001").is_visible()
+        assert page.locator("#plan-apply").is_enabled()
+        assert notices["queue"].is_hidden()
+
+        available["history"] = True
+        available["queue"] = False
+        page.locator("#plan-refresh").click()
+        page.wait_for_function("() => document.querySelector('#plan-open-orders-freshness')?.dataset.state === 'stale'")
+        assert notices["plan"].is_hidden()
+        assert notices["history"].is_hidden()
+        assert notices["queue"].is_visible()
+        assert "503" in notices["queue"].inner_text()
+        assert page.locator("#plan-open-orders").get_by_text("Тема ждёт бронирования").is_visible()
+
+        available["queue"] = True
+        page.locator("#plan-refresh").click()
+        page.wait_for_function(
+            "() => document.querySelector('#plan-freshness')?.hidden "
+            "&& document.querySelector('#plan-history-freshness')?.hidden "
+            "&& document.querySelector('#plan-open-orders-freshness')?.hidden"
+        )
+        assert page.locator("#plan-apply").is_enabled()
+
+        fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
+        available.update({"plan": False, "history": False, "queue": False})
+        fresh_page.route("**/api/**", mock_api)
+        fresh_page.goto(dashboard_url, wait_until="networkidle")
+        fresh_page.locator('.tab[data-view="plan"]').click()
+        fresh_page.wait_for_function(
+            "() => ['plan-freshness','plan-history-freshness','plan-open-orders-freshness']"
+            ".every(id => document.querySelector('#' + id)?.dataset.state === 'error')"
+        )
+        assert fresh_page.locator("#plan-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#plan-history-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#plan-open-orders-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#plan-apply").is_disabled()
+        assert fresh_page.locator("#plan-entries").get_by_text("Тестовый плановый материал").count() == 0
+
+        browser.close()
