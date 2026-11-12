@@ -602,6 +602,31 @@ def test_review_board_shows_unknown_measurements_and_cancels_safe_retry(dashboar
 
     def mock_review_api(route):
         path = urlsplit(route.request.url).path
+        if path == "/api/posts/review-unknown-001":
+            payload = {
+                "id": "review-unknown-001",
+                "public_id": "review-unknown-001",
+                "hook": "Материал с неподтверждённой доставкой",
+                "body": "Полный текст материала для сверки.",
+                "text": "Полный текст материала для сверки.",
+                "status": "publish_unknown",
+                "platform": "vk",
+                "channel_id": "vk",
+                "channel_title": "Основной канал VK",
+                "post_format": "news",
+                "chars": 420,
+                "quality": {},
+                "sources": [],
+                "claims": [],
+                "hashtags": [],
+                "media": [],
+                "cover": None,
+                "video": None,
+                "reject_reason": None,
+                "created_at": "2026-11-11T10:00:00Z",
+            }
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
         if path == "/api/review/queue":
             payload = {
                 "total": 1,
@@ -647,6 +672,14 @@ def test_review_board_shows_unknown_measurements_and_cancels_safe_retry(dashboar
         assert card.get_by_text("попыток: нет отчёта", exact=False).is_visible()
         assert card.get_by_text("0 ч", exact=False).count() == 0
         assert card.get_by_text("попыток 0", exact=False).count() == 0
+
+        card.get_by_role("button", name="Открыть материал").click()
+        drawer = page.locator("#drawer")
+        drawer.wait_for(state="visible")
+        assert drawer.get_by_role("heading", name="Материал с неподтверждённой доставкой").is_visible()
+        assert drawer.get_by_text("Результат не подтверждён.", exact=False).is_visible()
+        drawer.locator(".drawer-close").click()
+        drawer.wait_for(state="hidden")
 
         card.get_by_role("button", name="Проверил, поста нет — в очередь").click()
         assert len(dialog_messages) == 1
