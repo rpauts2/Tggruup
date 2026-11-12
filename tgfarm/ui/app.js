@@ -4699,12 +4699,13 @@
     drawer.hidden = false;
     drawer.setAttribute("role", "dialog");
     drawer.setAttribute("aria-modal", "true");
+    drawer.setAttribute("aria-labelledby", "drawer-title");
     let p;
     try {
       p = await api(`/api/posts/${encodeURIComponent(postId)}`);
     } catch (e) {
       inner.innerHTML = `<div class="drawer-head">
-        <h3>Материал не удалось загрузить</h3>
+        <h3 id="drawer-title">Материал не удалось загрузить</h3>
         <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
       </div>
       <div class="empty" role="alert">Не удалось прочитать материал: ${esc(e.message || e)}</div>`;
@@ -4838,7 +4839,7 @@
       : "";
     inner.innerHTML = `
       <div class="drawer-head">
-        <h3>${esc(p.hook)}</h3>
+        <h3 id="drawer-title">${esc(p.hook)}</h3>
         <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
       </div>
 
