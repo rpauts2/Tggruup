@@ -287,6 +287,7 @@ main {
 .workspace-freshness strong { color: var(--text); font-weight: 600; }
 .workspace-freshness[data-state="stale"] { border-left-color: var(--warning, #d6a54b); }
 .workspace-freshness[data-state="error"] { border-left-color: var(--danger, #d66b6b); }
+.workspace-freshness + .delivery-health { margin-top: 8px; }
 
 /* -------------------------------------------------------------------- list */
 .list { display: flex; flex-direction: column; min-height: 84px; }
