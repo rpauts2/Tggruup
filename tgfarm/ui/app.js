@@ -1907,6 +1907,8 @@
           ? '<div class="item-meta is-unresolved-error">' + esc(row.error) + "</div>"
           : "")
         + '</div><div class="item-side unresolved-actions">'
+        + '<button class="btn btn-ghost btn-sm" type="button"'
+        + ' data-unresolved-open="' + esc(row.public_id) + '">Открыть материал</button>'
         + '<button class="btn btn-primary btn-sm" type="button"'
         + ' data-unresolved-action="confirm_published"'
         + ' data-unresolved-id="' + esc(row.public_id) + '">Да, пост уже есть</button>'
@@ -6263,7 +6265,10 @@
       + '<span class="review-age">' + esc(ageLabel) + " · " + esc(attemptsLabel) + "</span></div>"
       + '<p class="review-hook">' + esc(item.hook || "Без заголовка") + "</p>"
       + '<p class="review-reason">' + esc(item.reason || "") + "</p>"
-      + '<div class="review-actions">' + actions + "</div></article>";
+      + '<div class="review-actions">'
+      + '<button class="btn btn-ghost btn-sm" type="button" data-review-open="'
+      + esc(item.public_id) + '">Открыть материал</button>'
+      + actions + "</div></article>";
   }
 
   function renderReviewBoard() {
@@ -6806,6 +6811,12 @@
   const reviewBoard = $("#review-board");
   if (reviewBoard) {
     reviewBoard.addEventListener("click", (event) => {
+      const open = event.target.closest("[data-review-open]");
+      if (open) {
+        event.preventDefault();
+        openDrawer(open.dataset.reviewOpen);
+        return;
+      }
       const button = event.target.closest("[data-review-action]");
       if (!button) return;
       event.preventDefault();
@@ -6818,6 +6829,12 @@
   const unresolvedList = $("#overview-unresolved");
   if (unresolvedList) {
     unresolvedList.addEventListener("click", (event) => {
+      const open = event.target.closest("[data-unresolved-open]");
+      if (open) {
+        event.preventDefault();
+        openDrawer(open.dataset.unresolvedOpen);
+        return;
+      }
       const button = event.target.closest("[data-unresolved-action]");
       if (!button) return;
       event.preventDefault();
