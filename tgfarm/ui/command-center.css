@@ -672,3 +672,27 @@ input, select, textarea { accent-color: var(--accent); }
 
 /* Author button display rules must not override the native hidden state. */
 #command-next-action[hidden] { display: none !important; }
+
+
+/* Platform readiness: separate enablement, configuration and verified access. */
+.platform-readiness { margin: 0 0 20px; padding: 17px 19px; border: 1px solid var(--ui-border); border-radius: 15px; background: linear-gradient(145deg, rgba(16,24,41,.88), rgba(10,15,26,.9)); }
+.platform-readiness-head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:14px; }
+.platform-readiness-head > div { min-width:0; }
+.platform-readiness-head > div > span { color:#91adf7; font-size:9px; font-weight:800; letter-spacing:.15em; }
+.platform-readiness-head h2 { margin-top:4px; color:var(--text); font-size:15px; font-weight:740; }
+.platform-readiness-head p { margin-top:4px; color:var(--text-faint); font-size:11px; line-height:1.45; }
+.platform-readiness-stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
+.platform-readiness-stat { display:flex; flex-direction:column; gap:5px; min-width:0; padding:10px 12px; border:1px solid var(--ui-border); border-radius:10px; background:rgba(4,8,16,.24); }
+.platform-readiness-stat span { color:var(--text-faint); font-size:10px; }
+.platform-readiness-stat strong { color:var(--text); font-size:18px; font-variant-numeric:tabular-nums; }
+.platform-readiness-list { display:grid; gap:7px; margin-top:12px; }
+.platform-readiness-row { display:flex; align-items:center; gap:10px; min-width:0; padding:9px 10px; border:1px solid rgba(251,191,36,.15); border-radius:9px; background:rgba(120,80,12,.07); }
+.platform-readiness-indicator { flex:none; width:7px; height:7px; border-radius:50%; background:var(--warn); }
+.platform-readiness-indicator.is-error { background:var(--err); }
+.platform-readiness-copy { display:flex; flex:1 1 auto; flex-direction:column; gap:2px; min-width:0; }
+.platform-readiness-copy strong { color:var(--text); font-size:11px; }
+.platform-readiness-copy small { color:var(--text-dim); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
+.platform-readiness-clear,.platform-readiness-empty { padding:11px; border:1px dashed var(--ui-border); border-radius:9px; color:var(--text-dim); font-size:11px; line-height:1.5; }
+.platform-readiness-stale { margin-top:9px; color:var(--warn); font-size:10px; }
+@media(max-width:900px) { .platform-readiness-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media(max-width:600px) { .platform-readiness { padding:14px; } .platform-readiness-head { align-items:flex-start; flex-direction:column; } .platform-readiness-head .btn { width:100%; justify-content:center; } .platform-readiness-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }

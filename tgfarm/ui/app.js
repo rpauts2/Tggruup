@@ -3126,9 +3126,52 @@
     }
   };
 
+  function renderPlatformReadiness(payload = state.platformData, fresh = state.platformCatalogFresh) {
+    const root = $("#platform-readiness");
+    if (!root) return;
+    if (!payload) {
+      root.dataset.state = "error";
+      root.innerHTML = '<div class="platform-readiness-empty">Состояние площадок ещё не получено. Обнови данные, чтобы увидеть готовность подключений.</div>';
+      return;
+    }
+    root.dataset.state = fresh ? "fresh" : "stale";
+    const platforms = Array.isArray(payload.platforms) ? payload.platforms : [];
+    const supported = platforms.filter((item) => item.supported);
+    const enabled = supported.filter((item) => item.enabled);
+    const authorized = supported.filter((item) => (item.auth || {}).status === "authorized");
+    const needsSetup = enabled.filter((item) => !item.configured);
+    const failed = enabled.filter((item) => (item.auth || {}).status === "failed");
+    const manual = enabled.filter((item) => item.automation_mode === "manual");
+    const attention = [...new Map([...failed, ...needsSetup].map((item) => [item.id, item])).values()];
+    const stats = [
+      ["С адаптером", supported.length],
+      ["Включено", enabled.length],
+      ["Доступ подтверждён", authorized.length],
+      ["Нужна настройка", needsSetup.length + failed.filter((item) => item.configured).length],
+      ["Только вручную", manual.length],
+    ];
+    root.innerHTML = '<div class="platform-readiness-stats">' + stats.map(([label, value]) =>
+      '<div class="platform-readiness-stat"><span>' + esc(label) + '</span><strong>' + esc(n(value)) + '</strong></div>'
+    ).join("") + '</div>'
+      + (fresh ? '' : '<p class="platform-readiness-stale">Показан последний успешный снимок каталога. Данные могут измениться после этого.</p>')
+      + '<div class="platform-readiness-list">' + (attention.length
+        ? attention.slice(0, 5).map((item) => {
+          const auth = item.auth || {};
+          const failedAuth = auth.status === "failed";
+          const reason = failedAuth ? (auth.detail || auth.note || "Проверка доступа завершилась ошибкой")
+            : (item.connection_detail || item.requirements || "Для включённой площадки не хватает настроек");
+          return '<div class="platform-readiness-row"><span class="platform-readiness-indicator ' + (failedAuth ? 'is-error' : 'is-warn') + '"></span>'
+            + '<div class="platform-readiness-copy"><strong>' + esc(item.name || item.id) + '</strong><small>' + esc(reason) + '</small></div>'
+            + '<button type="button" class="attention-open" data-goto="connect">Открыть</button></div>';
+        }).join("")
+        : '<div class="platform-readiness-clear">Нет включённых площадок с выявленной проблемой настройки или доступа.</div>')
+      + '</div>';
+  }
+
   function renderPlatforms(payload) {
     state.platformData = payload || { platforms: [], summary: {} };
     state.platformCatalogFresh = true;
+    renderPlatformReadiness(state.platformData, true);
     const summary = state.platformData.summary || {};
     const items = state.platformData.platforms || [];
     const stats = [
@@ -6032,6 +6075,7 @@
       renderWorkspaceFreshness("platforms", "platforms-freshness",
         "platforms" in data ? null : reasons.platforms || new Error("каталог площадок не получен"));
       state.platformCatalogFresh = "platforms" in data;
+      renderPlatformReadiness(state.platformData, state.platformCatalogFresh);
       if (!state.platformCatalogFresh) renderPlatformCards();
       updateRefreshIndicator(failed, Object.keys(endpoints).length);
       // With no successful response there is no fresh dashboard snapshot to
