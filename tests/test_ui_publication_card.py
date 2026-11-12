@@ -331,3 +331,24 @@ def test_delivery_workspace_exposes_independent_freshness_states(client):
     refresh = _chunk(script, "async function refresh()", "async function runCycle()")
     assert 'renderWorkspaceFreshness("crossposts"' in refresh
     assert 'renderWorkspaceFreshness("deliveryHealth"' in refresh
+
+
+def test_platform_catalog_freshness_blocks_stale_state_changes(client):
+    html = client.get("/").text
+    assert 'id="platforms-freshness"' in html
+    assert html.index('id="platforms-freshness"') < html.index('id="platforms-grid"')
+
+    script = _script(client)
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("platforms", "platforms-freshness"' in refresh
+    assert 'state.platformCatalogFresh = "platforms" in data' in refresh
+    assert 'container.classList.toggle("is-stale", !state.platformCatalogFresh)' in script
+    for guard in (
+        "async function updatePlatformSwitch(platformId, enabled)",
+        "async function updatePlatformPlan(platformId)",
+        "async function openPlatformAuthorization(platformId, forceCredentials = false)",
+        "async function checkPlatformAuthorization(platformId, button)",
+    ):
+        body = _chunk(script, guard, "\n  }")
+        assert "if (!state.platformCatalogFresh)" in body
+        assert "return" in body
