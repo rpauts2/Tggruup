@@ -7145,6 +7145,12 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const staleAction = event.target.closest("[data-platform-toggle], [data-platform-plan], [data-platform-auth], [data-platform-auth-config], [data-platform-auth-check], [data-platform-browser-auth], [data-platform-destinations], [data-platform-max-webhook]");
+    if (staleAction && !state.platformCatalogFresh) {
+      event.preventDefault();
+      toast("Каталог площадок устарел. Обнови данные перед изменением настроек.", "warn");
+      return;
+    }
     const maxWebhook = event.target.closest("[data-platform-max-webhook]");
     if (maxWebhook) {
       await registerMaxWebhook(maxWebhook);
