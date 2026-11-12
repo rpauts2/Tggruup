@@ -2449,3 +2449,24 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
 
 /* Editorial plan controls remain unavailable until their own plan snapshot has been read successfully. */
 #plan-apply:disabled, #plan-refresh:disabled { opacity: .48; cursor: not-allowed; }
+
+
+/* Platform contract: distinguish login, access, transport, destination and delivery. */
+.platform-contract { margin: 13px 0 12px; padding: 11px; border: 1px solid var(--line-soft); border-radius: 11px; background: rgba(4,8,16,.24); }
+.platform-contract-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:9px; }
+.platform-contract-head > strong { color:var(--text-faint); font-size:9px; font-weight:800; letter-spacing:.12em; }
+.platform-contract-source { color:var(--text-faint); font-size:9px; }
+.platform-contract-source.is-stale { color:var(--warn); }
+.platform-contract-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+.platform-contract-cell { display:flex; flex-direction:column; gap:4px; min-width:0; padding:8px; border:1px solid var(--line-soft); border-radius:8px; background:rgba(255,255,255,.018); }
+.platform-contract-cell > span { color:var(--text-faint); font-size:9px; letter-spacing:.03em; }
+.platform-contract-cell > strong { color:var(--text); font-size:10.5px; line-height:1.35; overflow-wrap:anywhere; }
+.platform-contract-cell > strong.is-ready { color:var(--ok); }
+.platform-contract-cell > strong.is-failed,.platform-contract-cell > strong.is-blocked { color:var(--err); }
+.platform-contract-cell > strong.is-pending,.platform-contract-cell > strong.is-missing { color:var(--warn); }
+.platform-contract-cell > strong.is-manual,.platform-contract-cell > strong.is-none { color:var(--text-dim); }
+.platform-contract-cell > strong.is-unknown { color:var(--text-faint); }
+.platform-contract-cell > strong.is-info { color:#b8c8ff; }
+.platform-contract-cell > small { color:var(--text-faint); font-size:9px; line-height:1.4; overflow-wrap:anywhere; }
+@media(max-width:1050px) { .platform-contract-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:600px) { .platform-contract { padding:9px; } .platform-contract-grid { grid-template-columns:1fr 1fr; } .platform-contract-cell { padding:7px; } }

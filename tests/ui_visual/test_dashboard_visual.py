@@ -143,6 +143,12 @@ def _mock_api(route):
                     "id": "telegram", "name": "Telegram", "category": "Мессенджер",
                     "mode": "token", "authorized": True, "account": "@tgfarm_demo",
                     "hint": "Доступ подтверждён. Публикация через Bot API.",
+                    "statuses": {
+                        "auth": {"state": "ready", "label": "Авторизован"},
+                        "api": {"state": "ready", "label": "API готов"},
+                        "destination": {"state": "ready", "label": "Назначено: @tgfarm_demo"},
+                        "publish": {"state": "ready", "label": "Готово к публикации"},
+                    },
                 },
                 {
                     "id": "vk", "name": "VK", "category": "Социальная сеть",
@@ -264,6 +270,19 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert page.locator('.view[data-view="review"].is-active').is_visible()
                     page.locator('.tab[data-view="overview"]').click()
                     assert page.locator('.view[data-view="overview"].is-active').is_visible()
+                if view == "platforms":
+                    card = page.locator('.platform-card[data-platform-id="telegram"]')
+                    assert card.is_visible()
+                    contract = card.locator(".platform-contract")
+                    assert contract.get_by_text("Способ входа").is_visible()
+                    assert contract.get_by_text("Токен", exact=True).is_visible()
+                    assert contract.get_by_text("Авторизован").is_visible()
+                    assert contract.get_by_text("API готов").is_visible()
+                    assert contract.get_by_text("Готово к публикации").is_visible()
+                    assert contract.get_by_text("Редакционный фокус").is_visible()
+                    assert contract.get_by_text("Не описано адаптером").count() == 3
+                    assert contract.get_by_text("Расписание").is_visible()
+                    assert contract.get_by_text("Метрики").is_visible()
                 if view == "posts":
                     failed_filter = page.locator('#post-filters button[data-status="failed"]')
                     draft_filter = page.locator('#post-filters button[data-status="draft"]')

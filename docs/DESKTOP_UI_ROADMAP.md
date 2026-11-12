@@ -139,3 +139,12 @@ The overview now has a dedicated operational status strip, separate from aggrega
 
 - Status freshness is independent from the aggregate sync pill: a failed first read says the farm state is unknown; a later failed read retains the last successful snapshot but marks it stale. Recovery clears the notice. A stale snapshot is never relabelled as fresh.
 - Attention rows expose direct navigation to the workspace responsible for the alert code; the top action follows the first current alert. These are navigation-only actions, not hidden retries or publishing controls.
+
+
+## Platform card contract — operator readiness slice
+
+- Platform cards now join the platform catalogue with the existing `/api/connect/matrix` authorization contract. The matrix is loaded when either the Connections hub or Platform Center is opened; no backend route or data model was added.
+- Each supported card separates the login method, account authorization, API/transport readiness, destination selection, and actual delivery level. The delivery label comes from the existing five-level capability contract and its explanatory note.
+- Cards also show the catalogue's editorial focus separately from media transport. Media, scheduling and metrics are displayed only when an explicit `capabilities` field is supplied by the API; otherwise the UI says that the adapter has not described that capability. Editorial roles are never promoted into claims of image/video upload support.
+- Connection-matrix refresh failure retains the last successful snapshot and marks it stale; a first-read failure leaves access unknown. The existing platform-catalogue freshness gate still controls platform-changing actions independently.
+- Browser visual QA covers a fully authorized Telegram fixture, including token login, API readiness, destination, delivery, editorial focus, and the honest unknown state for undeclared media/scheduling/metrics.

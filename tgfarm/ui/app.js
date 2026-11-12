@@ -3273,6 +3273,8 @@
              ${item.planned ? "✓ В плане" : "+ В план"}
            </button>`;
       const auth = item.auth || {};
+      const connectionRow = ((state.connections || {}).platforms || []).find((row) => row.id === item.id) || null;
+      const connectionStatuses = (connectionRow && connectionRow.statuses) || {};
       const authCheckedDate = auth.checked_at ? new Date(auth.checked_at) : null;
       const authCheckedLabel = authCheckedDate && !Number.isNaN(authCheckedDate.getTime())
         ? `Проверено: ${authCheckedDate.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
@@ -3333,8 +3335,44 @@
       const automationNote = item.automation_note
         ? `<small class="platform-auth-checked">${esc(item.automation_note)}</small>`
         : "";
+      const modeLabel = connectionRow ? (CONNECT_MODES[connectionRow.mode] || connectionRow.mode) : "";
+      const statusCell = (key, fallbackLabel, fallbackState = "unknown") => {
+        const value = connectionStatuses[key] || {};
+        const rawState = String(value.state || fallbackState);
+        const safeState = ["ready", "failed", "blocked", "pending", "missing", "manual", "none", "unknown"].includes(rawState) ? rawState : "unknown";
+        return { state: safeState, label: value.label || fallbackLabel };
+      };
+      const authCell = statusCell("auth", connectionRow ? connectStatusOf(connectionRow).label : (state.connectFresh === false ? "Снимок подключений устарел" : "Загрузка статуса входа"), connectionRow ? connectStatusOf(connectionRow).key === "ready" ? "ready" : connectStatusOf(connectionRow).key === "failed" ? "failed" : "pending" : "unknown");
+      const apiCell = statusCell("api", item.capability === "publish" ? "API-путь не подтверждён" : "Автоматический API-постинг не заявлен", item.capability === "publish" ? "unknown" : "manual");
+      const destinationCell = statusCell("destination", "Назначение не проверено", "unknown");
+      const publishCell = statusCell("publish", item.capability_label || "Возможность доставки не указана", item.capability === "publish" ? "blocked" : "manual");
+      const featureLabel = (value) => {
+        if (value === true) return "Поддерживается";
+        if (value === false) return "Не поддерживается";
+        if (Array.isArray(value)) return value.length ? value.map((entry) => typeof entry === "string" ? entry : entry.label || entry.name || "").filter(Boolean).join(" · ") : "Не указано";
+        if (value && typeof value === "object") return value.label || value.note || value.state || "Описано";
+        return "Не описано адаптером";
+      };
+      const declaredCapabilities = item.capabilities || {};
+      const roleLabels = { primary: "Основная публикация", crosspost: "Кросспостинг", video: "Видео", visual: "Визуальный контент", text: "Текст", professional: "Профессиональный контент", search: "Поисковый трафик", community: "Сообщества", article: "Статьи", technical: "Технический контент" };
+      const editorialFocus = (item.roles || []).map((role) => roleLabels[role] || role).join(" · ") || item.roles_label || "Не указан";
+      const readinessTile = (label, value, stateName, detail = "") => `<div class="platform-contract-cell"><span>${esc(label)}</span><strong class="is-${esc(stateName)}">${esc(value)}</strong>${detail ? `<small>${esc(detail)}</small>` : ""}</div>`;
+      const contractMarkup = `<section class="platform-contract" aria-label="Возможности и готовность ${esc(item.name)}">
+        <div class="platform-contract-head"><strong>ВОЗМОЖНОСТИ И ГОТОВНОСТЬ</strong>${connectionRow ? `<span class="platform-contract-source ${state.connectFresh === false ? "is-stale" : ""}">${state.connectFresh === false ? "Снимок устарел" : "Проверка подключений"}</span>` : '<span class="platform-contract-source">Статус входа загружается</span>'}</div>
+        <div class="platform-contract-grid">
+          ${readinessTile("Способ входа", modeLabel || "Не получен", connectionRow ? "ready" : "unknown", connectionRow ? (connectionRow.hint || "") : "")}
+          ${readinessTile("Доступ", authCell.label, authCell.state, connectionRow?.account ? "Аккаунт: " + connectionRow.account : "")}
+          ${readinessTile("API / транспорт", apiCell.label, apiCell.state)}
+          ${readinessTile("Назначение", destinationCell.label, destinationCell.state)}
+          ${readinessTile("Доставка", publishCell.label, publishCell.state, item.capability_note || "")}
+          ${readinessTile("Редакционный фокус", editorialFocus, "info", "Не является обещанием поддержки конкретного типа медиа")}
+          ${readinessTile("Медиа", featureLabel(declaredCapabilities.media), declaredCapabilities.media === true ? "ready" : declaredCapabilities.media === false ? "manual" : "unknown")}
+          ${readinessTile("Расписание", featureLabel(declaredCapabilities.scheduling), declaredCapabilities.scheduling === true ? "ready" : declaredCapabilities.scheduling === false ? "manual" : "unknown")}
+          ${readinessTile("Метрики", featureLabel(declaredCapabilities.metrics), declaredCapabilities.metrics === true ? "ready" : declaredCapabilities.metrics === false ? "manual" : "unknown")}
+        </div>
+      </section>`;
       return `
-        <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}"
+        <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}" data-platform-id="${esc(item.id)}"
           style="--platform-color:${esc(item.color || "#7890b2")}">
           <div class="platform-card-head">
             <div class="platform-brand-mark">${esc(item.symbol || item.name.slice(0, 2))}</div>
@@ -3345,6 +3383,7 @@
             <div class="platform-card-action">${switchMarkup}</div>
           </div>
           <p class="platform-description">${esc(item.description)}</p>
+          ${contractMarkup}
           ${item.editorial ? `<div class="platform-editorial-meta">
             <span>РЕДАКЦИОННЫЙ ПРОФИЛЬ</span>
             <p><strong>${esc(item.editorial.label || item.editorial.format)}</strong> · ${esc(item.editorial.audience || "")}</p>
@@ -6807,9 +6846,15 @@
       const data = await api("/api/connect/matrix");
       state.connections = data || { platforms: [] };
       state.connectLoaded = true;
+      state.connectFresh = true;
       renderConnections();
+      renderPlatformCards();
     } catch (error) {
-      if (grid) grid.innerHTML = '<div class="empty">Не удалось получить список площадок: ' + esc(error?.message || error) + "</div>";
+      state.connectFresh = false;
+      renderPlatformCards();
+      if (grid) grid.innerHTML = state.connections
+        ? '<div class="empty">Показан последний успешный снимок подключений. Он может устареть.</div>'
+        : '<div class="empty">Не удалось получить список площадок: ' + esc(error?.message || error) + "</div>";
       toast("Подключения не загрузились: " + (error?.message || error), "err");
     } finally {
       state.connectBusy = false;
@@ -7125,7 +7170,7 @@
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
     if (view === "review" && !state.reviewLoaded) loadReviewBoard();
     if (view === "sources") loadSourcesHealth();
-    if (view === "connect" && !state.connectLoaded) loadConnections();
+    if ((view === "connect" || view === "platforms") && !state.connectLoaded) loadConnections();
     if (view === "sources") loadReprintBackfill();
   }
 
