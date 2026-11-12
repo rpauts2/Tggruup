@@ -94,17 +94,17 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Connected both the review board and the Command Center's unresolved-delivery worklist to the same material drawer. Operators can open the full post, editorial context and lifecycle trace before deciding; existing reconciliation actions remain separate and confirmation-gated.
 - Added unit and browser coverage for opening a material from the review board, while retaining the cancel-confirmation test that proves no reconciliation request is sent when the operator backs out.
 - Reprioritized the Command Center's four primary shortcuts around operator work: «Требует внимания», planning, publication queue and connections. AI Team remains available in primary navigation, while the highest-risk review path is now one click from the overview.
+- Reordered the overview so the real pipeline state and editorial results come first, followed immediately by the last publish decision and per-platform backlog. Portfolio, AI-usage and measurement analytics remain available below the operational workspace rather than competing with daily delivery decisions.
 - Added a browser assertion that the attention shortcut opens the review workspace and returns cleanly to the overview.
 
 ## Next UI milestones
 
 1. Make the publication queue, post drawer, trace and delivery reconciliation navigable as one material lifecycle.
-2. Rework Command Center hierarchy around operator decisions: what is healthy, what is blocked, what needs attention, and what changed.
-3. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
-4. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
-5. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
-6. Add agent activity only after a reliable backend event/status contract exists.
-7. Validate desktop, compact webview, keyboard navigation and reduced-motion behavior.
+2. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
+3. Apply the same loading, empty, stale, partial-error and unknown-state contract to each specialist workspace.
+4. Make source, trend, community, review and analytics detail views trace back to the source evidence and affected material.
+5. Add agent activity only after a reliable backend event/status contract exists.
+6. Validate desktop, compact webview, keyboard navigation and reduced-motion behavior.
 
 ## Acceptance criteria
 
