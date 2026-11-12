@@ -313,7 +313,7 @@ def test_specialist_workspaces_expose_local_freshness_states(client):
     assert "state.workspaceFreshness[key]" in freshness
     assert 'root.dataset.state = "stale"' in freshness
     assert 'root.dataset.state = "error"' in freshness
-    assert "esc(error.message || error)" in freshness
+    assert "esc(failure.message || failure)" in freshness
     assert "dt(lastSuccessAt)" in freshness
 
     refresh = _chunk(script, "async function refresh()", "async function runCycle()")
