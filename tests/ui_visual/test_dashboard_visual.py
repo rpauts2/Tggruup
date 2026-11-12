@@ -224,6 +224,17 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                 _capture_view(page, view, viewport)
                 assert page.locator(f'.view[data-view="{view}"]').is_visible()
                 if view == "overview":
+                    overview = page.locator('.view[data-view="overview"]')
+                    assert overview.locator('[aria-label="Операционная картина"]').count() == 1
+                    assert overview.locator('[aria-label="Публикации и доставка"]').count() == 1
+                    positions = overview.evaluate("""(root) => [
+                        "pipeline-visual", "report-chart", "publication-decision",
+                        "backlog-list", "portfolio-insights"
+                    ].map((id) => [...root.querySelectorAll("[id]")].indexOf(root.querySelector(`#${id}`)))
+                    """)
+                    assert positions == sorted(positions)
+                    assert overview.get_by_role("heading", name="Состояние конвейера").is_visible()
+                    assert overview.get_by_role("heading", name="Результаты редакции").is_visible()
                     grid = page.locator(".command-shortcuts-grid")
                     assert grid.evaluate("(el) => getComputedStyle(el).display") == "grid"
                     card = grid.locator("button").first
