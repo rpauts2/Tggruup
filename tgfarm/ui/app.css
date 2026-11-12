@@ -270,6 +270,24 @@ main {
 .stage-cancelled b { color: #c9a6ff; }
 .stage-cancelled .stage-dot { background: transparent; box-shadow: inset 0 0 0 2px #9b5cf6; }
 
+/* Specialist workspaces keep their last good data visible during a partial
+   outage, but the local banner must make that snapshot's age explicit. */
+.workspace-freshness {
+  margin: 8px 18px 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  color: var(--text-faint);
+  background: rgba(255,255,255,.025);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.workspace-freshness[hidden] { display: none; }
+.workspace-freshness strong { color: var(--text); font-weight: 600; }
+.workspace-freshness[data-state="stale"] { border-left-color: var(--warning, #d6a54b); }
+.workspace-freshness[data-state="error"] { border-left-color: var(--danger, #d66b6b); }
+
 /* -------------------------------------------------------------------- list */
 .list { display: flex; flex-direction: column; min-height: 84px; }
 .list > * + * { border-top: 1px solid var(--line-soft); }
