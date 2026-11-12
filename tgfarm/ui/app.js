@@ -140,6 +140,7 @@
       state.workspaceFreshness[key] = { lastSuccessAt: new Date().toISOString() };
       root.hidden = true;
       root.dataset.state = "fresh";
+    if (section) section.dataset.state = "fresh";
       root.textContent = "";
       return;
     }
@@ -153,6 +154,7 @@
         + 'Обновление не удалось: ' + esc(failure.message || failure);
     } else {
       root.dataset.state = "error";
+      if (section) section.dataset.state = "error";
       root.innerHTML = '<strong>Данные раздела недоступны.</strong> '
         + 'Успешный снимок ещё не получен. ' + esc(failure.message || failure);
     }
@@ -178,6 +180,7 @@
   }
 
   function renderCommandStatus(status, failure = null) {
+    const section = $("#command-status");
     const root = $("#command-status-grid");
     const action = $("#command-next-action");
     if (!root) return;
@@ -185,6 +188,7 @@
     if (!status) {
       if (state.commandStatusLoaded) {
         root.dataset.state = "stale";
+        if (section) section.dataset.state = "stale";
         if (freshness) {
           freshness.hidden = false;
           freshness.dataset.state = "stale";
