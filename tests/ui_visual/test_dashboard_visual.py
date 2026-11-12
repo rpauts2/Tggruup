@@ -1009,8 +1009,8 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
         trends.clear()
         sources.clear()
         page.locator("#refresh-data").click()
-        page.get_by_text("Трендов нет — тепло ниже порога").wait_for()
-        page.get_by_text("Источники не заданы").wait_for()
+        page.locator("#trends-list").get_by_text("Трендов нет — тепло ниже порога").wait_for()
+        page.locator("#sources-list").get_by_text("Источники не заданы").wait_for()
         assert trends_notice.is_hidden()
         assert sources_notice.is_hidden()
         assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").count() == 0
