@@ -134,3 +134,7 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 ## Command Center — live operational snapshot
 
 The overview now has a dedicated operational status strip, separate from aggregate KPIs. It renders only facts from `/api/status`: configured run mode, scheduler state, publication permission, and the cycle watchdog state/timestamps. Unknown values remain explicitly unknown; the cycle state distinguishes idle, running, successful, partial, failed, timed out, cancelled and stale. Its single next-action link is selected from actual alerts and blocking conditions and navigates to the relevant existing workspace. It does not start a cycle, alter settings, or publish anything.
+
+
+- Status freshness is independent from the aggregate sync pill: a failed first read says the farm state is unknown; a later failed read retains the last successful snapshot but marks it stale. Recovery clears the notice. A stale snapshot is never relabelled as fresh.
+- Attention rows expose direct navigation to the workspace responsible for the alert code; the top action follows the first current alert. These are navigation-only actions, not hidden retries or publishing controls.

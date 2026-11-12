@@ -19,6 +19,7 @@
     topicQuery: "",
     topicDossier: null,
     platformData: null,
+    commandStatusLoaded: false,
     platformCatalogFresh: false,
     editorialPlanFresh: false,
     editorialPlanBusy: false,
@@ -176,14 +177,39 @@
     })[target] || "Открыть раздел";
   }
 
-  function renderCommandStatus(status) {
+  function renderCommandStatus(status, failure = null) {
     const root = $("#command-status-grid");
     const action = $("#command-next-action");
     if (!root) return;
+    const freshness = $("#command-status-freshness");
     if (!status) {
-      root.innerHTML = '<div class="command-status-unavailable">Статус фермы не прочитан. Последнее состояние нельзя считать актуальным.</div>';
+      if (state.commandStatusLoaded) {
+        root.dataset.state = "stale";
+        if (freshness) {
+          freshness.hidden = false;
+          freshness.dataset.state = "stale";
+          freshness.textContent = "Обновление статуса не удалось. Показан последний успешный снимок"
+            + (failure && failure.message ? ": " + failure.message : ".");
+        }
+        return;
+      }
+      root.dataset.state = "error";
+      root.innerHTML = '<div class="command-status-unavailable">Статус ещё не получен. Состояние фермы неизвестно.</div>';
+      if (freshness) {
+        freshness.hidden = false;
+        freshness.dataset.state = "error";
+        freshness.textContent = "Первое чтение статуса не удалось"
+          + (failure && failure.message ? ": " + failure.message : ".");
+      }
       if (action) action.hidden = true;
       return;
+    }
+    state.commandStatusLoaded = true;
+    root.dataset.state = "fresh";
+    if (freshness) {
+      freshness.hidden = true;
+      freshness.textContent = "";
+      delete freshness.dataset.state;
     }
     const cycle = status.cycle_health || {};
     const mode = {
@@ -5970,6 +5996,8 @@
       // every endpoint is down the independent sections keep their last known
       // content, while the decision card is explicitly marked unread on this pass.
       // This happens before the all-failed early return below, never from stale cache.
+      renderCommandStatus("status" in data ? data.status : null,
+        "status" in data ? null : reasons.status || new Error("статус не получен"));
       renderPublicationDecision("status" in data ? data.status : null,
         "status" in data ? null : reasons.status || new Error("статус не получен"));
       // Same rule as the publication card above: a read that died must be said
@@ -6021,7 +6049,6 @@
         }
         $("#brand-sub").textContent =
           `${data.status.channels} каналов · ${data.status.sources} источников · ${data.status.embedder}`;
-        renderCommandStatus(data.status);
         renderAlerts(data.status.alerts || []);
         renderKPIs(data.status.kpis || data.status);
       }

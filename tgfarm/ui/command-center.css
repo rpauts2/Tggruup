@@ -649,3 +649,22 @@ input, select, textarea { accent-color: var(--accent); }
   .attention-row { align-items:flex-start; flex-wrap:wrap; }
   .attention-open { margin-left:17px; }
 }
+
+
+/* Status snapshot freshness: never present a retained read as current. */
+.command-status-freshness {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(251,191,36,.24);
+  border-radius: 9px;
+  background: rgba(120,80,12,.12);
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.command-status-freshness[data-state="error"] {
+  border-color: rgba(248,113,113,.26);
+  background: rgba(127,29,29,.10);
+  color: var(--err);
+}
+.command-status[data-state="stale"] .command-status-item { opacity: .78; }

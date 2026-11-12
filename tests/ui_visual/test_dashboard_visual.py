@@ -434,6 +434,69 @@ def test_command_center_attention_actions_route_by_alert_code(dashboard_url):
         browser.close()
 
 
+def test_command_status_marks_retained_snapshot_stale_and_first_failure_unavailable(dashboard_url):
+    from playwright.sync_api import sync_playwright
+
+    status_failed = False
+    payload = {
+        "mode": "live",
+        "scheduler_running": True,
+        "can_publish": True,
+        "cycle_health": {
+            "state": "ok", "stale": False,
+            "started_at": "2026-11-12T10:00:00+00:00",
+            "finished_at": "2026-11-12T10:01:00+00:00",
+        },
+        "alerts": [],
+        "kpis": {
+            "sources": 1, "sources_total": 1, "ready_clusters": 0, "clusters": 0,
+            "scheduled": 0, "gated": 0, "published": 0, "posts": 0, "rejected": 0,
+            "reject_rate": None, "avg_er": None, "covers": 0, "videos": 0, "crossposts": 0,
+        },
+    }
+
+    def status_route(route):
+        if status_failed:
+            route.fulfill(status=503, json={"detail": "status service unavailable"})
+        else:
+            route.fulfill(json=payload)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", _mock_api)
+        page.route("**/api/status", status_route)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.wait_for_function("document.querySelector('#command-status')?.dataset.state === 'fresh'")
+        assert page.locator("#command-status").get_by_text("LIVE", exact=True).is_visible()
+        status_failed = True
+        page.evaluate("window.tgfarmRefresh()")
+        page.wait_for_function(
+            "document.querySelector('#command-status-freshness')?.dataset.state === 'stale'"
+        )
+        assert page.locator("#command-status").get_by_text("LIVE", exact=True).is_visible()
+        assert page.locator("#command-status-freshness").get_by_text(
+            "Показан последний успешный снимок", exact=False
+        ).is_visible()
+        browser.close()
+
+        first_failure = browser.new_page(viewport={"width": 1440, "height": 960})
+        first_failure.route("**/api/**", _mock_api)
+        first_failure.route(
+            "**/api/status",
+            lambda route: route.fulfill(status=503, json={"detail": "status service unavailable"}),
+        )
+        first_failure.goto(dashboard_url, wait_until="networkidle")
+        first_failure.wait_for_function(
+            "document.querySelector('#command-status')?.dataset.state === 'error'"
+        )
+        assert first_failure.locator("#command-status").get_by_text(
+            "Состояние фермы неизвестно", exact=False
+        ).is_visible()
+        assert first_failure.locator("#command-next-action").is_hidden()
+        browser.close()
+
+
 def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
     """An uncertain delivery must open an evidence-first drawer, never a blind retry."""
     from playwright.sync_api import sync_playwright
