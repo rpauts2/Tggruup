@@ -6242,8 +6242,14 @@
   }
 
   function renderReviewCard(item) {
-    const age = Number(item.age_hours || 0);
-    const ageLabel = age >= 48 ? Math.round(age / 24) + " дн" : Math.round(age) + " ч";
+    const age = typeof item.age_hours === "number" && Number.isFinite(item.age_hours)
+      ? item.age_hours : null;
+    const ageLabel = age === null
+      ? "возраст не измерен"
+      : age >= 48 ? Math.round(age / 24) + " дн" : Math.round(age) + " ч";
+    const attemptsLabel = typeof item.attempts === "number" && Number.isFinite(item.attempts)
+      ? "попыток " + n(item.attempts)
+      : "попыток: нет отчёта";
     const actions = (item.actions || [])
       .map((action) => {
         const label = REVIEW_ACTION_LABELS[action] || action;
@@ -6254,7 +6260,7 @@
       .join("");
     return '<article class="review-card">'
       + '<div class="review-card-head"><span class="tag">' + esc(item.platform) + "</span>"
-      + '<span class="review-age">' + esc(ageLabel) + " · попыток " + Number(item.attempts || 0) + "</span></div>"
+      + '<span class="review-age">' + esc(ageLabel) + " · " + esc(attemptsLabel) + "</span></div>"
       + '<p class="review-hook">' + esc(item.hook || "Без заголовка") + "</p>"
       + '<p class="review-reason">' + esc(item.reason || "") + "</p>"
       + '<div class="review-actions">' + actions + "</div></article>";
@@ -6286,17 +6292,22 @@
   async function runReviewAction(publicId, action) {
     try {
       if (action === "confirm_published") {
+        if (!confirm("Подтверждаете, что этот пост уже появился на целевой площадке?")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", { action: "confirm_published" });
       } else if (action === "retry_after_check") {
+        if (!confirm("Вы лично проверили целевую площадку и убедились, что этого поста там нет? Только после этой проверки разрешён повтор.")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", {
           action: "retry_after_check",
           confirm_not_published: true,
         });
       } else if (action === "retry") {
+        if (!confirm("Повторить доставку этого материала?")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/retry", {});
       } else if (action === "publish_now") {
+        if (!confirm("Отправить этот материал на публикацию сейчас?")) return;
         await post("/api/posts/publish", { post_public_ids: [publicId] });
       } else if (action === "reject") {
+        if (!confirm("Отклонить этот материал? Он не попадёт в обычную очередь публикации.")) return;
         await post("/api/posts/reject", {
           post_public_ids: [publicId],
           reason: "operator review board",
