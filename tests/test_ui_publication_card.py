@@ -249,8 +249,10 @@ def test_queue_cards_and_overview_rows_are_keyboard_entry_points(client):
     script = _script(client)
     card = _chunk(script, "function postCard(p)", "function renderPosts(posts)")
     assert 'role="button" tabindex="0" aria-label="Открыть материал:' in card
+    assert '$(".pcard, #overview-queue .item").forEach' in _chunk(script, "function renderPosts(posts)", "// «Ближайшие публикации»")
     rows = _chunk(script, "function renderPosts(posts)", "// «Ближайшие публикации»")
     assert 'role="button" tabindex="0" aria-label="Открыть материал:' in rows
+    assert rows.count('role="button" tabindex="0"') == 2
     assert 'event.key !== "Enter" && event.key !== " "' in rows
     assert 'openDrawer(el.dataset.post)' in rows
 
