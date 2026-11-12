@@ -2446,3 +2446,6 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   opacity: .48;
   cursor: not-allowed;
 }
+
+/* Editorial plan controls remain unavailable until their own plan snapshot has been read successfully. */
+#plan-apply:disabled, #plan-refresh:disabled { opacity: .48; cursor: not-allowed; }
