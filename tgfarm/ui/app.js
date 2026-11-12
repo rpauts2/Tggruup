@@ -5695,7 +5695,7 @@
           + '<button class="attention-open" type="button" data-goto="' + alertDestination(a) + '">'
           + "Открыть</button></div>").join("")
       + "</div>";
-    $("[data-goto]", box).forEach((button) => {
+    Array.from(box.querySelectorAll("[data-goto]")).forEach((button) => {
       button.addEventListener("click", () => switchView(button.dataset.goto));
     });
     const toggle = $("#attention-toggle");
