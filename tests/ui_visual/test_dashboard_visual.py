@@ -1005,4 +1005,27 @@ def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboa
         assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").is_visible()
         assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").is_visible()
 
+        # A successful empty response is not an outage and must not inherit a stale badge.
+        trends.clear()
+        sources.clear()
+        page.locator("#refresh-data").click()
+        page.get_by_text("Трендов нет — тепло ниже порога").wait_for()
+        page.get_by_text("Источники не заданы").wait_for()
+        assert trends_notice.is_hidden()
+        assert sources_notice.is_hidden()
+        assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").count() == 0
+        assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").count() == 0
+
+        # A first-read failure has no old snapshot to preserve; report unavailable, not stale.
+        available["trends"] = False
+        available["sources"] = False
+        fresh_page = browser.new_page(viewport={"width": 1440, "height": 960})
+        fresh_page.route("**/api/**", mock_api)
+        fresh_page.goto(dashboard_url, wait_until="networkidle")
+        fresh_page.locator('#trends-freshness[data-state="error"]').wait_for(timeout=10000)
+        fresh_page.locator('#sources-freshness[data-state="error"]').wait_for(timeout=10000)
+        assert fresh_page.locator("#trends-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#sources-freshness").get_by_text("Данные раздела недоступны").is_visible()
+        assert fresh_page.locator("#trends-freshness").get_by_text("Данные устарели").count() == 0
+
         browser.close()
