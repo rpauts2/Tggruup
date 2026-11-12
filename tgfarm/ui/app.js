@@ -3728,6 +3728,10 @@
   }
 
   async function checkPlatformAuthorization(platformId, button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед проверкой доступа.", "warn");
+      return null;
+    }
     if (button) {
       button.disabled = true;
       button.classList.add("is-busy");
