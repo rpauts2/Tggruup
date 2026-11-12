@@ -627,3 +627,25 @@ input, select, textarea { accent-color: var(--accent); }
   .command-status-item > strong { font-size:15px; }
 }
 @media(max-width:360px) { .command-status-grid { grid-template-columns:1fr; } }
+
+
+/* Actionable attention rows */
+.attention-row { align-items:center; }
+.attention-text { flex:1 1 auto; }
+.attention-open {
+  flex:none;
+  padding:5px 10px;
+  border:1px solid var(--ui-border);
+  border-radius:8px;
+  background:rgba(91,140,255,.08);
+  color:#b8c9ff;
+  font-size:10.5px;
+  font-weight:650;
+  cursor:pointer;
+}
+.attention-open:hover { border-color:var(--ui-border-hover); background:rgba(91,140,255,.15); }
+.attention-open:focus-visible { outline:2px solid rgba(125,160,255,.86); outline-offset:2px; }
+@media(max-width:540px) {
+  .attention-row { align-items:flex-start; flex-wrap:wrap; }
+  .attention-open { margin-left:17px; }
+}

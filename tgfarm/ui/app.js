@@ -157,6 +157,25 @@
     }
   }
 
+  function alertDestination(alert) {
+    const code = String(alert && alert.code || "");
+    if (code.startsWith("cycle_") || code.startsWith("backup_")) return "runs";
+    if (code.startsWith("dzen_") || code.startsWith("platform_auth")) return "connect";
+    if (code.startsWith("source_")) return "sources";
+    if (code.startsWith("crosspost_")) return "review";
+    if (code.startsWith("publish_") || code === "publishing_stuck") return "review";
+    return "review";
+  }
+
+  function alertDestinationLabel(target) {
+    return ({
+      runs: "Открыть диагностику",
+      connect: "Проверить подключение",
+      sources: "Проверить источники",
+      review: "Разобрать проблемы",
+    })[target] || "Открыть раздел";
+  }
+
   function renderCommandStatus(status) {
     const root = $("#command-status-grid");
     const action = $("#command-next-action");
@@ -216,15 +235,16 @@
     if (action) {
       let target = "posts";
       let label = "Открыть очередь";
-      if ((status.alerts || []).length) {
-        target = "review";
-        label = "Разобрать проблемы";
+      const alerts = Array.isArray(status.alerts) ? status.alerts : [];
+      if (alerts.length) {
+        target = alertDestination(alerts[0]);
+        label = alertDestinationLabel(target);
       } else if (cycle.stale === true || ["failed", "timeout", "partial"].includes(cycle.state)) {
         target = "runs";
         label = "Проверить последний цикл";
       } else if (status.can_publish === false) {
         target = "platforms";
-        label = "Проверить готовность площадок";
+        label = "Проверить настройки публикации";
       } else if (status.scheduler_running === false) {
         target = "plan";
         label = "Открыть планирование";
@@ -5652,7 +5672,8 @@
     if (!box) {
       box = document.createElement("div");
       box.id = "alert-banner";
-      kpis.parentElement.insertBefore(box, kpis);
+      const anchor = $("#command-status") || kpis;
+      anchor.parentElement.insertBefore(box, anchor);
     }
     const errors = alerts.filter((a) => a.level === "error").length;
     const counter = $("#review-nav-count");
@@ -5670,8 +5691,13 @@
           '<div class="attention-row attention-row--' + (a.level === "error" ? "err" : "warn") + '">'
           + '<span class="attention-dot"></span>'
           + '<div class="attention-text"><strong>' + esc(a.code) + "</strong>"
-          + "<span>" + esc(String(a.message || "").slice(0, 220)) + "</span></div></div>").join("")
+          + "<span>" + esc(String(a.message || "").slice(0, 220)) + "</span></div>"
+          + '<button class="attention-open" type="button" data-goto="' + alertDestination(a) + '">'
+          + "Открыть</button></div>").join("")
       + "</div>";
+    $("[data-goto]", box).forEach((button) => {
+      button.addEventListener("click", () => switchView(button.dataset.goto));
+    });
     const toggle = $("#attention-toggle");
     if (toggle) {
       toggle.addEventListener("click", () => {

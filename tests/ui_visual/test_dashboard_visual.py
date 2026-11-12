@@ -388,6 +388,52 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
     assert not browser_errors, f"uncaught browser errors: {browser_errors}"
 
 
+def test_command_center_attention_actions_route_by_alert_code(dashboard_url):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", _mock_api)
+        page.route("**/api/status", lambda route: route.fulfill(json={
+            "mode": "live",
+            "scheduler_running": True,
+            "can_publish": True,
+            "cycle_health": {
+                "state": "failed", "stale": False,
+                "started_at": "2026-11-12T10:00:00+00:00",
+                "finished_at": "2026-11-12T10:01:00+00:00",
+            },
+            "alerts": [
+                {"level": "error", "code": "dzen_auth", "message": "Требуется повторный вход"},
+                {"level": "error", "code": "cycle_failed", "message": "Последний цикл завершился ошибкой"},
+            ],
+            "kpis": {
+                "sources": 1, "sources_total": 1, "ready_clusters": 0, "clusters": 0,
+                "scheduled": 0, "gated": 0, "published": 0, "posts": 0, "rejected": 0,
+                "reject_rate": None, "avg_er": None, "covers": 0, "videos": 0, "crossposts": 0,
+            },
+        }))
+        response = page.goto(dashboard_url, wait_until="networkidle")
+        assert response is not None and response.status == 200
+        page.locator("#command-status-grid .command-status-item").nth(3).get_by_text(
+            "Сбой", exact=True
+        ).wait_for()
+        assert page.locator("#command-next-action").get_attribute("data-goto") == "connect"
+        attention = page.locator("#alert-banner")
+        assert attention.is_visible()
+        buttons = attention.locator(".attention-row .attention-open")
+        assert buttons.count() == 2
+        assert buttons.nth(0).get_attribute("data-goto") == "connect"
+        assert buttons.nth(1).get_attribute("data-goto") == "runs"
+        buttons.nth(0).click()
+        assert page.locator('.view[data-view="connect"].is-active').is_visible()
+        page.locator('.tab[data-view="overview"]').click()
+        attention.locator(".attention-open").nth(1).click()
+        assert page.locator('.view[data-view="runs"].is-active').is_visible()
+        browser.close()
+
+
 def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
     """An uncertain delivery must open an evidence-first drawer, never a blind retry."""
     from playwright.sync_api import sync_playwright
