@@ -300,3 +300,22 @@ def test_post_queue_exposes_all_operational_status_groups(client):
         assert label in html
     assert 'state.postFilter ? "&status=" + state.postFilter : ""' in script
     assert 'state.postFilter = b.dataset.status' in script
+
+def test_specialist_workspaces_expose_local_freshness_states(client):
+    html = client.get("/").text
+    assert 'id="trends-freshness"' in html
+    assert 'id="sources-freshness"' in html
+    assert html.index('id="trends-freshness"') < html.index('id="trends-list"')
+    assert html.index('id="sources-freshness"') < html.index('id="sources-health"')
+
+    script = _script(client)
+    freshness = _chunk(script, "function renderWorkspaceFreshness", "function renderKPIs")
+    assert "state.workspaceFreshness[key]" in freshness
+    assert 'root.dataset.state = "stale"' in freshness
+    assert 'root.dataset.state = "error"' in freshness
+    assert "esc(error.message || error)" in freshness
+    assert "dt(lastSuccessAt)" in freshness
+
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("trends"' in refresh
+    assert 'renderWorkspaceFreshness("sources"' in refresh
