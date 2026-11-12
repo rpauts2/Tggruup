@@ -246,7 +246,7 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert operations.get_by_text("Не запускался", exact=True).is_visible()
                     next_action = operations.locator("#command-next-action")
                     assert next_action.get_attribute("data-goto") == "platforms"
-                    assert next_action.get_by_text("Проверить готовность площадок").is_visible()
+                    assert next_action.get_by_text("Проверить настройки публикации").is_visible()
                     assert overview.get_by_role("heading", name="Результаты редакции").is_visible()
                     grid = page.locator(".command-shortcuts-grid")
                     assert grid.evaluate("(el) => getComputedStyle(el).display") == "grid"
