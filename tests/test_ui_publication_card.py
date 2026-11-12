@@ -276,3 +276,24 @@ def test_material_drawer_is_modal_and_loads_trace_separately(client):
     assert 'if (!drawer.hidden && e.key === "Tab")' in script
     assert 'if (!drawer.hidden && e.key === "Escape")' in script
     assert "if (restore && restore.isConnected" in drawer
+
+
+# ---------------------------------------------------------------- queue filters
+def test_post_queue_exposes_all_operational_status_groups(client):
+    """Every visible filter maps to an existing Post.status value."""
+    html = client.get("/").text
+    script = _script(client)
+    for status, label in (
+        ("", "все"),
+        ("gated", "прошли"),
+        ("scheduled", "в очереди"),
+        ("publish_unknown", "нужна сверка"),
+        ("failed", "ошибки"),
+        ("draft", "черновики"),
+        ("published", "опубликованы"),
+        ("rejected", "отклонены"),
+    ):
+        assert ('data-status="' + status + '"') in html
+        assert label in html
+    assert 'state.postFilter ? "&status=" + state.postFilter : ""' in script
+    assert 'state.postFilter = b.dataset.status' in script
