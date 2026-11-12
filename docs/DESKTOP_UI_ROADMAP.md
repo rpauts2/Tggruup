@@ -105,6 +105,7 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 
 - Editorial planning tracks the plan snapshot, revision history and ordered-but-unbooked queue independently. A failed read retains the last successful rows with a local stale notice; first-read failures are explicit unavailable states; a successful read clears only its own notice. The plan-commit action stays disabled until the plan snapshot is fresh.
 
+- Editorial plan confirmation now distinguishes a successful refresh request from a successfully re-read plan. If the follow-up read fails, the UI keeps the plan stale and shows a warning instead of a false success message.
 - Platform catalog freshness is now a safety boundary: the last successful catalog remains visible after a failed read, receives an explicit stale notice, and platform-changing / authorization entry points refuse to run until a fresh catalog response arrives. A first-read failure is shown as unavailable rather than as an empty registry.
 
 1. Improve platform cards with adapter-backed login, delivery, media, scheduling and metrics capabilities.
