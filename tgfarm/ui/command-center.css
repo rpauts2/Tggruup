@@ -668,3 +668,7 @@ input, select, textarea { accent-color: var(--accent); }
   color: var(--err);
 }
 .command-status[data-state="stale"] .command-status-item { opacity: .78; }
+
+
+/* Author button display rules must not override the native hidden state. */
+#command-next-action[hidden] { display: none !important; }
