@@ -38,6 +38,7 @@
     shortVideoBusy: new Set(),
     agentBenchmarkCluster: "",
     agentBenchmarkBusy: false,
+    drawerReturnFocus: null,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -1749,7 +1750,7 @@
                : p.scheduled_at ? `в ${clock(p.scheduled_at)}`
                : dt(p.created_at);
     return `
-      <article class="pcard" data-post="${esc(p.id)}">
+      <article class="pcard" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="pcard-cover">${cover}</div>
         <div class="pcard-body">
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${esc(when)}</div>
@@ -1788,7 +1789,7 @@
     if (queue.length) {
       title.textContent = "Ближайшие публикации";
       $("#overview-queue").innerHTML = queue.map((p) => `
-      <div class="item" data-post="${esc(p.id)}">
+      <div class="item" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : p.status === "failed" ? "исправьте причину и повторите вручную" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
@@ -1812,8 +1813,13 @@
       $("#overview-queue").innerHTML = `<div class="empty">Постов пока нет</div>`;
     }
 
-    $$(".pcard, #overview-queue .item").forEach((el) => {
+    $(".pcard, #overview-queue .item").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.post));
+      el.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openDrawer(el.dataset.post);
+      });
     });
   }
 
@@ -4675,13 +4681,24 @@
   }
 
   /* --------------------------------------------------------------- drawer */
+  function closeDrawer() {
+    const drawer = $("#drawer");
+    if (!drawer || drawer.hidden) return;
+    drawer.hidden = true;
+    const restore = state.drawerReturnFocus;
+    state.drawerReturnFocus = null;
+    if (restore && restore.isConnected && typeof restore.focus === "function") restore.focus();
+  }
+
   async function openDrawer(postId) {
     if (!postId) return;
     const drawer = $("#drawer");
     const inner = $("#drawer-inner");
-    inner.innerHTML = `<div class="empty">Загрузка…</div>`;
+    if (drawer.hidden) state.drawerReturnFocus = document.activeElement;
+    inner.innerHTML = `<div class="empty">Загрузка материала…</div>`;
     drawer.hidden = false;
-
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
     let p;
     try {
       p = await api(`/api/posts/${encodeURIComponent(postId)}`);
@@ -4815,7 +4832,7 @@
     inner.innerHTML = `
       <div class="drawer-head">
         <h3>${esc(p.hook)}</h3>
-        <button class="btn btn-ghost btn-sm drawer-close" onclick="document.getElementById('drawer').hidden=true">✕</button>
+        <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
       </div>
 
       <div class="pcard-foot" style="margin-bottom:14px">
@@ -4949,8 +4966,17 @@
 
       ${state.bestHour != null ? `<div class="drawer-block"><h4>Умная подсказка</h4><div class="drawer-text">Лучшее время публикации по статистике: ${state.bestHour}:00. Пост пройдёт гейты и встанет в очередь автоматически.</div></div>` : ""}
 
+      <div id="trace-slot" aria-live="polite"><div class="drawer-block trace-block"><h4>История материала</h4><div class="empty">Загружаю историю…</div></div></div>
       <div id="editor-slot"></div>
       <div id="preview-slot"></div>`;
+    const closeButton = inner.querySelector("[data-drawer-close]");
+    if (closeButton) {
+      closeButton.addEventListener("click", closeDrawer);
+      closeButton.focus();
+    } else {
+      drawer.focus();
+    }
+    window.tgfarmTrace(p.id);
   }
 
   function setTikTokPublishStatus(message, kind = "") {
@@ -5266,11 +5292,14 @@
   }
 
   window.tgfarmTrace = async (id) => {
-    const slot = $("#preview-slot");
+    const slot = $("#trace-slot");
     if (!slot) return;
+    const tracePostId = String(id || "");
+    slot.dataset.tracePostId = tracePostId;
     slot.innerHTML = '<div class="drawer-block"><h4>История материала</h4><div class="empty">Загружаю события…</div></div>';
     try {
       const t = await api(`/api/posts/${encodeURIComponent(id)}/trace`);
+      if (!slot.isConnected || slot.dataset.tracePostId !== tracePostId) return;
       const events = Array.isArray(t.events) ? t.events : [];
       const status = t.status ? (STATUS_RU[t.status] || t.status) : "статус не получен";
       const mediaCount = typeof t.media === "number" && Number.isFinite(t.media) ? t.media : null;
@@ -5305,6 +5334,7 @@
         ${timeline}
       </section>`;
     } catch (e) {
+      if (!slot.isConnected || slot.dataset.tracePostId !== tracePostId) return;
       slot.innerHTML = '<div class="drawer-block trace-block"><h4>История материала</h4>'
         + '<div class="empty">Не удалось прочитать историю: ' + esc(e.message || e) + '</div></div>';
     }
@@ -5879,7 +5909,7 @@
     try {
       await post(`/api/posts/${encodeURIComponent(id)}/reconcile`, body);
       toast(action === "confirm_published" ? "Публикация отмечена как подтверждённая" : "Пост возвращён в очередь", "ok");
-      $("#drawer").hidden = true;
+      closeDrawer();
       refresh();
     } catch (e) {
       toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
@@ -6151,7 +6181,7 @@
         toast("Не удалось опубликовать: " + detail, "err");
       } else {
         toast("Опубликовано", "ok");
-        $("#drawer").hidden = true;
+        closeDrawer();
         refresh();
       }
     } catch (e) {
@@ -6176,7 +6206,7 @@
     try {
       await post("/api/posts/reject", { post_public_ids: [id], reason: "manual" });
       toast("Отклонено", "ok");
-      $("#drawer").hidden = true;
+      closeDrawer();
       refresh();
     } catch (e) { toast("Ошибка", "err"); }
   };
@@ -7135,7 +7165,33 @@
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") $("#drawer").hidden = true;
+    const drawer = $("#drawer");
+    if (!drawer.hidden && e.key === "Escape") {
+      e.preventDefault();
+      closeDrawer();
+      return;
+    }
+    if (!drawer.hidden && e.key === "Tab") {
+      const focusable = [...drawer.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])")]
+        .filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        e.preventDefault();
+        drawer.focus();
+      } else {
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!drawer.contains(document.activeElement)) {
+          e.preventDefault();
+          first.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
     if (e.key === "/" && state.view === "platforms" && !e.ctrlKey && !e.metaKey
       && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
       e.preventDefault();
