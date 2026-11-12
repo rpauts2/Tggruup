@@ -644,6 +644,19 @@ def test_review_board_shows_unknown_measurements_and_cancels_safe_retry(dashboar
             }
             route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
             return
+        if path == "/api/posts/review-unknown-001/trace":
+            payload = {
+                "status": "publish_unknown",
+                "media": 0,
+                "events": [{
+                    "kind": "draft",
+                    "at": "2026-11-11T09:55:00Z",
+                    "detail": "Материал создан перед передачей в очередь.",
+                }],
+                "stats": None,
+            }
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
         if path == "/api/review/queue":
             payload = {
                 "total": 1,
@@ -690,17 +703,119 @@ def test_review_board_shows_unknown_measurements_and_cancels_safe_retry(dashboar
         assert card.get_by_text("0 ч", exact=False).count() == 0
         assert card.get_by_text("попыток 0", exact=False).count() == 0
 
-        card.get_by_role("button", name="Открыть материал").click()
+        open_button = card.get_by_role("button", name="Открыть материал")
+        open_button.click()
         drawer = page.locator("#drawer")
         drawer.wait_for(state="visible")
+        assert drawer.get_attribute("role") == "dialog"
+        assert drawer.get_attribute("aria-modal") == "true"
         material_heading = drawer.get_by_role("heading", name="Материал с неподтверждённой доставкой")
         material_heading.wait_for(state="visible", timeout=5000)
         assert drawer.get_by_text("Результат не подтверждён.", exact=False).is_visible()
+        drawer.locator("#trace-slot .trace-event").wait_for(state="visible", timeout=5000)
+        assert drawer.get_by_text("Материал создан перед передачей в очередь.", exact=True).is_visible()
         drawer.locator(".drawer-close").click()
         drawer.wait_for(state="hidden")
+        assert open_button.evaluate("(el) => document.activeElement === el")
+
+        open_button.click()
+        drawer.wait_for(state="visible")
+        page.keyboard.press("Escape")
+        drawer.wait_for(state="hidden")
+        assert open_button.evaluate("(el) => document.activeElement === el")
 
         card.get_by_role("button", name="Проверил, поста нет — в очередь").click()
         assert len(dialog_messages) == 1
         assert "лично проверили" in dialog_messages[0]
         assert retry_requests == []
+        browser.close()
+
+
+def test_publication_queue_opens_material_and_restores_focus_and_filter(dashboard_url):
+    """The queue's keyboard entry point opens the same detail/trace lifecycle and returns to context."""
+    from playwright.sync_api import sync_playwright
+
+    post = {
+        "id": "queue-item-001",
+        "public_id": "queue-item-001",
+        "hook": "Очередной материал для проверки",
+        "excerpt": "Краткий анонс материала для карточки очереди.",
+        "text": "Полный текст материала для проверки.",
+        "body": "Полный текст материала для проверки.",
+        "status": "scheduled",
+        "platform": "vk",
+        "channel_id": "vk-main",
+        "channel_title": "Основной канал VK",
+        "post_format": "news",
+        "chars": 420,
+        "quality": {},
+        "sources": [],
+        "claims": [],
+        "hashtags": [],
+        "media": [],
+        "cover": None,
+        "video": None,
+        "reject_reason": None,
+        "created_at": "2026-11-11T10:00:00Z",
+        "scheduled_at": "2026-11-12T14:00:00Z",
+        "published_at": None,
+        "impressions": None,
+        "opens": None,
+        "views": None,
+        "er": None,
+        "ctr": None,
+        "plan_entry_id": None,
+        "plan_slot_at": None,
+        "plan_public_id": None,
+    }
+
+    def mock_queue_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/posts":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"posts": [post]}))
+            return
+        if path == "/api/posts/queue-item-001":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(post))
+            return
+        if path == "/api/posts/queue-item-001/trace":
+            payload = {
+                "status": "scheduled",
+                "media": 0,
+                "events": [{
+                    "kind": "scheduled",
+                    "at": "2026-11-11T10:30:00Z",
+                    "detail": "Материал поставлен в очередь публикации.",
+                }],
+                "stats": None,
+            }
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_queue_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        page.locator('.tab[data-view="posts"]').click()
+        scheduled_filter = page.locator('#post-filters button[data-status="scheduled"]')
+        scheduled_filter.click()
+        card = page.locator('.pcard[data-post="queue-item-001"]')
+        card.wait_for(state="visible", timeout=5000)
+        assert card.get_attribute("role") == "button"
+        assert card.get_attribute("tabindex") == "0"
+
+        card.focus()
+        card.press("Enter")
+        drawer = page.locator("#drawer")
+        drawer.wait_for(state="visible")
+        drawer.get_by_role("heading", name="Очередной материал для проверки").wait_for(timeout=5000)
+        drawer.locator("#trace-slot .trace-event").wait_for(state="visible", timeout=5000)
+        assert drawer.get_by_text("Материал поставлен в очередь публикации.", exact=True).is_visible()
+
+        page.keyboard.press("Escape")
+        drawer.wait_for(state="hidden")
+        assert card.evaluate("(el) => document.activeElement === el")
+        assert scheduled_filter.get_attribute("class").find("is-active") >= 0
         browser.close()
