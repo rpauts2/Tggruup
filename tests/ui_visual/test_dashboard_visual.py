@@ -302,7 +302,7 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     assert page.get_by_text("2 канала", exact=True).is_visible()
                     assert page.get_by_text("0 каналов", exact=True).is_visible()
                     assert page.get_by_text("Публикует автоматически", exact=True).is_visible()
-                    assert page.get_by_text("Ручная загрузка пакета", exact=True).is_visible()
+                    assert page.locator(".platform-card .platform-capability.capability-manual_upload").is_visible()
                     assert page.get_by_text("Каждое видео требует отдельного согласия автора.", exact=True).is_visible()
                     for auth_copy in page.locator(".platform-auth-copy").all():
                         assert auth_copy.evaluate("(el) => el.getBoundingClientRect().width >= 180")
