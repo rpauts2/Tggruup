@@ -594,12 +594,8 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         drawer = page.locator("#drawer")
         drawer.wait_for(state="visible")
         timeline = drawer.locator("#trace-slot .trace-block")
-        timeline.wait_for(state="visible")
+        timeline.locator(".trace-event").first.wait_for(state="visible", timeout=5000)
         assert timeline.get_by_role("heading", name="История материала").is_visible()
-        # Trace is loaded automatically with the material; the explicit button
-        # remains available to refresh it after a manual destination check.
-        page.get_by_role("button", name="Обновить историю").click()
-        timeline.wait_for(state="visible")
         assert timeline.locator(".trace-event").count() == 5
         assert timeline.get_by_text("Черновик создан").is_visible()
         assert timeline.get_by_text("Проверка качества").is_visible()
