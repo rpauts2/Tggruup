@@ -89,6 +89,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Fixed the narrow-webview grid min-content overflow: the sidebar and workspace now stay within the viewport while the tab row scrolls internally. Browser QA passed at 390 px.
 - Added the active channel/persona count to supported platform cards, with Russian singular/plural forms and an honest no-report fallback. The visual fixture now covers both automatic publishing and owner-consent/manual-upload capability on desktop and mobile.
 - Added a delivery-capability filter to the platform catalog (automatic publish, draft-only, manual package/consent, read-only, unsupported), separate from enablement/setup filters. Reset restores all filters; browser QA covers each behavior.
+- Hardened the review board as an operator decision surface: missing age and attempt measurements stay explicitly unknown instead of rendering as zero; reconciliation, retry, immediate publish and rejection actions require a confirmation step.
+- Added browser coverage proving that dismissing the «Проверил: поста нет» confirmation sends no reconciliation request, and that absent age/attempt fields remain unknown.
 
 ## Next UI milestones
 
