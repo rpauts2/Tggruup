@@ -378,6 +378,7 @@
       </header>
       <p class="card-sub">Кнопка «Почему?» показывает числа: скорость, свежесть, насыщенность. Фаза и ускорение сравнивают текущее окно наблюдений с предыдущим; «нет данных» — это не ноль, предыдущего окна ещё не было.</p>
       <p class="card-sub">Кнопка «Пропуски?» показывает площадки, которые маршрутизатор убрал из плана кластера, и записанную причину. Отчёт живёт в памяти процесса: после перезапуска или вытеснения по LRU записи нет, и «нет данных» в этом блоке не означает «ничего не пропущено».</p>
+      <div id="trends-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="trends-list" class="list list-rich"></div>
     </article>
   </section>
@@ -659,6 +660,7 @@
         <h2>Источники</h2>
         <span class="card-sub">сводка здоровья и статус бэкфилла репринтов сверху, список сборщиков ниже</span>
       </header>
+      <div id="sources-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="sources-health" class="list">
         <div class="empty">Читаю здоровье источников…</div>
       </div>
