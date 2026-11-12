@@ -91,6 +91,8 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Added a delivery-capability filter to the platform catalog (automatic publish, draft-only, manual package/consent, read-only, unsupported), separate from enablement/setup filters. Reset restores all filters; browser QA covers each behavior.
 - Hardened the review board as an operator decision surface: missing age and attempt measurements stay explicitly unknown instead of rendering as zero; reconciliation, retry, immediate publish and rejection actions require a confirmation step.
 - Added browser coverage proving that dismissing the «Проверил: поста нет» confirmation sends no reconciliation request, and that absent age/attempt fields remain unknown.
+- Connected both the review board and the Command Center's unresolved-delivery worklist to the same material drawer. Operators can open the full post, editorial context and lifecycle trace before deciding; existing reconciliation actions remain separate and confirmation-gated.
+- Added unit and browser coverage for opening a material from the review board, while retaining the cancel-confirmation test that proves no reconciliation request is sent when the operator backs out.
 
 ## Next UI milestones
 
