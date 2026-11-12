@@ -828,3 +828,108 @@ def test_publication_queue_opens_material_and_restores_focus_and_filter(dashboar
         assert card.evaluate("(el) => document.activeElement === el")
         assert scheduled_filter.get_attribute("class").find("is-active") >= 0
         browser.close()
+
+def test_material_drawer_ignores_detail_response_from_previous_open(dashboard_url):
+    """Closing A and opening B must make a late detail response for A harmless."""
+    from playwright.sync_api import sync_playwright
+
+    posts = [
+        {
+            "id": "drawer-race-a", "channel": "vk", "channel_id": "vk",
+            "channel_title": "VK", "platform": "vk", "post_format": "news",
+            "hook": "Материал A", "excerpt": "Первый материал", "chars": 100,
+            "quality": {}, "status": "scheduled", "created_at": "2026-11-12T08:00:00Z",
+            "scheduled_at": "2026-11-12T10:00:00Z", "published_at": None,
+            "reject_reason": None, "cover": None, "video": None, "er": None,
+            "ctr": None, "impressions": None, "opens": None, "views": None,
+            "tg_message_id": None,
+        },
+        {
+            "id": "drawer-race-b", "channel": "telegram", "channel_id": "telegram",
+            "channel_title": "Telegram", "platform": "telegram", "post_format": "news",
+            "hook": "Материал B", "excerpt": "Второй материал", "chars": 120,
+            "quality": {}, "status": "scheduled", "created_at": "2026-11-12T08:01:00Z",
+            "scheduled_at": "2026-11-12T10:01:00Z", "published_at": None,
+            "reject_reason": None, "cover": None, "video": None, "er": None,
+            "ctr": None, "impressions": None, "opens": None, "views": None,
+            "tg_message_id": None,
+        },
+    ]
+
+    def detail(post):
+        return {
+            **post, "text": f"Полный текст: {post['hook']}", "body": f"Полный текст: {post['hook']}",
+            "cta": None, "sources": [], "claims": [], "hashtags": [],
+            "format_reason": "Тестовый материал.", "external_url": None,
+            "remote_id": None, "external_platform": None, "media": [],
+        }
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/posts":
+            payload = {"posts": posts}
+        else:
+            return _mock_api(route)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    hold_detail_fetches = """
+    (() => {
+      const originalFetch = window.fetch.bind(window);
+      window.__tgfarmPendingDetails = [];
+      window.fetch = (input, init) => {
+        const url = typeof input === "string" ? input : (input && input.url) || "";
+        const match = String(url).match(/\\/api\\/posts\\/([^/?]+)$/);
+        if (!match) return originalFetch(input, init);
+        const id = decodeURIComponent(match[1]);
+        return new Promise((resolve) => {
+          window.__tgfarmPendingDetails.push({ id, resolve });
+        });
+      };
+      window.__tgfarmResolveDetail = (id, payload) => {
+        const pending = window.__tgfarmPendingDetails.find((item) => item.id === id);
+        if (!pending) throw new Error("No pending detail request for " + id);
+        window.__tgfarmPendingDetails = window.__tgfarmPendingDetails.filter((item) => item !== pending);
+        pending.resolve(new Response(JSON.stringify(payload), {
+          status: 200, headers: { "Content-Type": "application/json" }
+        }));
+      };
+    })();
+    """
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.add_init_script(hold_detail_fetches)
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        drawer = page.locator("#drawer")
+        page.locator("#overview-queue [data-post='drawer-race-a']").click()
+        page.wait_for_function(
+            "() => window.__tgfarmPendingDetails.some((item) => item.id === 'drawer-race-a')"
+        )
+        page.keyboard.press("Escape")
+        drawer.wait_for(state="hidden")
+
+        page.locator("#overview-queue [data-post='drawer-race-b']").click()
+        page.wait_for_function(
+            "() => window.__tgfarmPendingDetails.some((item) => item.id === 'drawer-race-b')"
+        )
+        page.evaluate(
+            "payload => window.__tgfarmResolveDetail('drawer-race-b', payload)",
+            detail(posts[1]),
+        )
+        drawer.get_by_role("heading", name="Материал B").wait_for(state="visible")
+        assert drawer.get_by_text("Полный текст: Материал B").is_visible()
+
+        # The stale A response arrives last. It must not replace B or reopen the drawer.
+        page.evaluate(
+            "payload => window.__tgfarmResolveDetail('drawer-race-a', payload)",
+            detail(posts[0]),
+        )
+        page.wait_for_timeout(100)
+        assert drawer.get_by_role("heading", name="Материал B").is_visible()
+        assert drawer.get_by_text("Полный текст: Материал B").is_visible()
+        assert drawer.get_by_role("heading", name="Материал A").count() == 0
+
+        browser.close()
