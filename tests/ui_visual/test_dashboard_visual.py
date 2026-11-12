@@ -592,3 +592,64 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         assert page.get_by_role("button", name="Создать вертикальное видео").count() == 1
 
         browser.close()
+
+def test_review_board_shows_unknown_measurements_and_cancels_safe_retry(dashboard_url):
+    """The review card must not invent zeroes or retry after a dismissed confirmation."""
+    from playwright.sync_api import sync_playwright
+
+    retry_requests: list[str] = []
+    dialog_messages: list[str] = []
+
+    def mock_review_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/review/queue":
+            payload = {
+                "total": 1,
+                "counts": {"unknown": 1, "terminal": 0, "held": 0},
+                "titles": {
+                    "unknown": "Неизвестный результат",
+                    "terminal": "Финальные отказы",
+                    "held": "Без слота",
+                },
+                "buckets": {
+                    "unknown": [{
+                        "public_id": "review-unknown-001",
+                        "platform": "vk",
+                        "hook": "Материал с неподтверждённой доставкой",
+                        "reason": "Площадка не вернула подтверждение",
+                        "age_hours": None,
+                        "attempts": None,
+                        "actions": ["retry_after_check"],
+                    }],
+                    "terminal": [],
+                    "held": [],
+                },
+            }
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        if route.request.method == "POST" and path.endswith("/reconcile"):
+            retry_requests.append(path)
+            route.fulfill(status=200, content_type="application/json", body="{}")
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_review_api)
+        page.on("dialog", lambda dialog: (dialog_messages.append(dialog.message), dialog.dismiss()))
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        page.locator('.tab[data-view="review"]').click()
+        card = page.locator(".review-card")
+        card.wait_for(state="visible", timeout=5000)
+        assert card.get_by_text("возраст не измерен", exact=False).is_visible()
+        assert card.get_by_text("попыток: нет отчёта", exact=False).is_visible()
+        assert card.get_by_text("0 ч", exact=False).count() == 0
+        assert card.get_by_text("попыток 0", exact=False).count() == 0
+
+        card.get_by_role("button", name="Проверил, поста нет — в очередь").click()
+        assert len(dialog_messages) == 1
+        assert "лично проверили" in dialog_messages[0]
+        assert retry_requests == []
+        browser.close()
