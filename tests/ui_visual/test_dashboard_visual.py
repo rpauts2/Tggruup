@@ -933,3 +933,76 @@ def test_material_drawer_ignores_detail_response_from_previous_open(dashboard_ur
         assert drawer.get_by_role("heading", name="Материал A").count() == 0
 
         browser.close()
+
+def test_specialist_workspaces_mark_retained_snapshots_stale_and_recover(dashboard_url):
+    """Trends and sources distinguish an outage from a real empty response."""
+    from playwright.sync_api import sync_playwright
+
+    available = {"trends": True, "sources": True}
+    trends = [{
+        "id": "trend-stale-001", "label": "Сохранившийся тестовый тренд",
+        "niche": "технологии", "items": 4, "outlets": ["Издание"],
+        "status": "ready", "heat": 0.8, "trend_phase": "rising", "acceleration": 0.2,
+    }]
+    sources = [{
+        "id": "source-stale-001", "name": "Сохранившийся тестовый источник",
+        "kind": "rss", "weight": 1, "last_fetched_at": "2026-11-12T08:00:00Z",
+        "cooldown_active": False, "cooldown_until": None, "failures": 0,
+        "last_status": "ok", "last_error": None,
+    }]
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        if path in ("/api/trends", "/api/sources"):
+            key = path.removeprefix("/api/")
+            if not available[key]:
+                route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body=json.dumps({"detail": f"{key} test outage"}),
+                )
+                return
+            payload = {"trends": trends} if key == "trends" else {"sources": sources}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        trends_notice = page.locator("#trends-freshness")
+        sources_notice = page.locator("#sources-freshness")
+        page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").wait_for()
+        page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").wait_for()
+        assert trends_notice.is_hidden()
+        assert sources_notice.is_hidden()
+
+        available["trends"] = False
+        available["sources"] = False
+        page.locator("#refresh-data").click()
+        trends_notice.wait_for(state="visible", timeout=10000)
+        sources_notice.wait_for(state="visible", timeout=10000)
+        page.locator('#trends-freshness[data-state="stale"]').wait_for()
+        page.locator('#sources-freshness[data-state="stale"]').wait_for()
+        assert trends_notice.get_by_text("Данные устарели").is_visible()
+        assert sources_notice.get_by_text("Данные устарели").is_visible()
+        assert "503" in trends_notice.inner_text()
+        assert "503" in sources_notice.inner_text()
+        # Last good content remains available for inspection, but is labelled stale.
+        assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").is_visible()
+        assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").is_visible()
+
+        available["trends"] = True
+        available["sources"] = True
+        page.locator("#refresh-data").click()
+        page.wait_for_function(
+            "() => document.querySelector('#trends-freshness')?.hidden "
+            "&& document.querySelector('#sources-freshness')?.hidden"
+        )
+        assert page.locator("#trends-list").get_by_text("Сохранившийся тестовый тренд").is_visible()
+        assert page.locator("#sources-list").get_by_text("Сохранившийся тестовый источник").is_visible()
+
+        browser.close()
