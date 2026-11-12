@@ -19,6 +19,7 @@
     topicQuery: "",
     topicDossier: null,
     platformData: null,
+    platformCatalogFresh: false,
     platformQuery: "",
     platformFilter: "all",
     platformCapabilityFilter: "all",
@@ -2941,6 +2942,7 @@
 
   function renderPlatforms(payload) {
     state.platformData = payload || { platforms: [], summary: {} };
+    state.platformCatalogFresh = true;
     const summary = state.platformData.summary || {};
     const items = state.platformData.platforms || [];
     const stats = [
@@ -2976,6 +2978,11 @@
     const container = $("#platforms-grid");
     if (!container) return;
     const all = (state.platformData && state.platformData.platforms) || [];
+    container.classList.toggle("is-stale", !state.platformCatalogFresh);
+    if (!state.platformCatalogFresh && !state.platformData) {
+      container.innerHTML = '<div class="card platform-empty"><h3>Каталог площадок недоступен</h3><p>Успешное состояние интеграций ещё не получено. Действия заблокированы до обновления.</p></div>';
+      return;
+    }
     const query = (state.platformQuery || "").trim().toLocaleLowerCase("ru-RU");
     const visible = all.filter((item) => {
       const haystack = [
@@ -3254,6 +3261,10 @@
   }
 
   async function openPlatformAuthorization(platformId, forceCredentials = false) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед подключением.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item) return;
     const auth = item.auth || {};
@@ -4137,6 +4148,10 @@
   }
 
   async function updatePlatformSwitch(platformId, enabled) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед изменением настроек.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
     if (enabled && platformId === "x") {
@@ -4175,6 +4190,10 @@
   }
 
   async function updatePlatformPlan(platformId) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед изменением плана.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
     state.platformBusy.add(platformId);
@@ -5796,6 +5815,10 @@
         "crossposts" in data ? null : reasons.crossposts || new Error("журнал доставок не получен"));
       renderWorkspaceFreshness("deliveryHealth", "crosspost-health-freshness",
         "deliveryHealth" in data ? null : reasons.deliveryHealth || new Error("сводка доставок не получена"));
+      renderWorkspaceFreshness("platforms", "platforms-freshness",
+        "platforms" in data ? null : reasons.platforms || new Error("каталог площадок не получен"));
+      state.platformCatalogFresh = "platforms" in data;
+      if (!state.platformCatalogFresh) renderPlatformCards();
       updateRefreshIndicator(failed, Object.keys(endpoints).length);
       // With no successful response there is no fresh dashboard snapshot to
       // render. Keep independent workspaces intact; the cards above already show
