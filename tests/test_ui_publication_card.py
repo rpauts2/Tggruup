@@ -169,12 +169,15 @@ def test_error_field_is_checked_before_any_totals(client):
     assert body.index("payload.error") < body.index("из очереди")
 
 
-def test_refresh_renders_the_card_before_the_all_failed_throw(client):
-    """A fully dead backend must leave «сеть не отвечает», not a frozen old verdict."""
+def test_refresh_renders_the_card_before_the_all_failed_return(client):
+    """A full outage is rendered explicitly and returns without generic error handling."""
     script = _script(client)
     body = _chunk(script, "async function refresh()", "async function runCycle()")
     assert 'renderPublicationDecision("status" in data' in body
-    assert body.index("renderPublicationDecision") < body.index('throw new Error("API недоступен")')
+    full_outage_return = 'if (failed.length === Object.keys(endpoints).length) return;'
+    assert full_outage_return in body
+    assert body.index("renderPublicationDecision") < body.index(full_outage_return)
+    assert 'throw new Error("API недоступен")' not in body
     # The rejection reason travels, so HTTP and network wordings can differ.
     assert "reasons[key] = outcome.reason" in body
     assert "Promise.allSettled(" in body
