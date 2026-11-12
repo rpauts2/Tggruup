@@ -84,6 +84,7 @@ Do not claim that arbitrary cookies or all browser storage are extracted. Keep c
 - Added browser assertions for every tab/panel relationship and keyboard navigation (arrow keys, Home, End, focus synchronization).
 - Added a shared data-freshness indicator with manual refresh, partial-failure visibility, the last successful full snapshot time, and deduplicated recovery notifications.
 - Added section-level freshness notices for Trends and Sources. A failed refresh keeps the last successful list visible but labels it stale with the last successful snapshot age and error; a first-read failure says the section is unavailable; a successful empty response remains a genuine empty state. Recovery hides the notice.
+- Extended local freshness handling to the delivery workspace: the cross-post journal and delivery-health snapshot have independent notices, retain their last successful content during an outage, distinguish first-read failure from stale data, and clear notices after recovery. Successful empty journal responses remain a genuine empty state.
 - Added a browser scenario that simulates one failed data endpoint, verifies that the dashboard identifies it as stale, and verifies recovery through the refresh control.
 - Turned the existing post trace into a readable lifecycle timeline with status labels, event timestamps and media count; timestamps without timezone information are shown without silently converting them to local time.
 - Removed duplicated short-video actions from published-post details so the same preparation controls appear only once.
