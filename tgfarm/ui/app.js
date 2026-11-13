@@ -2025,7 +2025,7 @@
     if (meta) {
       meta.textContent = query
         ? `Найдено ${n(visible.length)} из ${n(snapshot.length)} загруженных материалов`
-        : `Загружено ${n(snapshot.length)} материалов · выборка до 40 записей`;
+        : `В загруженной выборке: ${n(snapshot.length)} материалов · до 40 записей`;
     }
 
     const queue = snapshot.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
