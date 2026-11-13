@@ -839,10 +839,12 @@ def _record_recent_failures(channel_id: str) -> int:
 
     from tgfarm.core.security import redact_sensitive_text
     from tgfarm.crosspost_journal import JOURNAL_STATUS_FAILED, JOURNAL_STATUS_PERMANENT
-    from tgfarm.db.models import CrosspostLog, PipelineRun, Post
+    from tgfarm.db.models import CrosspostLog, LearningMemory, PipelineRun, Post
 
     pipeline_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
     crosspost_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    pipeline_read_ok = False
+    crosspost_read_ok = False
 
     try:
         with session_scope() as session:
@@ -857,6 +859,7 @@ def _record_recent_failures(channel_id: str) -> int:
                 error = redact_sensitive_text(row.error, limit=300)
                 if error:
                     pipeline_groups[stage].append((int(row.id), error))
+        pipeline_read_ok = True
     except Exception as exc:  # noqa: BLE001 - isolate the two evidence sources
         log.warning("s12: mistake collection failed for %s (pipeline): %s", channel, type(exc).__name__)
 
@@ -878,6 +881,7 @@ def _record_recent_failures(channel_id: str) -> int:
                 error = redact_sensitive_text(row.error, limit=300)
                 if error:
                     crosspost_groups[platform].append((int(row.id), error))
+        crosspost_read_ok = True
     except Exception as exc:  # noqa: BLE001 - preserve PipelineRun lessons if this read fails
         log.warning("s12: mistake collection failed for %s (crosspost): %s", channel, type(exc).__name__)
 
@@ -931,6 +935,34 @@ def _record_recent_failures(channel_id: str) -> int:
         store_group("pipeline", stage, events)
     for platform, events in crosspost_groups.items():
         store_group("crosspost", platform, events)
+
+    def remove_stale_lessons(prefix: str, current_names: set[str], source_read_ok: bool) -> None:
+        """Prune only after a successful source read; preserve lessons on outages."""
+        if not source_read_ok:
+            return
+        try:
+            keep = {f"{prefix}:{name}" for name in current_names}
+            with session_scope() as session:
+                statement = delete(LearningMemory).where(
+                    LearningMemory.channel_id == channel,
+                    LearningMemory.kind == "mistake",
+                    LearningMemory.key.like(f"{prefix}:%"),
+                )
+                if keep:
+                    statement = statement.where(LearningMemory.key.not_in(keep))
+                session.execute(statement)
+        except Exception as exc:  # noqa: BLE001 - pruning must not erase other evidence
+            log.warning(
+                "s12: stale %s lessons could not be reconciled for %s: %s",
+                prefix,
+                channel,
+                type(exc).__name__,
+            )
+
+    # A window is authoritative only after its query succeeds. A source outage
+    # must not delete lessons from the last healthy snapshot.
+    remove_stale_lessons("pipeline", set(pipeline_groups), pipeline_read_ok)
+    remove_stale_lessons("crosspost", set(crosspost_groups), crosspost_read_ok)
     return written
 
 

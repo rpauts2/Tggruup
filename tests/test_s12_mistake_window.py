@@ -190,3 +190,67 @@ def test_a_broken_mistake_read_warns_and_keeps_the_other_lessons(monkeypatch, ca
     ), f"lost mistake sweep emitted no WARNING: {[r.getMessage() for r in caplog.records]}"
     assert result["lessons"] > 0
     assert {row["key"] for row in writes} >= {"angle_weights", "best_angle", "worst_angle"}
+
+
+def test_pipeline_lesson_is_removed_when_it_falls_out_of_recent_window():
+    from tgfarm.s12_learning import _record_recent_failures
+
+    _seed_channel()
+    base = _base()
+    with session_scope() as session:
+        session.add(PipelineRun(
+            run_id=f"{PREFIX}_old", stage="w35old", status="error",
+            error="old pipeline error", created_at=base,
+        ))
+    _record_recent_failures(CHANNEL_ID)
+    assert "pipeline:w35old" in _mistakes()
+
+    with session_scope() as session:
+        for index in range(WINDOW + 1):
+            session.add(PipelineRun(
+                run_id=f"{PREFIX}_new_{index:02d}", stage=f"w35new{index:02d}",
+                status="error", error=f"new pipeline error {index}",
+                created_at=base + timedelta(minutes=index + 1),
+            ))
+    _record_recent_failures(CHANNEL_ID)
+    rows = _mistakes()
+    assert "pipeline:w35old" not in rows
+    assert "pipeline:w35new20" in rows
+
+
+def test_crosspost_lesson_is_removed_when_it_falls_out_of_recent_window():
+    from tgfarm.s12_learning import _record_recent_failures
+
+    _seed_channel()
+    base = _base()
+    old_post = f"{PREFIX}_old_post"
+    with session_scope() as session:
+        session.add(Post(
+            public_id=old_post, channel_id=CHANNEL_ID, hook="Hook", body="Body", status="failed",
+        ))
+        session.flush()
+        session.add(CrosspostLog(
+            post_public_id=old_post, platform="w35old", status="failed",
+            error="old crosspost error", created_at=base,
+        ))
+    _record_recent_failures(CHANNEL_ID)
+    assert "crosspost:w35old" in _mistakes()
+
+    with session_scope() as session:
+        new_posts = [f"{PREFIX}_new_post_{index:02d}" for index in range(WINDOW + 1)]
+        session.add_all([
+            Post(public_id=post_id, channel_id=CHANNEL_ID, hook="Hook", body="Body", status="failed")
+            for post_id in new_posts
+        ])
+        session.flush()
+        for index, post_id in enumerate(new_posts):
+            session.add(CrosspostLog(
+                post_public_id=post_id, platform=f"w35new{index:02d}", status="failed",
+                error=f"new crosspost error {index}",
+                created_at=base + timedelta(minutes=index + 1),
+            ))
+    _record_recent_failures(CHANNEL_ID)
+    rows = _mistakes()
+    assert "crosspost:w35old" not in rows
+    assert "crosspost:w35new20" in rows
+
