@@ -28,6 +28,45 @@ def test_modes_match_the_real_mechanism():
     ]
     assert matrix["pikabu"]["mode"] == "browser"
     assert matrix["pikabu"]["login_url"].startswith("https://")
+    # Medium still supports an existing legacy token, not a generic browser login.
+    assert matrix["medium"]["mode"] == "token"
+    # WeChat Official Account requires App ID/Secret, not a saved website session.
+    assert matrix["wechat"]["mode"] == "token"
+    assert matrix["medium"]["keys_absent"] == ["MEDIUM_ACCESS_TOKEN"]
+    assert matrix["wechat"]["keys_absent"] == ["WECHAT_APP_ID", "WECHAT_APP_SECRET"]
+    # Odnoklassniki publishes through its API credentials, not a saved website session.
+    assert matrix["odnoklassniki"]["mode"] == "token"
+    assert matrix["odnoklassniki"]["keys_absent"] == [
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
+    ]
+    assert {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN",
+        "OK_SESSION_SECRET_KEY", "OK_GROUP_ID",
+    } <= {field["key"] for field in matrix["odnoklassniki"]["fields"]}
+
+
+def test_odnoklassniki_authorization_uses_api_credentials():
+    result = asyncio.run(pa.authorize("odnoklassniki"))
+    assert result["mode"] == "token"
+    assert result["state"] == "awaiting_token"
+    assert {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
+    } <= {field["key"] for field in result["fields"]}
+
+
+def test_odnoklassniki_group_is_reported_as_the_destination(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(pa, "get_settings", lambda: SimpleNamespace(ok_group_id="123456789"))
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    statuses = pa.platform_statuses(
+        "odnoklassniki",
+        mode="token",
+        authorized=True,
+        keys_present=True,
+    )
+    assert statuses["destination"]["state"] == "ready"
+    assert statuses["destination"]["label"] == "Назначено: 123456789"
 
 
 def test_token_flow_does_not_call_the_network():
@@ -106,3 +145,95 @@ def test_status_reports_what_is_known(monkeypatch):
     status = pa.authorize_status("vk")
     assert status["mode"] == "vkhost"
     assert status["account"] == "Всякая всячина"
+
+
+
+def test_saved_token_is_not_reported_as_verified_api_access(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    statuses = pa.platform_statuses(
+        "telegram",
+        mode="token",
+        authorized=None,
+        keys_present=True,
+    )
+    assert statuses["auth"]["state"] == "pending"
+    assert statuses["api"]["state"] == "pending"
+    assert statuses["publish"]["state"] == "blocked"
+
+
+def test_browser_publisher_requires_a_verified_session(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    pending = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=None,
+        keys_present=False,
+        profile_saved=True,
+        session_verified=False,
+    )
+    assert pending["api"]["state"] == "pending"
+    assert pending["publish"]["state"] == "blocked"
+
+    ready = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=None,
+        keys_present=False,
+        profile_saved=True,
+        session_verified=True,
+    )
+    assert ready["auth"]["state"] == "ready"
+    assert ready["api"]["state"] == "ready"
+    assert ready["publish"]["state"] == "ready"
+
+
+def test_oauth_matrix_returns_only_setup_fields_and_presence_flags():
+    rows = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    reddit = rows["reddit"]
+    assert {field["key"] for field in reddit["fields"]} == {
+        "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"
+    }
+    assert all(isinstance(field["has_value"], bool) for field in reddit["fields"])
+    assert "REDDIT_ACCESS_TOKEN" not in {field["key"] for field in reddit["fields"]}
+
+
+
+def test_all_oauth_providers_expose_only_their_application_setup_fields():
+    expected = {
+        "reddit": {"REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"},
+        "x": {"X_OAUTH_CLIENT_ID", "X_OAUTH_CLIENT_SECRET"},
+        "threads": {"THREADS_APP_ID", "THREADS_APP_SECRET"},
+        "facebook": {"FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"},
+        "instagram": {"INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET"},
+        "pinterest": {"PINTEREST_APP_ID", "PINTEREST_APP_SECRET"},
+        "youtube": {"YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"},
+        "tiktok": {"TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"},
+        "mastodon": {"MASTODON_INSTANCE"},
+        "linkedin": {"LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"},
+        "tumblr": {"TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET"},
+        "douyin": {"DOUYIN_CLIENT_KEY", "DOUYIN_CLIENT_SECRET"},
+    }
+    rows = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    for platform_id, required in expected.items():
+        row = rows[platform_id]
+        assert row["mode"] == "oauth"
+        assert {field["key"] for field in row["fields"]} == required
+        assert all(isinstance(field["has_value"], bool) for field in row["fields"])
+        assert all("value" not in field for field in row["fields"])
+
+
+def test_dzen_auth_check_unlocks_its_dedicated_browser_delivery(monkeypatch):
+    monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
+    # Dzen's own login endpoint records a verified auth check from
+    # DzenWebPublisher; it does not use the generic browser profile directory.
+    ready = pa.platform_statuses(
+        "dzen",
+        mode="browser",
+        authorized=True,
+        keys_present=False,
+        profile_saved=False,
+        session_verified=False,
+    )
+    assert ready["auth"]["state"] == "ready"
+    assert ready["api"]["state"] == "ready"
+    assert ready["publish"]["state"] == "ready"

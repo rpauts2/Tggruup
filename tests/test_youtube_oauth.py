@@ -72,6 +72,15 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
     assert query["response_type"] == ["code"]
     assert query["access_type"] == ["offline"]
     assert query["redirect_uri"] == [redirect_uri]
+    assert query["code_challenge_method"] == ["S256"]
+    assert len(query["code_challenge"][0]) == 43
+    pending = youtube_oauth._PENDING[query["state"][0]]
+    verifier = pending["code_verifier"]
+    assert 43 <= len(verifier) <= 128
+    import base64
+    import hashlib
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+    assert challenge == query["code_challenge"][0]
     scopes = set(query["scope"][0].split())
     assert scopes == set(youtube_oauth.SCOPES)
     assert "youtube.upload" in query["scope"][0]
@@ -87,6 +96,7 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
     assert exchange[1] == youtube_oauth.TOKEN_URL
     assert exchange[2]["data"]["code"] == "single-use-code"
     assert exchange[2]["data"]["redirect_uri"] == redirect_uri
+    assert exchange[2]["data"]["code_verifier"] == verifier
     channel_call = next(call for call in FakeGoogleOAuthClient.calls if call[0] == "GET")
     assert channel_call[1] == youtube_oauth.CHANNELS_URL
     assert channel_call[2]["params"] == {"part": "snippet", "mine": "true"}
@@ -94,6 +104,37 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
 
     with pytest.raises(ValueError, match="истекла или уже использована"):
         await youtube_oauth.complete_youtube_oauth(query["state"][0], "replay-code")
+
+
+@pytest.mark.asyncio
+async def test_youtube_oauth_does_not_reuse_a_previous_account_refresh_token(monkeypatch):
+    from tgfarm import youtube_oauth
+    import tgfarm.core.settings as settings_module
+
+    async def exchange(_data):
+        return {"access_token": "new-account-access", "expires_in": 3600}
+
+    async def verify(_access_token):
+        raise AssertionError("channel verification must not run without this OAuth grant's refresh token")
+
+    monkeypatch.setattr(youtube_oauth, "_exchange_token", exchange)
+    monkeypatch.setattr(youtube_oauth, "_verify_channel", verify)
+    monkeypatch.setattr(
+        settings_module,
+        "get_settings",
+        lambda: SimpleNamespace(youtube_refresh_token="previous-account-refresh"),
+    )
+    started = await youtube_oauth.begin_youtube_oauth(
+        "google-client-id",
+        "google-client-secret",
+        "http://127.0.0.1:8000/api/platforms/youtube/auth/callback",
+    )
+    state = parse_qs(urlsplit(started["authorize_url"]).query)["state"][0]
+
+    with pytest.raises(RuntimeError, match="Старый токен не переиспользован"):
+        await youtube_oauth.complete_youtube_oauth(state, "new-account-code")
+
+    assert state not in youtube_oauth._PENDING
 
 
 @pytest.mark.asyncio
@@ -181,11 +222,17 @@ def test_youtube_oauth_callback_persists_tokens_without_echoing_secrets(monkeypa
         lambda *args, **kwargs: checked.append((args, kwargs)) or {"status": "authorized"},
     )
     with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1:8000") as client:
+        # Desktop Google OAuth redirects to the loopback origin, not an
+        # application callback path. The middleware captures and strips the
+        # credentials before the dashboard route dispatches to the handler.
         response = client.get(
-            "/api/platforms/youtube/auth/callback?code=private-one-time-code&state=valid-state"
+            "/?code=private-one-time-code&state=valid-state"
         )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["content-security-policy"].startswith("default-src 'none'")
     assert "TgFarm Demo Channel" in response.text
     assert "private-one-time-code" not in response.text
     assert "private-access-token" not in response.text

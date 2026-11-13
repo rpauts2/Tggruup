@@ -51,12 +51,16 @@ OAUTH_PLATFORMS: frozenset[str] = frozenset(
     }
 )
 
-#: Token/webhook platforms: no site session helps, only a key does.
-TOKEN_PLATFORMS: frozenset[str] = frozenset({"telegram", "max", "bluesky", "telegraph", "discord"})
+#: Token/webhook and legacy-credential platforms. A browser session is not a
+#: substitute for these explicit API credentials.
+TOKEN_PLATFORMS: frozenset[str] = frozenset(
+    {"telegram", "max", "bluesky", "telegraph", "discord", "medium", "wechat", "odnoklassniki"}
+)
 
-#: Browser-only destinations: the farm drives the site through a saved profile.
+#: Destinations whose current publishing path depends on an isolated browser
+#: profile. Keep this list limited to platforms that actually use that profile.
 BROWSER_ONLY: frozenset[str] = frozenset(
-    {"dzen", "pikabu", "vc_ru", "habr", "rutube", "tenchat", "medium", "rednote", "twitch", "wechat",
+    {"dzen", "pikabu", "vc_ru", "habr", "rutube", "tenchat", "rednote", "twitch",
      "whatsapp_channels", "snapchat", "vk_clips"}
 )
 
@@ -71,7 +75,36 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "discord": ("DISCORD_WEBHOOK_URL",),
     "mastodon": ("MASTODON_INSTANCE", "MASTODON_ACCESS_TOKEN"),
     "vk": ("VK_ACCESS_TOKEN",),
+    "medium": ("MEDIUM_ACCESS_TOKEN",),
+    "wechat": ("WECHAT_APP_ID", "WECHAT_APP_SECRET"),
+    "odnoklassniki": (
+        "OK_APPLICATION_KEY",
+        "OK_APPLICATION_SECRET",
+        "OK_ACCESS_TOKEN",
+        "OK_GROUP_ID",
+    ),
 }
+
+#: OAuth app credentials required before a user can be redirected to a provider.
+#: The user authorizes their own account only after these app-level values exist.
+OAUTH_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "reddit": ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"),
+    "x": ("X_OAUTH_CLIENT_ID", "X_OAUTH_CLIENT_SECRET"),
+    "threads": ("THREADS_APP_ID", "THREADS_APP_SECRET"),
+    "facebook": ("FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"),
+    "instagram": ("INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET"),
+    "pinterest": ("PINTEREST_APP_ID", "PINTEREST_APP_SECRET"),
+    "youtube": ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"),
+    "tiktok": ("TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"),
+    "mastodon": ("MASTODON_INSTANCE",),
+    "linkedin": ("LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"),
+    "tumblr": ("TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET"),
+    "douyin": ("DOUYIN_CLIENT_KEY", "DOUYIN_CLIENT_SECRET"),
+}
+
+#: Fields shown in the first step of OAuth setup. OAuth-issued tokens and
+#: generated client credentials are deliberately excluded from the UI.
+OAUTH_SETUP_FIELDS: dict[str, tuple[str, ...]] = dict(OAUTH_REQUIRED_FIELDS)
 
 #: Human-readable field labels for the token forms.
 FIELD_LABELS: dict[str, str] = {
@@ -120,17 +153,28 @@ def _mode_for(platform_id: str) -> str:
     return "manual"
 
 
-def _fields(platform_id: str) -> list[dict[str, str]]:
-    rows = []
-    for field in _AUTH_FIELDS.get(platform_id, []):
+def _fields(platform_id: str) -> list[dict[str, Any]]:
+    """Return safe field metadata, never the configured values themselves."""
+    pid = str(platform_id or "").strip().lower()
+    settings = get_settings()
+    oauth_keys = OAUTH_SETUP_FIELDS.get(pid)
+    rows: list[dict[str, Any]] = []
+    for field in _AUTH_FIELDS.get(pid, []):
         key = str(field.get("key") or "")
-        if not key:
+        if not key or field.get("hidden"):
             continue
+        if oauth_keys is not None and key not in oauth_keys:
+            continue
+        attribute = str(field.get("attribute") or key.lower())
+        configured_value = getattr(settings, attribute, "")
         rows.append(
             {
                 "key": key,
-                "label": FIELD_LABELS.get(key, key),
+                "label": FIELD_LABELS.get(key, field.get("label") or key),
                 "secret": bool(field.get("secret", True)),
+                "placeholder": str(field.get("placeholder") or ""),
+                "help": str(field.get("help") or ""),
+                "has_value": bool(str(configured_value or "").strip()),
             }
         )
     return rows
@@ -149,6 +193,7 @@ DESTINATION_FIELDS: dict[str, tuple[str, ...]] = {
     "mastodon": ("MASTODON_INSTANCE",),
     "tumblr": ("TUMBLR_BLOG_NAME",),
     "discord": ("DISCORD_WEBHOOK_URL",),
+    "odnoklassniki": ("OK_GROUP_ID",),
 }
 
 
@@ -195,12 +240,25 @@ def platform_statuses(
 
     if capability != "publish":
         api = {"state": "manual", "label": "API-публикации нет"}
-    elif authorized is True or keys_present:
-        api = {"state": "ready", "label": "API готов"}
+    elif mode == "browser":
+        # Dzen uses its dedicated DzenWebPublisher profile rather than the
+        # generic Playwright profile. Its successful login is recorded through
+        # record_auth_check(), so the verified platform check is authoritative
+        # even when browser_session_status() has no generic profile to inspect.
+        if authorized is True or session_verified:
+            api = {"state": "ready", "label": "Браузерная доставка доступна"}
+        elif profile_saved:
+            api = {"state": "pending", "label": "Сессия сохранена, нужна проверка"}
+        else:
+            api = {"state": "missing", "label": "Нужна браузерная сессия"}
+    elif authorized is True:
+        api = {"state": "ready", "label": "Доступ API подтверждён"}
+    elif keys_present:
+        api = {"state": "pending", "label": "Реквизиты сохранены, доступ не проверен"}
     elif mode in {"oauth", "vkhost", "token"}:
         api = {"state": "missing", "label": "Нужен доступ API"}
     else:
-        api = {"state": "unknown", "label": "По сессии браузера"}
+        api = {"state": "unknown", "label": "Способ доступа не подтверждён"}
 
     dest_state, dest_label = _destination_state(platform_id)
     destination = {
@@ -239,14 +297,22 @@ def auth_matrix() -> dict[str, Any]:
                 session = {}
         keys_present = False
         keys_absent: list[str] = []
-        if mode == "token":
+        if mode in {"token", "oauth"}:
             settings = get_settings()
-            reported = [field["key"] for field in _fields(pid)]
-            required = list(REQUIRED_FIELDS.get(pid, tuple(reported[:1])))
-            missing = [
-                key for key in required
-                if not str(getattr(settings, key.lower(), "") or "").strip()
-            ]
+            required = list(
+                OAUTH_REQUIRED_FIELDS.get(pid, ())
+                if mode == "oauth"
+                else REQUIRED_FIELDS.get(pid, tuple(field["key"] for field in _fields(pid)[:1]))
+            )
+            missing = []
+            for key in required:
+                attribute = next(
+                    (str(field.get("attribute") or key.lower())
+                     for field in _AUTH_FIELDS.get(pid, []) if field.get("key") == key),
+                    key.lower(),
+                )
+                if not str(getattr(settings, attribute, "") or "").strip():
+                    missing.append(key)
             keys_present = bool(required) and not missing
             keys_absent = missing
         platforms.append(
@@ -254,6 +320,13 @@ def auth_matrix() -> dict[str, Any]:
                 "id": pid,
                 "keys_present": keys_present,
                 "keys_absent": keys_absent,
+                "configured": keys_present,
+                "docs_url": str(item.get("docs_url") or ""),
+                "requirements": str(item.get("requirements") or ""),
+                "instance_url": (
+                    str(getattr(get_settings(), "mastodon_instance", "") or "")
+                    if pid == "mastodon" else ""
+                ),
                 "name": item.get("name") or pid,
                 "category": item.get("category") or "",
                 "mode": mode,

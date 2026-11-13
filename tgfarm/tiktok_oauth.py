@@ -7,7 +7,9 @@ each video before bytes are sent to TikTok.
 from __future__ import annotations
 
 import secrets
+import threading
 import time
+import hashlib
 from urllib.parse import urlencode, urlsplit
 
 import httpx
@@ -19,6 +21,7 @@ CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/que
 SCOPES = "user.info.basic,video.publish"
 
 _PENDING: dict[str, dict[str, object]] = {}
+_PENDING_LOCK = threading.RLock()
 
 
 def _validate_redirect_uri(value: str) -> str:
@@ -61,19 +64,28 @@ async def begin_tiktok_oauth(client_key: str, client_secret: str, redirect_uri: 
     if len(client_key) > 2048 or len(client_secret) > 4096:
         raise ValueError("Параметры TikTok OAuth имеют недопустимый размер.")
     state = secrets.token_urlsafe(32)
-    _prune_pending(time.time())
-    _PENDING[state] = {
-        "client_key": client_key,
-        "client_secret": client_secret,
-        "redirect_uri": redirect_uri,
-        "created_at": time.time(),
-    }
+    # TikTok's Desktop Login Kit requires PKCE and specifically expects the
+    # SHA-256 digest encoded as lowercase hexadecimal (not base64url).
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = hashlib.sha256(code_verifier.encode("ascii")).hexdigest()
+    created_at = time.time()
+    with _PENDING_LOCK:
+        _prune_pending(created_at)
+        _PENDING[state] = {
+            "client_key": client_key,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+            "created_at": created_at,
+        }
     query = urlencode({
         "client_key": client_key,
         "scope": SCOPES,
         "response_type": "code",
         "redirect_uri": redirect_uri,
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     })
     return {
         "authorize_url": f"{AUTHORIZE_URL}?{query}",
@@ -83,7 +95,8 @@ async def begin_tiktok_oauth(client_key: str, client_secret: str, redirect_uri: 
 
 
 def cancel_tiktok_oauth(state: str) -> None:
-    _PENDING.pop(str(state or ""), None)
+    with _PENDING_LOCK:
+        _PENDING.pop(str(state or ""), None)
 
 
 async def complete_tiktok_oauth(state: str, code: str) -> dict[str, str]:
@@ -92,7 +105,8 @@ async def complete_tiktok_oauth(state: str, code: str) -> dict[str, str]:
     code = str(code or "").split("#", 1)[0]
     if not state or not code or len(code) > 4096:
         raise ValueError("Ответ TikTok OAuth неполный. Запусти подключение заново.")
-    transaction = _PENDING.pop(state, None)
+    with _PENDING_LOCK:
+        transaction = _PENDING.pop(state, None)
     if not transaction:
         raise ValueError("Сессия TikTok OAuth истекла или уже использована. Запусти подключение заново.")
     if time.time() - float(transaction.get("created_at", 0)) > STATE_TTL_SECONDS:
@@ -101,6 +115,7 @@ async def complete_tiktok_oauth(state: str, code: str) -> dict[str, str]:
     client_key = str(transaction["client_key"])
     client_secret = str(transaction["client_secret"])
     redirect_uri = str(transaction["redirect_uri"])
+    code_verifier = str(transaction["code_verifier"])
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
             response = await client.post(
@@ -111,6 +126,7 @@ async def complete_tiktok_oauth(state: str, code: str) -> dict[str, str]:
                     "code": code,
                     "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
+                    "code_verifier": code_verifier,
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
