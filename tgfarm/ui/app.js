@@ -7340,7 +7340,7 @@
     loadReviewBoard(true);
     refresh();
   });
-  const deliveryCenterFilters = $("#delivery-center-filters");
+  const deliveryCenterFilters = $(".delivery-center-filters");
   if (deliveryCenterFilters) deliveryCenterFilters.addEventListener("click", (event) => {
     const button = event.target.closest("[data-delivery-filter]");
     if (!button || !deliveryCenterFilters.contains(button)) return;
