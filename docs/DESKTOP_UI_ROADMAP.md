@@ -157,3 +157,13 @@ The overview now has a dedicated operational status strip, separate from aggrega
 - The delivery-health summary is shown beside the journal. Crosspost and health reads share an explicit freshness notice: partial failure is visible and does not imply an empty queue.
 - Opening a journal card opens the existing material drawer and its lifecycle trace. Existing platform-level reconciliation buttons retain their confirmation prompts; unknown publish outcomes are not automatically retried.
 - Refresh and filter controls are local to this workspace. No backend, authentication, adapter, database or live publishing behavior changes.
+
+
+## Publication workspace — compact operator list and local search
+
+- The publication queue opens in a compact, keyboard-operable list by default; the existing cover-card layout remains available as a view toggle.
+- Each row brings the destination/channel, post title, excerpt, current lifecycle status, format, plan provenance and available measurement evidence into one scan.
+- Search filters the already-loaded publication slice by title, excerpt, channel, platform, format, status and rejection reason. The interface explicitly states the current 40-row limit; it does not claim to search the full archive or issue an unbounded database query.
+- Search and layout changes are local presentation actions. Status filters continue to use the existing server query, and opening a row continues to use the existing material drawer.
+- Missing engagement measurements remain “not measured”/“no report”; the list must not turn absent values into zero.
+- Browser QA covers populated and empty states, case-insensitive Cyrillic search, no-results recovery, list/card switching, keyboard-operable rows and narrow-window overflow.
