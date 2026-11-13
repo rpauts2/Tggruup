@@ -696,3 +696,53 @@ input, select, textarea { accent-color: var(--accent); }
 .platform-readiness-stale { margin-top:9px; color:var(--warn); font-size:10px; }
 @media(max-width:900px) { .platform-readiness-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media(max-width:600px) { .platform-readiness { padding:14px; } .platform-readiness-head { align-items:flex-start; flex-direction:column; } .platform-readiness-head .btn { width:100%; justify-content:center; } .platform-readiness-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+
+/* Keep the Command Center focused on live operations; deep measurement panels
+   remain one click away and retain their existing IDs/data contracts. */
+.command-details {
+  margin: 0 0 18px;
+  overflow: clip;
+  border: 1px solid var(--ui-border);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(16,22,37,.72), rgba(10,15,26,.88));
+}
+.command-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 66px;
+  padding: 14px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+.command-details > summary::-webkit-details-marker { display: none; }
+.command-details > summary::marker { content: ""; }
+.command-details > summary:hover { background: rgba(91,140,255,.055); }
+.command-details > summary:focus-visible {
+  outline: 2px solid rgba(125,160,255,.86);
+  outline-offset: -3px;
+}
+.command-details-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.command-details-copy strong { color: var(--text); font-size: 13px; font-weight: 720; }
+.command-details-copy small { color: var(--text-faint); font-size: 11px; line-height: 1.45; }
+.command-details-action {
+  display: inline-flex; align-items: center; gap: 9px; flex: none;
+  color: #b9cbff; font-size: 11px; font-weight: 650;
+}
+.command-details-action > span { font-size: 16px; transition: transform .16s ease; }
+.command-details[open] .command-details-action > span { transform: rotate(180deg); }
+.command-details-content {
+  display: grid;
+  gap: 14px;
+  padding: 0 14px 14px;
+}
+.command-details-content > .card { margin: 0; box-shadow: none; }
+@media (max-width: 600px) {
+  .command-details > summary { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .command-details-action { align-self: flex-end; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .command-details-action > span { transition: none; }
+}
