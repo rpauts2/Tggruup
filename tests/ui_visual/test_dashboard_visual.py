@@ -608,7 +608,7 @@ def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
         posts_tab.click()
         page.locator('.view[data-view="posts"].is-active').wait_for(state="visible")
         page.locator('.tab[data-view="posts"][aria-selected="true"]').wait_for(state="visible")
-        card = page.locator('.pcard[data-post="post-unknown-001"]')
+        card = page.locator('.post-row[data-post="post-unknown-001"]')
         card.wait_for(state="visible", timeout=5000)
         card.click()
 
@@ -758,7 +758,7 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         page.route("**/api/**", mock_trace_api)
         page.goto(dashboard_url, wait_until="networkidle")
         page.locator('.tab[data-view="posts"]').click()
-        card = page.locator('.pcard[data-post="trace-post-001"]')
+        card = page.locator('.post-row[data-post="trace-post-001"]')
         card.wait_for(state="visible", timeout=5000)
         card.click()
 
@@ -972,7 +972,7 @@ def test_publication_queue_opens_material_and_restores_focus_and_filter(dashboar
         page.locator('.tab[data-view="posts"]').click()
         scheduled_filter = page.locator('#post-filters button[data-status="scheduled"]')
         scheduled_filter.click()
-        card = page.locator('.pcard[data-post="queue-item-001"]')
+        card = page.locator('.post-row[data-post="queue-item-001"]')
         card.wait_for(state="visible", timeout=5000)
         assert card.get_attribute("role") == "button"
         assert card.get_attribute("tabindex") == "0"
@@ -1522,4 +1522,104 @@ def test_delivery_center_unifies_health_journal_filters_and_material_drawer(dash
         assert journal.get_by_text("delivery-post-001").is_visible()
         page.locator("#delivery-center-refresh").click()
         page.locator("#delivery-center-journal").get_by_text("delivery-post-001").wait_for()
+        browser.close()
+
+
+
+def test_posts_workspace_search_and_view_modes(dashboard_url):
+    """The publication workspace supports quick local search and compact/card layouts."""
+    from playwright.sync_api import sync_playwright
+
+    posts = [
+        {
+            "id": "queue-post-001", "hook": "Новый формат аналитики",
+            "excerpt": "Разбираем технологические изменения и новые сценарии.",
+            "channel_title": "Канал технологий", "channel_id": "@tech_news",
+            "platform": "telegram", "status": "scheduled", "post_format": "post",
+            "chars": 780, "impressions": 0, "opens": 0, "er": None,
+            "created_at": "2026-11-12T08:00:00Z", "scheduled_at": "2026-11-13T12:00:00Z",
+        },
+        {
+            "id": "queue-post-002", "hook": "Как готовится публикация для Дзена",
+            "excerpt": "Материал для Дзена проходит отдельную редакционную проверку.",
+            "channel_title": "Редакция Дзена", "channel_id": "dzen",
+            "platform": "dzen", "status": "publish_unknown", "post_format": "article",
+            "chars": 2400, "impressions": None, "opens": None, "er": None,
+            "created_at": "2026-11-12T07:00:00Z",
+        },
+        {
+            "id": "queue-post-003", "hook": "Короткая заметка о рынке",
+            "excerpt": "Проверка экспериментального формата для сообщества.",
+            "channel_title": "VK", "channel_id": "public-123",
+            "platform": "vk", "status": "failed", "post_format": "short",
+            "chars": 420, "created_at": "2026-11-11T18:00:00Z",
+            "reject_reason": "delivery: временная ошибка",
+        },
+    ]
+    post_requests = []
+
+    def mock_api(route):
+        if urlsplit(route.request.url).path == "/api/posts":
+            post_requests.append(route.request.url)
+            route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"posts": posts, "total": len(posts)}),
+            )
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="posts"]').click()
+
+        root = page.locator("#posts-grid")
+        assert root.evaluate("(el) => el.classList.contains('posts-list-mode')")
+        assert root.locator(".post-row").count() == 3
+        assert page.locator("#posts-result-meta").inner_text() == (
+            "В загруженной выборке: 3 материалов · до 40 записей"
+        )
+        assert page.locator("#posts-search-hint").is_visible()
+
+        # Search is deliberately local to the already-loaded 40-row slice:
+        # changing the query must not trigger another API request or mutate data.
+        request_count = len(post_requests)
+        search = page.locator("#posts-search")
+        search.fill("ДЗЕН")
+        assert root.locator(".post-row").count() == 1
+        assert root.locator('[data-post="queue-post-002"]').is_visible()
+        assert page.locator("#posts-result-meta").inner_text() == (
+            "Найдено 1 из 3 загруженных материалов"
+        )
+        assert len(post_requests) == request_count
+
+        search.fill("строка-которой-нет")
+        assert root.locator(".post-row").count() == 0
+        assert root.get_by_role("heading", name="Ничего не найдено").is_visible()
+        root.get_by_role("button", name="Сбросить поиск").click()
+        assert search.input_value() == ""
+        assert root.locator(".post-row").count() == 3
+
+        cards_button = page.locator('#post-layout [data-post-layout="cards"]')
+        cards_button.click()
+        assert cards_button.get_attribute("aria-pressed") == "true"
+        assert root.locator(".pcard").count() == 3
+        assert root.locator(".post-row").count() == 0
+        assert root.locator('.pcard[data-post="queue-post-001"] .pcard-score').inner_text() == "показы 0 · открытия 0"
+        assert root.locator('.pcard[data-post="queue-post-002"] .pcard-score').inner_text() == "метрики не измерены"
+        assert len(post_requests) == request_count
+
+        list_button = page.locator('#post-layout [data-post-layout="list"]')
+        list_button.click()
+        assert list_button.get_attribute("aria-pressed") == "true"
+        assert root.locator(".post-row").count() == 3
+        assert len(post_requests) == request_count
+
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        page.screenshot(
+            path=str(ARTIFACT_DIR / "1440x960-posts-populated-list.png"),
+            full_page=True, animations="disabled",
+        )
         browser.close()
