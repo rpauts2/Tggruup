@@ -7345,7 +7345,7 @@
     const button = event.target.closest("[data-delivery-filter]");
     if (!button || !deliveryCenterFilters.contains(button)) return;
     state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
-    $("[data-delivery-filter]", deliveryCenterFilters).forEach((item) =>
+    $$("[data-delivery-filter]", deliveryCenterFilters).forEach((item) =>
       item.classList.toggle("is-active", item === button));
     const entries = state.data.crossposts?.crossposts || [];
     renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
