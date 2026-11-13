@@ -1638,3 +1638,123 @@ def test_posts_workspace_search_and_view_modes(dashboard_url):
             full_page=True, animations="disabled",
         )
         browser.close()
+
+
+
+def test_content_studio_preview_and_analytics_keep_measured_data_honest(dashboard_url):
+    """Studio preview never publishes; partial analytics retains good snapshots and null stays unknown."""
+    from playwright.sync_api import sync_playwright
+
+    available = {"report": True, "formats": True, "freshness": True, "usage": True, "delivery": True}
+    calls = []
+    detail = {
+        "id": "studio-post-001", "hook": "<img src=x onerror=alert(1)>",
+        "body": "Текст опубликованного материала.", "excerpt": "Короткий фрагмент",
+        "status": "published", "post_format": "article", "platform": "telegram",
+        "channel_title": "Тестовый канал", "chars": 123,
+        "sources": [{"title": "Проверенный источник", "url": "https://example.com/source"}],
+        "claims": [{"claim": "Проверяемое утверждение"}],
+        "quality": {"gate": "passed", "reason": "Проверено", "agent_team": {"roles": {}}},
+    }
+    report = {"fleet": {"posts": 3, "views_total": 0, "avg_er": None}}
+    formats = {
+        "published_total": 2, "measured_total": 0, "fresh_measured_total": 0,
+        "stale_measured_total": 0, "evidence_status": "measured",
+        "formats": {"article": {"published": 2, "measured": 0, "avg_engagement": None, "reliable": False}},
+        "measurement": {"article": {"fresh": 0, "stale": 0}},
+        "publication": {"published_evidenced": 2, "published_unevidenced": 0,
+                        "published_unrulled": 0, "publish_unknown": 0},
+    }
+    freshness = {
+        "snapshots_total": 0, "generated_at": "2026-11-13T10:00:00Z",
+        "summary": {"platforms_total": 2, "ok": 0, "stale": 0, "never": 2,
+                    "collectors_ok": 0, "collectors_stale": 0, "collectors_no_report": 0},
+    }
+    usage = {"today": {"charged": 0, "stale_reservations": 0},
+             "totals": {"used": 0, "fallbacks": 0, "average_latency_ms": 0}}
+    delivery = {"generated_at": "2026-11-13T10:00:00Z", "totals": {"posted": None},
+                "platforms": [{"platform": "telegram", "state": "healthy",
+                               "posted": None, "unknown": 0, "permanent": None}]}
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        calls.append((route.request.method, path))
+        if path == "/api/posts":
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"posts": [{
+                              "id": "studio-post-001", "hook": detail["hook"],
+                              "channel_title": "Тестовый канал", "status": "published", "post_format": "article",
+                          }], "total": 1}))
+            return
+        if path == "/api/platforms":
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"platforms": [{"id": "telegram", "name": "Telegram"}]}))
+            return
+        if path == "/api/posts/studio-post-001":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(detail))
+            return
+        if path == "/api/posts/studio-post-001/trace":
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"events": [{"kind": "published", "at": "2026-11-13T09:00:00Z",
+                                                      "detail": "Публикация подтверждена"}]}))
+            return
+        if path.startswith("/api/platform-drafts/") and path.endswith("/editorial"):
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"status": "preview_ready", "publish_action": "none",
+                                           "detail": "Нативная версия собрана без публикации",
+                                           "target": {"name": "Telegram канал"},
+                                           "draft": {"title": "Версия для площадки", "body": "Предпросмотр текста"}}))
+            return
+        analytics = {
+            "/api/report": ("report", report),
+            "/api/metrics/formats": ("formats", formats),
+            "/api/metrics/freshness": ("freshness", freshness),
+            "/api/ai/usage": ("usage", usage),
+            "/api/crossposts/health": ("delivery", delivery),
+        }
+        for endpoint, (key, payload) in analytics.items():
+            if path == endpoint:
+                if not available[key]:
+                    route.fulfill(status=503, content_type="application/json",
+                                  body=json.dumps({"detail": key + " fixture outage"}))
+                    return
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+                return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+
+        page.locator('.tab[data-view="studio"]').click()
+        page.locator("#studio-title").get_by_text(detail["hook"]).wait_for()
+        assert page.locator("#studio-content h3").inner_text() == detail["hook"]
+        assert page.locator("#studio-content img[onerror]").count() == 0
+        assert page.locator("#studio-inspector").get_by_text("Проверенный источник").is_visible()
+        page.locator("#studio-platform-select").select_option("telegram")
+        preview = page.locator("#studio-preview")
+        assert preview.is_enabled()
+        preview.click()
+        page.locator("#studio-preview-result").get_by_text("Нативная версия собрана без публикации").wait_for()
+        assert any(method == "POST" and path.startswith("/api/platform-drafts/telegram/studio-post-001/editorial")
+                   for method, path in calls)
+        assert not any("publish" in path.lower() for method, path in calls)
+
+        page.locator('.tab[data-view="analytics"]').click()
+        page.wait_for_function("() => document.querySelector('#analytics-sync-status')?.dataset.state === 'fresh'")
+        kpis = page.locator("#analytics-kpis").inner_text()
+        assert "3" in kpis and "0" in kpis and "нет отчёта" in kpis
+        assert page.locator("#analytics-formats").get_by_text("0 измерено").is_visible()
+        assert page.locator("#analytics-platforms").get_by_text("нет отчёта подтверждено").is_visible()
+        assert page.locator("#analytics-platforms").get_by_text("0 сверка").is_visible()
+
+        available["formats"] = False
+        page.locator("#analytics-refresh").click()
+        page.wait_for_function("() => document.querySelector('#analytics-sync-status')?.dataset.state === 'partial'")
+        assert "Часть источников недоступна" in page.locator("#analytics-sync-status").inner_text()
+        assert "форматы:" in page.locator("#analytics-sync-status").inner_text()
+        assert page.locator("#analytics-formats").get_by_text("0 измерено").is_visible()
+        assert "3" in page.locator("#analytics-kpis").inner_text()
+        browser.close()

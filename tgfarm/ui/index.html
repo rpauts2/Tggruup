@@ -26,6 +26,7 @@
       <button class="tab is-active" data-view="overview" role="tab" aria-selected="true" tabindex="0"><span class="tab-label">Command Center</span></button>
       <button class="tab" data-view="review" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Центр доставки</span><span class="tab-counter" id="review-nav-count">0</span></button>
       <button class="tab" data-view="team" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">AI Team</span></button>
+      <button class="tab" data-view="studio" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Контент-студия</span></button>
 
       <div class="nav-group">Редакция</div>
       <button class="tab" data-view="plan" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Планирование</span></button>
@@ -37,6 +38,9 @@
       <button class="tab" data-view="channels" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Каналы</span></button>
       <button class="tab" data-view="platforms" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Центр площадок</span><span class="tab-counter" id="platforms-nav-count">5</span></button>
       <button class="tab" data-view="connect" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Подключения</span><span class="tab-counter" id="connect-nav-count">0</span></button>
+
+      <div class="nav-group">Аналитика</div>
+      <button class="tab" data-view="analytics" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Результаты и рост</span></button>
 
       <div class="nav-group">Система</div>
       <button class="tab" data-view="sources" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Источники</span></button>
@@ -393,6 +397,39 @@
       <p>В Command Center уже доступно сравнение обычного автора и версии со стратегом на одном материале и маршруте. Оно помогает оценивать практический эффект, не выдавая эксперимент за доказательство.</p>
       <button class="btn btn-ghost btn-sm" type="button" data-goto="overview">Открыть эксперименты в Command Center</button>
     </article>
+  </section>
+
+  <section class="view" data-view="studio">
+    <div class="page-hero">
+      <div><div class="section-kicker">EDITORIAL WORKSPACE</div><h2>Контент-студия</h2>
+        <p>Материал, источники, проверки и платформенная версия в одном рабочем пространстве. Редактура проходит через quality gates; предпросмотр не запускает публикацию.</p></div>
+      <button class="btn btn-ghost" id="studio-refresh" type="button">↻ Обновить</button>
+    </div>
+    <div id="studio-sync-status" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+    <div class="studio-layout">
+      <aside class="card studio-queue">
+        <header class="card-head"><div><h2>Материалы</h2><span class="card-sub" id="studio-count">Последние черновики и публикации</span></div></header>
+        <div class="studio-post-list" id="studio-post-list"><div class="empty">Загружаю материалы…</div></div>
+      </aside>
+      <section class="card studio-main">
+        <header class="card-head"><div><h2 id="studio-title">Выбери материал</h2><span class="card-sub" id="studio-subtitle">Редакторский просмотр</span></div><span class="card-sub" id="studio-post-status">—</span></header>
+        <div class="studio-content" id="studio-content"><div class="empty">Выбери материал слева.</div></div>
+        <div class="studio-toolbar" id="studio-toolbar"></div>
+        <div class="studio-native-preview">
+          <div class="studio-preview-head"><div><strong>Платформенная версия</strong><span>Предпросмотр не публикует материал</span></div>
+            <div class="studio-preview-controls">
+              <select id="studio-platform-select" aria-label="Площадка для предпросмотра"><option value="">Загрузка площадок…</option></select>
+              <button class="btn btn-primary btn-sm" id="studio-preview" type="button" disabled>Собрать версию</button>
+            </div>
+          </div>
+          <div id="studio-preview-result" class="studio-preview-result"><div class="empty">Для проверенного опубликованного материала можно собрать нативный preview.</div></div>
+        </div>
+      </section>
+      <aside class="card studio-inspector">
+        <header class="card-head"><div><h2>Инспектор</h2><span class="card-sub">Доказательства и история</span></div></header>
+        <div id="studio-inspector" class="studio-inspector-body"><div class="empty">Источники, claims и trace появятся здесь.</div></div>
+      </aside>
+    </div>
   </section>
 
   <section class="view" data-view="plan">
@@ -772,6 +809,24 @@
   </section>
 
   <!-- ============================================================= SOURCES -->
+  <section class="view" data-view="analytics">
+    <div class="page-hero">
+      <div><div class="section-kicker">MEASURED GROWTH</div><h2>Аналитика и развитие</h2>
+        <p>Опубликовано, измерено и актуально остаются разными показателями. Отсутствие данных не превращается в ноль.</p></div>
+      <div class="analytics-actions"><select id="analytics-days" aria-label="Период аналитики"><option value="7">7 дней</option><option value="14">14 дней</option><option value="30" selected>30 дней</option></select><button class="btn btn-ghost" id="analytics-refresh" type="button">↻ Обновить</button></div>
+    </div>
+    <div id="analytics-sync-status" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+    <div class="analytics-kpis" id="analytics-kpis"><div class="empty">Загружаю измерения…</div></div>
+    <div class="analytics-grid">
+      <article class="card"><header class="card-head"><div><h2>Эффективность по форматам</h2><span class="card-sub" id="analytics-format-meta">Ожидание отчёта</span></div></header><div id="analytics-formats" class="analytics-table"><div class="empty">Нет отчёта по форматам</div></div></article>
+      <article class="card"><header class="card-head"><div><h2>Доставка по площадкам</h2><span class="card-sub" id="analytics-platform-meta">Ожидание журнала</span></div></header><div id="analytics-platforms" class="analytics-table"><div class="empty">Нет данных о доставке</div></div></article>
+    </div>
+    <div class="analytics-grid">
+      <article class="card"><header class="card-head"><div><h2>Использование AI</h2><span class="card-sub">Вызовы и fallback, не денежная стоимость</span></div></header><div id="analytics-ai" class="analytics-detail"><div class="empty">Нет данных</div></div></article>
+      <article class="card"><header class="card-head"><div><h2>Свежесть измерений</h2><span class="card-sub">Актуальность сохранённых метрик</span></div></header><div id="analytics-freshness" class="analytics-detail"><div class="empty">Нет данных</div></div></article>
+    </div>
+  </section>
+
   <section class="view" data-view="sources">
     <article class="card">
       <header class="card-head">

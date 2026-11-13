@@ -272,3 +272,32 @@ def test_admin_api_rejects_untrusted_host_even_with_valid_token(client):
     assert response.status_code == 403
     assert response.json()["error"] == "untrusted host"
 
+
+
+def test_content_studio_and_analytics_workspaces_use_existing_safe_api_contracts(client):
+    html = client.get("/").text
+    script = client.get("/ui/app.js").text
+    for view in ("studio", "analytics"):
+        assert f'data-view="{view}"' in html
+    for element_id in (
+        "studio-sync-status", "studio-post-list", "studio-content", "studio-inspector",
+        "studio-platform-select", "studio-preview", "analytics-sync-status",
+        "analytics-kpis", "analytics-formats", "analytics-platforms",
+        "analytics-ai", "analytics-freshness",
+    ):
+        assert f'id="{element_id}"' in html
+    for contract in (
+        "/api/posts?limit=80", "/api/metrics/formats?days=", "/api/metrics/freshness",
+        "/api/ai/usage?days=", "/api/crossposts/health", "/api/platform-drafts/", "/api/posts/",
+    ):
+        assert contract in script
+    preview = script[
+        script.index("async function buildStudioPreview()"):
+        script.index("function analyticsErrorText(", script.index("async function buildStudioPreview()"))
+    ]
+    assert "/api/platform-drafts/" in preview
+    assert 'publish_action === "none"' in preview
+    assert "/publish" not in preview
+    analytics_loader = script[script.index("async function loadAnalytics("):]
+    assert "Promise.allSettled" in analytics_loader
+    assert "state.analyticsErrors" in analytics_loader

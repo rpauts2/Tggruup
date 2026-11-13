@@ -51,6 +51,24 @@
     drawerReturnFocus: null,
     drawerRequestId: 0,
     workspaceFreshness: {},
+    studioLoaded: false,
+    studioBusy: false,
+    studioRequestId: 0,
+    studioDetailRequestId: 0,
+    studioPosts: [],
+    studioSelectedId: "",
+    studioDetail: null,
+    studioTrace: null,
+    studioCatalog: [],
+    studioErrors: {},
+    studioDetailError: "",
+    studioPreviewBusy: false,
+    studioPreview: null,
+    analyticsBusy: false,
+    analyticsRequestId: 0,
+    analyticsData: null,
+    analyticsErrors: {},
+    analyticsUpdatedAt: null,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -7205,6 +7223,8 @@
     overview: ["Command Center", "Состояние фермы, команда и площадки в одном окне"],
     connect: ["Подключения", "Способ входа, состояние доступа и доступный маршрут авторизации для каждой площадки"],
     team: ["AI Team", "Редакционные роли и реальные стадии работы конвейера"],
+    studio: ["Контент-студия", "Материалы, доказательства, редактура и платформенные версии"],
+    analytics: ["Аналитика и рост", "Доставка, измерения, эффективность форматов и использование AI"],
     platforms: ["Центр площадок", "Каталог площадок, статусы подключения и готовность к публикации"],
     plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
     trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
@@ -7242,6 +7262,396 @@
     });
   }
 
+  const STUDIO_ROLE_TITLES = {
+    researcher: "Исследователь", topic_router: "Маршрутизатор тем",
+    editorial_strategist: "Редакционный стратег", writer: "Автор",
+    fact_checker: "Фактчекер", review_board: "Редакционный критик",
+    format_planner: "Планировщик формата", platform_editor: "Редактор площадки",
+  };
+  const STUDIO_STATUS_LABELS = {
+    completed: "завершено", passed: "прошло", blocked: "заблокировано",
+    rejected: "отклонено", failed: "ошибка", skipped: "пропущено",
+    running: "в работе", pending: "ожидает",
+  };
+  function studioErrorText(error) {
+    return String((error && error.message) || error || "неизвестная ошибка");
+  }
+
+  function renderStudioSyncStatus() {
+    const root = $("#studio-sync-status");
+    if (!root) return;
+    const errors = Object.entries(state.studioErrors || {});
+    if (!errors.length && !state.studioDetailError && !state.studioBusy) {
+      root.hidden = true;
+      root.textContent = "";
+      root.dataset.state = "fresh";
+      return;
+    }
+    const hasSnapshot = state.studioPosts.length > 0 || Boolean(state.studioDetail);
+    const parts = errors.map(([key, message]) => (key === "posts" ? "список материалов" : "каталог площадок") + ": " + message);
+    if (state.studioDetailError) parts.push("история выбранного материала: " + state.studioDetailError);
+    root.hidden = false;
+    root.dataset.state = state.studioBusy ? "loading" : hasSnapshot ? "stale" : "error";
+    root.textContent = state.studioBusy
+      ? (hasSnapshot ? "Обновляю студию; ранее загруженные данные оставлены на экране." : "Загружаю контент-студию…")
+      : (hasSnapshot
+        ? "Не все источники студии доступны. Сохранившиеся данные показаны как устаревший снимок. " + parts.join(" · ")
+        : "Контент-студия недоступна: " + parts.join(" · "));
+  }
+
+  async function loadStudio(force = false) {
+    if (state.studioBusy && !force) return;
+    const requestId = ++state.studioRequestId;
+    state.studioBusy = true;
+    renderStudioSyncStatus();
+    const list = $("#studio-post-list");
+    if (list && !state.studioPosts.length) list.innerHTML = '<div class="empty">Загружаю публикации…</div>';
+    const results = await Promise.allSettled([
+      api("/api/posts?limit=80"),
+      state.platformData ? Promise.resolve(state.platformData) : api("/api/platforms"),
+    ]);
+    if (requestId !== state.studioRequestId) return;
+    const errors = {};
+    if (results[0].status === "fulfilled") {
+      const rows = results[0].value && results[0].value.posts;
+      if (Array.isArray(rows)) {
+        state.studioPosts = rows;
+        state.studioLoaded = true;
+      } else errors.posts = "сервер вернул ответ без списка материалов";
+    } else errors.posts = studioErrorText(results[0].reason);
+    if (results[1].status === "fulfilled") {
+      const platforms = results[1].value && results[1].value.platforms;
+      if (Array.isArray(platforms)) state.studioCatalog = platforms;
+      else errors.platforms = "сервер вернул ответ без каталога площадок";
+    } else errors.platforms = studioErrorText(results[1].reason);
+    state.studioErrors = errors;
+    renderStudioPlatformOptions();
+    if (state.studioPosts.length) {
+      if (!state.studioPosts.some((item) => item.id === state.studioSelectedId)) {
+        state.studioSelectedId = state.studioPosts[0].id || "";
+      }
+      renderStudioList();
+      if (state.studioSelectedId) await loadStudioDetail(state.studioSelectedId);
+      else renderStudioEmpty();
+    } else if (!state.studioLoaded) {
+      if (list) list.innerHTML = '<div class="empty">Не удалось загрузить список материалов. ' + esc(errors.posts || "Нет данных.") + "</div>";
+      renderStudioEmpty();
+    } else renderStudioList();
+    if (requestId === state.studioRequestId) {
+      state.studioBusy = false;
+      renderStudioSyncStatus();
+    }
+  }
+
+  function renderStudioPlatformOptions() {
+    const select = $("#studio-platform-select");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">Выбери площадку</option>' + state.studioCatalog.map((item) =>
+      '<option value="' + esc(item.id) + '">' + esc(item.name || item.id) + "</option>").join("");
+    if (state.studioCatalog.some((item) => item.id === current)) select.value = current;
+  }
+
+  function renderStudioList() {
+    const root = $("#studio-post-list");
+    if (!root) return;
+    const posts = state.studioPosts || [];
+    const count = $("#studio-count");
+    if (count) count.textContent = posts.length + " последних материалов";
+    root.innerHTML = posts.length ? posts.map((item) => {
+      const active = item.id === state.studioSelectedId;
+      return '<button type="button" class="studio-post-row ' + (active ? "is-active" : "") + '" data-studio-post="' + esc(item.id) + '">'
+        + '<span class="studio-post-status"></span><strong>' + esc(item.hook || "Без заголовка") + "</strong>"
+        + '<small>' + esc(item.channel_title || item.channel_id || "") + " · " + esc(STATUS_RU[item.status] || item.status || "—") + "</small></button>";
+    }).join("") : '<div class="empty">Пока нет материалов. После первого цикла здесь появятся черновики и публикации.</div>';
+  }
+
+  function renderStudioEmpty() {
+    $("#studio-title").textContent = "Нет материалов";
+    $("#studio-subtitle").textContent = "Очередь пока пуста";
+    $("#studio-content").innerHTML = '<div class="empty">Сначала собери материалы в редакционном конвейере.</div>';
+    $("#studio-inspector").innerHTML = '<div class="empty">Пока нечего анализировать.</div>';
+    $("#studio-toolbar").innerHTML = "";
+  }
+
+  async function loadStudioDetail(postId) {
+    if (!postId) return;
+    const requestId = ++state.studioDetailRequestId;
+    state.studioSelectedId = postId;
+    state.studioPreview = null;
+    state.studioDetailError = "";
+    state.studioDetail = null;
+    state.studioTrace = null;
+    renderStudioList();
+    const content = $("#studio-content");
+    if (content) content.innerHTML = '<div class="empty">Загружаю материал и историю…</div>';
+    const results = await Promise.allSettled([
+      api("/api/posts/" + encodeURIComponent(postId)),
+      api("/api/posts/" + encodeURIComponent(postId) + "/trace"),
+    ]);
+    if (requestId !== state.studioDetailRequestId || state.studioSelectedId !== postId) return;
+    if (results[0].status !== "fulfilled") {
+      state.studioDetailError = studioErrorText(results[0].reason);
+      if (content) content.innerHTML = '<div class="empty">Не удалось открыть материал: ' + esc(state.studioDetailError) + "</div>";
+      renderStudioSyncStatus();
+      return;
+    }
+    state.studioDetail = results[0].value;
+    if (results[1].status === "fulfilled") state.studioTrace = results[1].value;
+    else state.studioDetailError = "trace не прочитан: " + studioErrorText(results[1].reason);
+    renderStudioDetail();
+    renderStudioSyncStatus();
+  }
+
+  function renderStudioDetail() {
+    const p = state.studioDetail;
+    if (!p) return renderStudioEmpty();
+    const editable = ["draft", "gated", "rejected", "scheduled"].includes(p.status) && !p.tg_message_id;
+    $("#studio-title").textContent = p.hook || "Без заголовка";
+    const lengthLabel = typeof p.chars === "number" && Number.isFinite(p.chars) ? n(p.chars) + " символов" : "длина не измерена";
+    $("#studio-subtitle").textContent = (p.channel_title || p.channel_id || "") + " · " + (FORMAT_RU[p.post_format] || p.post_format || "материал") + " · " + lengthLabel;
+    $("#studio-post-status").textContent = STATUS_RU[p.status] || p.status || "—";
+    const cover = p.cover && p.cover.id ? '<img class="studio-cover" src="/api/media/' + encodeURIComponent(p.cover.id) + '" alt="Обложка материала">' : "";
+    const video = p.video && p.video.id ? '<video class="studio-video" src="/api/media/' + encodeURIComponent(p.video.id) + '" controls playsinline></video>' : "";
+    $("#studio-content").innerHTML = cover + video
+      + '<div class="studio-reading"><div class="studio-reading-kicker">МАТЕРИАЛ · ' + esc(p.post_format || "text") + '</div><h3>' + esc(p.hook || "Без заголовка") + '</h3><p>' + esc(p.body || p.excerpt || "Текст не сохранён.") + "</p>"
+      + (p.cta ? '<p class="studio-cta">' + esc(p.cta) + "</p>" : "")
+      + (Array.isArray(p.hashtags) && p.hashtags.length ? '<div class="studio-hashtags">' + p.hashtags.map((item) => '<span>#' + esc(String(item).replace(/^#/, "")) + "</span>").join("") + "</div>" : "")
+      + "</div>";
+    $("#studio-toolbar").innerHTML = editable
+      ? '<div><span>AI-переработка пройдёт повторную проверку качества</span><div class="studio-polish-actions">'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="shorter">Сократить</button>'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="funnier">Добавить иронию</button>'
+        + '<button class="btn btn-ghost btn-sm" data-studio-polish="stricter">Сделать строже</button></div></div>'
+      : '<span>Материал только для просмотра. Опубликованный пост не редактируется через TgFarm.</span>';
+    const q = p.quality || {};
+    const team = q.agent_team || {};
+    const sourceItems = Array.isArray(p.sources) ? p.sources : [];
+    const claims = Array.isArray(p.claims) ? p.claims : [];
+    const events = state.studioTrace && Array.isArray(state.studioTrace.events) ? state.studioTrace.events : [];
+    const roles = team.roles && typeof team.roles === "object" ? Object.entries(team.roles) : [];
+    const platformEdits = team.platform_edits && typeof team.platform_edits === "object" ? Object.entries(team.platform_edits) : [];
+    const roleHtml = roles.map(([key, role]) => '<div class="studio-trace-row"><strong>' + esc(STUDIO_ROLE_TITLES[key] || key) + '</strong><span>' + esc(STUDIO_STATUS_LABELS[role && role.status] || (role && role.status) || "нет статуса") + "</span></div>").join("");
+    const platformHtml = platformEdits.map(([platform, role]) => '<div class="studio-trace-row"><strong>' + esc(PLATFORM_RU[platform] || platform) + '</strong><span>' + esc(STUDIO_STATUS_LABELS[role && role.status] || (role && role.status) || "—") + "</span></div>").join("");
+    const claimHtml = claims.length ? '<ul>' + claims.slice(0, 12).map((item) => {
+      const value = typeof item === "string" ? item : (item.claim || item.text || "Утверждение");
+      return "<li>" + esc(value) + "</li>";
+    }).join("") + "</ul>" : '<p class="studio-muted">Отдельные claims не сохранены.</p>';
+    const sourceHtml = sourceItems.length ? sourceItems.slice(0, 12).map((item) => {
+      const url = String(item.url || "");
+      const valid = /^https:\/\//i.test(url);
+      return '<a class="studio-source" ' + (valid ? 'href="' + esc(url) + '" target="_blank" rel="noopener noreferrer"' : "") + '>' + esc(item.title || url || "Источник без названия") + "</a>";
+    }).join("") : '<p class="studio-muted">Источники не сохранены.</p>';
+    const eventHtml = events.length ? events.map((event) => '<div class="studio-event"><strong>' + esc(event.kind) + '</strong><span>' + esc(dt(event.at)) + '</span><p>' + esc(event.detail) + "</p></div>").join("") : '<p class="studio-muted">История событий недоступна.</p>';
+    $("#studio-inspector").innerHTML =
+      '<div class="studio-inspector-section"><h3>Качество</h3><div class="studio-inspector-kv">'
+      + '<span>Вердикт</span><strong>' + esc(q.gate || "нет сохранённого вердикта") + '</strong>'
+      + '<span>Причина</span><strong>' + esc(q.reason || p.reject_reason || "—") + "</strong></div></div>"
+      + '<div class="studio-inspector-section"><h3>Утверждения · ' + claims.length + '</h3>' + claimHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>Источники · ' + sourceItems.length + '</h3>' + sourceHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>Роли AI · ' + roles.length + '</h3>' + (roleHtml || '<p class="studio-muted">Trace ролей не сохранён.</p>') + platformHtml + "</div>"
+      + '<div class="studio-inspector-section"><h3>История материала</h3>' + eventHtml + "</div>";
+    const previewButton = $("#studio-preview");
+    if (previewButton) previewButton.disabled = p.status !== "published" || !$("#studio-platform-select").value;
+    const preview = $("#studio-preview-result");
+    if (preview && !state.studioPreview) {
+      preview.innerHTML = p.status === "published"
+        ? '<div class="empty">Выбери площадку и собери её редакторскую версию. Ничего не отправится.</div>'
+        : '<div class="empty">Preview доступен после подтверждённой публикации. Черновик можно улучшать через AI-проверку выше.</div>';
+    }
+  }
+
+  async function polishStudioPost(mode) {
+    const p = state.studioDetail;
+    if (!p || !["shorter", "funnier", "stricter"].includes(mode)) return;
+    const labels = { shorter: "сокращение", funnier: "ироничную редактуру", stricter: "более строгий стиль" };
+    if (!window.confirm("Применить " + labels[mode] + "? TgFarm перепишет черновик и повторно запустит проверки качества.")) return;
+    const buttons = $("#studio-toolbar [data-studio-polish]");
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      const result = await post("/api/posts/" + encodeURIComponent(p.id) + "/polish", { mode: mode });
+      toast(result.passed ? "Редактура прошла проверку качества" : "Редактура отклонена quality gates", result.passed ? "ok" : "warn");
+      await loadStudio(true);
+    } catch (error) {
+      toast("Не удалось переработать материал: " + (error && error.message || error), "err");
+    } finally {
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  async function buildStudioPreview() {
+    const p = state.studioDetail;
+    const platform = $("#studio-platform-select") && $("#studio-platform-select").value;
+    if (!p || p.status !== "published" || !platform || state.studioPreviewBusy) return;
+    state.studioPreviewBusy = true;
+    const button = $("#studio-preview");
+    const root = $("#studio-preview-result");
+    if (button) { button.disabled = true; button.textContent = "Готовлю…"; }
+    if (root) root.innerHTML = '<div class="empty">Собираю нативную версию, не публикую её…</div>';
+    try {
+      const result = await post("/api/platform-drafts/" + encodeURIComponent(platform) + "/" + encodeURIComponent(p.id) + "/editorial", {});
+      state.studioPreview = result;
+      const draft = result.draft || {};
+      const detail = result.detail || (result.profile && result.profile.goal) || "Предпросмотр собран. Финальная публикация не запускалась.";
+      root.innerHTML = '<div class="studio-preview-status"><span class="tag">' + esc(result.status || "preview") + '</span><span class="studio-muted">' + esc(detail) + "</span></div>"
+        + (result.target && result.target.name ? '<div class="studio-target">Адресат: ' + esc(result.target.name) + "</div>" : "")
+        + (draft.title ? '<h3>' + esc(draft.title) + "</h3>" : "")
+        + (draft.body ? '<p class="studio-preview-text">' + esc(draft.body) + "</p>" : '<p class="studio-muted">Текст не вернулся. Проверь требования площадки.</p>')
+        + (result.publish_action === "none" ? '<p class="studio-no-publish">Предпросмотр. Публикация не запускалась.</p>' : "");
+    } catch (error) {
+      root.innerHTML = '<div class="alert alert-err">Предпросмотр не собран: ' + esc(error && error.message || error) + "</div>";
+      toast("Предпросмотр не собран: " + (error && error.message || error), "err");
+    } finally {
+      state.studioPreviewBusy = false;
+      if (button) { button.textContent = "Собрать версию"; button.disabled = !state.studioDetail || state.studioDetail.status !== "published" || !$("#studio-platform-select").value; }
+    }
+  }
+
+  function analyticsErrorText(error) {
+    return String((error && error.message) || error || "неизвестная ошибка");
+  }
+
+  function renderAnalyticsSyncStatus() {
+    const root = $("#analytics-sync-status");
+    if (!root) return;
+    const data = state.analyticsData || {};
+    const names = ["report", "formats", "freshness", "usage", "delivery"];
+    const labels = { report: "сводка публикаций", formats: "форматы",
+      freshness: "свежесть метрик", usage: "использование AI", delivery: "доставка" };
+    const available = names.filter((name) => Object.prototype.hasOwnProperty.call(data, name));
+    const errors = Object.entries(state.analyticsErrors || {});
+    const hasSnapshot = available.length > 0;
+    if (!errors.length && !state.analyticsBusy && available.length === names.length) {
+      root.hidden = true;
+      root.textContent = "";
+      root.dataset.state = "fresh";
+      return;
+    }
+    root.hidden = false;
+    if (state.analyticsBusy) {
+      root.dataset.state = hasSnapshot ? "refreshing" : "loading";
+      root.textContent = hasSnapshot
+        ? "Обновляю источники аналитики. Последние успешные данные остаются на экране."
+        : "Загружаю аналитические источники…";
+      return;
+    }
+    root.dataset.state = hasSnapshot ? "partial" : "error";
+    const failed = errors.map(([name, message]) => (labels[name] || name) + ": " + message);
+    root.textContent = hasSnapshot
+      ? "Часть источников недоступна. Успешно прочитанные данные сохранены, неуспешные источники не подменены нулями. " + failed.join(" · ")
+      : "Аналитика не получена: " + failed.join(" · ");
+  }
+
+  async function loadAnalytics(force = false) {
+    if (state.analyticsBusy && !force) return;
+    const requestId = ++state.analyticsRequestId;
+    state.analyticsBusy = true;
+    renderAnalyticsSyncStatus();
+    const days = Math.max(1, Math.min(90, Number($("#analytics-days").value || 30)));
+    const names = ["report", "formats", "freshness", "usage", "delivery"];
+    const paths = [
+      "/api/report?days=" + days,
+      "/api/metrics/formats?days=" + days,
+      "/api/metrics/freshness",
+      "/api/ai/usage?days=" + Math.min(30, days),
+      "/api/crossposts/health",
+    ];
+    const results = await Promise.allSettled(paths.map((path) => api(path)));
+    if (requestId !== state.analyticsRequestId) return;
+    const retained = { ...(state.analyticsData || {}) };
+    const errors = {};
+    results.forEach((result, index) => {
+      const key = names[index];
+      if (result.status === "fulfilled") retained[key] = result.value;
+      else errors[key] = analyticsErrorText(result.reason);
+    });
+    state.analyticsData = retained;
+    state.analyticsErrors = errors;
+    state.analyticsUpdatedAt = new Date().toISOString();
+    state.analyticsBusy = false;
+    renderAnalytics();
+    renderAnalyticsSyncStatus();
+  }
+
+  function renderAnalytics() {
+    const data = state.analyticsData || {};
+    const measuredCount = (value) => typeof value === "number" && Number.isFinite(value) ? n(value) : "нет отчёта";
+    const measuredRate = (value) => typeof value === "number" && Number.isFinite(value) ? pct(value) : "нет отчёта";
+    const fleet = data.report && data.report.fleet || {};
+    const formats = data.formats || {};
+    const usage = data.usage || {};
+    const today = usage.today || {};
+    const totals = usage.totals || {};
+    const delivery = data.delivery || {};
+    const deliveryTotals = delivery.totals || {};
+    const kpis = [
+      ["Постов за период", measuredCount(fleet.posts), "учтённые публикации"],
+      ["Просмотры", measuredCount(fleet.views_total), "фактические просмотры"],
+      ["Средний ER", measuredRate(fleet.avg_er), "только измеренные посты"],
+      ["Доставки подтверждены", measuredCount(deliveryTotals.posted), "журнал кросспостинга"],
+    ];
+    $("#analytics-kpis").innerHTML = kpis.map((item) => '<div class="analytics-kpi"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong><small>' + esc(item[2]) + "</small></div>").join("");
+    const formatRows = Object.entries(formats.formats || {});
+    const measurement = formats.measurement || {};
+    const publication = formats.publication || {};
+    const reliableCount = formatRows.filter(([, row]) => row && row.reliable === true).length;
+    $("#analytics-format-meta").textContent = typeof formats.published_total === "number"
+      ? measuredCount(formats.published_total) + " опубликовано · " + measuredCount(formats.measured_total) + " измерено · "
+        + measuredCount(formats.fresh_measured_total) + " свежих · " + measuredCount(formats.stale_measured_total) + " устаревших"
+        + " · " + n(reliableCount) + " надёжных форматов · подтверждённость: " + (formats.evidence_status || "не указана")
+      : "Отчёт форматов не получен";
+    $("#analytics-formats").innerHTML = formatRows.length ? formatRows.map(([key, row]) => {
+      const fresh = measurement[key] || {};
+      const average = typeof row.avg_engagement === "number" && Number.isFinite(row.avg_engagement) ? row.avg_engagement.toFixed(1) : "нет замеров";
+      const live = typeof fresh.fresh === "number" ? n(fresh.fresh) + " свежих / " + measuredCount(fresh.stale) + " устаревших" : "свежесть неизвестна";
+      const signal = row.reliable === true ? "достаточная выборка" : "мало измерений";
+      return '<div class="analytics-row analytics-format-row"><strong>' + esc(FORMAT_RU[key] || key) + '</strong>'
+        + '<span>' + esc(measuredCount(row.published)) + " опубликовано · " + esc(measuredCount(row.measured)) + " измерено</span>"
+        + '<b>' + esc(average) + " среднее взаимодействие</b>"
+        + '<small>' + esc(live) + " · " + esc(signal) + "</small></div>";
+    }).join("") + '<p class="analytics-evidence-note">Подтверждённые: ' + measuredCount(publication.published_evidenced)
+      + " · без подтверждения: " + measuredCount(publication.published_unevidenced)
+      + " · без правила проверки: " + measuredCount(publication.published_unrulled)
+      + " · неизвестный результат: " + measuredCount(publication.publish_unknown) + "</p>"
+      : '<div class="empty">Нет отчёта по форматам. Неполученные данные не заменяются нулями.</div>';
+    const platforms = Array.isArray(delivery.platforms) ? delivery.platforms : [];
+    $("#analytics-platform-meta").textContent = delivery.generated_at ? "Срез " + dt(delivery.generated_at) : "Дата измерения не передана";
+    $("#analytics-platforms").innerHTML = platforms.length ? platforms.map((item) => {
+      const label = PLATFORM_RU[item.platform] || item.platform || "Площадка не указана";
+      const stateLabel = ({healthy:"есть успешные доставки",attention:"нужно внимание",setup:"не настроено",
+        not_tested:"не проверено",scheduled:"отложено",dry_run:"тестовый режим",working:"в работе"})[item.state] || item.state || "неизвестно";
+      return '<div class="analytics-row"><strong>' + esc(label) + '</strong><span>' + esc(stateLabel) + '</span><b>'
+        + esc(measuredCount(item.posted)) + ' подтверждено</b><small>'
+        + esc(measuredCount(item.unknown)) + ' сверка · ' + esc(measuredCount(item.permanent)) + ' отказов</small></div>';
+    }).join("") : '<div class="empty">В журнале пока нет измеренных данных о доставках по площадкам.</div>';
+    const aiRows = [
+      ["Вызовы онлайн за период", measuredCount(totals.used)],
+      ["Fallback", measuredCount(totals.fallbacks)],
+      ["Вызовы сегодня", measuredCount(today.charged)],
+      ["Зависшие резервы", measuredCount(today.stale_reservations)],
+      ["Средняя задержка", typeof totals.average_latency_ms === "number" ? n(totals.average_latency_ms) + " мс" : "нет отчёта"],
+    ];
+    $("#analytics-ai").innerHTML = aiRows.map((item) => '<div class="analytics-detail-row"><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + "</strong></div>").join("")
+      + '<p class="studio-muted">Журнал считает вызовы и задержку. Денежная стоимость и токены не рассчитываются, если backend их не измеряет.</p>';
+    const freshness = data.freshness || {};
+    const summary = freshness.summary || {};
+    const freshnessRows = [
+      ["Снимков", freshness.snapshots_total],
+      ["Площадок в каталоге", summary.platforms_total],
+      ["Площадки со свежими данными", summary.ok],
+      ["Устаревшие снимки площадок", summary.stale],
+      ["Пока нет снимков", summary.never],
+      ["Сборщики со свежими данными", summary.collectors_ok],
+      ["Устаревшие сборщики", summary.collectors_stale],
+      ["Сборщики без отчёта", summary.collectors_no_report],
+      ["Самый свежий снимок", summary.freshest && summary.freshest.collected_at ? dt(summary.freshest.collected_at) : null],
+      ["Последнее обновление отчёта", freshness.generated_at ? dt(freshness.generated_at) : null],
+    ];
+    $("#analytics-freshness").innerHTML = freshnessRows.map((item) => '<div class="analytics-detail-row"><span>' + esc(item[0]) + '</span><strong>'
+      + esc(typeof item[1] === "number" ? n(item[1]) : (item[1] === null || item[1] === undefined || item[1] === "" ? "нет отчёта" : item[1]))
+      + "</strong></div>").join("");
+  }
+
   function switchView(view) {
     state.view = view;
     syncTabSemantics(view);
@@ -7264,6 +7674,8 @@
       if (sub) sub.textContent = meta[1];
     }
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
+    if (view === "studio" && !state.studioLoaded && !state.studioBusy) loadStudio();
+    if (view === "analytics" && !state.analyticsData && !state.analyticsBusy) loadAnalytics();
     if (view === "review") {
       loadReviewBoard(true);
       refresh();
@@ -7446,6 +7858,23 @@
       $$("#review-filters button").forEach((item) => item.classList.toggle("is-active", item === button));
       renderReviewBoard();
     }));
+  $("#studio-refresh")?.addEventListener("click", () => loadStudio(true));
+  $("#studio-post-list")?.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-studio-post]");
+    if (item) loadStudioDetail(item.dataset.studioPost);
+  });
+  $("#studio-toolbar")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-studio-polish]");
+    if (button) polishStudioPost(button.dataset.studioPolish);
+  });
+  $("#studio-preview")?.addEventListener("click", buildStudioPreview);
+  $("#studio-platform-select")?.addEventListener("change", () => {
+    const button = $("#studio-preview");
+    if (button) button.disabled = !state.studioDetail || state.studioDetail.status !== "published" || !$("#studio-platform-select").value;
+  });
+  $("#analytics-refresh")?.addEventListener("click", () => loadAnalytics(true));
+  $("#analytics-days")?.addEventListener("change", () => loadAnalytics(true));
+
   const planRefresh = $("#plan-refresh");
   if (planRefresh) planRefresh.addEventListener("click", () => loadEditorialPlan(true));
   const planApply = $("#plan-apply");
