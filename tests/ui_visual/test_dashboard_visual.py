@@ -599,7 +599,7 @@ def test_publish_unknown_post_drawer_requires_reconciliation(dashboard_url):
         posts_tab.click()
         page.locator('.view[data-view="posts"].is-active').wait_for(state="visible")
         page.locator('.tab[data-view="posts"][aria-selected="true"]').wait_for(state="visible")
-        card = page.locator('.pcard[data-post="post-unknown-001"]')
+        card = page.locator('.post-row[data-post="post-unknown-001"]')
         card.wait_for(state="visible", timeout=5000)
         card.click()
 
@@ -749,7 +749,7 @@ def test_post_drawer_trace_is_rendered_as_a_lifecycle_timeline(dashboard_url):
         page.route("**/api/**", mock_trace_api)
         page.goto(dashboard_url, wait_until="networkidle")
         page.locator('.tab[data-view="posts"]').click()
-        card = page.locator('.pcard[data-post="trace-post-001"]')
+        card = page.locator('.post-row[data-post="trace-post-001"]')
         card.wait_for(state="visible", timeout=5000)
         card.click()
 
@@ -963,7 +963,7 @@ def test_publication_queue_opens_material_and_restores_focus_and_filter(dashboar
         page.locator('.tab[data-view="posts"]').click()
         scheduled_filter = page.locator('#post-filters button[data-status="scheduled"]')
         scheduled_filter.click()
-        card = page.locator('.pcard[data-post="queue-item-001"]')
+        card = page.locator('.post-row[data-post="queue-item-001"]')
         card.wait_for(state="visible", timeout=5000)
         assert card.get_attribute("role") == "button"
         assert card.get_attribute("tabindex") == "0"
