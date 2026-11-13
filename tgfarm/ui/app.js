@@ -1913,6 +1913,9 @@
     const when = p.published_at ? dt(p.published_at)
                : p.scheduled_at ? `в ${clock(p.scheduled_at)}`
                : dt(p.created_at);
+    const performance = typeof p.impressions === "number"
+      ? `показы ${n(p.impressions)} · открытия ${typeof p.opens === "number" ? n(p.opens) : "нет отчёта"}`
+      : typeof p.er === "number" ? `ER ${pct(p.er)}` : "метрики не измерены";
     return `
       <article class="pcard" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="pcard-cover">${cover}</div>
@@ -1927,7 +1930,7 @@
 <span class="tag">${n(p.chars)} симв.</span>
             ${reason}
             ${postProvenanceChip(p)}
-            <span class="pcard-score">${p.impressions ? `показы ${n(p.impressions)} · открытия ${n(p.opens)}` : `ER ${pct(p.er)}`}</span>
+            <span class="pcard-score">${esc(performance)}</span>
           </div>
         </div>
       </article>`;
