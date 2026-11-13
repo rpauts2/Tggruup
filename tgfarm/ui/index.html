@@ -420,8 +420,26 @@
 
   <!-- =============================================================== POSTS -->
   <section class="view" data-view="posts">
-    <div class="toolbar">
-      <div class="segmented" id="post-filters">
+    <section class="posts-toolbar" aria-label="Поиск и фильтры материалов">
+      <div class="posts-toolbar-head">
+        <label class="posts-search">
+          <span class="sr-only">Поиск по загруженным материалам</span>
+          <span class="posts-search-icon" aria-hidden="true">⌕</span>
+          <input id="posts-search" type="search" class="input"
+                 placeholder="Название, канал, площадка…" autocomplete="off"
+                 aria-describedby="posts-search-hint">
+        </label>
+        <div class="posts-toolbar-meta">
+          <span id="posts-result-meta" role="status" aria-live="polite">Поиск по текущей выборке</span>
+          <div class="posts-layout" id="post-layout" role="group" aria-label="Вид материалов">
+            <button type="button" class="is-active" data-post-layout="list" aria-pressed="true">Список</button>
+            <button type="button" data-post-layout="cards" aria-pressed="false">Карточки</button>
+          </div>
+        </div>
+      </div>
+      <p class="posts-search-hint" id="posts-search-hint">Поиск работает по текущей выборке до 40 материалов и не обращается ко всему архиву.</p>
+      <div class="toolbar posts-filter-toolbar">
+        <div class="segmented" id="post-filters">
         <button class="is-active" data-status="">все</button>
         <button data-status="gated">прошли</button>
         <button data-status="scheduled">в очереди</button>
@@ -431,8 +449,8 @@
         <button data-status="published">опубликованы</button>
         <button data-status="rejected">отклонены</button>
       </div>
-    </div>
-    <div id="posts-grid" class="cards"></div>
+    </section>
+    <div id="posts-grid" class="cards posts-list-mode"></div>
   </section>
 
   <!-- ============================================================= REVIEW -->
