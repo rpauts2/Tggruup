@@ -2470,3 +2470,20 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
 .platform-contract-cell > small { color:var(--text-faint); font-size:9px; line-height:1.4; overflow-wrap:anywhere; }
 @media(max-width:1050px) { .platform-contract-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:600px) { .platform-contract { padding:9px; } .platform-contract-grid { grid-template-columns:1fr 1fr; } .platform-contract-cell { padding:7px; } }
+
+
+/* Unified delivery center */
+.delivery-center-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:24px 26px;margin:0 0 18px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(135deg,rgba(72,112,176,.13),rgba(35,42,59,.18))}
+.delivery-center-kicker{display:block;color:var(--accent);font-size:10px;font-weight:800;letter-spacing:.14em;margin-bottom:8px}
+.delivery-center-hero h2{margin:0 0 8px;font-size:24px}
+.delivery-center-hero p{max-width:760px;margin:0;color:var(--muted);line-height:1.55}
+.delivery-center-grid{display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.6fr);gap:16px;margin-bottom:18px}
+.delivery-center-grid>.card{min-width:0}
+.delivery-center-filters{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px}
+.delivery-center-filters button{border:1px solid var(--line);border-radius:999px;padding:6px 11px;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer}
+.delivery-center-filters button.is-active{background:var(--surface-2);border-color:var(--accent);color:var(--text)}
+#delivery-center-journal .delivery-card{cursor:pointer;transition:border-color .15s ease}
+#delivery-center-journal .delivery-card:hover{border-color:var(--accent)}
+#delivery-center-journal .delivery-card .delivery-platforms{cursor:default}
+@media(max-width:900px){.delivery-center-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.delivery-center-hero{align-items:stretch;flex-direction:column;padding:18px}.delivery-center-hero h2{font-size:20px}.delivery-center-hero .btn{width:100%}}

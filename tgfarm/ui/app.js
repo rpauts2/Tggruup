@@ -9,6 +9,7 @@
     view: "overview",
     postFilter: "",
     crosspostFilter: "all",
+    deliveryCenterFilter: "all",
     data: {},
     refreshTimer: null,
     inFlight: false,
@@ -4792,8 +4793,8 @@
     }).join("") || `<div class="empty">Источники не заданы</div>`;
   }
 
-  function renderCrosspostHealth(payload) {
-    const container = $("#crosspost-health");
+  function renderCrosspostHealth(payload, target = "#crosspost-health") {
+    const container = $(target);
     if (!container) return;
     const data = payload || {};
     const totals = data.totals || {};
@@ -4837,8 +4838,8 @@
       }).join("") || `<div class="delivery-health-empty">Пока нет записей о доставке</div>`}</div>`;
   }
 
-  function renderCrossposts(entries) {
-    const container = $("#crossposts-list");
+  function renderCrossposts(entries, target = "#crossposts-list", filter = state.crosspostFilter) {
+    const container = $(target);
     if (!container) return;
 
     // API rows are newest-first. Keep the newest attempt for each
@@ -4893,14 +4894,14 @@
     });
     const matchesFilter = (rows) => {
       const statuses = rows.map((row) => String(row.status || "unknown"));
-      if (state.crosspostFilter === "attention") {
+      if (filter === "attention") {
         return statuses.some((status) => ["unknown", "failed", "permanent", "permanent_failure"].includes(status));
       }
-      if (state.crosspostFilter === "published") return statuses.includes("posted");
-      if (state.crosspostFilter === "errors") {
+      if (filter === "published") return statuses.includes("posted");
+      if (filter === "errors") {
         return statuses.some((status) => ["failed", "permanent", "permanent_failure"].includes(status));
       }
-      if (state.crosspostFilter === "pending") {
+      if (filter === "pending") {
         return statuses.some((status) => ["scheduled", "publishing", "retry_authorized", "failed"].includes(status));
       }
       return true;
@@ -4975,7 +4976,7 @@
           </div>
           <div class="item-side"><span class="tag ${overallClass}">${esc(overall)}</span></div>
         </div>`;
-    }).join("") || `<div class="empty">${visibleCards.length ? "Нет материалов для выбранного фильтра" : (state.crosspostFilter === "all" ? "Кросспостов пока нет" : "Нет материалов для выбранного фильтра")}</div>`;
+    }).join("") || `<div class="empty">${visibleCards.length ? "Нет материалов для выбранного фильтра" : (filter === "all" ? "Кросспостов пока нет" : "Нет материалов для выбранного фильтра")}</div>`;
 
     $(".js-crosspost-reconcile", container) && $$(".js-crosspost-reconcile", container).forEach((button) => {
       button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
@@ -6115,6 +6116,9 @@
         "crossposts" in data ? null : reasons.crossposts || new Error("журнал доставок не получен"));
       renderWorkspaceFreshness("deliveryHealth", "crosspost-health-freshness",
         "deliveryHealth" in data ? null : reasons.deliveryHealth || new Error("сводка доставок не получена"));
+      renderWorkspaceFreshness("deliveryCenter", "delivery-center-freshness",
+        "crossposts" in data && "deliveryHealth" in data ? null
+          : reasons.crossposts || reasons.deliveryHealth || new Error("не все данные доставки получены"));
       renderWorkspaceFreshness("platforms", "platforms-freshness",
         "platforms" in data ? null : reasons.platforms || new Error("каталог площадок не получен"));
       state.platformCatalogFresh = "platforms" in data;
@@ -6168,8 +6172,12 @@
       if ("crossposts" in data) {
         state.data.crossposts = data.crossposts;
         renderCrossposts(data.crossposts.crossposts || []);
+        renderCrossposts(data.crossposts.crossposts || [], "#delivery-center-journal", state.deliveryCenterFilter);
       }
-      if ("deliveryHealth" in data) renderCrosspostHealth(data.deliveryHealth);
+      if ("deliveryHealth" in data) {
+        renderCrosspostHealth(data.deliveryHealth);
+        renderCrosspostHealth(data.deliveryHealth, "#delivery-center-health");
+      }
       if ("memory" in data) renderMemory(data.memory);
       renderTopicDossier(state.topicDossier);
       if ("platforms" in data) renderPlatforms(data.platforms);
@@ -7113,7 +7121,7 @@
     plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
     trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
     posts: ["Очередь публикаций", "Материалы, их статусы и расписание"],
-    review: ["Требует внимания", "Неопределённые результаты, финальные отказы и материалы без слота"],
+    review: ["Центр доставки", "Сверка неопределённых результатов, ошибки и история по площадкам"],
     memory: ["Память публикаций", "Что уже вышло и что нельзя повторять"],
     channels: ["Каналы", "Подключённые каналы и их персона"],
     sources: ["Источники", "Флот сборщиков и их здоровье"],
@@ -7168,7 +7176,10 @@
       if (sub) sub.textContent = meta[1];
     }
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
-    if (view === "review" && !state.reviewLoaded) loadReviewBoard();
+    if (view === "review") {
+      loadReviewBoard(true);
+      refresh();
+    }
     if (view === "sources") loadSourcesHealth();
     if ((view === "connect" || view === "platforms") && !state.connectLoaded) loadConnections();
     if (view === "sources") loadReprintBackfill();
@@ -7233,6 +7244,16 @@
   // The overview's unresolved worklist offers the drawer's action, not a new one:
   // `tgfarmReconcile` is the only path from here to `/api/posts/{id}/reconcile`, and
   // it asks the operator to confirm before anything is written (§80).
+  const deliveryJournal = $("#delivery-center-journal");
+  if (deliveryJournal) {
+    deliveryJournal.addEventListener("click", (event) => {
+      const button = event.target.closest(".js-crosspost-reconcile");
+      if (button) return;
+      const card = event.target.closest(".delivery-card");
+      const postId = card?.querySelector(".item-title")?.textContent?.trim();
+      if (postId) openDrawer(postId);
+    });
+  }
   const unresolvedList = $("#overview-unresolved");
   if (unresolvedList) {
     unresolvedList.addEventListener("click", (event) => {
@@ -7315,6 +7336,18 @@
 
   const reviewRefresh = $("#review-refresh");
   if (reviewRefresh) reviewRefresh.addEventListener("click", () => loadReviewBoard(true));
+  $("#delivery-center-refresh")?.addEventListener("click", () => {
+    loadReviewBoard(true);
+    refresh();
+  });
+  $(".delivery-center-filters [data-delivery-filter]").forEach((button) =>
+    button.addEventListener("click", () => {
+      state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
+      $(".delivery-center-filters [data-delivery-filter]").forEach((item) =>
+        item.classList.toggle("is-active", item === button));
+      const entries = state.data.crossposts?.crossposts || [];
+      renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
+    }));
   const reviewRequeue = $("#review-requeue");
   if (reviewRequeue) reviewRequeue.addEventListener("click", () => requeueFailedBatch());
   $$("#review-filters button").forEach((button) =>

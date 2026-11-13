@@ -148,3 +148,12 @@ The overview now has a dedicated operational status strip, separate from aggrega
 - Cards also show the catalogue's editorial focus separately from media transport. Media, scheduling and metrics are displayed only when an explicit `capabilities` field is supplied by the API; otherwise the UI says that the adapter has not described that capability. Editorial roles are never promoted into claims of image/video upload support.
 - Connection-matrix refresh failure retains the last successful snapshot and marks it stale; a first-read failure leaves access unknown. The existing platform-catalogue freshness gate still controls platform-changing actions independently.
 - Browser visual QA covers a fully authorized Telegram fixture, including token login, API readiness, destination, delivery, editorial focus, and the honest unknown state for undeclared media/scheduling/metrics.
+
+
+## Unified delivery center — operator workspace
+
+- Reframed the existing review workspace as the Delivery Center without adding a new backend contract. It brings the delivery-health snapshot, per-platform journal, unresolved review buckets and existing reconciliation actions into one operational surface.
+- The journal reuses the existing crosspost snapshot and renderer. Filters cover all, attention, errors, in-progress and published states; no new status inference or retry path is introduced.
+- The delivery-health summary is shown beside the journal. Crosspost and health reads share an explicit freshness notice: partial failure is visible and does not imply an empty queue.
+- Opening a journal card opens the existing material drawer and its lifecycle trace. Existing platform-level reconciliation buttons retain their confirmation prompts; unknown publish outcomes are not automatically retried.
+- Refresh and filter controls are local to this workspace. No backend, authentication, adapter, database or live publishing behavior changes.

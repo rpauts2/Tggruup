@@ -437,6 +437,32 @@
 
   <!-- ============================================================= REVIEW -->
   <section class="view" data-view="review">
+    <section class="delivery-center-hero">
+      <div>
+        <span class="delivery-center-kicker">DISTRIBUTION OPERATIONS</span>
+        <h2>Центр доставки</h2>
+        <p>Единая точка контроля: неопределённые результаты, ошибки, активные отправки и подтверждённые публикации. Здесь используются существующие журналы и безопасные действия сверки.</p>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" id="delivery-center-refresh">Обновить доставки</button>
+    </section>
+    <div id="delivery-center-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+    <div class="delivery-center-grid">
+      <article class="card">
+        <header class="card-head"><h2>Состояние доставки</h2><span class="card-sub">сводка адаптеров</span></header>
+        <div id="delivery-center-health" class="delivery-health"><div class="empty">Читаю состояние доставок…</div></div>
+      </article>
+      <article class="card">
+        <header class="card-head"><h2>Журнал по площадкам</h2><span class="card-sub">последнее состояние каждой пары материал × площадка</span></header>
+        <div class="delivery-center-filters" role="group" aria-label="Фильтр журнала доставок">
+          <button type="button" class="is-active" data-delivery-filter="all">Все</button>
+          <button type="button" data-delivery-filter="attention">Внимание</button>
+          <button type="button" data-delivery-filter="errors">Ошибки</button>
+          <button type="button" data-delivery-filter="pending">В процессе</button>
+          <button type="button" data-delivery-filter="published">Опубликовано</button>
+        </div>
+        <div id="delivery-center-journal" class="list"><div class="empty">Читаю журнал доставок…</div></div>
+      </article>
+    </div>
     <div class="toolbar">
       <div class="segmented" id="review-filters">
         <button class="is-active" data-bucket="">все</button>
