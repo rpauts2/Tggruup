@@ -31,6 +31,7 @@ WIDTH, HEIGHT, FPS = 1080, 1920, 30
 DEFAULT_SCENE_SECONDS = 3.5
 MAX_SCENES = 7
 MAX_WORDS_PER_SCENE = 22
+MAX_MANIFEST_BYTES = 256 * 1024
 PALETTE = {
     "background": (11, 16, 32),
     "panel": (20, 28, 51),
@@ -513,6 +514,21 @@ def qc_video(path: str | Path, *, max_duration_s: float, max_mb: float) -> dict:
     }
 
 
+def _check_adjacent_sidecars(target: Path) -> None:
+    """Do not read or publish a manifest/caption through a redirected path."""
+    for suffix in (".json", ".srt"):
+        sidecar = target.with_suffix(suffix)
+        try:
+            resolved = sidecar.resolve()
+            redirected = (
+                sidecar.is_symlink() or resolved != sidecar or resolved.parent != target.parent
+            )
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"Unsafe adjacent sidecar: {sidecar}") from exc
+        if redirected:
+            raise ValueError(f"Redirected adjacent sidecar: {sidecar}")
+
+
 def render_short_video(
     title: str,
     body: str,
@@ -550,39 +566,94 @@ def render_short_video(
     scene_seconds = frames_per_scene / FPS
     duration = round(len(scenes) * scene_seconds, 2)
 
+    render_spec = {
+        "version": 2,
+        "format": "tgfarm-original-short",
+        "scenes": [asdict(scene) for scene in scenes],
+        "frames_per_scene": frames_per_scene,
+        "width": WIDTH, "height": HEIGHT, "fps": FPS,
+        "font_path": getattr(settings, "font_path", ""),
+        "burn_subtitles": burn_subtitles,
+        "subtitle_style": SUBTITLE_STYLE,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(render_spec, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     if output_path is None:
-        script_hash = hashlib.sha256(
-            (_clean_text(title) + "\n" + _clean_text(body)).encode("utf-8")
-        ).hexdigest()[:12]
-        output_path = settings.video_root() / "rendered" / f"short_{script_hash}.mp4"
+        output_path = settings.video_root() / "rendered" / f"short_{fingerprint[:12]}.mp4"
     target = Path(output_path).expanduser().resolve()
     if target.suffix.lower() != ".mp4":
         raise ValueError("Видео нужно сохранять в формате MP4.")
+    _check_adjacent_sidecars(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file() and target.stat().st_size > 0 and not force:
-        with target.open("rb") as handle:
-            existing_header = handle.read(12)
-        if len(existing_header) >= 8 and existing_header[4:8] == b"ftyp":
-            return ShortVideoArtifact(
-                str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
-                len(scenes), target.stat().st_size, _sha256(target), True,
-                qc=qc_video(
-                    target,
-                    max_duration_s=settings.video_max_duration_s,
-                    max_mb=settings.video_max_mb,
-                ),
-                subtitles={"burned": False, "reason": "reused existing render", "path": None},
+    if not force:
+        try:
+            # Sidecars are boundary data, not authority to open a different file.
+            with target.open("rb") as handle:
+                existing_header = handle.read(12)
+            with target.with_suffix(".json").open("rb") as handle:
+                manifest_bytes = handle.read(MAX_MANIFEST_BYTES + 1)
+            if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+                raise ValueError("Render manifest exceeds the cache size limit.")
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+            saved = manifest["asset"]
+            saved_subtitles = saved["subtitles"]
+            expected = {
+                "path": str(target), "title": _clean_text(title)[:180],
+                "width": WIDTH, "height": HEIGHT, "fps": FPS,
+                "duration_s": duration, "scene_count": len(scenes),
+                "bytes": target.stat().st_size, "sha256": _sha256(target),
+            }
+            valid = (
+                len(existing_header) == 12 and existing_header[4:8] == b"ftyp"
+                and type(manifest["version"]) is int and manifest["version"] == render_spec["version"]
+                and manifest["format"] == render_spec["format"]
+                and manifest["fingerprint"] == fingerprint
+                and manifest["scenes"] == render_spec["scenes"]
+                and type(manifest["scene_seconds"]) in (int, float)
+                and manifest["scene_seconds"] == scene_seconds
+                and math.isfinite(manifest["scene_seconds"])
+                and all(type(saved[key]) is type(value) and saved[key] == value
+                        for key, value in expected.items())
+                and type(saved["reused_existing"]) is bool and not saved["reused_existing"]
+                and isinstance(saved_subtitles, dict)
+                and type(saved_subtitles["burned"]) is bool
+                and isinstance(saved_subtitles["reason"], str)
             )
-        # Don't treat a leftover partial/corrupt file as a completed render.
-        target.unlink(missing_ok=True)
+            if valid and burn_subtitles:
+                sidecar = target.with_suffix(".srt")
+                valid = (
+                    saved_subtitles["path"] == str(sidecar)
+                    and (not saved_subtitles["reason"] if saved_subtitles["burned"]
+                         else bool(saved_subtitles["reason"]))
+                    and sidecar.read_bytes() == build_srt(scenes, scene_seconds=scene_seconds).encode("utf-8")
+                )
+            elif valid:
+                valid = saved_subtitles == {"burned": False, "reason": "not requested", "path": None}
+            if valid:
+                return ShortVideoArtifact(
+                    **{key: saved[key] for key in expected}, reused_existing=True,
+                    qc=qc_video(
+                        target,
+                        max_duration_s=settings.video_max_duration_s,
+                        max_mb=settings.video_max_mb,
+                    ),
+                    subtitles=saved_subtitles,
+                )
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError, RecursionError):
+            # Missing, old, malformed or mismatched evidence means a new render.
+            pass
 
     binary = ffmpeg_bin or shutil.which("ffmpeg")
     if not binary:
         raise RuntimeError("FFmpeg не найден. Установи FFmpeg и добавь ffmpeg в PATH.")
 
     subtitles: dict = {"burned": False, "reason": "not requested", "path": None}
-    with tempfile.TemporaryDirectory(prefix="tgfarm-short-") as temp:
+    # All scratch, including the encoded MP4, stays on the destination filesystem.
+    # A failed rerender must never overwrite or unlink the previous user's render.
+    with tempfile.TemporaryDirectory(prefix="tgfarm-short-", dir=target.parent) as temp:
         frame_dir = Path(temp)
+        staged_target = frame_dir / target.name
         for index, scene in enumerate(scenes):
             _draw_scene(scene, index + 1, len(scenes), frame_dir / f"scene_{index:03d}.png")
         input_pattern = frame_dir / "scene_%03d.png"
@@ -611,7 +682,7 @@ def render_short_video(
         encode_deadline = time.monotonic() + timeout_s
         completed = _encode(
             binary, input_pattern=input_pattern, vf=vf,
-            frames_per_scene=frames_per_scene, target=target, timeout_s=timeout_s,
+            frames_per_scene=frames_per_scene, target=staged_target, timeout_s=timeout_s,
         )
         if completed.returncode != 0 and burn_subtitles:
             # A missing libass or an unescapable path is a caption problem, not a
@@ -624,59 +695,103 @@ def render_short_video(
             }
             remaining_s = encode_deadline - time.monotonic()
             if remaining_s <= 0:
-                target.unlink(missing_ok=True)
                 raise RuntimeError("FFmpeg превысил лимит времени рендеринга видео.")
             completed = _encode(
                 binary, input_pattern=input_pattern, vf=vf.split(",subtitles=")[0],
-                frames_per_scene=frames_per_scene, target=target, timeout_s=remaining_s,
+                frames_per_scene=frames_per_scene, target=staged_target, timeout_s=remaining_s,
             )
         if completed.returncode != 0:
-            target.unlink(missing_ok=True)
             raise RuntimeError(f"FFmpeg не смог собрать видео: {_ffmpeg_hint(completed.stderr)}")
-        if not target.is_file() or target.stat().st_size == 0:
-            target.unlink(missing_ok=True)
+        if not staged_target.is_file() or staged_target.stat().st_size == 0:
             raise RuntimeError("FFmpeg завершился без ошибки, но MP4 не появился.")
-        with target.open("rb") as handle:
+        with staged_target.open("rb") as handle:
             header = handle.read(12)
-        if len(header) < 8 or header[4:8] != b"ftyp":
-            target.unlink(missing_ok=True)
+        if len(header) != 12 or header[4:8] != b"ftyp":
             raise RuntimeError("FFmpeg создал файл, который не похож на MP4.")
         if burn_subtitles:
-            # Written even when the burn failed: the track is still uploadable as
-            # a sidecar, and `burned: False` tells the caller it is not in the
-            # picture. A missing sidecar would leave the captions nowhere at all.
-            sidecar = target.with_suffix(".srt")
-            write_srt(scenes, sidecar, scene_seconds=scene_seconds)
-            subtitles["path"] = str(sidecar)
+            # Stage the uploadable track even when the burn fell back. Neither
+            # sidecar is published until the encoded MP4 has been validated.
+            write_srt(scenes, staged_target.with_suffix(".srt"), scene_seconds=scene_seconds)
+            subtitles["path"] = str(target.with_suffix(".srt"))
 
-    artifact = ShortVideoArtifact(
-        str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
-        len(scenes), target.stat().st_size, _sha256(target),
-        qc=qc_video(
-            target,
-            max_duration_s=settings.video_max_duration_s,
-            max_mb=settings.video_max_mb,
-        ),
-        subtitles=subtitles,
-    )
-    target.with_suffix(".json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "format": "tgfarm-original-short",
-                # `asset` already carries `qc` and `subtitles`; repeating them at
-                # the top level would give the manifest two places to disagree.
-                "asset": artifact.as_dict(),
-                "scene_seconds": scene_seconds,
-                "scenes": [asdict(scene) for scene in scenes],
-                "audio": "none",
-                "source_video_reused": False,
-            },
-            ensure_ascii=False, indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return artifact
+        artifact = ShortVideoArtifact(
+            str(target), _clean_text(title)[:180], WIDTH, HEIGHT, FPS, duration,
+            len(scenes), staged_target.stat().st_size, _sha256(staged_target),
+            qc=qc_video(
+                staged_target,
+                max_duration_s=settings.video_max_duration_s,
+                max_mb=settings.video_max_mb,
+            ),
+            subtitles=subtitles,
+        )
+        staged_target.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "version": render_spec["version"],
+                    "format": render_spec["format"],
+                    "fingerprint": fingerprint,
+                    # `asset` already carries `qc` and `subtitles`; repeating them at
+                    # the top level would give the manifest two places to disagree.
+                    "asset": artifact.as_dict(),
+                    "scene_seconds": scene_seconds,
+                    "scenes": [asdict(scene) for scene in scenes],
+                    "audio": "none",
+                    "source_video_reused": False,
+                },
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
+        _check_adjacent_sidecars(target)
+        replacements = [(staged_target, target)]
+        if burn_subtitles:
+            replacements.append((staged_target.with_suffix(".srt"), target.with_suffix(".srt")))
+        replacements.append((staged_target.with_suffix(".json"), target.with_suffix(".json")))
+        # Backups live in a dedicated subdirectory: an output basename must end
+        # in `.mp4`, so no legal destination name can collide with this namespace
+        # (a flat `previous{suffix}` name overwrites the staged `previous.mp4`).
+        backup_dir = frame_dir / "backups"
+        backup_dir.mkdir()
+        backups = {}
+        for _, destination in replacements:
+            backup = backup_dir / destination.name if destination.exists() else None
+            if backup is not None:
+                shutil.copy2(destination, backup)
+            backups[destination] = backup
+        published = []
+        try:
+            for staged, destination in replacements:
+                staged.replace(destination)
+                published.append(destination)
+        except OSError as publication_error:
+            # A failed restore must not prevent attempts to recover the other
+            # destinations. Only new destinations may be removed during rollback.
+            restore_errors = []
+            for destination in reversed(published):
+                backup = backups[destination]
+                try:
+                    if backup is not None:
+                        backup.replace(destination)
+                    else:
+                        destination.unlink(missing_ok=True)
+                except OSError as restore_error:
+                    restore_errors.append((destination, restore_error))
+            if restore_errors:
+                # Move remaining backups outside TemporaryDirectory so its cleanup
+                # cannot delete the only remaining old bytes. Backups consumed by
+                # successful restores are no longer in this directory.
+                recovery = Path(tempfile.mkdtemp(prefix="tgfarm-short-recovery-", dir=target.parent))
+                for backup in backup_dir.iterdir():
+                    backup.replace(recovery / backup.name)
+                details = "; ".join(
+                    f"{destination}: {error}" for destination, error in restore_errors
+                )
+                raise OSError(
+                    f"{publication_error}; restoration failed for {details}. "
+                    f"Exact previous bytes retained in {recovery}."
+                ) from publication_error
+            raise
+        return artifact
 
 
 def render_post_short(
