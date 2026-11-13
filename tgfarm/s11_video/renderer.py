@@ -763,13 +763,33 @@ def render_short_video(
             for staged, destination in replacements:
                 staged.replace(destination)
                 published.append(destination)
-        except OSError:
+        except OSError as publication_error:
+            # A failed restore must not prevent attempts to recover the other
+            # destinations. Only new destinations may be removed during rollback.
+            restore_errors = []
             for destination in reversed(published):
                 backup = backups[destination]
-                if backup is not None:
-                    backup.replace(destination)
-                else:
-                    destination.unlink(missing_ok=True)
+                try:
+                    if backup is not None:
+                        backup.replace(destination)
+                    else:
+                        destination.unlink(missing_ok=True)
+                except OSError as restore_error:
+                    restore_errors.append((destination, restore_error))
+            if restore_errors:
+                # Move remaining backups outside TemporaryDirectory so its cleanup
+                # cannot delete the only remaining old bytes. Backups consumed by
+                # successful restores are no longer in this directory.
+                recovery = Path(tempfile.mkdtemp(prefix="tgfarm-short-recovery-", dir=target.parent))
+                for backup in backup_dir.iterdir():
+                    backup.replace(recovery / backup.name)
+                details = "; ".join(
+                    f"{destination}: {error}" for destination, error in restore_errors
+                )
+                raise OSError(
+                    f"{publication_error}; restoration failed for {details}. "
+                    f"Exact previous bytes retained in {recovery}."
+                ) from publication_error
             raise
         return artifact
 

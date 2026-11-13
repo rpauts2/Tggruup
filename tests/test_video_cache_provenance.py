@@ -828,3 +828,78 @@ def test_previous_basename_publishes_new_bytes_and_matching_manifest(
     assert reused.sha256 == artifact.sha256
     assert reused.duration_s == duration
     assert reused.qc["ok"] is True
+
+
+@pytest.mark.parametrize("force", [False, True], ids=["cache-miss", "force"])
+@pytest.mark.parametrize(
+    ("burn_subtitles", "locked_suffixes"),
+    [(True, (".srt",)), (False, (".mp4",)), (True, (".srt", ".mp4"))],
+    ids=["locked-caption", "locked-video-no-captions", "both-restores-locked"],
+)
+def test_restore_failure_attempts_other_destinations_and_retains_exact_old_bytes(
+    render_env, tmp_path, monkeypatch, force, burn_subtitles, locked_suffixes,
+):
+    target = tmp_path / "restore-failure.mp4"
+    first = _render(target, burn_subtitles=burn_subtitles)
+    paths = [target, target.with_suffix(".json")]
+    if burn_subtitles:
+        paths.append(target.with_suffix(".srt"))
+    before = {path: path.read_bytes() for path in paths}
+    entries = set(tmp_path.iterdir())
+    step = 3.5 if force else 2.0
+    encoded, scratch = _install_distinct_encoder(
+        render_env, monkeypatch, first.scene_count * step,
+    )
+    replace = Path.replace
+    published_bytes = {}
+
+    def replace_with_locked_restore(path, destination):
+        destination = Path(destination)
+        if destination == target.with_suffix(".json"):
+            raise OSError("offline JSON publication failure")
+        if destination in published_bytes and destination.suffix in locked_suffixes:
+            raise PermissionError("offline no-delete-sharing restore lock")
+        result = replace(path, destination)
+        published_bytes.setdefault(destination, destination.read_bytes())
+        return result
+
+    monkeypatch.setattr(Path, "replace", replace_with_locked_restore)
+    with pytest.raises(OSError) as caught:
+        _render(target, burn_subtitles=burn_subtitles, scene_seconds=step, force=force)
+
+    # These are byte assertions, not just assertions that restore calls happened.
+    for path in paths:
+        if path.suffix not in locked_suffixes:
+            assert path.read_bytes() == before[path]
+        else:
+            assert path.read_bytes() == published_bytes[path]
+    assert published_bytes[target] == encoded
+    assert len(scratch) == 1 and not scratch[0].parent.exists()
+    residual = set(tmp_path.iterdir()) - entries
+    assert len(residual) == 1
+    recovery = residual.pop()
+    assert recovery.is_dir() and recovery.name.startswith("tgfarm-short-recovery-")
+    message = str(caught.value)
+    assert "offline JSON publication failure" in message
+    assert "restoration failed" in message
+    assert str(recovery) in message
+    assert "offline no-delete-sharing restore lock" in message
+    assert isinstance(caught.value.__cause__, OSError)
+    for suffix in locked_suffixes:
+        destination = target.with_suffix(suffix)
+        assert str(destination) in message
+        backup = recovery / destination.name
+        assert backup.read_bytes() == before[destination]
+        assert hashlib.sha256(backup.read_bytes()).digest() == hashlib.sha256(before[destination]).digest()
+    assert (recovery / target.with_suffix(".json").name).read_bytes() == before[target.with_suffix(".json")]
+    for path in recovery.iterdir():
+        assert path.is_file() and path.read_bytes() == before[target.parent / path.name]
+    if ".mp4" not in locked_suffixes:
+        assert not (recovery / target.name).exists()
+
+    # Once the OS permits it, retained old bytes can actually recover the failed destinations.
+    monkeypatch.setattr(Path, "replace", replace)
+    for suffix in locked_suffixes:
+        destination = target.with_suffix(suffix)
+        (recovery / destination.name).replace(destination)
+    assert {path: path.read_bytes() for path in paths} == before
