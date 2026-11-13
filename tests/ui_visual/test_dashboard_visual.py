@@ -241,6 +241,14 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
                     ].map((id) => [...root.querySelectorAll("[id]")].indexOf(root.querySelector(`#${id}`)))
                     """)
                     assert positions == sorted(positions)
+                    advanced = overview.locator("#overview-advanced")
+                    assert advanced.count() == 1
+                    assert not advanced.evaluate("(el) => el.open")
+                    assert advanced.get_by_role("heading", name="Разведка портфеля").count() == 1
+                    assert not overview.locator("#portfolio-insights").is_visible()
+                    advanced.locator("summary").click()
+                    assert overview.locator("#portfolio-insights").is_visible()
+                    advanced.locator("summary").click()
                     assert overview.get_by_role("heading", name="Состояние конвейера").is_visible()
                     operations = overview.locator("#command-status")
                     assert operations.is_visible()
