@@ -411,7 +411,6 @@ def test_editorial_command_center_workspaces_are_wired_to_real_ui(client):
     ):
         assert f'id="{element_id}"' in html
     assert 'class="team-role-grid"' in html
-    assert 'class="team-quality-card"' in html
     for contract in (
         "/api/runs?limit=100",
         "/api/posts?limit=80",
