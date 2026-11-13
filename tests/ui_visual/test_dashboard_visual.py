@@ -1598,6 +1598,8 @@ def test_posts_workspace_search_and_view_modes(dashboard_url):
         assert cards_button.get_attribute("aria-pressed") == "true"
         assert root.locator(".pcard").count() == 3
         assert root.locator(".post-row").count() == 0
+        assert root.locator('.pcard[data-post="queue-post-001"] .pcard-score').inner_text() == "показы 0 · открытия 0"
+        assert root.locator('.pcard[data-post="queue-post-002"] .pcard-score').inner_text() == "метрики не измерены"
         assert len(post_requests) == request_count
 
         list_button = page.locator('#post-layout [data-post-layout="list"]')
