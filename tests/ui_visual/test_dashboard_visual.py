@@ -1488,7 +1488,9 @@ def test_delivery_center_unifies_health_journal_filters_and_material_drawer(dash
 
         assert page.locator('.view[data-view="review"].is-active').is_visible()
         assert page.locator('.view[data-view="review"]').get_by_role("heading", name="Центр доставки").is_visible()
-        page.locator("#delivery-center-health").get_by_text("требует внимания").wait_for()
+        health_status = page.locator("#delivery-center-health .delivery-health-head .tag")
+        health_status.wait_for()
+        assert health_status.inner_text().strip().casefold() == "требует внимания"
         journal = page.locator("#delivery-center-journal")
         journal.get_by_text("delivery-post-001").wait_for()
         journal.get_by_text("delivery-post-002").wait_for()
