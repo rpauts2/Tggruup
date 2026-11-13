@@ -4,7 +4,7 @@
 
 **Дата:** 2026-11-13  
 **Основная ветка:** `main`  
-**Последний функциональный checkpoint:** `4ca2570e557063d8aad4949ae671e597180747bf`
+**Последний функциональный checkpoint:** `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`
 
 ## Что перенесено в main в этом заходе
 
@@ -49,3 +49,18 @@ CI run [#43441301090](https://github.com/rpauts2/Tggruup/actions/runs/4344130109
 - Не считать offline smoke, мок, fixture или CI proof live-доступа.
 - Не называть AI Team живым multi-agent execution без соответствующих run/traces.
 - Не создавать новые ветки для каждой мелочи; пользователь предпочитает прямую работу в `main`.
+
+
+## Последнее продолжение — 2026-11-13
+
+Функциональный checkpoint: `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`.
+
+Дополнительные коммиты после OAuth/S12 переноса:
+- `389276e` — первые исправления CI: актуальные UI selectors, channel-owned Post fixtures, восстановление поведения worst_angle.
+- `6aaa865` — helper `_drop_lesson` для удаления устаревшего worst_angle.
+- `971bdae` — atomic Desktop lock, уникальная запись desktop.port, неизменяемый сохранённый OAuth callback port, Reddit API approval gate в UI и matrix, VK token detection; регрессионные тесты.
+- `64cd0e5` — очистка S12 lessons, выпавших из 20-row window. Источник может удалять старые записи только при успешном чтении, при сбое сохранённая память остаётся.
+
+CodeAnt замечания по PR #60 (4 пункта) и #56 (3 пункта) перенесены в исправления; новые regression tests покрывают эти контракты.
+
+Текущий CI: [run #43445803450](https://github.com/rpauts2/Tggruup/actions/runs/43445803450). Полная suite и Windows build ещё должны завершиться. Не закрывать PR #60/#56 до зелёного CI.

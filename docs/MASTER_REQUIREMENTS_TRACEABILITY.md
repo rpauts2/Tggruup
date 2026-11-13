@@ -94,6 +94,21 @@
 
 - `e61cd3c3e4f4a66d38115a4babc83886df2f273e` — backend Desktop OAuth and platform auth.
 - `c81ac6abe4565a0588f0cb03ec90e6182f00b6ec` — connection UI and desktop auth tests.
-- `4ca2570e557063d8aad4949ae671e597180747bf` — S12 failure evidence aggregation and tests.
+- `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0` — S12 failure evidence aggregation and tests.
 
 CI run #43441301090 относится к последнему SHA выше; на момент написания результат ещё выполнялся. Проверить его итог до закрытия source PRs.
+
+
+## E. Новые review findings и исправления (2026-11-13)
+
+| Finding | Изменение в main | Защита от регрессии |
+|---|---|---|
+| Сохранённый Desktop OAuth port мог заменяться после bind-конфликта | Порт остаётся неизменным; bind конфликт вызывает понятную ошибку; уникальный tempfile предотвращает гонку rename | tests: registered redirect port preservation, concurrent atomic port writes |
+| SingleInstance имел check-then-write race | OS-level advisory lock удерживается на открытом handle; kernel освобождает при crash | tests: конкурентные старты оставляют ровно одного владельца |
+| Reddit UI показывал OAuth при запрещённом Data API | auth matrix содержит `oauth_allowed` и blocker; UI не показывает OAuth action; server-side 403 остаётся | tests: approval false блокирует, true разрешает |
+| VK saved token считался отсутствующим | VKHost проверяет `VK_ACCESS_TOKEN`; без auth check статус остаётся pending | tests: saved token pending, publish blocked |
+| Старые S12 failure lessons оставались после выхода группы за newest-20 window | Старая группа удаляется только после успешного read того же источника | tests: pipeline/crosspost stale lesson pruning |
+
+**Commits:** `971bdaeb340fd5f2aa1d23245e0aeae7c3854af4`, `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`.
+
+CI run [#43445803450](https://github.com/rpauts2/Tggruup/actions/runs/43445803450) проверяет последний checkpoint; до его завершения статус остаётся pending.
