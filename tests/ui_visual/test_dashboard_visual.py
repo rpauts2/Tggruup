@@ -1442,3 +1442,69 @@ def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashbo
         assert fresh_page.locator("#plan-entries").get_by_text("Тестовый плановый материал").count() == 0
 
         browser.close()
+
+
+
+def test_delivery_center_unifies_health_journal_filters_and_material_drawer(dashboard_url):
+    """The operator can inspect platform delivery and filter the shared journal in one workspace."""
+    from playwright.sync_api import sync_playwright
+
+    entries = [
+        {"post": "delivery-post-001", "platform": "vk", "status": "unknown",
+         "at": "2026-11-12T08:00:00Z", "attempt": 1, "error": "publish outcome unknown"},
+        {"post": "delivery-post-002", "platform": "telegram", "status": "posted",
+         "at": "2026-11-12T09:00:00Z", "remote_id": "tg-456",
+         "url": "https://t.me/example/456"},
+        {"post": "delivery-post-003", "platform": "dzen", "status": "failed",
+         "at": "2026-11-12T10:00:00Z", "attempt": 3, "error": "temporary transport error"},
+    ]
+    health = {
+        "state": "attention", "generated_at": "2026-11-12T10:05:00Z",
+        "totals": {"targets": 3, "posted": 1, "needs_attention": 2, "claims": 0, "stale_claims": 0},
+        "platforms": [
+            {"platform": "vk", "state": "attention", "posted": 0, "scheduled": 0, "unknown": 1, "permanent": 0},
+            {"platform": "telegram", "state": "healthy", "posted": 1, "scheduled": 0, "unknown": 0, "permanent": 0},
+            {"platform": "dzen", "state": "attention", "posted": 0, "scheduled": 0, "unknown": 0, "permanent": 1},
+        ],
+    }
+
+    def mock_api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/api/crossposts":
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"crossposts": entries}))
+            return
+        if path == "/api/crossposts/health":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(health))
+            return
+        _mock_api(route)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 960})
+        page.route("**/api/**", mock_api)
+        page.goto(dashboard_url, wait_until="networkidle")
+        page.locator('.tab[data-view="review"]').click()
+
+        assert page.locator('.view[data-view="review"].is-active').is_visible()
+        assert page.get_by_role("heading", name="Центр доставки").is_visible()
+        page.locator("#delivery-center-health").get_by_text("требует внимания").wait_for()
+        journal = page.locator("#delivery-center-journal")
+        journal.get_by_text("delivery-post-001").wait_for()
+        journal.get_by_text("delivery-post-002").wait_for()
+        journal.get_by_text("delivery-post-003").wait_for()
+
+        page.locator('[data-delivery-filter="attention"]').click()
+        assert journal.get_by_text("delivery-post-001").is_visible()
+        assert journal.get_by_text("delivery-post-003").is_visible()
+        assert journal.get_by_text("delivery-post-002").count() == 0
+
+        page.locator('[data-delivery-filter="published"]').click()
+        assert journal.get_by_text("delivery-post-002").is_visible()
+        assert journal.get_by_text("delivery-post-001").count() == 0
+
+        page.locator('[data-delivery-filter="all"]').click()
+        assert journal.get_by_text("delivery-post-001").is_visible()
+        page.locator("#delivery-center-refresh").click()
+        page.locator("#delivery-center-journal").get_by_text("delivery-post-001").wait_for()
+        browser.close()
