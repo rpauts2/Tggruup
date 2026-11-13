@@ -8,6 +8,9 @@
   const state = {
     view: "overview",
     postFilter: "",
+    postQuery: "",
+    postLayout: "list",
+    postsSnapshot: [],
     crosspostFilter: "all",
     deliveryCenterFilter: "all",
     data: {},
@@ -1930,20 +1933,102 @@
       </article>`;
   }
 
-  function renderPosts(posts) {
-    $("#posts-grid").innerHTML = posts.length
-      ? posts.map(postCard).join("")
-      : `<section class="posts-empty" aria-labelledby="posts-empty-title">
-          <span class="posts-empty-icon" aria-hidden="true">▤</span>
-          <h3 id="posts-empty-title">Очередь пока пуста</h3>
-          <p>Здесь появятся материалы после подготовки и проверки. Начни с редакционного плана, чтобы собрать темы и распределить публикации.</p>
-          <button class="btn btn-primary btn-sm" type="button" data-goto="plan">Открыть планирование</button>
-        </section>`;
-    $("#posts-grid [data-goto]")?.addEventListener("click", (event) => {
-      switchView(event.currentTarget.dataset.goto);
-    });
+  function postListRow(p) {
+    const cover = p.cover && p.cover.id
+      ? `<img src="/api/media/${encodeURIComponent(p.cover.id)}" alt="" loading="lazy">`
+      : `<span aria-hidden="true">${p.post_format === "video" ? "▶" : "▤"}</span>`;
+    const when = p.published_at ? `Опубликован ${dt(p.published_at)}`
+      : p.scheduled_at ? `Слот ${clock(p.scheduled_at)}`
+        : `Создан ${dt(p.created_at)}`;
+    const destination = [p.platform, p.channel_title || p.channel_id]
+      .filter(Boolean).join(" · ");
+    const format = FORMAT_RU[p.post_format] || p.post_format || "формат не указан";
+    const status = STATUS_RU[p.status] || p.status || "статус неизвестен";
+    const performance = typeof p.impressions === "number"
+      ? `Показы ${n(p.impressions)} · открытия ${n(p.opens)}`
+      : typeof p.er === "number" ? `ER ${pct(p.er)}` : "Метрики не измерены";
+    const reason = p.reject_reason
+      ? `<span class="tag tag-err">${esc(p.reject_reason.split(":")[0])}</span>` : "";
+    return `
+      <article class="post-row" data-post="${esc(p.id)}" role="button" tabindex="0"
+               aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
+        <div class="post-row-thumb">${cover}</div>
+        <div class="post-row-main">
+          <div class="post-row-overline">
+            <span>${esc(destination || "Площадка не указана")}</span>
+            <span class="post-row-date">${esc(when)}</span>
+          </div>
+          <h3 class="post-row-title">${esc(p.hook || "Без заголовка")}</h3>
+          <p class="post-row-excerpt">${esc(p.excerpt || "")}</p>
+          <div class="post-row-tags">
+            <span class="tag ${STATUS_TAG[p.status] || ""}">${esc(status)}</span>
+            <span class="tag">${esc(format)}</span>
+            ${reason}
+            ${postProvenanceChip(p)}
+          </div>
+        </div>
+        <div class="post-row-side">
+          <span class="post-row-performance">${esc(performance)}</span>
+          ${typeof p.chars === "number" ? `<span>${n(p.chars)} симв.</span>` : ""}
+          <span class="post-row-open" aria-hidden="true">↗</span>
+        </div>
+      </article>`;
+  }
 
-    const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
+  function renderPosts(posts) {
+    const snapshot = Array.isArray(posts) ? posts : [];
+    state.postsSnapshot = snapshot;
+    const root = $("#posts-grid");
+    const meta = $("#posts-result-meta");
+    const query = String(state.postQuery || "").trim().normalize("NFKC").toLocaleLowerCase("ru-RU");
+    const searchable = (post) => [
+      post.hook, post.excerpt, post.channel_title, post.channel_id,
+      post.platform, post.post_format, FORMAT_RU[post.post_format],
+      post.status, STATUS_RU[post.status], post.reject_reason,
+    ].filter(Boolean).join(" ").normalize("NFKC").toLocaleLowerCase("ru-RU");
+    const visible = query ? snapshot.filter((post) => searchable(post).includes(query)) : snapshot;
+    const listMode = state.postLayout === "list";
+
+    if (root) {
+      root.classList.toggle("posts-list-mode", listMode);
+      if (!snapshot.length) {
+        root.innerHTML = `<section class="posts-empty" aria-labelledby="posts-empty-title">
+            <span class="posts-empty-icon" aria-hidden="true">▤</span>
+            <h3 id="posts-empty-title">Очередь пока пуста</h3>
+            <p>Здесь появятся материалы после подготовки и проверки. Начни с редакционного плана, чтобы собрать темы и распределить публикации.</p>
+            <button class="btn btn-primary btn-sm" type="button" data-goto="plan">Открыть планирование</button>
+          </section>`;
+      } else if (!visible.length) {
+        root.innerHTML = `<section class="posts-no-results" role="status">
+            <span class="posts-empty-icon" aria-hidden="true">⌕</span>
+            <h3>Ничего не найдено</h3>
+            <p>В текущей выборке нет материалов по запросу «${esc(state.postQuery)}».</p>
+            <button class="btn btn-ghost btn-sm" type="button" data-posts-clear-search>Сбросить поиск</button>
+          </section>`;
+      } else {
+        root.innerHTML = listMode
+          ? visible.map(postListRow).join("")
+          : visible.map(postCard).join("");
+      }
+
+      root.querySelector("[data-goto]")?.addEventListener("click", (event) => {
+        switchView(event.currentTarget.dataset.goto);
+      });
+      root.querySelector("[data-posts-clear-search]")?.addEventListener("click", () => {
+        state.postQuery = "";
+        const input = $("#posts-search");
+        if (input) { input.value = ""; input.focus(); }
+        renderPosts(state.postsSnapshot);
+      });
+    }
+
+    if (meta) {
+      meta.textContent = query
+        ? `Найдено ${n(visible.length)} из ${n(snapshot.length)} загруженных материалов`
+        : `Загружено ${n(snapshot.length)} материалов · выборка до 40 записей`;
+    }
+
+    const queue = snapshot.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
     // to the most recent posts so the card always reflects the last real output.
     const title = $("#overview-queue-title");
@@ -1958,9 +2043,9 @@
         </div>
         <div class="item-side"><span class="tag ${STATUS_TAG[p.status] || ""}">${esc(STATUS_RU[p.status] || FORMAT_RU[p.post_format] || p.post_format)}</span></div>
       </div>`).join("");
-    } else if (posts.length) {
+    } else if (snapshot.length) {
       title.textContent = "Последние публикации";
-      $("#overview-queue").innerHTML = posts.slice(0, 6).map((p) => `
+      $("#overview-queue").innerHTML = snapshot.slice(0, 6).map((p) => `
       <div class="item" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
@@ -1974,7 +2059,7 @@
       $("#overview-queue").innerHTML = `<div class="empty">Постов пока нет</div>`;
     }
 
-    $$(".pcard, #overview-queue .item").forEach((el) => {
+    $$(".pcard, .post-row, #overview-queue .item").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.post));
       el.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -7414,6 +7499,20 @@
     }
   });
 
+  $("#posts-search")?.addEventListener("input", (event) => {
+    state.postQuery = event.target.value || "";
+    renderPosts(state.postsSnapshot);
+  });
+  $$("#post-layout [data-post-layout]").forEach((button) =>
+    button.addEventListener("click", () => {
+      state.postLayout = button.dataset.postLayout === "cards" ? "cards" : "list";
+      $$("#post-layout [data-post-layout]").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("is-active", active);
+        item.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      renderPosts(state.postsSnapshot);
+    }));
   $$("#post-filters button").forEach((b) =>
     b.addEventListener("click", () => {
       state.postFilter = b.dataset.status;
