@@ -523,7 +523,10 @@ def test_redirected_adjacent_sidecar_is_rejected_before_encode_or_write(
 
     assert {path: path.read_bytes() for path in paths if path.exists()} == before
     if link_kind == "symlink":
-        assert sidecar.is_symlink() and sidecar.readlink() == foreign
+        # Windows readlink() may carry the extended-length NT prefix (//?/); compare
+        # the target file, not the namespace spelling. No-op on POSIX.
+        link_target = sidecar.readlink().as_posix().removeprefix("//?/")
+        assert sidecar.is_symlink() and link_target == foreign.as_posix()
     assert set(tmp_path.iterdir()) == entries
     assert len(render_env.calls) == 1
 
