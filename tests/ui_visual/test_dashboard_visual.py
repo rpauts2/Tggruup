@@ -1570,7 +1570,7 @@ def test_posts_workspace_search_and_view_modes(dashboard_url):
         assert root.evaluate("(el) => el.classList.contains('posts-list-mode')")
         assert root.locator(".post-row").count() == 3
         assert page.locator("#posts-result-meta").inner_text() == (
-            "Загружено 3 материалов · выборка до 40 записей"
+            "В загруженной выборке: 3 материалов · до 40 записей"
         )
         assert page.locator("#posts-search-hint").is_visible()
 
