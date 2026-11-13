@@ -1945,7 +1945,7 @@
     const format = FORMAT_RU[p.post_format] || p.post_format || "формат не указан";
     const status = STATUS_RU[p.status] || p.status || "статус неизвестен";
     const performance = typeof p.impressions === "number"
-      ? `Показы ${n(p.impressions)} · открытия ${n(p.opens)}`
+      ? `Показы ${n(p.impressions)} · открытия ${typeof p.opens === "number" ? n(p.opens) : "нет отчёта"}`
       : typeof p.er === "number" ? `ER ${pct(p.er)}` : "Метрики не измерены";
     const reason = p.reject_reason
       ? `<span class="tag tag-err">${esc(p.reject_reason.split(":")[0])}</span>` : "";
