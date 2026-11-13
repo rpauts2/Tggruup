@@ -28,7 +28,16 @@ def _utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _quality(value) -> float:
+def _quality(value) -> float | None:
+    """Clamp a *measured* quality into [0, 1]; absence (None) stays absent.
+
+    None means unmeasured, not a measured zero: coercing it to 0.0 here would
+    let an absent quality drag a baseline down and inflate the sample count,
+    the exact fabrication the P34 rule («absence is not zero») forbids. Callers
+    exclude None before averaging; this helper never re-introduces it as 0.0.
+    """
+    if value is None:
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -40,7 +49,7 @@ def _quality(value) -> float:
 
 def estimate_group(scores: Iterable[float], baseline: float) -> dict:
     """Estimate a group's quality with an eight-post prior from its channel."""
-    values = [_quality(value) for value in scores]
+    values = [quality for value in scores if (quality := _quality(value)) is not None]
     n = len(values)
     base = _quality(baseline)
     observed = sum(values) / n if n else base

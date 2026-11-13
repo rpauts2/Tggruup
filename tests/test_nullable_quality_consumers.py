@@ -14,7 +14,7 @@ from tgfarm.db import session as session_mod
 from tgfarm.db.models import Base, Channel, Post, PostStat
 from tgfarm.db.session import session_scope
 from tgfarm.s8_analytics import PostMetrics
-from tgfarm.s8_analytics.portfolio import build_portfolio_report
+from tgfarm.s8_analytics.portfolio import _quality, build_portfolio_report, estimate_group
 
 CHANNEL = "nullable-quality"
 NOW = datetime(2026, 11, 6, 12, tzinfo=UTC)
@@ -207,3 +207,26 @@ def test_portfolio_all_missing_scores_keep_coverage_without_inventing_quality():
     assert channel["observation_span_days"] == 0.0
     assert channel["recommendations_ready"] is False
     assert channel["recommendations"] == []
+
+
+def test_quality_helper_keeps_none_absent_instead_of_zero():
+    """DEFECT 3: _quality must not turn None (absence) into a measured 0.0.
+
+    A real measured zero stays 0.0 and clamping still bounds real scores, but
+    absence propagates as None so it can never be summed into a baseline."""
+    assert _quality(None) is None
+    assert _quality(0.0) == 0.0
+    assert _quality(0.1) == 0.1
+    assert _quality(1.5) == 1.0
+    assert _quality(-0.2) == 0.0
+
+
+def test_estimate_group_excludes_none_from_sample_count_and_mean():
+    """DEFECT 3: None scores are excluded, never coerced to 0.0 and never summed.
+
+    Three real 0.1 scores plus one None must report sample_size 3 and observed
+    0.1 — not sample_size 4 and a fabricated 0.075 from counting None as zero."""
+    estimate = estimate_group([None, 0.1, 0.1, 0.1], baseline=0.1)
+    assert estimate["sample_size"] == 3
+    assert estimate["observed_quality"] == 0.1
+    assert estimate["confidence"] == 0.2727
