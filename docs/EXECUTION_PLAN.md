@@ -4,7 +4,7 @@
 
 **Дата среза:** 2026-11-13  
 **Основная ветка:** `main`  
-**Последний функциональный checkpoint:** `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`  
+**Последний функциональный checkpoint:** `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59`  
 **Правило интеграции:** по запросу владельца продолжаем непосредственно в `main`; отдельные ветки не плодим.  
 **Live-ограничение:** без отдельного подтверждения владельца не меняем production-БД, секреты, режим LIVE и реальные публикации.
 
@@ -93,10 +93,13 @@ AI Team показывает сохранённые run/trace данные. Не
 
 ## 6. Текущие проверки
 
-- Базовый функциональный commit `dead4a1f` имел успешный CI run #43412746508 (Linux/Windows, offline smoke и Windows EXE). Это результат предыдущего checkpoint, не подтверждение последующих переносов.
-- После переносов запущен новый CI run #43441301090 для commit `4ca2570e`.
-- На последней проверке оба задания `test` и `windows` выполнялись. Компиляция Python, проверка синтаксиса JS и delivery regression checks уже прошли; полная тестовая suite ещё выполнялась, offline smoke и Windows EXE оставались в очереди.
-- Пока run не завершится, этот checkpoint не объявляет последующие изменения зелёными.
+- Исторический базовый commit `dead4a1f` имел успешный CI run #43412746508 (Linux/Windows, offline smoke и Windows EXE). Это результат предыдущего checkpoint, не подтверждение последующих переносов.
+- Пользовательский main `65487de` (OAuth field selector) провалил CI run [#43447122615](https://github.com/rpauts2/Tggruup/actions/runs/43447122615): Linux — 2 failed (4075 passed), Windows — 3 failed (4074 passed). Все падения — три контракта command center, а не платформенная логика.
+- `490f21a` чинит ровно эти три контракта: `app.js` runs endpoint `limit=100`, list-safe `$$()` на connect-dialog и platform-credential полях, и bounded retry `os.replace` в `desktop.py`. Локально на `490f21a`: 4076 passed, один перемежающийся flaky lock-тест (см. §10).
+- После интеграции W36 (video + nullable) checkpoint `37a6202` запушен в `github` (fast-forward `65487de..37a6202`, без force); remote SHA сверен равен `37a62021d2c5efa6b998ccd70c03414b665a5660`.
+- CI run [#43484978287](https://github.com/rpauts2/Tggruup/actions/runs/43484978287) на `37a6202` завершён: **Linux `test` — success**, **Windows — failure** (`18 failed, 4283 passed, 15 skipped`). Все 18 падений — один параметризованный тест `test_redirected_adjacent_sidecar_is_rejected_before_encode_or_write[symlink-…]`: на CI Windows (где есть privilege на symlink) `readlink()` возвращает target с extended-length NT-префиксом `//?/C:/…`, а пост-условие сравнивало его с plain `foreign`. Renderer корректно отклонил sidecar (`pytest.raises(ValueError)` прошёл); падало только пост-условие. Локально эти 18 случаев SKIP (WinError 1314), что скрыло дефект от ревью пакета.
+- `073e22f` чинит перемежающийся flaky lock-тест Windows (placeholder write внесён в loser guard; ~48% падений → 30/30). `b6dee9e` чинит symlink-пост-условие (сравнение `as_posix()` со снятым `//?/`; no-op на POSIX, репоинт на другой файл по-прежнему ловится). Оба — READY-WITH-NITS независимого ревью.
+- Новый функциональный checkpoint `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59` (lock + symlink fixes поверх `37a6202`). Локальная полная suite: `4283 passed, 33 skipped, 4 xfailed, 0 failed`. Новый CI run запускается после push; пока не завершится и не будет прочитан, checkpoint не объявляется зелёным.
 
 ## 7. Следующий приоритет
 
@@ -127,3 +130,49 @@ AI Team показывает сохранённые run/trace данные. Не
 Уникальные функциональные части PR #60 и #56 перенесены в `main`; исходные PR остаются открытыми до успешного CI текущего checkpoint, после чего будут закрыты как superseded (не объединять повторно). PR #59 — ранняя версия OAuth ветки #60. Ветки planner/editorial, posts workspace, command center, S5, Retry-After и legal windows уже представлены в main через соответствующие merged PR или совпадающие файловые SHAs; отдельный дубль не создаётся.
 
 Новая полная проверка: [CI run #43445803450](https://github.com/rpauts2/Tggruup/actions/runs/43445803450) для `64cd0e5`. На момент обновления документа выполняется на Linux и Windows; пока не объявлена зелёной.
+
+## 10. CI-ремонт и интеграция W36 — 2026-11-13
+
+### Аудит пользовательских веток (только чтение)
+
+Четыре независимых read-only агента сверили все ветки/remote с `main` на уровне содержимого (не только patch-id). Вывод unanimous: уникального пользовательского кода, которого нет в `main`, не осталось — всё уже перенесено и переработано под более новые UI/планировщик/аналитика. `git cherry` показывает `+` (patch-unique) для всех веток, но это обманчиво: `main` содержит те же контракты под другими SHA. Авторитетен content-grep, а не patch-id. Подтверждено собственным §9 владельца: «отдельный дубль не создаётся», «не объединять повторно». Whole-branch merge запрещён — все ветки net-negative относительно `main` (регрессировали бы более новый код). Ничего не портировалось повторно; rejected/unknown работа сохранена.
+
+### Ремонт красного CI пользовательского main
+
+Пользовательский `65487de` провалил CI run #43447122615 (Linux 2 failed, Windows 3 failed). Диагностика: три контракта command center, не платформенная логика. `490f21a` чинит ровно их:
+
+- `app.js`: runs endpoint `limit=40 → limit=100` (контракт editorial workspace wiring).
+- `app.js`: single-element `$().forEach → $$()` на connect-dialog и platform-credential полях (дефект-класс 2026-11-04, обрывавший весь refresh).
+- `desktop.py`: bounded retry `os.replace` на Windows `PermissionError`, чтобы конкурентные писатели `_store_desktop_port` не теряли порт и не оставляли temp-файлы.
+
+Отдельно диагностирован env-артефакт: `NO_PROXY=…,[::1],…` ломает httpx 0.28.1 (`InvalidURL: Invalid port: ':1]'`), давая 8 ложных auth/telegram падений локально. Это не дефект кода; CI-runner не несёт этого значения. Локальные прогоны выполняются с `NO_PROXY= no_proxy=`.
+
+### Интеграция W36 (video + nullable)
+
+Два независимо проверенных пакета интегрированы в `main` через `w36-integration`:
+
+- **W36-B video provenance** (`b27ad52`, commits `cd600b6`/`2e2f109`): rollback-бэкапы в disjoint namespace `frame_dir/"backups"`; per-destination try/except по `reversed(published)` с recovery в `tgfarm-short-recovery-*`. Reviewer READY, mutation-tested. `tests/test_video_cache_provenance.py` (+905), `tests/test_video_renderer.py`, `tgfarm/s11_video/renderer.py`. 18 skips — Windows symlink winerror 1314 (среда, не код).
+- **W36-C nullable rate contract** (`37a6202`, commits `3705eb8`/`97a16e3`/`c602442`): отсутствующая rate/quality остаётся `None`, не coerced в ноль; `_quality(None) → None`, `estimate_group` фильтрует `None`; None-quality исключён из slot/rate denominators и baselines. `tests/test_nullable_quality_consumers.py` (+232), `tests/test_post_metric_rate_validity.py` (+266), `tgfarm/s8_analytics/{__init__,portfolio}.py`, `tgfarm/s12_learning/__init__.py`.
+
+Инвариант «неизвестно ≠ ноль; отсутствие метрики ≠ измеренный ноль» сохранён; +159/-46 rewrite S12 из `main` не заменён старой версией ветки — None-gate применён поверх.
+
+### Проверка и публикация
+
+- Интеграционное дерево `37a6202`: 399 затронутых тестов зелёные; полная suite `4282 passed, 33 skipped, 4 xfailed, 1 failed` (единственное падение — перемежающийся flaky lock-тест, впоследствии починен `073e22f`).
+- No-secrets gate: 9 файлов, без миграций, чисто.
+- `main` fast-forward `65487de..37a6202` запушен в `github` (без force); remote SHA сверен равен `37a62021d2c5efa6b998ccd70c03414b665a5660`.
+- CI run #43484978287 на `37a6202` завершён: Linux success, Windows failure (18 symlink readlink-префикс, см. §6). Это выявило дефект тест-пост-условия, скрытый локальными WinError 1314 skips.
+
+### Пост-интеграционный ремонт CI (checkpoint `b6dee9e`)
+
+Два независимых исправления поверх `37a6202`, оба READY-WITH-NITS отдельного ревью:
+
+- `073e22f5bd131aa853fda2b4d28e1d897ed502e4` — **flaky SingleInstance lock (Windows)**. Root cause подтверждён эмпирически: `PermissionError [Errno 13]` на `desktop.py:77` (flush placeholder-записи). Winner держит mandatory lock на byte 0 и truncate-ит файл; более медленный конкурент всё ещё делает pre-lock append на заблокированный byte 0 → исключение вне inner `OSError` guard → re-raise через `BaseException`. Fix: placeholder write внесён в тот же loser guard (`except (OSError, BlockingIOError) → return False`). Инвариант exactly-one-winner сохранён (placeholder конкурента падает только когда byte 0 уже заблокирован winner-ом). POSIX flock advisory — не затронут. Доказательство: до фикса ~48% падений (12/25), после — 30/30; полный desktop-файл 57/57; ревьюер независимо воспроизвёл pre-fix 10/50 PermissionError vs post-fix 0/50.
+- `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59` — **symlink readlink NT-префикс (Windows CI)**. 18 параметризованных случаев `test_redirected_adjacent_sidecar_is_rejected_before_encode_or_write[symlink-…]` падали на пост-условии `readlink() == foreign`: CI Windows возвращает `//?/C:/…`, foreign — plain. Renderer отклонил sidecar корректно (`ValueError` прошёл); падало только сравнение. Fix: `readlink().as_posix().removeprefix("//?/") == foreign.as_posix()` — no-op на POSIX, репоинт на другой файл по-прежнему ловится (assertion НЕ ослаблен). `resolve()`/`realpath()`/`normpath()` префикс сохраняют — работает только stripping. Локально symlink-ветка SKIP (WinError 1314), поэтому проверено pure-path red-green (OLD False → NEW True для same-parent/outside-parent/dangling) + 154 passed/18 skipped файла; реальное подтверждение — CI Windows.
+
+Локальная полная suite на `b6dee9e`: `4283 passed, 33 skipped, 4 xfailed, 0 failed` (flaky lock устранён). Новый CI run запускается после push `b6dee9e`; до завершения и чтения результата checkpoint не объявляется зелёным.
+
+### Открытый остаток
+
+- После зелёного CI закрыть PR #60/#56 как superseded со ссылкой на commits в `main` (подтвердить перед закрытием — общее состояние GitHub).
+- Локальный аккаунт Windows не имеет privilege на symlink (WinError 1314), поэтому 18 symlink-случаев локально SKIP и проверяются только на CI Windows. Это легитимный skip по privilege, не vacuous-тест; но он скрыл дефект пост-условия от ревью пакета — учитывать при будущих symlink-тестах.

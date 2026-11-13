@@ -4,7 +4,7 @@
 
 **Дата:** 2026-11-13  
 **Основная ветка:** `main`  
-**Последний функциональный checkpoint:** `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`
+**Последний функциональный checkpoint:** `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59`
 
 ## Что перенесено в main в этом заходе
 
@@ -16,12 +16,15 @@
 
 ## Текущее CI
 
-CI run [#43441301090](https://github.com/rpauts2/Tggruup/actions/runs/43441301090) запущен на `4ca2570e`.
+Пользовательский main `65487de` провалил run [#43447122615](https://github.com/rpauts2/Tggruup/actions/runs/43447122615) (Linux 2 failed, Windows 3 failed) — три контракта command center. `490f21a` чинит ровно их. После интеграции W36 checkpoint `37a6202` запушен в `github` (fast-forward, без force), remote SHA сверен.
 
-На последнем просмотре:
-- Linux: Python compile, JS syntax и platform delivery regression checks прошли; полный test suite выполнялся.
-- Windows: установка зависимостей выполнялась; затем запланированы compile, JS syntax, тесты, offline smoke и сборка EXE.
-- Итогового результата ещё нет. Не объявлять этот commit прошедшим CI, пока workflow не завершится.
+Run [#43484978287](https://github.com/rpauts2/Tggruup/actions/runs/43484978287) на `37a6202` завершён: **Linux success, Windows failure** (`18 failed, 4283 passed, 15 skipped`). 18 падений — symlink readlink NT-префикс в тест-пост-условии W36-B (локально скрыто WinError 1314 skips). Renderer поведение корректно; падало только сравнение `readlink() == foreign`.
+
+Исправления поверх `37a6202` → checkpoint `b6dee9e`:
+- `073e22f` — flaky SingleInstance lock Windows (placeholder write в loser guard; ~48% → 30/30).
+- `b6dee9e` — symlink readlink `//?/` префикс (as_posix + removeprefix; no-op POSIX, assertion не ослаблен).
+
+Локальная полная suite на `b6dee9e`: `4283 passed, 33 skipped, 4 xfailed, 0 failed`. Новый CI run запускается после push; не объявлять checkpoint зелёным, пока workflow не завершится и результат не будет прочитан.
 
 ## Что уже есть в UI
 
@@ -34,7 +37,7 @@ CI run [#43441301090](https://github.com/rpauts2/Tggruup/actions/runs/4344130109
 
 ## Следующие действия
 
-1. Проверить завершение CI run #43441301090 и все неуспешные шаги.
+1. Проверить завершение нового CI run на checkpoint `b6dee9e` (после push) и все неуспешные шаги; run #43484978287 на `37a6202` уже завершён (Windows 18 symlink) и исправлен `073e22f`/`b6dee9e`.
 2. Исправить регрессии, если появятся, не переписывая UI/backend целиком.
 3. При зелёном CI закрыть PR #60 и #56 как superseded, указав main commits.
 4. Составить платформенную матрицу полевых испытаний; credentials вводятся локально, live публикации — только с отдельным согласием.
@@ -53,14 +56,24 @@ CI run [#43441301090](https://github.com/rpauts2/Tggruup/actions/runs/4344130109
 
 ## Последнее продолжение — 2026-11-13
 
-Функциональный checkpoint: `64cd0e515c5e9bd5fa815b129e4e273e3f5ec9a0`.
+Функциональный checkpoint: `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59`.
 
 Дополнительные коммиты после OAuth/S12 переноса:
 - `389276e` — первые исправления CI: актуальные UI selectors, channel-owned Post fixtures, восстановление поведения worst_angle.
 - `6aaa865` — helper `_drop_lesson` для удаления устаревшего worst_angle.
 - `971bdae` — atomic Desktop lock, уникальная запись desktop.port, неизменяемый сохранённый OAuth callback port, Reddit API approval gate в UI и matrix, VK token detection; регрессионные тесты.
 - `64cd0e5` — очистка S12 lessons, выпавших из 20-row window. Источник может удалять старые записи только при успешном чтении, при сбое сохранённая память остаётся.
+- `65487de` — пользовательский: correct OAuth field selector и UI contract assertions.
+- `490f21a` — ремонт трёх красных CI-контрактов command center: runs `limit=100`, list-safe `$$()` на connect-dialog/platform-credential, bounded retry `os.replace` в desktop.py.
+- `cd600b6`/`2e2f109` → merge `b27ad52` — W36-B video provenance: disjoint rollback-бэкапы, per-destination restore с recovery; mutation-tested.
+- `3705eb8`/`97a16e3`/`c602442` → merge `37a6202` — W36-C nullable rate contract: отсутствующая rate/quality остаётся None, не coerced в ноль; None исключён из denominators/baselines.
+- `073e22f` — flaky SingleInstance lock Windows: placeholder write внесён в loser guard; PermissionError на byte 0 больше не крашит конкурентный старт (~48% → 30/30).
+- `b6dee9e` — symlink readlink NT-префикс: тест-пост-условие W36-B сравнивает `as_posix()` со снятым `//?/`; чинит 18 падений CI Windows, скрытых локальными WinError 1314 skips.
+
+Аудит всех пользовательских веток (4 read-only агента, content-level): уникального кода вне main не осталось; whole-branch merge запрещён (net-negative). Ничего повторно не портировалось.
 
 CodeAnt замечания по PR #60 (4 пункта) и #56 (3 пункта) перенесены в исправления; новые regression tests покрывают эти контракты.
 
-Текущий CI: [run #43445803450](https://github.com/rpauts2/Tggruup/actions/runs/43445803450). Полная suite и Windows build ещё должны завершиться. Не закрывать PR #60/#56 до зелёного CI.
+Текущий CI: run #43484978287 на `37a6202` завершён (Linux success, Windows failure — 18 symlink). Исправлено `073e22f` + `b6dee9e`; новый run запускается после push `b6dee9e`. Не закрывать PR #60/#56 до зелёного CI.
+
+Открытый остаток: flaky lock и symlink-префикс ПОЧИНЕНЫ (см. выше). Локальный Windows-аккаунт без symlink privilege (WinError 1314) — 18 symlink-случаев локально SKIP, проверяются только на CI Windows; легитимный skip, но скрывает дефекты пост-условий от ревью. После зелёного CI закрыть PR #60/#56 как superseded (подтвердить перед закрытием).
