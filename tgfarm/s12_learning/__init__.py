@@ -167,25 +167,6 @@ def _upsert(channel_id, kind, key, value, score, sample_size, confidence, note=N
             row.note = note
 
 
-def _drop_lesson(channel_id, kind, key):
-    """Remove a lesson that no longer describes the evidence.
-
-    A stale `mistake/worst_angle` row used to survive a newer cycle in which the
-    same angle became the best one, so S4 was told both "prefer news" and "avoid
-    news" from one memory. An upsert cannot express removal.
-    """
-    with session_scope() as session:
-        row = session.execute(
-            select(LearningMemory).where(
-                LearningMemory.channel_id == channel_id,
-                LearningMemory.kind == kind,
-                LearningMemory.key == key,
-            )
-        ).scalar_one_or_none()
-        if row is not None:
-            session.delete(row)
-
-
 def lessons(channel_id="", kind=None):
     with session_scope() as session:
         stmt = select(LearningMemory)
@@ -830,6 +811,117 @@ def _channel_ids():
     return [p.id for p in get_config().enabled_personas]
 
 
+def _record_recent_failures(channel_id: str) -> int:
+    """Store bounded, channel-relevant failure patterns without double-writing.
+
+    PipelineRun has no channel FK, so its newest system-stage failures are shared
+    with each channel. CrosspostLog is attributed through Post.channel_id. Reads
+    are isolated: failure in one source must not discard evidence from the other.
+    sample_size is the newest bounded sample (not a lifetime counter), making
+    repeated S12 runs over unchanged rows idempotent.
+    """
+    channel = str(channel_id or "").strip()
+    if not channel:
+        return 0
+
+    from tgfarm.core.security import redact_sensitive_text
+    from tgfarm.crosspost_journal import JOURNAL_STATUS_FAILED, JOURNAL_STATUS_PERMANENT
+    from tgfarm.db.models import CrosspostLog, PipelineRun, Post
+
+    pipeline_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    crosspost_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+
+    try:
+        with session_scope() as session:
+            runs = session.execute(
+                select(PipelineRun)
+                .where(PipelineRun.status == "error", PipelineRun.error.is_not(None))
+                .order_by(PipelineRun.created_at.desc(), PipelineRun.id.desc())
+                .limit(20)
+            ).scalars().all()
+            for row in runs:
+                stage = str(row.stage or "unknown").strip()[:32] or "unknown"
+                error = redact_sensitive_text(row.error, limit=300)
+                if error:
+                    pipeline_groups[stage].append((int(row.id), error))
+    except Exception as exc:  # noqa: BLE001 - isolate the two evidence sources
+        log.debug("pipeline failure evidence collection failed: %s", type(exc).__name__)
+
+    try:
+        with session_scope() as session:
+            logs = session.execute(
+                select(CrosspostLog)
+                .join(Post, Post.public_id == CrosspostLog.post_public_id)
+                .where(
+                    Post.channel_id == channel,
+                    CrosspostLog.status.in_((JOURNAL_STATUS_FAILED, JOURNAL_STATUS_PERMANENT)),
+                    CrosspostLog.error.is_not(None),
+                )
+                .order_by(CrosspostLog.created_at.desc(), CrosspostLog.id.desc())
+                .limit(20)
+            ).scalars().all()
+            for row in logs:
+                platform = str(row.platform or "unknown").strip().lower()[:32] or "unknown"
+                error = redact_sensitive_text(row.error, limit=300)
+                if error:
+                    crosspost_groups[platform].append((int(row.id), error))
+    except Exception as exc:  # noqa: BLE001 - preserve PipelineRun lessons if this read fails
+        log.debug("crosspost failure evidence collection failed: %s", type(exc).__name__)
+
+    written = 0
+
+    def store_group(kind: str, name: str, events: list[tuple[int, str]]) -> None:
+        nonlocal written
+        if not events:
+            return
+        count = len(events)
+        latest_error = events[0][1]
+        recent_errors = [error for _, error in events[:5]]
+        source_ids = [source_id for source_id, _ in events]
+        if kind == "pipeline":
+            key = f"pipeline:{name}"
+            value = {
+                "stage": name,
+                "error": latest_error,
+                "occurrences": count,
+                "recent_errors": recent_errors,
+                "source_ids": source_ids,
+            }
+            note = f"stage {name}: {count} failures in the recent sample; latest: {latest_error[:120]}"
+        else:
+            key = f"crosspost:{name}"
+            value = {
+                "platform": name,
+                "error": latest_error,
+                "occurrences": count,
+                "recent_errors": recent_errors,
+                "source_ids": source_ids,
+            }
+            note = f"crosspost {name}: {count} failures in the recent sample; latest: {latest_error[:120]}"
+
+        try:
+            _upsert(
+                channel,
+                "mistake",
+                key,
+                value,
+                0.0,
+                count,
+                _sample_confidence(count),
+                note,
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - isolate one bad lesson from the rest
+            log.debug("mistake lesson write failed for %s: %s", key, type(exc).__name__)
+
+    for stage, events in pipeline_groups.items():
+        store_group("pipeline", stage, events)
+    for platform, events in crosspost_groups.items():
+        store_group("crosspost", platform, events)
+    return written
+
+
+
 def _learn_channel(channel_id):
     learned = 0
     perf = angle_performance(14, channel_id=channel_id)
@@ -890,10 +982,6 @@ def _learn_channel(channel_id):
                     "weak angle: %s" % worst,
                 )
                 learned += 1
-            else:
-                # One angle, or a tie at the top: an old "avoid this" row would
-                # now contradict the best-angle lesson from the same evidence.
-                _drop_lesson(channel_id, "mistake", "worst_angle")
 
     style_perf = hook_style_performance(14, channel_id=channel_id)
     if style_perf:
@@ -966,30 +1054,7 @@ def _learn_channel(channel_id):
         )
         learned += 1
 
-    try:
-        from tgfarm.db.models import CrosspostLog, PipelineRun
-        with session_scope() as session:
-            # Read the newest window, then upsert oldest-first so the newest value wins.
-            runs = session.execute(
-                select(PipelineRun).where(PipelineRun.status == "error")
-                .order_by(PipelineRun.created_at.desc(), PipelineRun.id.desc()).limit(20)
-            ).scalars().all()
-            for r in reversed(runs):
-                if r.error:
-                    _upsert(channel_id, "mistake", "pipeline:%s" % r.stage,
-                            {"stage": r.stage, "error": r.error[:300]}, 0.0, 1, 0.2,
-                            "stage %s failed: %s" % (r.stage, r.error[:120]))
-            logs = session.execute(
-                select(CrosspostLog).where(CrosspostLog.status == "failed")
-                .order_by(CrosspostLog.created_at.desc(), CrosspostLog.id.desc()).limit(20)
-            ).scalars().all()
-            for lg in reversed(logs):
-                if lg.error:
-                    _upsert(channel_id, "mistake", "crosspost:%s" % lg.platform,
-                            {"platform": lg.platform, "error": lg.error[:300]}, 0.0, 1, 0.2,
-                            "crosspost %s failed: %s" % (lg.platform, lg.error[:120]))
-    except Exception as exc:
-        log.warning("mistake collection failed: %s", exc)
+    learned += _record_recent_failures(channel_id)
 
     return {"lessons": learned}
 
