@@ -26,7 +26,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from tgfarm.core.logging import get_logger
 from tgfarm.core.run import to_thread
@@ -142,6 +142,19 @@ def _rounded_or_none(value: object) -> float | None:
     if not math.isfinite(number):
         return None
     return round(number, 4)
+
+
+def _drop_lesson(channel_id: str, kind: str, key: str) -> int:
+    """Remove an obsolete lesson after newer evidence disproves it."""
+    with session_scope() as session:
+        result = session.execute(
+            delete(LearningMemory).where(
+                LearningMemory.channel_id == channel_id,
+                LearningMemory.kind == kind,
+                LearningMemory.key == key,
+            )
+        )
+        return max(0, int(result.rowcount or 0))
 
 
 def _upsert(channel_id, kind, key, value, score, sample_size, confidence, note=None):
