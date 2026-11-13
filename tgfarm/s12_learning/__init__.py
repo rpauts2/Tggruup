@@ -845,7 +845,7 @@ def _record_recent_failures(channel_id: str) -> int:
                 if error:
                     pipeline_groups[stage].append((int(row.id), error))
     except Exception as exc:  # noqa: BLE001 - isolate the two evidence sources
-        log.debug("pipeline failure evidence collection failed: %s", type(exc).__name__)
+        log.warning("s12: mistake collection failed for %s (pipeline): %s", channel, type(exc).__name__)
 
     try:
         with session_scope() as session:
@@ -866,7 +866,7 @@ def _record_recent_failures(channel_id: str) -> int:
                 if error:
                     crosspost_groups[platform].append((int(row.id), error))
     except Exception as exc:  # noqa: BLE001 - preserve PipelineRun lessons if this read fails
-        log.debug("crosspost failure evidence collection failed: %s", type(exc).__name__)
+        log.warning("s12: mistake collection failed for %s (crosspost): %s", channel, type(exc).__name__)
 
     written = 0
 
@@ -982,6 +982,9 @@ def _learn_channel(channel_id):
                     "weak angle: %s" % worst,
                 )
                 learned += 1
+            else:
+                # Remove yesterday's anti-pattern when the same angle now leads.
+                _drop_lesson(channel_id, "mistake", "worst_angle")
 
     style_perf = hook_style_performance(14, channel_id=channel_id)
     if style_perf:

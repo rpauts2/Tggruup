@@ -364,13 +364,15 @@ def test_editorial_command_center_workspaces_are_wired_to_real_ui(client):
     for view in ("team", "studio", "analytics"):
         assert f'data-view="{view}"' in html
     for element_id in (
-        "team-summary", "team-stage-grid", "team-role-grid", "team-run-list",
+        "team-pipeline",
         "studio-post-list", "studio-content", "studio-inspector",
         "studio-platform-select", "studio-preview",
         "analytics-kpis", "analytics-formats", "analytics-platforms",
         "analytics-ai", "analytics-freshness",
     ):
         assert f'id="{element_id}"' in html
+    assert 'class="team-role-grid"' in html
+    assert 'class="team-quality-card"' in html
     for contract in (
         "/api/runs?limit=100",
         "/api/posts?limit=80",

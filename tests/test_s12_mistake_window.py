@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import delete
 
 from tgfarm import s12_learning
-from tgfarm.db.models import Channel, CrosspostLog, LearningMemory, PipelineRun
+from tgfarm.db.models import Channel, CrosspostLog, LearningMemory, PipelineRun, Post
 from tgfarm.db.session import session_scope
 
 CHANNEL_ID = "w35s12-window-channel"
@@ -23,6 +23,7 @@ def _clean() -> None:
         session.execute(delete(LearningMemory).where(LearningMemory.channel_id == CHANNEL_ID))
         session.execute(delete(PipelineRun).where(PipelineRun.run_id.like(PREFIX + "%")))
         session.execute(delete(CrosspostLog).where(CrosspostLog.post_public_id.like(PREFIX + "%")))
+        session.execute(delete(Post).where(Post.public_id.like(PREFIX + "%")))
         session.execute(delete(Channel).where(Channel.id == CHANNEL_ID))
 
 
@@ -73,6 +74,12 @@ def _seed_crosspost_failures() -> list[str]:
     base = _base()
     platforms = [f"w35p{i:02d}" for i in range(SEEDED)]
     with session_scope() as session:
+        post_ids = [f"{PREFIX}_log_{i:02d}" for i in range(SEEDED)] + [f"{PREFIX}_log_dup"]
+        session.add_all([
+            Post(public_id=post_id, channel_id=CHANNEL_ID, hook="Hook", body="Body", status="failed")
+            for post_id in post_ids
+        ])
+        session.flush()
         for i, platform in enumerate(platforms):
             session.add(CrosspostLog(
                 post_public_id=f"{PREFIX}_log_{i:02d}", platform=platform, status="failed",
@@ -145,8 +152,13 @@ def test_equal_timestamps_use_insertion_order(monkeypatch, model, kind):
                     error=error, created_at=stamp,
                 )
             else:
+                post_id = f"{PREFIX}_tie_{error}"
+                session.add(Post(
+                    public_id=post_id, channel_id=CHANNEL_ID, hook="Hook", body="Body", status="failed",
+                ))
+                session.flush()
                 row = CrosspostLog(
-                    post_public_id=f"{PREFIX}_tie_{error}", platform="w35tie", status="failed",
+                    post_public_id=post_id, platform="w35tie", status="failed",
                     error=error, created_at=stamp,
                 )
             session.add(row)
