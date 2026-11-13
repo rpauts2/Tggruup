@@ -1,48 +1,51 @@
 # TgFarm — continuation checkpoint
 
-> Короткий рабочий снимок. Единственный реестр статусов: [EXECUTION_PLAN.md](EXECUTION_PLAN.md). Если сведения расходятся, сначала перепроверить GitHub и CI.
+> Этот файл — краткая передача следующему инженерному циклу. Единственный подробный реестр статуса: [EXECUTION_PLAN.md](EXECUTION_PLAN.md). Для всех требований см. [MASTER_REQUIREMENTS_TRACEABILITY.md](MASTER_REQUIREMENTS_TRACEABILITY.md).
 
 **Дата:** 2026-11-13  
-**main:** `e2937074997549b8316dc35deb6b9098078eb552`
+**Основная ветка:** `main`  
+**Последний функциональный checkpoint:** `4ca2570e557063d8aad4949ae671e597180747bf`
 
-## Состояние веток
+## Что перенесено в main в этом заходе
 
-- PR #63 объединён в main. Очередь публикаций: список по умолчанию, карточный режим, поиск в загруженной выборке, честная обработка отсутствующих метрик.
-- PR #62 объединён ранее: Command Center.
-- PR #60 открыт и НЕ в main. Его head `0006f6ac72ecffccb2ddac4847df8edb2080db92`, 19 коммитов от общей базы; main ушёл вперёд на 4 коммита. Head CI run #959 завершился success, но это не заменяет review и обновление ветки.
-- `feature/editorial-planning-workspace-20261113` идентична main (ahead 0 / behind 0). Уникальной реализации планирования там нет.
-- Документационный cleanup ведётся в отдельной ветке `chore/reconcile-project-roadmap-20261113`. Не писать напрямую в main.
+- `e61cd3c` — backend Desktop OAuth, стабильный loopback listener, system browser, LinkedIn/TikTok/YouTube PKCE, корректный YouTube reconnect, платформенные credential flows и регрессионные тесты.
+- `c81ac6a` — UI для Client ID/Secret, official docs/Redirect URI, system browser в PyWebView, Dzen flow completion, четыре независимых proof статуса платформы и восемь Desktop/OAuth тестов.
+- `4ca2570` — S12 failure memory: ошибки pipeline и crosspost агрегируются отдельно, crosspost связан с конкретным каналом, secret redaction, повторное чтение идемпотентно, permanent rejection включён, сбой чтения одного источника не уничтожает данные другого.
 
-## Следующая инженерная задача
+Открытые PR #60 и #56 содержат теперь уже перенесённые изменения и должны быть закрыты как superseded после успешного CI. Не пытаться повторно вливать старые ветки.
 
-**Editorial Planning workspace** на актуальном main:
-1. Обзор текущего плана и его freshness.
-2. Список тем плана с реальными действиями/причинами.
-3. Отдельная очередь ordered-but-unbooked / awaiting slot.
-4. Исполнение плана и фактические результаты.
-5. История ревизий.
-6. Календарь только при наличии подтверждённого API с достоверными слотами. Не рисовать свободные слоты из предположений.
+## Текущее CI
 
-Сохранить текущие API, request identity, независимые ошибки/freshness, stale snapshot retention, безопасную кнопку подтверждения плана и существующие renderer/data contracts.
+CI run [#43441301090](https://github.com/rpauts2/Tggruup/actions/runs/43441301090) запущен на `4ca2570e`.
+
+На последнем просмотре:
+- Linux: Python compile, JS syntax и platform delivery regression checks прошли; полный test suite выполнялся.
+- Windows: установка зависимостей выполнялась; затем запланированы compile, JS syntax, тесты, offline smoke и сборка EXE.
+- Итогового результата ещё нет. Не объявлять этот commit прошедшим CI, пока workflow не завершится.
+
+## Что уже есть в UI
+
+- Command Center и публикационная очередь.
+- AI Team, Content Studio и Analytics.
+- Editorial Planner: overview, execution, ожидающие брони, plan topics и revision history.
+- Platform Center/Connections с раздельными статусами auth/API/destination/publish.
+
+Старый утверждённый факт про наличие planner: не строить второй workspace. Следующие изменения должны расширять существующий контракт только если аудит покажет конкретный пробел.
+
+## Следующие действия
+
+1. Проверить завершение CI run #43441301090 и все неуспешные шаги.
+2. Исправить регрессии, если появятся, не переписывая UI/backend целиком.
+3. При зелёном CI закрыть PR #60 и #56 как superseded, указав main commits.
+4. Составить платформенную матрицу полевых испытаний; credentials вводятся локально, live публикации — только с отдельным согласием.
+5. Пройти полный цикл S1–S12 на изолированных тестовых аккаунтах и проверить восстановление после остановки/перезапуска.
+6. Проверить чистую установку Windows EXE и Linux server deployment/backup/restore.
 
 ## Ограничения
 
-- Не менять рабочую БД, токены, настройки LIVE и реальные публикации.
-- Не повторять `publish_unknown` автоматически.
-- Не объявлять AI Team живой мультиагентной системой без backend telemetry.
-- Не считать CI доказательством OAuth или live-доставки.
-- PR #60 сначала проверить по безопасности и конфликтам, не объединять вслепую.
-- Не выполнять массовые repair/import на production без backup, read-only preview и отдельного согласия.
-
-## Последняя проверка
-
-- PR #63 merge SHA = main HEAD.
-- CI/UI QA PR #63: Linux success, Windows success (включая EXE), UI Visual QA success — по результатам workflow, записанным в рабочем checkpoint.
-- Для самого merge SHA combined-status API не вернул status entries; не заявлять отдельный зелёный статус main.
-- Тесты текущего main в этом checkpoint заново локально не запускались.
-
-## Возобновление
-
-1. Сначала закрыть PR документационной синхронизации.
-2. Затем провести независимое review PR #60 и обновить его ветку.
-3. После — начать Editorial Planning workspace отдельной feature-веткой от свежего main.
+- Не менять production DB, секреты, LIVE mode и реальные публикации без отдельного подтверждения.
+- Не повторять `publish_unknown` автоматически; сначала reconciliation.
+- Не считать токен/сессию признаком publish-ready.
+- Не считать offline smoke, мок, fixture или CI proof live-доступа.
+- Не называть AI Team живым multi-agent execution без соответствующих run/traces.
+- Не создавать новые ветки для каждой мелочи; пользователь предпочитает прямую работу в `main`.
