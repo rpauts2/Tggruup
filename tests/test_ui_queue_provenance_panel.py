@@ -305,16 +305,20 @@ def test_every_interpolated_server_field_leaves_through_esc(block, distribution)
     assert not unjustified, f"голая интерполяция без объяснения: {sorted(set(unjustified))}"
 
 
-def test_the_card_mounts_itself_and_hangs_on_the_plan_tab(script, block, plan_loader):
-    """`index.html` is outside this feature's write area, so the node is created here."""
-    assert "document.createElement" in block and "insertBefore" in block, (
-        "the card has no mount and would render nothing at all"
-    )
+def test_the_card_uses_its_static_mount_and_loads_on_the_plan_tab(script, block, plan_loader):
+    """The editorial workspace owns the queue mount; the loader reuses it instead of creating a duplicate."""
+    assert 'const existing = $("#plan-open-orders");' in block
+    assert "if (existing) return existing;" in block
     assert "loadOpenOrderQueue();" in plan_loader
     assert plan_loader.count("load") >= 3, "the plan tab stopped reading its other two cards"
     assert script.count("loadOpenOrderQueue") == 2, "the loader is defined but never called"
     html = (UI_DIR / "index.html").read_text(encoding="utf-8")
-    assert re.search(r'\bid="plan-open-orders"', html) is None, "the card node is created by the panel, not by the markup"
+    waiting_panel = re.search(
+        r'<article class="card plan-panel plan-waiting-panel">.*?<div id="plan-open-orders"',
+        html,
+        re.S,
+    )
+    assert waiting_panel is not None, "the queue mount must live inside its dedicated waiting-slot panel"
 
 
 def test_the_endpoint_the_card_calls_is_served_and_names_the_key(client, block):
