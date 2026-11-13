@@ -102,7 +102,11 @@ def test_renderer_creates_mp4_manifest_and_reuses_existing_artifact(tmp_path, mo
     assert command[0] == "ffmpeg-test-double"
     assert "-c:v" in command and command[command.index("-c:v") + 1] == "libx264"
     assert "1080x1920" in command[command.index("-vf") + 1]
-    assert command[-1] == str(output.resolve())
+    encoded_path = Path(command[-1])
+    assert encoded_path != output.resolve()
+    assert encoded_path.parent.parent == output.resolve().parent
+    assert encoded_path.name == output.name
+    assert not encoded_path.parent.exists()
 
     manifest = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
     assert manifest["format"] == "tgfarm-original-short"
@@ -144,7 +148,10 @@ def test_corrupt_cached_mp4_is_not_reported_as_reused(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="FFmpeg не найден"):
         renderer.render_short_video(TITLE, BODY, output_path=target)
 
-    assert not target.exists()
+    assert target.read_bytes() == b"not an mp4"
+    assert not target.with_suffix(".json").exists()
+    assert not target.with_suffix(".srt").exists()
+    assert list(tmp_path.iterdir()) == [target]
 
 
 def test_renderer_rejects_duration_limit_shorter_than_minimum_storyboard(monkeypatch, tmp_path):
