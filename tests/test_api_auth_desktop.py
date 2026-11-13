@@ -301,3 +301,129 @@ def test_content_studio_and_analytics_workspaces_use_existing_safe_api_contracts
     analytics_loader = script[script.index("async function loadAnalytics("):]
     assert "Promise.allSettled" in analytics_loader
     assert "state.analyticsErrors" in analytics_loader
+
+
+
+def test_desktop_open_url_accepts_http_and_https(monkeypatch):
+    import webbrowser
+    from tgfarm.desktop import DesktopApi, DesktopApp
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, new=0, autoraise=True: opened.append(url) or True)
+    bridge = DesktopApi(DesktopApp())
+    assert bridge.open_url("https://accounts.example.test/authorize") == "ok"
+    assert bridge.open_url("http://127.0.0.1:43121/callback") == "ok"
+    assert opened == [
+        "https://accounts.example.test/authorize",
+        "http://127.0.0.1:43121/callback",
+    ]
+
+
+@pytest.mark.parametrize("url", [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,hello",
+    "https://user:pass@example.test/",
+    "/relative/path",
+])
+
+
+def test_desktop_open_url_rejects_non_web_or_embedded_credentials(url):
+    from tgfarm.desktop import DesktopApi, DesktopApp
+
+    with pytest.raises(ValueError):
+        DesktopApi(DesktopApp()).open_url(url)
+
+
+def test_desktop_oauth_port_is_stable_between_restarts(tmp_path):
+    from tgfarm.desktop import stable_desktop_port
+
+    first = stable_desktop_port(tmp_path)
+    second = stable_desktop_port(tmp_path)
+    assert 1024 < first < 65536
+    assert second == first
+    assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(first)
+
+
+def test_desktop_oauth_port_replaces_a_port_already_in_use(tmp_path):
+    import socket
+    from tgfarm.desktop import stable_desktop_port
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        blocked = occupied.getsockname()[1]
+        (tmp_path / "desktop.port").write_text(str(blocked), encoding="ascii")
+        selected = stable_desktop_port(tmp_path)
+        assert selected != blocked
+        assert 1024 < selected < 65536
+
+
+def test_editorial_command_center_workspaces_are_wired_to_real_ui(client):
+    html = client.get("/").text
+    script = client.get("/ui/app.js").text
+    for view in ("team", "studio", "analytics"):
+        assert f'data-view="{view}"' in html
+    for element_id in (
+        "team-summary", "team-stage-grid", "team-role-grid", "team-run-list",
+        "studio-post-list", "studio-content", "studio-inspector",
+        "studio-platform-select", "studio-preview",
+        "analytics-kpis", "analytics-formats", "analytics-platforms",
+        "analytics-ai", "analytics-freshness",
+    ):
+        assert f'id="{element_id}"' in html
+    for contract in (
+        "/api/runs?limit=100",
+        "/api/posts?limit=80",
+        "/api/metrics/formats?days=",
+        "/api/metrics/freshness",
+        "/api/ai/usage?days=",
+        "/api/crossposts/health",
+        "/api/platform-drafts/",
+        "/polish",
+    ):
+        assert contract in script
+
+
+def test_oauth_and_desktop_auth_workspaces_keep_secrets_out_of_client_contract(client):
+    script = client.get("/ui/app.js").text
+    assert "data-connect-save-oauth" in script
+    assert "window.pywebview.api.open_url" in script
+    matrix = client.get("/api/connect/matrix", headers={apiauth.HEADER: ensure_token()})
+    assert matrix.status_code == 200
+    assert "profile_saved" in matrix.text
+
+
+def test_desktop_listener_reserves_the_selected_oauth_port(tmp_path):
+    import socket
+
+    from tgfarm.desktop import _bind_desktop_socket
+
+    listener = _bind_desktop_socket(tmp_path, None)
+    try:
+        selected = int(listener.getsockname()[1])
+        assert 1024 < selected < 65536
+        assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(selected)
+        # A second listener cannot steal the port while Uvicorn has not started.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            with pytest.raises(OSError):
+                probe.bind(("127.0.0.1", selected))
+    finally:
+        listener.close()
+
+
+def test_desktop_listener_falls_back_if_saved_port_is_claimed(tmp_path):
+    import socket
+
+    from tgfarm.desktop import _bind_desktop_socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        blocked = int(occupied.getsockname()[1])
+        listener = _bind_desktop_socket(tmp_path, blocked)
+        try:
+            selected = int(listener.getsockname()[1])
+            assert selected != blocked
+            assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(selected)
+        finally:
+            listener.close()
