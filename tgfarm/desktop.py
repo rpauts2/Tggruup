@@ -71,12 +71,15 @@ class SingleInstance:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+b")
         try:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
+            # The placeholder write shares the loser guard: on Windows the winner
+            # holds a mandatory lock on byte 0, so a competitor's append onto the
+            # just-truncated file raises PermissionError here, not at locking().
             try:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                handle.seek(0)
                 if os.name == "nt":
                     import msvcrt
 
