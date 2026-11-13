@@ -396,24 +396,50 @@
   </section>
 
   <section class="view" data-view="plan">
-    <article class="card">
-      <header class="card-head">
-        <h2>План тем</h2>
-        <button class="btn btn-ghost" id="plan-refresh" type="button">Обновить</button>
-        <button class="btn" id="plan-apply" type="button" disabled title="Сначала получи актуальный план">Зафиксировать план</button>
-      </header>
-      <div id="plan-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
-      <p id="plan-meta">Ещё не загружено.</p>
-      <div id="plan-summary" class="plan-chips"></div>
-      <h3>Исполнитель плана</h3>
-      <p class="card-sub">Переключатель PLAN_EXECUTION_ENABLED решает, регистрируются ли задачи исполнителя и двигаются ли записи плана. «неизвестно» здесь — это не «выключен» и не «ноль»: панель не может это измерить.</p>
-      <div id="plan-execution"></div>
-      <div id="plan-open-orders-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
-      <div id="plan-entries"></div>
-      <h3>История ревизий</h3>
-      <div id="plan-history-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
-      <div id="plan-history"></div>
-    </article>
+    <div class="plan-workspace">
+      <section class="plan-workspace-top" aria-label="Обзор редакционного плана">
+        <article class="card plan-panel plan-overview-panel">
+          <header class="card-head">
+            <div><span class="plan-eyebrow">РЕДАКЦИОННЫЙ ЦИКЛ</span><h2>Обзор плана</h2></div>
+            <div class="plan-toolbar">
+              <button class="btn btn-ghost" id="plan-refresh" type="button">Обновить</button>
+              <button class="btn" id="plan-apply" type="button" disabled title="Сначала получи актуальный план">Зафиксировать план</button>
+            </div>
+          </header>
+          <div id="plan-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+          <p id="plan-meta">Ещё не загружено.</p>
+          <div id="plan-summary" class="plan-chips"></div>
+        </article>
+        <article class="card plan-panel plan-execution-panel">
+          <header class="card-head"><div><span class="plan-eyebrow">SCHEDULER</span><h2>Исполнение</h2></div></header>
+          <p class="card-sub">Состояние исполнителя и брони. «неизвестно» здесь — это не «выключен» и не «ноль».</p>
+          <div id="plan-execution"></div>
+        </article>
+      </section>
+
+      <article class="card plan-panel plan-waiting-panel">
+        <header class="card-head">
+          <div><span class="plan-eyebrow">ТРЕБУЕТ РЕШЕНИЯ</span><h2>Ожидают слота</h2></div>
+          <span class="card-sub">Темы, для которых план ещё не получил подтверждённую бронь</span>
+        </header>
+        <div id="plan-open-orders-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+        <div id="plan-open-orders"></div>
+      </article>
+
+      <article class="card plan-panel plan-topics-panel">
+        <header class="card-head">
+          <div><span class="plan-eyebrow">РЕШЕНИЯ РЕДАКЦИИ</span><h2>Темы плана</h2></div>
+          <span class="card-sub">Приоритет, площадка, формат и причины решения</span>
+        </header>
+        <div id="plan-entries"></div>
+      </article>
+
+      <article class="card plan-panel plan-history-panel">
+        <header class="card-head"><div><span class="plan-eyebrow">ИЗМЕНЕНИЯ</span><h2>История ревизий</h2></div></header>
+        <div id="plan-history-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+        <div id="plan-history"></div>
+      </article>
+    </div>
   </section>
 
   <section class="view" data-view="trends">

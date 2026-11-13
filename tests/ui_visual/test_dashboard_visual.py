@@ -1367,6 +1367,21 @@ def test_editorial_plan_plan_history_and_queue_keep_independent_freshness(dashbo
         page.locator("#plan-entries").get_by_text("Тестовый плановый материал").wait_for()
         page.locator("#plan-history").get_by_text("history-revision-001").wait_for()
         page.locator("#plan-open-orders").get_by_text("Тема ждёт бронирования").wait_for()
+        # Each planning concern has its own operator panel; the queue renderer
+        # must mount inside the waiting panel rather than under the topic list.
+        assert page.locator("#plan-open-orders").evaluate(
+            "(el) => el.closest('.plan-waiting-panel') !== null"
+        )
+        assert page.locator("#plan-entries").evaluate(
+            "(el) => el.closest('.plan-topics-panel') !== null"
+        )
+        assert page.locator("#plan-execution").evaluate(
+            "(el) => el.closest('.plan-execution-panel') !== null"
+        )
+        assert page.locator("#plan-history").evaluate(
+            "(el) => el.closest('.plan-history-panel') !== null"
+        )
+        assert page.locator("[data-view='plan'] .plan-calendar").count() == 0
         notices = {
             "plan": page.locator("#plan-freshness"),
             "history": page.locator("#plan-history-freshness"),

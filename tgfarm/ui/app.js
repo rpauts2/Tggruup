@@ -3072,9 +3072,9 @@
   }
 
   // ── Кто из черновиков ждёт слота плана ────────────────────────────────────
-  // `index.html` is outside this file's reach, so the card creates its own mount
-  // next to `#plan-entries` instead of writing into a container another render
-  // replaces (the booking card above uses the same move for the same reason).
+  // The editorial workspace supplies a permanent mount inside the waiting-slot
+  // panel. Reuse it first; the fallback only supports older embedded shells that
+  // still lack the dedicated panel markup.
   const OPEN_ORDERS_ENDPOINT = "/api/editorial";
   const OPEN_ORDERS_SHOWN = 8;
   const OPEN_ORDERS_TRANSPORT = "очередь: ответ не пришёл";
