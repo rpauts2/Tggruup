@@ -7340,14 +7340,16 @@
     loadReviewBoard(true);
     refresh();
   });
-  $$("#delivery-center-filters [data-delivery-filter]").forEach((button) =>
-    button.addEventListener("click", () => {
-      state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
-      $$("#delivery-center-filters [data-delivery-filter]").forEach((item) =>
-        item.classList.toggle("is-active", item === button));
-      const entries = state.data.crossposts?.crossposts || [];
-      renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
-    }));
+  const deliveryCenterFilters = $("#delivery-center-filters");
+  if (deliveryCenterFilters) deliveryCenterFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delivery-filter]");
+    if (!button || !deliveryCenterFilters.contains(button)) return;
+    state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
+    $("[data-delivery-filter]", deliveryCenterFilters).forEach((item) =>
+      item.classList.toggle("is-active", item === button));
+    const entries = state.data.crossposts?.crossposts || [];
+    renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
+  });
   const reviewRequeue = $("#review-requeue");
   if (reviewRequeue) reviewRequeue.addEventListener("click", () => requeueFailedBatch());
   $$("#review-filters button").forEach((button) =>
