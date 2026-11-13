@@ -187,7 +187,16 @@ def _store_desktop_port(data_root: Path, port: int) -> None:
             temp.chmod(0o600)
         except OSError:
             pass
-        os.replace(temp, path)
+        # Windows raises PermissionError when another writer is mid-replace on
+        # the same destination; retry briefly rather than lose the port.
+        for attempt in range(20):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
     finally:
         temp.unlink(missing_ok=True)
 

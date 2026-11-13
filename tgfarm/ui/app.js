@@ -4153,7 +4153,7 @@
     if (state.authSaving || !state.authPlatformId) return;
     const platformId = state.authPlatformId;
     const values = {};
-    $("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
+    $$("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
       const value = String(input.value || "").trim();
       if (value) values[input.dataset.platformCredential] = value;
     });
@@ -4172,7 +4172,7 @@
       );
       const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
       if (item && result.auth) item.auth = result.auth;
-      $("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
+      $$("[data-platform-credential]", $("#platform-auth-dialog")).forEach((input) => {
         input.value = "";
         const field = (result.auth?.fields || []).find((entry) => entry.key === input.dataset.platformCredential);
         if (field?.has_value) input.placeholder = "Сохранено. Введи новое значение, чтобы заменить.";
@@ -6156,7 +6156,7 @@
       const endpoints = {
         status: "/api/status",
         report: "/api/report?days=14",
-        runs: "/api/runs?limit=40",
+        runs: "/api/runs?limit=100",
         trends: "/api/trends?limit=25",
         posts: `/api/posts?limit=40${state.postFilter ? "&status=" + state.postFilter : ""}`,
         channels: "/api/channels",
@@ -7240,7 +7240,7 @@
       return;
     }
     const values = {};
-    $("#connect-dialog-body [data-connect-field]").forEach((input) => {
+    $$("#connect-dialog-body [data-connect-field]").forEach((input) => {
       const value = String(input.value || "").trim();
       if (value) values[input.dataset.connectField] = value;
     });
