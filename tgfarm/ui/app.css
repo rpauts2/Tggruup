@@ -270,6 +270,25 @@ main {
 .stage-cancelled b { color: #c9a6ff; }
 .stage-cancelled .stage-dot { background: transparent; box-shadow: inset 0 0 0 2px #9b5cf6; }
 
+/* Specialist workspaces keep their last good data visible during a partial
+   outage, but the local banner must make that snapshot's age explicit. */
+.workspace-freshness {
+  margin: 8px 18px 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  color: var(--text-faint);
+  background: rgba(255,255,255,.025);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.workspace-freshness[hidden] { display: none; }
+.workspace-freshness strong { color: var(--text); font-weight: 600; }
+.workspace-freshness[data-state="stale"] { border-left-color: var(--warning, #d6a54b); }
+.workspace-freshness[data-state="error"] { border-left-color: var(--danger, #d66b6b); }
+.workspace-freshness + .delivery-health { margin-top: 8px; }
+
 /* -------------------------------------------------------------------- list */
 .list { display: flex; flex-direction: column; min-height: 84px; }
 .list > * + * { border-top: 1px solid var(--line-soft); }
@@ -839,6 +858,21 @@ main {
   display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
   padding: 12px 20px 15px; border-top: 1px solid var(--line-soft);
 }
+.platform-capability-select {
+  display: flex;
+  flex: 0 1 205px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 170px;
+}
+.platform-capability-select > span {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.platform-capability-select select { width: 100%; min-width: 0; }
 .platform-search {
   display: flex; align-items: center; gap: 9px;
   flex: 1; min-width: 260px; max-width: 450px;
@@ -891,10 +925,10 @@ main {
 
 .platform-grid {
   display: grid;
-  /* A plain absolute minimum: `min(100%, 306px)` resolved against an indefinite
-     width inside the desktop webview and collapsed the cards into one-character
-     columns. The mobile rule below handles narrow windows explicitly. */
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  /* Empty tracks collapse so a short catalog uses the available width;
+     additional destinations create new columns automatically. The mobile
+     rule below handles narrow windows explicitly. */
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 13px;
   align-items: stretch;
   min-width: 0;
@@ -1120,6 +1154,7 @@ main {
   .platform-toolbar { padding: 12px 15px; }
   .platform-categories { padding: 0 15px 13px; }
   .platform-search { min-width: 100%; max-width: none; }
+  .platform-capability-select { flex: 1 1 100%; min-width: 0; }
   .platform-filter-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
   .platform-filter-tabs button { flex: none; }
   .platform-card { padding: 15px 15px 0; }
@@ -1239,7 +1274,24 @@ main {
 .platform-auth-block.is-pending .platform-auth-dot { background: #e2b562; box-shadow: 0 0 0 3px rgba(226,181,98,.1); }
 .platform-auth-block.is-not-integrated { border-style: dashed; }
 .platform-auth-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
-.platform-auth-actions .btn { white-space: nowrap; min-height: 32px; }
+/* Platform cards are intentionally information-dense. Keep the access
+   explanation on its own row so a long OAuth/setup action cannot crush the
+   status copy into one-letter columns at the 300px card minimum. */
+.platform-auth-block { flex-direction: column; align-items: stretch; }
+.platform-auth-copy { width: 100%; flex: 1 1 auto; }
+.platform-auth-copy > div { flex: 1 1 auto; }
+.platform-auth-actions {
+  width: 100%;
+  flex: 0 1 auto;
+  justify-content: flex-start;
+}
+.platform-auth-actions .btn {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+  min-height: 32px;
+}
 .platform-auth-button { color: #b8c5dc; border-color: rgba(150,172,211,.2); background: rgba(150,172,211,.04); }
 .platform-auth-check { border-color: rgba(91,140,255,.25); background: rgba(91,140,255,.1); color: #a9c5ff; }
 .platform-auth-dialog {
@@ -2308,3 +2360,130 @@ main { max-width: none; margin: 0; padding: 22px 24px 64px; }
   font-size: 10.5px; padding: 4px 8px; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
+
+
+/* Connection cards: keep platform names readable when status chips compete for row space. */
+.connect-card-top { flex-wrap: wrap; }
+.connect-card-title {
+  flex: 1 1 120px;
+  min-width: 120px;
+}
+.connect-card-title strong {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+
+/* Helpful queue empty state instead of a lone label in a blank workspace. */
+.posts-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 340px;
+  padding: 36px 24px;
+  border: 1px dashed rgba(125,160,255,.24);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(91,140,255,.09), transparent 58%),
+    linear-gradient(145deg, rgba(18,25,42,.72), rgba(11,16,28,.62));
+  text-align: center;
+}
+.posts-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(91,140,255,.26);
+  border-radius: 16px;
+  background: rgba(91,140,255,.12);
+  color: #b4c7ff;
+  font-size: 23px;
+}
+.posts-empty h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 720;
+}
+.posts-empty p {
+  max-width: 440px;
+  margin: 0 0 4px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.posts-empty .btn { margin-top: 2px; }
+
+
+/* Queue cards are keyboard-operable entry points to the shared material drawer. */
+.pcard { cursor: pointer; }
+.pcard:focus-visible,
+.item[role="button"]:focus-visible {
+  outline: 2px solid rgba(125,160,255,.86);
+  outline-offset: 3px;
+  position: relative;
+  z-index: 1;
+}
+.drawer[role="dialog"] { outline: none; }
+.drawer-close:focus-visible {
+  outline: 2px solid rgba(125,160,255,.9);
+  outline-offset: 3px;
+}
+
+/* When the platform registry read fails, keep the last snapshot visible but make its controls inert. */
+.platform-grid.is-stale [data-platform-toggle],
+.platform-grid.is-stale [data-platform-plan],
+.platform-grid.is-stale [data-platform-auth],
+.platform-grid.is-stale [data-platform-auth-config],
+.platform-grid.is-stale [data-platform-auth-check],
+.platform-grid.is-stale [data-platform-browser-auth],
+.platform-grid.is-stale [data-platform-destinations],
+.platform-grid.is-stale [data-platform-max-webhook] {
+  pointer-events: none;
+  opacity: .48;
+  cursor: not-allowed;
+}
+
+/* Editorial plan controls remain unavailable until their own plan snapshot has been read successfully. */
+#plan-apply:disabled, #plan-refresh:disabled { opacity: .48; cursor: not-allowed; }
+
+
+/* Platform contract: distinguish login, access, transport, destination and delivery. */
+.platform-contract { margin: 13px 0 12px; padding: 11px; border: 1px solid var(--line-soft); border-radius: 11px; background: rgba(4,8,16,.24); }
+.platform-contract-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:9px; }
+.platform-contract-head > strong { color:var(--text-faint); font-size:9px; font-weight:800; letter-spacing:.12em; }
+.platform-contract-source { color:var(--text-faint); font-size:9px; }
+.platform-contract-source.is-stale { color:var(--warn); }
+.platform-contract-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+.platform-contract-cell { display:flex; flex-direction:column; gap:4px; min-width:0; padding:8px; border:1px solid var(--line-soft); border-radius:8px; background:rgba(255,255,255,.018); }
+.platform-contract-cell > span { color:var(--text-faint); font-size:9px; letter-spacing:.03em; }
+.platform-contract-cell > strong { color:var(--text); font-size:10.5px; line-height:1.35; overflow-wrap:anywhere; }
+.platform-contract-cell > strong.is-ready { color:var(--ok); }
+.platform-contract-cell > strong.is-failed,.platform-contract-cell > strong.is-blocked { color:var(--err); }
+.platform-contract-cell > strong.is-pending,.platform-contract-cell > strong.is-missing { color:var(--warn); }
+.platform-contract-cell > strong.is-manual,.platform-contract-cell > strong.is-none { color:var(--text-dim); }
+.platform-contract-cell > strong.is-unknown { color:var(--text-faint); }
+.platform-contract-cell > strong.is-info { color:#b8c8ff; }
+.platform-contract-cell > small { color:var(--text-faint); font-size:9px; line-height:1.4; overflow-wrap:anywhere; }
+@media(max-width:1050px) { .platform-contract-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:600px) { .platform-contract { padding:9px; } .platform-contract-grid { grid-template-columns:1fr 1fr; } .platform-contract-cell { padding:7px; } }
+
+
+/* Unified delivery center */
+.delivery-center-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:24px 26px;margin:0 0 18px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(135deg,rgba(72,112,176,.13),rgba(35,42,59,.18))}
+.delivery-center-kicker{display:block;color:var(--accent);font-size:10px;font-weight:800;letter-spacing:.14em;margin-bottom:8px}
+.delivery-center-hero h2{margin:0 0 8px;font-size:24px}
+.delivery-center-hero p{max-width:760px;margin:0;color:var(--muted);line-height:1.55}
+.delivery-center-grid{display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.6fr);gap:16px;margin-bottom:18px}
+.delivery-center-grid>.card{min-width:0}
+.delivery-center-filters{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px}
+.delivery-center-filters button{border:1px solid var(--line);border-radius:999px;padding:6px 11px;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer}
+.delivery-center-filters button.is-active{background:var(--surface-2);border-color:var(--accent);color:var(--text)}
+#delivery-center-journal .delivery-card{cursor:pointer;transition:border-color .15s ease}
+#delivery-center-journal .delivery-card:hover{border-color:var(--accent)}
+#delivery-center-journal .delivery-card .delivery-platforms{cursor:default}
+@media(max-width:900px){.delivery-center-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.delivery-center-hero{align-items:stretch;flex-direction:column;padding:18px}.delivery-center-hero h2{font-size:20px}.delivery-center-hero .btn{width:100%}}

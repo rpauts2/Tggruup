@@ -470,11 +470,16 @@ def test_the_new_cards_are_dispatched_through_the_shared_refresh(client):
     assert 'if ("metricsFormats" in data) renderMetricsFormats(data.metricsFormats);' in body
     assert 'if ("metricsCoverage" in data) renderMetricsCoverage(data.metricsCoverage);' in body
     assert "Promise.allSettled(" in body
-    # The Dzen attribution is re-rendered on every pass, before the all-failed
-    # throw, so a fully dead backend says so instead of freezing on last pass's
-    # attribution — the rule the publication card already follows.
+    # Both decision cards are refreshed before the full-outage early return.
+    # A fully failed read must not enter the generic exception handler, which
+    # would overwrite the endpoint-level unavailable state.
+    assert "renderPublicationDecision(" in body
     assert "renderDzenAttribution(" in body
-    assert body.index("renderDzenAttribution(") < body.index('throw new Error("API недоступен")')
+    full_outage_return = 'if (failed.length === Object.keys(endpoints).length) return;'
+    assert full_outage_return in body
+    assert body.index("renderDzenAttribution(") < body.index(full_outage_return)
+    assert body.index("renderPublicationDecision(") < body.index(full_outage_return)
+    assert 'throw new Error("API недоступен")' not in body
 
 
 # ------------------------------------------------------------------ attribution
@@ -577,14 +582,14 @@ def test_cancelled_gets_its_own_class_and_word_in_the_pipeline_strip(client):
 def test_the_pipeline_strip_no_longer_folds_every_non_ok_into_an_error(client):
     body = _pipeline_body(_script(client))
     assert 's.status === "ok" ? "stage-ok" : "stage-err"' not in body
-    assert 's.status === "cancelled"' in body
-    assert 'STAGE_STATUS[s.status] || { cls: "stage-err"' in body, (
+    assert 'stage.status === "cancelled"' in body
+    assert 'STAGE_STATUS[stage.status] || { cls: "stage-err"' in body, (
         "an unknown status must keep the red: it may not be promoted to 'nothing happened'"
     )
     # The counters of a cancelled stage still ride on `items()`, never on `n()`,
     # and the server's error string stays escaped.
-    assert "items(s.out, s.counters_state)" in body
-    assert "esc((s.error || \"\").slice(0, 40))" in body
+    assert "items(stage.out, stage.counters_state)" in body
+    assert "esc((stage.error || \"\").slice(0, 40))" in body
     assert "${s.out}" not in body and "${s.in}" not in body
 
 

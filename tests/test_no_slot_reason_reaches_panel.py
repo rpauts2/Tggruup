@@ -37,7 +37,7 @@ API_PY = ROOT / "tgfarm" / "api.py"
 
 HELPERS_START = "  const $ = (sel, root = document) => root.querySelector(sel);"
 HELPERS_END = "  // The admin API can force-publish"
-PLAN_START = "  function renderEditorialPlan(plan, history) {"
+PLAN_START = "  function renderEditorialPlan(plan) {"
 PLAN_END = "  function renderDistributionPlan(payload) {"
 
 NODES = ["#plan-meta", "#plan-summary", "#plan-entries", "#plan-history"]

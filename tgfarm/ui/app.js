@@ -9,16 +9,26 @@
     view: "overview",
     postFilter: "",
     crosspostFilter: "all",
+    deliveryCenterFilter: "all",
     data: {},
     refreshTimer: null,
     inFlight: false,
+    refreshIssueSignature: null,
+    lastFullRefreshAt: null,
     bestHour: null,
     memoryQuery: "",
     topicQuery: "",
     topicDossier: null,
     platformData: null,
+    commandStatusLoaded: false,
+    platformCatalogFresh: false,
+    editorialPlanFresh: false,
+    editorialPlanBusy: false,
+    editorialPlanApplyBusy: false,
+    editorialRequests: { plan: 0, history: 0, openOrders: 0 },
     platformQuery: "",
     platformFilter: "all",
+    platformCapabilityFilter: "all",
     platformCategory: "Все",
     platformBusy: new Set(),
     authPlatformId: "",
@@ -35,13 +45,21 @@
     shortVideoBusy: new Set(),
     agentBenchmarkCluster: "",
     agentBenchmarkBusy: false,
+    drawerReturnFocus: null,
+    drawerRequestId: 0,
+    workspaceFreshness: {},
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
   const fmt = new Intl.NumberFormat("ru-RU");
+  const ruPluralRules = new Intl.PluralRules("ru-RU");
   const n = (v) => fmt.format(Math.round(Number(v) || 0));
+  const ruCountLabel = (value, forms) => {
+    const category = ruPluralRules.select(value);
+    return `${n(value)} ${forms[category] || forms.other || forms.many || ""}`.trim();
+  };
   const pct = (v) => `${((Number(v) || 0) * 100).toFixed(1)}%`;
   // Journal counters arrive as `int | null` (`tgfarm/api.py::_stage_counters`):
   // `null` is "nobody measured this", `0` is "measured: nothing happened".
@@ -116,6 +134,158 @@
   }
 
   /* ------------------------------------------------------------- rendering */
+  function renderWorkspaceFreshness(key, rootId, failure) {
+    const root = $("#" + rootId);
+    if (!root) return;
+    if (!failure) {
+      state.workspaceFreshness[key] = { lastSuccessAt: new Date().toISOString() };
+      root.hidden = true;
+      root.dataset.state = "fresh";
+      root.textContent = "";
+      return;
+    }
+
+    const lastSuccessAt = state.workspaceFreshness[key]?.lastSuccessAt;
+    root.hidden = false;
+    if (lastSuccessAt) {
+      root.dataset.state = "stale";
+      root.innerHTML = '<strong>Данные устарели.</strong> '
+        + 'Показан последний успешный снимок: ' + esc(dt(lastSuccessAt)) + '. '
+        + 'Обновление не удалось: ' + esc(failure.message || failure);
+    } else {
+      root.dataset.state = "error";
+      root.innerHTML = '<strong>Данные раздела недоступны.</strong> '
+        + 'Успешный снимок ещё не получен. ' + esc(failure.message || failure);
+    }
+  }
+
+  function alertDestination(alert) {
+    const code = String(alert && alert.code || "");
+    if (code.startsWith("cycle_") || code.startsWith("backup_")) return "runs";
+    if (code.startsWith("dzen_") || code.startsWith("platform_auth")) return "connect";
+    if (code.startsWith("source_")) return "sources";
+    if (code.startsWith("crosspost_")) return "review";
+    if (code.startsWith("publish_") || code === "publishing_stuck") return "review";
+    return "review";
+  }
+
+  function alertDestinationLabel(target) {
+    return ({
+      runs: "Открыть диагностику",
+      connect: "Проверить подключение",
+      sources: "Проверить источники",
+      review: "Разобрать проблемы",
+    })[target] || "Открыть раздел";
+  }
+
+  function renderCommandStatus(status, failure = null) {
+    const section = $("#command-status");
+    const root = $("#command-status-grid");
+    const action = $("#command-next-action");
+    if (!root) return;
+    const freshness = $("#command-status-freshness");
+    if (!status) {
+      if (state.commandStatusLoaded) {
+        root.dataset.state = "stale";
+        if (section) section.dataset.state = "stale";
+        if (freshness) {
+          freshness.hidden = false;
+          freshness.dataset.state = "stale";
+          freshness.textContent = "Обновление статуса не удалось. Показан последний успешный снимок"
+            + (failure && failure.message ? ": " + failure.message : ".");
+        }
+        return;
+      }
+      root.dataset.state = "error";
+      if (section) section.dataset.state = "error";
+      root.innerHTML = '<div class="command-status-unavailable">Статус ещё не получен. Состояние фермы неизвестно.</div>';
+      if (freshness) {
+        freshness.hidden = false;
+        freshness.dataset.state = "error";
+        freshness.textContent = "Первое чтение статуса не удалось"
+          + (failure && failure.message ? ": " + failure.message : ".");
+      }
+      if (action) action.hidden = true;
+      return;
+    }
+    state.commandStatusLoaded = true;
+    root.dataset.state = "fresh";
+    if (section) section.dataset.state = "fresh";
+    if (freshness) {
+      freshness.hidden = true;
+      freshness.textContent = "";
+      delete freshness.dataset.state;
+    }
+    const cycle = status.cycle_health || {};
+    const mode = {
+      live: ["LIVE", "is-live", "Публикации могут выполняться в рабочем режиме"],
+      dry: ["DRY-RUN", "is-warn", "Цикл работает без реальной публикации"],
+      off: ["OFF", "is-muted", "Рабочий режим выключен"],
+    }[status.mode] || ["Неизвестно", "is-muted", "Сервер не сообщил режим"];
+    const schedulerKnown = typeof status.scheduler_running === "boolean";
+    const scheduler = !schedulerKnown
+      ? ["Неизвестно", "is-muted", "Нет подтверждённого ответа"]
+      : status.scheduler_running
+        ? ["Работает", "is-live", "Планировщик активен в этом процессе"]
+        : ["Остановлен", "is-warn", "Автоматический запуск по расписанию сейчас не выполняется"];
+    const publishing = status.can_publish === true
+      ? ["Разрешена", "is-live", "Сервер разрешает публикацию в текущей конфигурации"]
+      : status.can_publish === false
+        ? ["Заблокирована", "is-warn", "Текущая конфигурация не разрешает публикацию"]
+        : ["Неизвестно", "is-muted", "Сервер не сообщил право публикации"];
+    const cycleStates = {
+      idle: ["Не запускался", "is-muted"],
+      running: ["Выполняется", "is-live"],
+      ok: ["Завершён", "is-live"],
+      partial: ["Завершён с ошибками", "is-warn"],
+      failed: ["Сбой", "is-error"],
+      timeout: ["Тайм-аут", "is-error"],
+      cancelled: ["Отменён", "is-warn"],
+    };
+    const cycleView = cycleStates[cycle.state] || ["Неизвестно", "is-muted"];
+    if (cycle.stale === true) cycleView[0] = "Зависший цикл";
+    const cycleStamp = cycle.state === "running" ? cycle.started_at : cycle.finished_at;
+    const cycleDetail = cycle.stale === true
+      ? "Цикл превысил допустимое время — нужна диагностика"
+      : cycleStamp
+        ? (cycle.state === "running" ? "Запущен " : "Завершён ") + dt(cycleStamp)
+        : "Нет подтверждённого времени последнего цикла";
+    const cards = [
+      ["Режим работы", mode[0], mode[2], mode[1]],
+      ["Планировщик", scheduler[0], scheduler[2], scheduler[1]],
+      ["Право публикации", publishing[0], publishing[2], publishing[1]],
+      ["Последний цикл", cycleView[0], cycleDetail, cycle.stale === true ? "is-error" : cycleView[1]],
+    ];
+    root.innerHTML = cards.map(([label, value, detail, tone]) =>
+      '<article class="command-status-item ' + tone + '">'
+      + '<span>' + esc(label) + '</span>'
+      + '<strong>' + esc(value) + '</strong>'
+      + '<small>' + esc(detail) + '</small>'
+      + '</article>'
+    ).join("");
+    if (action) {
+      let target = "posts";
+      let label = "Открыть очередь";
+      const alerts = Array.isArray(status.alerts) ? status.alerts : [];
+      if (alerts.length) {
+        target = alertDestination(alerts[0]);
+        label = alertDestinationLabel(target);
+      } else if (cycle.stale === true || ["failed", "timeout", "partial"].includes(cycle.state)) {
+        target = "runs";
+        label = "Проверить последний цикл";
+      } else if (status.can_publish === false) {
+        target = "platforms";
+        label = "Проверить настройки публикации";
+      } else if (status.scheduler_running === false) {
+        target = "plan";
+        label = "Открыть планирование";
+      }
+      action.dataset.goto = target;
+      action.innerHTML = esc(label) + ' <span aria-hidden="true">↗</span>';
+      action.hidden = false;
+    }
+  }
+
   function renderKPIs(s) {
     const fleet = s.fleet || {};
     const items = [
@@ -1567,6 +1737,7 @@
   };
 
   function renderPipeline(runs) {
+    const targets = ["#pipeline-visual", "#team-pipeline"].map((selector) => $(selector)).filter(Boolean);
     const byRun = new Map();
     for (const r of runs) {
       if (r.stage === "cycle") continue;
@@ -1582,25 +1753,23 @@
                     s9_crosspost: "кросспост", s8_analytics: "аналитика" };
 
     if (!stages.length) {
-      $("#pipeline-visual").innerHTML = `<div class="empty">Прогонов ещё не было</div>`;
+      targets.forEach((target) => { target.innerHTML = '<div class="empty">Прогонов ещё не было</div>'; });
       return;
     }
     const map = Object.fromEntries(stages.map((s) => [s.stage, s]));
-    $("#pipeline-visual").innerHTML = order.map((key) => {
-      const s = map[key];
-      const state = s ? (STAGE_STATUS[s.status] || { cls: "stage-err", word: null }) : null;
-      const cancelled = !!state && s.status === "cancelled";
-      const cls = !s ? "" : state.cls;
-      // A cancelled stage's `error` is the sentence the timer wrote
-      // ("cancelled after 4500ms"), so it is kept — but prefixed with what it
-      // actually was, and still through `esc()`: the string is server data.
-      const detail = s ? (cancelled ? `прерван · ${esc((s.error || "").slice(0, 40))}`
-        : s.status === "ok" ? `${items(s.out, s.counters_state)} · ${s.ms} мс` : esc((s.error || "").slice(0, 40))) : "не запускался";
+    const markup = order.map((key) => {
+      const stage = map[key];
+      const status = stage ? (STAGE_STATUS[stage.status] || { cls: "stage-err", word: null }) : null;
+      const cancelled = !!status && stage.status === "cancelled";
+      const cls = !stage ? "" : status.cls;
+      // A cancelled stage's error is the timer's cancellation reason, not a publish failure.
+      const detail = stage ? (cancelled ? `прерван · ${esc((stage.error || "").slice(0, 40))}`
+        : stage.status === "ok" ? `${items(stage.out, stage.counters_state)} · ${stage.ms} мс` : esc((stage.error || "").slice(0, 40))) : "не запускался";
       return `<div class="stage ${cls}"><span class="stage-dot"></span>
                 <span><b>${names[key]}</b><br>${detail}</span></div>`;
     }).join("");
+    targets.forEach((target) => { target.innerHTML = markup; });
   }
-
   // S2 stores the *shape* of interest per cluster: `trend_phase` is this window
   // against the window before it, `acceleration` is the relative change. Both
   // can be legitimately absent — `unknown` means the farm never observed a
@@ -1742,7 +1911,7 @@
                : p.scheduled_at ? `в ${clock(p.scheduled_at)}`
                : dt(p.created_at);
     return `
-      <article class="pcard" data-post="${esc(p.id)}">
+      <article class="pcard" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="pcard-cover">${cover}</div>
         <div class="pcard-body">
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${esc(when)}</div>
@@ -1764,7 +1933,15 @@
   function renderPosts(posts) {
     $("#posts-grid").innerHTML = posts.length
       ? posts.map(postCard).join("")
-      : `<div class="empty">Постов нет</div>`;
+      : `<section class="posts-empty" aria-labelledby="posts-empty-title">
+          <span class="posts-empty-icon" aria-hidden="true">▤</span>
+          <h3 id="posts-empty-title">Очередь пока пуста</h3>
+          <p>Здесь появятся материалы после подготовки и проверки. Начни с редакционного плана, чтобы собрать темы и распределить публикации.</p>
+          <button class="btn btn-primary btn-sm" type="button" data-goto="plan">Открыть планирование</button>
+        </section>`;
+    $("#posts-grid [data-goto]")?.addEventListener("click", (event) => {
+      switchView(event.currentTarget.dataset.goto);
+    });
 
     const queue = posts.filter((p) => ["publish_unknown", "scheduled", "gated", "failed"].includes(p.status)).slice(0, 6);
     // With nothing waiting, an empty panel tells the operator nothing. Fall back
@@ -1773,7 +1950,7 @@
     if (queue.length) {
       title.textContent = "Ближайшие публикации";
       $("#overview-queue").innerHTML = queue.map((p) => `
-      <div class="item" data-post="${esc(p.id)}">
+      <div class="item" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.status === "publish_unknown" ? "проверьте площадку перед повтором" : p.status === "failed" ? "исправьте причину и повторите вручную" : (p.scheduled_at ? clock(p.scheduled_at) : "ждёт слота")}</div>
@@ -1784,7 +1961,7 @@
     } else if (posts.length) {
       title.textContent = "Последние публикации";
       $("#overview-queue").innerHTML = posts.slice(0, 6).map((p) => `
-      <div class="item" data-post="${esc(p.id)}">
+      <div class="item" data-post="${esc(p.id)}" role="button" tabindex="0" aria-label="Открыть материал: ${esc(p.hook || "Без заголовка")}">
         <div class="item-main">
           <div class="item-title">${esc(p.hook)}</div>
           <div class="item-meta">${esc(p.channel_title || p.channel_id)} · ${p.published_at ? clock(p.published_at) : "—"}</div>
@@ -1799,6 +1976,11 @@
 
     $$(".pcard, #overview-queue .item").forEach((el) => {
       el.addEventListener("click", () => openDrawer(el.dataset.post));
+      el.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openDrawer(el.dataset.post);
+      });
     });
   }
 
@@ -1892,6 +2074,8 @@
           ? '<div class="item-meta is-unresolved-error">' + esc(row.error) + "</div>"
           : "")
         + '</div><div class="item-side unresolved-actions">'
+        + '<button class="btn btn-ghost btn-sm" type="button"'
+        + ' data-unresolved-open="' + esc(row.public_id) + '">Открыть материал</button>'
         + '<button class="btn btn-primary btn-sm" type="button"'
         + ' data-unresolved-action="confirm_published"'
         + ' data-unresolved-id="' + esc(row.public_id) + '">Да, пост уже есть</button>'
@@ -1955,39 +2139,77 @@
   };
 
   // ── План тем (глобальный редакционный план) ─────────────────────────────
-  async function loadEditorialPlan(force = false) {
-    if (force) state.planLoaded = false;
-    // Read independently of the plan itself: whether the consumer runs does not
-    // depend on this process being able to serialize the plan.
-    loadPlanExecution();
-    // The same argument in the other direction: booking fidelity is a fact about
-    // stored rows, not about the plan snapshot this call is building, and it keeps
-    // its own request so a failed one cannot be reported as the other.
-    loadBookingFidelity();
-    // And the third independent read: which topics the plan has already ordered a
-    // draft for but has not booked a slot to yet. `/api/editorial` answers it out of
-    // `editorial.queue`, so this is neither the consumer's state nor the snapshot's
-    // — it is the queue's own answer, and it keeps its own request so that a dead
-    // one cannot be reported as the other.
-    loadOpenOrderQueue();
-    try {
-      const [plan, history] = await Promise.all([
-        api("/api/editorial/plan"),
-        api("/api/editorial/plan/history?limit=10"),
-      ]);
-      renderEditorialPlan(plan || {}, (history && history.plans) || []);
-      state.planLoaded = true;
-    } catch (err) {
-      const meta = $("#plan-meta");
-      if (meta) meta.textContent = "План недоступен: " + (err && err.message ? err.message : String(err));
+  function syncEditorialPlanActions() {
+    const refresh = $("#plan-refresh");
+    const apply = $("#plan-apply");
+    if (refresh) refresh.disabled = state.editorialPlanBusy || state.editorialPlanApplyBusy;
+    if (apply) {
+      apply.disabled = !state.editorialPlanFresh
+        || state.editorialPlanBusy || state.editorialPlanApplyBusy;
+      apply.title = state.editorialPlanFresh
+        ? "Зафиксировать текущий редакционный план"
+        : "Сначала получи актуальный план";
     }
   }
 
-  function renderEditorialPlan(plan, history) {
+  async function loadEditorialPlan(force = false) {
+    if (force) state.planLoaded = false;
+    const planRequestId = ++state.editorialRequests.plan;
+    const historyRequestId = ++state.editorialRequests.history;
+    state.editorialPlanBusy = true;
+    syncEditorialPlanActions();
+
+    // Each endpoint is its own source of truth. A history outage must not hide a
+    // successfully read plan, and a plan outage must not erase a good history.
+    loadPlanExecution();
+    loadBookingFidelity();
+    loadOpenOrderQueue();
+
+    const [planResult, historyResult] = await Promise.allSettled([
+      api("/api/editorial/plan"),
+      api("/api/editorial/plan/history?limit=10"),
+    ]);
+
+    if (planRequestId === state.editorialRequests.plan) {
+      if (planResult.status === "fulfilled"
+        && planResult.value && typeof planResult.value === "object"
+        && Array.isArray(planResult.value.entries)) {
+        renderEditorialPlan(planResult.value);
+        renderWorkspaceFreshness("editorialPlan", "plan-freshness", null);
+        state.editorialPlanFresh = true;
+        state.planLoaded = true;
+      } else {
+        const error = planResult.status === "rejected"
+          ? planResult.reason : new Error("Ответ плана не содержит список entries.");
+        renderWorkspaceFreshness("editorialPlan", "plan-freshness", error);
+        state.editorialPlanFresh = false;
+        state.planLoaded = false;
+      }
+    }
+
+    if (historyRequestId === state.editorialRequests.history) {
+      if (historyResult.status === "fulfilled"
+        && historyResult.value && Array.isArray(historyResult.value.plans)) {
+        renderPlanHistory(historyResult.value.plans);
+        renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness", null);
+      } else {
+        const error = historyResult.status === "rejected"
+          ? historyResult.reason : new Error("Ответ истории не содержит список plans.");
+        renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness", error);
+      }
+    }
+
+    if (planRequestId === state.editorialRequests.plan) {
+      state.editorialPlanBusy = false;
+      syncEditorialPlanActions();
+    }
+  }
+
+
+  function renderEditorialPlan(plan) {
     const meta = $("#plan-meta");
     const chips = $("#plan-summary");
     const rows = $("#plan-entries");
-    const hist = $("#plan-history");
     if (!meta || !rows) return;
 
     const summary = plan.summary || {};
@@ -2085,6 +2307,11 @@
         }).join("")}</ul>`
       : `<p class="plan-entry-reasons">Материалов нет — запустите сбор тем или обновите план.</p>`;
 
+  }
+
+  function renderPlanHistory(history) {
+    const hist = $("#plan-history");
+    if (!hist) return;
     hist.innerHTML = history.length
       ? `<ul class="plan-history">${history.map((h) => {
           const s = h.summary || {};
@@ -2093,6 +2320,7 @@
         }).join("")}</ul>`
       : `<p class="plan-entry-reasons">Зафиксированных планов пока нет.</p>`;
   }
+
 
   // ── Исполнитель плана: работает ли потребитель и что он уже сделал ───────
   const EXECUTION_UNKNOWN = "неизвестно";
@@ -2851,10 +3079,20 @@
   async function loadOpenOrderQueue() {
     const root = openOrdersMount();
     if (!root) return;
+    const requestId = ++state.editorialRequests.openOrders;
     try {
-      renderOpenOrderQueue(await api(OPEN_ORDERS_ENDPOINT), null);
+      const payload = await api(OPEN_ORDERS_ENDPOINT);
+      if (!payload || !Array.isArray(payload.queue)) {
+        throw new Error("Ответ редакционной очереди не содержит список queue.");
+      }
+      if (requestId !== state.editorialRequests.openOrders) return;
+      renderOpenOrderQueue(payload, null);
+      renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness", null);
     } catch (error) {
-      renderOpenOrderQueue(null, error);
+      if (requestId !== state.editorialRequests.openOrders) return;
+      const hadSnapshot = Boolean(state.workspaceFreshness.editorialOpenOrders?.lastSuccessAt);
+      renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness", error);
+      if (!hadSnapshot) renderOpenOrderQueue(null, error);
     }
   }
 
@@ -2889,8 +3127,56 @@
     }
   };
 
+  function renderPlatformReadiness(payload = state.platformData, fresh = state.platformCatalogFresh) {
+    const root = $("#platform-readiness");
+    if (!root) return;
+    if (!payload) {
+      root.dataset.state = "error";
+      root.innerHTML = '<div class="platform-readiness-empty">Состояние площадок ещё не получено. Обнови данные, чтобы увидеть готовность подключений.</div>';
+      return;
+    }
+    root.dataset.state = fresh ? "fresh" : "stale";
+    const platforms = Array.isArray(payload.platforms) ? payload.platforms : [];
+    const supported = platforms.filter((item) => item.supported);
+    const enabled = supported.filter((item) => item.enabled);
+    const accessStatus = (item) => item.id === "dzen" && state.dzenStatus
+      && typeof state.dzenStatus.authorized === "boolean"
+      ? (state.dzenStatus.authorized ? "authorized" : "needs_setup")
+      : (item.auth || {}).status;
+    const authorized = supported.filter((item) => accessStatus(item) === "authorized");
+    const needsSetup = enabled.filter((item) => !item.configured || accessStatus(item) === "needs_setup");
+    const failed = enabled.filter((item) => accessStatus(item) === "failed");
+    const manual = enabled.filter((item) => item.automation_mode === "manual");
+    const attention = [...new Map([...failed, ...needsSetup].map((item) => [item.id, item])).values()];
+    const stats = [
+      ["С адаптером", supported.length],
+      ["Включено", enabled.length],
+      ["Доступ подтверждён", authorized.length],
+      ["Нужна настройка", needsSetup.length + failed.filter((item) => item.configured).length],
+      ["Только вручную", manual.length],
+    ];
+    root.innerHTML = '<div class="platform-readiness-stats">' + stats.map(([label, value]) =>
+      '<div class="platform-readiness-stat"><span>' + esc(label) + '</span><strong>' + esc(n(value)) + '</strong></div>'
+    ).join("") + '</div>'
+      + (fresh ? '' : '<p class="platform-readiness-stale">Показан последний успешный снимок каталога. Данные могут измениться после этого.</p>')
+      + '<div class="platform-readiness-list">' + (attention.length
+        ? attention.slice(0, 5).map((item) => {
+          const auth = item.auth || {};
+          const failedAuth = auth.status === "failed";
+          const reason = failedAuth ? (auth.detail || auth.note || "Проверка доступа завершилась ошибкой")
+            : (item.connection_detail || item.requirements || "Для включённой площадки не хватает настроек");
+          return '<div class="platform-readiness-row"><span class="platform-readiness-indicator ' + (failedAuth ? 'is-error' : 'is-warn') + '"></span>'
+            + '<div class="platform-readiness-copy"><strong>' + esc(item.name || item.id) + '</strong><small>' + esc(reason) + '</small></div>'
+            + '<button type="button" class="attention-open" data-goto="connect">Открыть</button></div>';
+        }).join("")
+        : '<div class="platform-readiness-clear">Нет включённых площадок с выявленной проблемой настройки или доступа.</div>')
+      + '</div>';
+  }
+
   function renderPlatforms(payload) {
     state.platformData = payload || { platforms: [], summary: {} };
+    state.platformCatalogFresh = true;
+    renderPlatformReadiness(state.platformData, true);
     const summary = state.platformData.summary || {};
     const items = state.platformData.platforms || [];
     const stats = [
@@ -2926,6 +3212,11 @@
     const container = $("#platforms-grid");
     if (!container) return;
     const all = (state.platformData && state.platformData.platforms) || [];
+    container.classList.toggle("is-stale", !state.platformCatalogFresh);
+    if (!state.platformCatalogFresh && !state.platformData) {
+      container.innerHTML = '<div class="card platform-empty"><h3>Каталог площадок недоступен</h3><p>Успешное состояние интеграций ещё не получено. Действия заблокированы до обновления.</p></div>';
+      return;
+    }
     const query = (state.platformQuery || "").trim().toLocaleLowerCase("ru-RU");
     const visible = all.filter((item) => {
       const haystack = [
@@ -2937,6 +3228,8 @@
       if (state.platformFilter === "enabled" && !(item.supported && item.enabled)) return false;
       if (state.platformFilter === "setup" && !(item.supported && item.enabled && !item.configured)) return false;
       if (state.platformFilter === "planned" && !item.planned) return false;
+      if (state.platformCapabilityFilter !== "all"
+        && item.capability !== state.platformCapabilityFilter) return false;
       return true;
     }).sort((a, b) => {
       const group = (p) => p.supported ? (p.enabled ? 0 : 1) : (p.planned ? 2 : 3);
@@ -2981,6 +3274,8 @@
              ${item.planned ? "✓ В плане" : "+ В план"}
            </button>`;
       const auth = item.auth || {};
+      const connectionRow = ((state.connections || {}).platforms || []).find((row) => row.id === item.id) || null;
+      const connectionStatuses = (connectionRow && connectionRow.statuses) || {};
       const authCheckedDate = auth.checked_at ? new Date(auth.checked_at) : null;
       const authCheckedLabel = authCheckedDate && !Number.isNaN(authCheckedDate.getTime())
         ? `Проверено: ${authCheckedDate.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
@@ -3041,8 +3336,44 @@
       const automationNote = item.automation_note
         ? `<small class="platform-auth-checked">${esc(item.automation_note)}</small>`
         : "";
+      const modeLabel = connectionRow ? (CONNECT_MODES[connectionRow.mode] || connectionRow.mode) : "";
+      const statusCell = (key, fallbackLabel, fallbackState = "unknown") => {
+        const value = connectionStatuses[key] || {};
+        const rawState = String(value.state || fallbackState);
+        const safeState = ["ready", "failed", "blocked", "pending", "missing", "manual", "none", "unknown"].includes(rawState) ? rawState : "unknown";
+        return { state: safeState, label: value.label || fallbackLabel };
+      };
+      const authCell = statusCell("auth", connectionRow ? connectStatusOf(connectionRow).label : (state.connectFresh === false ? "Снимок подключений устарел" : "Загрузка статуса входа"), connectionRow ? connectStatusOf(connectionRow).key === "ready" ? "ready" : connectStatusOf(connectionRow).key === "failed" ? "failed" : "pending" : "unknown");
+      const apiCell = statusCell("api", item.capability === "publish" ? "API-путь не подтверждён" : "Автоматический API-постинг не заявлен", item.capability === "publish" ? "unknown" : "manual");
+      const destinationCell = statusCell("destination", "Назначение не проверено", "unknown");
+      const publishCell = statusCell("publish", item.capability_label || "Возможность доставки не указана", item.capability === "publish" ? "blocked" : "manual");
+      const featureLabel = (value) => {
+        if (value === true) return "Поддерживается";
+        if (value === false) return "Не поддерживается";
+        if (Array.isArray(value)) return value.length ? value.map((entry) => typeof entry === "string" ? entry : entry.label || entry.name || "").filter(Boolean).join(" · ") : "Не указано";
+        if (value && typeof value === "object") return value.label || value.note || value.state || "Описано";
+        return "Не описано адаптером";
+      };
+      const declaredCapabilities = item.capabilities || {};
+      const roleLabels = { primary: "Основная публикация", crosspost: "Кросспостинг", video: "Видео", visual: "Визуальный контент", text: "Текст", professional: "Профессиональный контент", search: "Поисковый трафик", community: "Сообщества", article: "Статьи", technical: "Технический контент" };
+      const editorialFocus = (item.roles || []).map((role) => roleLabels[role] || role).join(" · ") || item.roles_label || "Не указан";
+      const readinessTile = (label, value, stateName, detail = "") => `<div class="platform-contract-cell"><span>${esc(label)}</span><strong class="is-${esc(stateName)}">${esc(value)}</strong>${detail ? `<small>${esc(detail)}</small>` : ""}</div>`;
+      const contractMarkup = `<section class="platform-contract" aria-label="Возможности и готовность ${esc(item.name)}">
+        <div class="platform-contract-head"><strong>ВОЗМОЖНОСТИ И ГОТОВНОСТЬ</strong>${connectionRow ? `<span class="platform-contract-source ${state.connectFresh === false ? "is-stale" : ""}">${state.connectFresh === false ? "Снимок устарел" : "Проверка подключений"}</span>` : '<span class="platform-contract-source">Статус входа загружается</span>'}</div>
+        <div class="platform-contract-grid">
+          ${readinessTile("Способ входа", modeLabel || "Не получен", connectionRow ? "ready" : "unknown", connectionRow ? (connectionRow.hint || "") : "")}
+          ${readinessTile("Доступ", authCell.label, authCell.state, connectionRow?.account ? "Аккаунт: " + connectionRow.account : "")}
+          ${readinessTile("API / транспорт", apiCell.label, apiCell.state)}
+          ${readinessTile("Назначение", destinationCell.label, destinationCell.state)}
+          ${readinessTile("Доставка", publishCell.label, publishCell.state, item.capability_note || "")}
+          ${readinessTile("Редакционный фокус", editorialFocus, "info", "Не является обещанием поддержки конкретного типа медиа")}
+          ${readinessTile("Медиа", featureLabel(declaredCapabilities.media), declaredCapabilities.media === true ? "ready" : declaredCapabilities.media === false ? "manual" : "unknown")}
+          ${readinessTile("Расписание", featureLabel(declaredCapabilities.scheduling), declaredCapabilities.scheduling === true ? "ready" : declaredCapabilities.scheduling === false ? "manual" : "unknown")}
+          ${readinessTile("Метрики", featureLabel(declaredCapabilities.metrics), declaredCapabilities.metrics === true ? "ready" : declaredCapabilities.metrics === false ? "manual" : "unknown")}
+        </div>
+      </section>`;
       return `
-        <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}"
+        <article class="platform-card ${supported ? "is-supported" : "is-planned"} ${item.enabled && supported ? "is-enabled" : ""}" data-platform-id="${esc(item.id)}"
           style="--platform-color:${esc(item.color || "#7890b2")}">
           <div class="platform-card-head">
             <div class="platform-brand-mark">${esc(item.symbol || item.name.slice(0, 2))}</div>
@@ -3053,6 +3384,7 @@
             <div class="platform-card-action">${switchMarkup}</div>
           </div>
           <p class="platform-description">${esc(item.description)}</p>
+          ${contractMarkup}
           ${item.editorial ? `<div class="platform-editorial-meta">
             <span>РЕДАКЦИОННЫЙ ПРОФИЛЬ</span>
             <p><strong>${esc(item.editorial.label || item.editorial.format)}</strong> · ${esc(item.editorial.audience || "")}</p>
@@ -3065,6 +3397,7 @@
             <span class="platform-priority ${item.priority === "core" ? "priority-core" : ""}">${esc(priority)}</span>
             <span class="platform-priority">${esc(automationLabel)}</span>
             ${item.capability ? `<span class="platform-capability capability-${esc(item.capability)}" title="${esc(item.capability_note || "")}">${esc(item.capability_label || item.capability)}</span>` : ""}
+            ${supported ? `<span class="platform-priority platform-channel-count" title="Количество включённых каналов и персон этой площадки">${typeof item.channel_count === "number" ? ruCountLabel(item.channel_count, { one: "канал", few: "канала", many: "каналов" }) : "каналы: нет отчёта"}</span>` : ""}
           </div>
           <div class="platform-connection">
             <span class="platform-connection-icon">${supported ? (item.configured ? "✓" : "!") : "↗"}</span>
@@ -3105,6 +3438,10 @@
   }
 
   async function registerMaxWebhook(button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед настройкой webhook.", "warn");
+      return;
+    }
     if (button) {
       button.disabled = true;
       button.textContent = "Подключаю webhook…";
@@ -3128,6 +3465,10 @@
   }
 
   async function discoverPlatformDestinations(platformId, button) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед поиском адресатов.", "warn");
+      return;
+    }
     const root = document.getElementById("platform-destination-" + platformId);
     if (!root) return;
     const isFacebook = platformId === "facebook";
@@ -3201,6 +3542,10 @@
   }
 
   async function openPlatformAuthorization(platformId, forceCredentials = false) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед подключением.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item) return;
     const auth = item.auth || {};
@@ -3629,6 +3974,10 @@
   }
 
   async function startPlatformBrowserLogin(platformId, button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед входом.", "warn");
+      return;
+    }
     if (!platformId || state.platformBusy.has(platformId)) return;
     state.platformBusy.add(platformId);
     if (button) button.disabled = true;
@@ -3652,6 +4001,10 @@
   }
 
   async function checkPlatformAuthorization(platformId, button = null) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед проверкой доступа.", "warn");
+      return null;
+    }
     if (button) {
       button.disabled = true;
       button.classList.add("is-busy");
@@ -3687,6 +4040,10 @@
 
   async function savePlatformCredentials(event) {
     event?.preventDefault();
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед сохранением настроек.", "warn");
+      return;
+    }
     if (state.authSaving || !state.authPlatformId) return;
     const platformId = state.authPlatformId;
     const values = {};
@@ -4084,6 +4441,10 @@
   }
 
   async function updatePlatformSwitch(platformId, enabled) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед изменением настроек.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
     if (enabled && platformId === "x") {
@@ -4122,6 +4483,10 @@
   }
 
   async function updatePlatformPlan(platformId) {
+    if (!state.platformCatalogFresh) {
+      toast("Каталог площадок устарел. Обнови данные перед изменением плана.", "warn");
+      return;
+    }
     const item = (state.platformData?.platforms || []).find((entry) => entry.id === platformId);
     if (!item || state.platformBusy.has(platformId)) return;
     state.platformBusy.add(platformId);
@@ -4428,8 +4793,8 @@
     }).join("") || `<div class="empty">Источники не заданы</div>`;
   }
 
-  function renderCrosspostHealth(payload) {
-    const container = $("#crosspost-health");
+  function renderCrosspostHealth(payload, target = "#crosspost-health") {
+    const container = $(target);
     if (!container) return;
     const data = payload || {};
     const totals = data.totals || {};
@@ -4473,8 +4838,8 @@
       }).join("") || `<div class="delivery-health-empty">Пока нет записей о доставке</div>`}</div>`;
   }
 
-  function renderCrossposts(entries) {
-    const container = $("#crossposts-list");
+  function renderCrossposts(entries, target = "#crossposts-list", filter = state.crosspostFilter) {
+    const container = $(target);
     if (!container) return;
 
     // API rows are newest-first. Keep the newest attempt for each
@@ -4529,14 +4894,14 @@
     });
     const matchesFilter = (rows) => {
       const statuses = rows.map((row) => String(row.status || "unknown"));
-      if (state.crosspostFilter === "attention") {
+      if (filter === "attention") {
         return statuses.some((status) => ["unknown", "failed", "permanent", "permanent_failure"].includes(status));
       }
-      if (state.crosspostFilter === "published") return statuses.includes("posted");
-      if (state.crosspostFilter === "errors") {
+      if (filter === "published") return statuses.includes("posted");
+      if (filter === "errors") {
         return statuses.some((status) => ["failed", "permanent", "permanent_failure"].includes(status));
       }
-      if (state.crosspostFilter === "pending") {
+      if (filter === "pending") {
         return statuses.some((status) => ["scheduled", "publishing", "retry_authorized", "failed"].includes(status));
       }
       return true;
@@ -4611,7 +4976,7 @@
           </div>
           <div class="item-side"><span class="tag ${overallClass}">${esc(overall)}</span></div>
         </div>`;
-    }).join("") || `<div class="empty">${visibleCards.length ? "Нет материалов для выбранного фильтра" : (state.crosspostFilter === "all" ? "Кросспостов пока нет" : "Нет материалов для выбранного фильтра")}</div>`;
+    }).join("") || `<div class="empty">${visibleCards.length ? "Нет материалов для выбранного фильтра" : (filter === "all" ? "Кросспостов пока нет" : "Нет материалов для выбранного фильтра")}</div>`;
 
     $(".js-crosspost-reconcile", container) && $$(".js-crosspost-reconcile", container).forEach((button) => {
       button.addEventListener("click", () => window.tgfarmReconcileCrosspost(
@@ -4655,18 +5020,41 @@
   }
 
   /* --------------------------------------------------------------- drawer */
+  function closeDrawer() {
+    const drawer = $("#drawer");
+    if (!drawer || drawer.hidden) return;
+    drawer.hidden = true;
+    state.drawerRequestId += 1;
+    const restore = state.drawerReturnFocus;
+    state.drawerReturnFocus = null;
+    if (restore && restore.isConnected && typeof restore.focus === "function") restore.focus();
+  }
+
   async function openDrawer(postId) {
     if (!postId) return;
     const drawer = $("#drawer");
     const inner = $("#drawer-inner");
-    inner.innerHTML = `<div class="empty">Загрузка…</div>`;
+    const requestId = ++state.drawerRequestId;
+    if (drawer.hidden) state.drawerReturnFocus = document.activeElement;
+    inner.innerHTML = `<div class="empty">Загрузка материала…</div>`;
     drawer.hidden = false;
-
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
+    drawer.setAttribute("aria-labelledby", "drawer-title");
     let p;
     try {
       p = await api(`/api/posts/${encodeURIComponent(postId)}`);
+      if (requestId !== state.drawerRequestId || drawer.hidden) return;
     } catch (e) {
-      inner.innerHTML = `<div class="empty">Не удалось загрузить пост</div>`;
+      if (requestId !== state.drawerRequestId || drawer.hidden) return;
+      inner.innerHTML = `<div class="drawer-head">
+        <h3 id="drawer-title">Материал не удалось загрузить</h3>
+        <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
+      </div>
+      <div class="empty" role="alert">Не удалось прочитать материал: ${esc(e.message || e)}</div>`;
+      const closeButton = inner.querySelector("[data-drawer-close]");
+      closeButton?.addEventListener("click", closeDrawer);
+      closeButton?.focus();
       return;
     }
 
@@ -4794,8 +5182,8 @@
       : "";
     inner.innerHTML = `
       <div class="drawer-head">
-        <h3>${esc(p.hook)}</h3>
-        <button class="btn btn-ghost btn-sm drawer-close" onclick="document.getElementById('drawer').hidden=true">✕</button>
+        <h3 id="drawer-title">${esc(p.hook)}</h3>
+        <button class="btn btn-ghost btn-sm drawer-close" type="button" data-drawer-close aria-label="Закрыть карточку материала">✕</button>
       </div>
 
       <div class="pcard-foot" style="margin-bottom:14px">
@@ -4822,7 +5210,7 @@
 
       ${p.status === "published" ? `<div class="drawer-block short-video-tools">
         <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
-        <p class="drawer-meta">Ферма собирает оригинальный вертикальный MP4 из текста публикации. YouTube Shorts могут уходить через настроенный live-конвейер. TikTok требует отдельного просмотра и подтверждения для каждого видео.</p>
+        <p class="drawer-meta">Из текущего материала можно собрать вертикальный MP4. YouTube Shorts загружаются автоматически только при включённой площадке и активном LIVE-режиме. TikTok требует отдельного просмотра и подтверждения для каждой отправки.</p>
         <div class="short-video-actions">
           <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(p.id)}')" ${state.shortVideoBusy.has(p.id) ? "disabled" : ""}>${p.video ? "Пересобрать MP4" : "Создать вертикальное видео"}</button>
           <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareTikTok('${esc(p.id)}')">Подготовить TikTok</button>
@@ -4859,18 +5247,6 @@
           <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareCommunityDraft('${esc(p.id)}','pikabu')">Подготовить для Пикабу</button>
         </div>
       </div>
-
-      ${p.status === "published" ? `<div class="drawer-block short-video-tools">
-        <h4>Короткие видео · Shorts / TikTok / VK Клипы</h4>
-        <p class="drawer-meta">Из текущего поста можно собрать оригинальный вертикальный MP4. YouTube загружает Shorts автоматически только при включённой площадке и live-режиме. TikTok всегда просит подтверждение перед каждой отправкой.</p>
-        <div class="short-video-actions">
-          <button class="btn btn-primary btn-sm" type="button" onclick="tgfarmRenderShort('${esc(p.id)}')" ${state.shortVideoBusy.has(p.id) ? "disabled" : ""}>${p.video ? "Пересобрать MP4" : "Создать вертикальное видео"}</button>
-          <button class="btn btn-ghost btn-sm" type="button" onclick="tgfarmPrepareTikTok('${esc(p.id)}')">Подготовить TikTok</button>
-          ${p.video ? `<a class="btn btn-ghost btn-sm" href="/api/media/${encodeURIComponent(p.video.id)}" download="tgfarm-short-${esc(p.id)}.mp4">Скачать MP4 для VK Клипов</a>` : ""}
-          <a class="btn btn-ghost btn-sm" href="https://vk.com/clips" target="_blank" rel="noopener noreferrer">Открыть VK Клипы ↗</a>
-        </div>
-        <p class="drawer-meta">VK Клипы: TgFarm готовит MP4 и открывает официальный экран загрузки. Прямую API-публикацию именно в ленту Клипов не заявляем, пока не подтверждён отдельный поддерживаемый endpoint.</p>
-      </div>` : ""}
 
       ${p.format_reason ? `<div class="drawer-block"><h4>Почему такой формат</h4>
         <div class="drawer-text">${esc(p.format_reason)}</div></div>` : ""}
@@ -4932,7 +5308,7 @@
         ${p.status === "failed" && !p.tg_message_id ? `<button class="btn btn-primary btn-sm" onclick="tgfarmRetryFailed('${esc(p.id)}')">Повторить после исправления</button>` : ""}
         ${["draft", "gated", "scheduled", "rejected", "failed"].includes(p.status) ? `<button class="btn btn-ghost btn-sm" onclick="tgfarmReject('${esc(p.id)}')">Отклонить</button>` : ""}
         <button class="btn btn-ghost btn-sm" onclick="tgfarmCopyText('${esc(p.id)}')">Копировать текст</button>
-        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Трейс</button>
+        <button class="btn btn-ghost btn-sm" onclick="tgfarmTrace('${esc(p.id)}')">Обновить историю</button>
         ${p.external_url ? `<a class="btn btn-ghost btn-sm" href="${esc(p.external_url)}" target="_blank" rel="noopener">Открыть оригинал</a>` : ""}
         ${EDITABLE.has(p.status) && !p.tg_message_id
           ? `<button class="btn btn-ghost btn-sm" id="btn-edit" onclick="tgfarmEditStart('${esc(p.id)}')">Редактировать</button>
@@ -4941,8 +5317,17 @@
 
       ${state.bestHour != null ? `<div class="drawer-block"><h4>Умная подсказка</h4><div class="drawer-text">Лучшее время публикации по статистике: ${state.bestHour}:00. Пост пройдёт гейты и встанет в очередь автоматически.</div></div>` : ""}
 
+      <div id="trace-slot" aria-live="polite"><div class="drawer-block trace-block"><h4>История материала</h4><div class="empty">Загружаю историю…</div></div></div>
       <div id="editor-slot"></div>
       <div id="preview-slot"></div>`;
+    const closeButton = inner.querySelector("[data-drawer-close]");
+    if (closeButton) {
+      closeButton.addEventListener("click", closeDrawer);
+      closeButton.focus();
+    } else {
+      drawer.focus();
+    }
+    window.tgfarmTrace(p.id);
   }
 
   function setTikTokPublishStatus(message, kind = "") {
@@ -5221,17 +5606,88 @@
     }
   };
 
+  const TRACE_KIND_LABELS = {
+    draft: "Черновик создан",
+    quality: "Проверка качества",
+    reject: "Материал отклонён",
+    scheduled: "Добавлен в расписание",
+    publish_error: "Ошибка публикации",
+    published: "Публикация подтверждена",
+  };
+
+  function traceKindLabel(kind) {
+    const value = String(kind || "");
+    if (TRACE_KIND_LABELS[value]) return TRACE_KIND_LABELS[value];
+    if (value.startsWith("crosspost:")) {
+      const platform = value.slice("crosspost:".length);
+      return "Попытка доставки · " + (PLATFORM_RU[platform] || platform || "площадка");
+    }
+    return value || "Событие без типа";
+  }
+
+  function traceTime(value) {
+    if (typeof value !== "string" || !value) return '<span class="trace-at">Время не записано</span>';
+    const raw = value.trim();
+    const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw);
+    if (!hasZone) {
+      const parts = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      if (!parts) return '<span class="trace-at">Время не распознано</span>';
+      const label = `${parts[3]}.${parts[2]}.${parts[1]} ${parts[4]}:${parts[5]} · часовой пояс не указан`;
+      return `<time class="trace-at" datetime="${esc(raw)}" title="API не указал часовой пояс">${esc(label)}</time>`;
+    }
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return '<span class="trace-at">Время не распознано</span>';
+    return `<time class="trace-at" datetime="${esc(date.toISOString())}">${esc(date.toLocaleString("ru-RU", {
+      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    }))}</time>`;
+  }
+
   window.tgfarmTrace = async (id) => {
-    const slot = $("#preview-slot");
+    const slot = $("#trace-slot");
     if (!slot) return;
-    slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Загрузка…</div></div>`;
+    const tracePostId = String(id || "");
+    slot.dataset.tracePostId = tracePostId;
+    slot.innerHTML = '<div class="drawer-block"><h4>История материала</h4><div class="empty">Загружаю события…</div></div>';
     try {
       const t = await api(`/api/posts/${encodeURIComponent(id)}/trace`);
-      const rows = t.events.map((e) =>
-        `<div class="trace-row"><span class="trace-at">${e.at || "—"}</span> <b>${esc(e.kind)}</b> <span>${esc(e.detail || "")}</span></div>`).join("");
-      slot.innerHTML = `<div class="drawer-block"><h4>Трейс · ${esc(t.status)} · медиа: ${t.media}</h4>${rows}</div>`;
+      if (!slot.isConnected || slot.dataset.tracePostId !== tracePostId) return;
+      const events = Array.isArray(t.events) ? t.events : [];
+      const status = t.status ? (STATUS_RU[t.status] || t.status) : "статус не получен";
+      const mediaCount = typeof t.media === "number" && Number.isFinite(t.media) ? t.media : null;
+      const mediaForm = mediaCount === null ? "" : new Intl.PluralRules("ru-RU").select(mediaCount);
+      const mediaNoun = mediaForm === "one" ? "файл" : mediaForm === "few" ? "файла" : "файлов";
+      const media = mediaCount === null ? "нет отчёта о медиа" : `${n(mediaCount)} ${mediaNoun}`;
+      const rows = events.map((event) => {
+        const kind = String(event.kind || "");
+        const tone = ["published"].includes(kind) ? "trace-event--success"
+          : ["reject", "publish_error"].includes(kind) ? "trace-event--attention" : "";
+        return `<li class="trace-event ${tone}">
+          <span class="trace-event-marker" aria-hidden="true"></span>
+          <div class="trace-event-content">
+            <div class="trace-event-head">
+              <strong>${esc(traceKindLabel(kind))}</strong>
+              ${traceTime(event.at)}
+            </div>
+            <p>${esc(event.detail || "Подробности события не записаны.")}</p>
+          </div>
+        </li>`;
+      }).join("");
+      const timeline = rows
+        ? `<ol class="trace-timeline">${rows}</ol>`
+        : '<div class="empty">В журнале пока нет событий. Отсутствие записи само по себе не подтверждает отсутствие действия.</div>';
+      slot.innerHTML = `<section class="drawer-block trace-block" aria-label="История материала">
+        <h4>История материала</h4>
+        <div class="trace-summary">
+          <span class="tag">${esc(status)}</span>
+          <span class="tag">Событий: ${n(events.length)}</span>
+          <span class="tag">Медиа: ${esc(media)}</span>
+        </div>
+        ${timeline}
+      </section>`;
     } catch (e) {
-      slot.innerHTML = `<div class="drawer-block"><h4>Трейс</h4><div class="empty">Не удалось: ${esc(e.message)}</div></div>`;
+      if (!slot.isConnected || slot.dataset.tracePostId !== tracePostId) return;
+      slot.innerHTML = '<div class="drawer-block trace-block"><h4>История материала</h4>'
+        + '<div class="empty">Не удалось прочитать историю: ' + esc(e.message || e) + '</div></div>';
     }
   };
 
@@ -5333,7 +5789,8 @@
     if (!box) {
       box = document.createElement("div");
       box.id = "alert-banner";
-      kpis.parentElement.insertBefore(box, kpis);
+      const anchor = $("#command-status") || kpis;
+      anchor.parentElement.insertBefore(box, anchor);
     }
     const errors = alerts.filter((a) => a.level === "error").length;
     const counter = $("#review-nav-count");
@@ -5351,8 +5808,13 @@
           '<div class="attention-row attention-row--' + (a.level === "error" ? "err" : "warn") + '">'
           + '<span class="attention-dot"></span>'
           + '<div class="attention-text"><strong>' + esc(a.code) + "</strong>"
-          + "<span>" + esc(String(a.message || "").slice(0, 220)) + "</span></div></div>").join("")
+          + "<span>" + esc(String(a.message || "").slice(0, 220)) + "</span></div>"
+          + '<button class="attention-open" type="button" data-goto="' + alertDestination(a) + '">'
+          + "Открыть</button></div>").join("")
       + "</div>";
+    Array.from(box.querySelectorAll("[data-goto]")).forEach((button) => {
+      button.addEventListener("click", () => switchView(button.dataset.goto));
+    });
     const toggle = $("#attention-toggle");
     if (toggle) {
       toggle.addEventListener("click", () => {
@@ -5472,9 +5934,115 @@
       + " · окно " + attributionWindow(data.window_days) + ".</div>";
   }
 
+  const REFRESH_SECTION_LABELS = {
+    status: "состояние фермы",
+    report: "аналитика",
+    runs: "журнал прогонов",
+    trends: "тренды",
+    posts: "очередь публикаций",
+    channels: "каналы",
+    sources: "источники",
+    dzen: "состояние Дзена",
+    crossposts: "кросспосты",
+    deliveryHealth: "здоровье доставок",
+    memory: "память публикаций",
+    platforms: "центр площадок",
+    redditMetrics: "метрики Reddit",
+    aiUsage: "использование ИИ",
+    metricsFreshness: "свежесть метрик",
+    ["metricsCoverage"]: "покрытие метрик",
+    ["metricsAttribution"]: "атрибуция метрик",
+    backlog: "публикационный backlog",
+    metricsFormats: "эффективность форматов",
+    distributionPlan: "план распространения",
+    agentBenchmark: "эксперименты AI",
+  };
+
+  function setRefreshBusy(busy) {
+    const root = $("#data-sync");
+    const button = $("#refresh-data");
+    if (root) root.setAttribute("aria-busy", String(busy));
+    if (button) button.disabled = busy;
+  }
+
+  function updateRefreshIndicator(failed, total) {
+    const root = $("#data-sync");
+    const label = $("#data-sync-label");
+    const detail = $("#data-sync-detail");
+    const announcement = $("#data-sync-announcement");
+    if (!root || !label || !detail) return;
+
+    const now = new Date();
+    const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const names = failed.map((key) => REFRESH_SECTION_LABELS[key] || key);
+    const signature = failed.length ? "failed:" + [...failed].sort().join("|") : "";
+    const lastFull = state.lastFullRefreshAt
+      ? "последний полный ответ " + state.lastFullRefreshAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+      : "полного ответа в этой сессии ещё не было";
+    root.title = failed.length
+      ? "Разделы не обновились: " + names.join(", ") + "; " + lastFull
+      : "Последний полный запрос завершился успешно";
+
+    if (!failed.length) {
+      state.lastFullRefreshAt = now;
+      root.dataset.state = "ok";
+      label.textContent = "Данные обновлены";
+      detail.textContent = `Все ${total} групп данных · ${time}`;
+      if (state.refreshIssueSignature) {
+        state.refreshIssueSignature = null;
+        if (announcement) announcement.textContent = "Обновление панели восстановлено. Данные получены.";
+        toast("Обновление панели восстановлено: данные получены", "ok");
+      } else {
+        state.refreshIssueSignature = null;
+      }
+      return;
+    }
+
+    const allFailed = failed.length === total;
+    root.dataset.state = allFailed ? "error" : "partial";
+    label.textContent = allFailed ? "Нет связи с API" : "Часть данных устарела";
+    if (allFailed) {
+      detail.textContent = `Нет ответа на ${total} групп · ${lastFull}`;
+    } else {
+      const shown = names.slice(0, 3).join(", ");
+      const rest = names.length > 3 ? ` и ещё ${names.length - 3}` : "";
+      detail.textContent = `Нет ответа: ${shown}${rest} · ${lastFull}`;
+    }
+
+    if (signature !== state.refreshIssueSignature) {
+      state.refreshIssueSignature = signature;
+      const message = allFailed
+        ? "Нет связи с API: данные панели не обновились"
+        : `Не обновились разделы: ${names.join(", ")}`;
+      if (announcement) announcement.textContent = message;
+      toast(message, allFailed ? "err" : "warn");
+    }
+  }
+
+  function updateRefreshError(error) {
+    const root = $("#data-sync");
+    const label = $("#data-sync-label");
+    const detail = $("#data-sync-detail");
+    const announcement = $("#data-sync-announcement");
+    if (!root || !label || !detail) return;
+    const message = String(error?.message || error || "неизвестная ошибка");
+    const signature = "exception:" + message;
+    root.dataset.state = "error";
+    root.title = message;
+    label.textContent = "Ошибка обновления";
+    detail.textContent = "Не удалось обновить панель · " +
+      new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    if (signature !== state.refreshIssueSignature) {
+      state.refreshIssueSignature = signature;
+      if (announcement) announcement.textContent = "Ошибка обновления данных панели.";
+      toast("Не удалось обновить данные: " + message, "err");
+    }
+  }
+
   async function refresh() {
     if (state.inFlight) return;
     state.inFlight = true;
+    setRefreshBusy(true);
     try {
       const endpoints = {
         status: "/api/status",
@@ -5500,7 +6068,8 @@
         agentBenchmark: "/api/agents/benchmark",
       };
       // One failing endpoint must not kill the whole dashboard: degraded
-      // sections keep their previous content and are reported in a toast.
+      // sections keep their previous content and the shared health indicator
+      // lists them. The warning toast is emitted only when the failure set changes.
       const settled = await Promise.allSettled(Object.values(endpoints).map((path) => api(path)));
       const data = {};
       const failed = [];
@@ -5515,9 +6084,11 @@
       });
       // The publication card answers the one question the whole dashboard
       // exists for, so it is rendered before the all-failed throw below: when
-      // every endpoint is down the other sections keep their stale silence,
-      // but this one must say «сеть не отвечает» instead of freezing on an old
-      // verdict — and a failed read is re-rendered every pass, never cached.
+      // every endpoint is down the independent sections keep their last known
+      // content, while the decision card is explicitly marked unread on this pass.
+      // This happens before the all-failed early return below, never from stale cache.
+      renderCommandStatus("status" in data ? data.status : null,
+        "status" in data ? null : reasons.status || new Error("статус не получен"));
       renderPublicationDecision("status" in data ? data.status : null,
         "status" in data ? null : reasons.status || new Error("статус не получен"));
       // Same rule as the publication card above: a read that died must be said
@@ -5537,8 +6108,29 @@
       // too — an old list of rows that have since been reconciled would be a lie.
       renderUnresolvedWorklist("backlog" in data ? data.backlog : null,
         "backlog" in data ? null : reasons.backlog || new Error("очередь не получена"));
-      if (failed.length === Object.keys(endpoints).length) throw new Error("API недоступен");
-      if (failed.length) toast("Часть разделов не обновилась: " + failed.join(", "), "warn");
+      renderWorkspaceFreshness("trends", "trends-freshness",
+        "trends" in data ? null : reasons.trends || new Error("тренды не получены"));
+      renderWorkspaceFreshness("sources", "sources-freshness",
+        "sources" in data ? null : reasons.sources || new Error("источники не получены"));
+      renderWorkspaceFreshness("crossposts", "crossposts-freshness",
+        "crossposts" in data ? null : reasons.crossposts || new Error("журнал доставок не получен"));
+      renderWorkspaceFreshness("deliveryHealth", "crosspost-health-freshness",
+        "deliveryHealth" in data ? null : reasons.deliveryHealth || new Error("сводка доставок не получена"));
+      renderWorkspaceFreshness("deliveryCenter", "delivery-center-freshness",
+        "crossposts" in data && "deliveryHealth" in data ? null
+          : reasons.crossposts || reasons.deliveryHealth || new Error("не все данные доставки получены"));
+      renderWorkspaceFreshness("platforms", "platforms-freshness",
+        "platforms" in data ? null : reasons.platforms || new Error("каталог площадок не получен"));
+      state.platformCatalogFresh = "platforms" in data;
+      renderPlatformReadiness(state.platformData, state.platformCatalogFresh);
+      if (!state.platformCatalogFresh) renderPlatformCards();
+      updateRefreshIndicator(failed, Object.keys(endpoints).length);
+      // With no successful response there is no fresh dashboard snapshot to
+      // render. Keep independent workspaces intact; the cards above already show
+      // their own read failures, and the shared indicator explains the outage.
+      // Return normally instead of throwing into the generic exception handler,
+      // which would overwrite the more useful endpoint-level failure summary.
+      if (failed.length === Object.keys(endpoints).length) return;
 
       if ("status" in data) {
         const mode = data.status.mode || "?";
@@ -5580,8 +6172,12 @@
       if ("crossposts" in data) {
         state.data.crossposts = data.crossposts;
         renderCrossposts(data.crossposts.crossposts || []);
+        renderCrossposts(data.crossposts.crossposts || [], "#delivery-center-journal", state.deliveryCenterFilter);
       }
-      if ("deliveryHealth" in data) renderCrosspostHealth(data.deliveryHealth);
+      if ("deliveryHealth" in data) {
+        renderCrosspostHealth(data.deliveryHealth);
+        renderCrosspostHealth(data.deliveryHealth, "#delivery-center-health");
+      }
       if ("memory" in data) renderMemory(data.memory);
       renderTopicDossier(state.topicDossier);
       if ("platforms" in data) renderPlatforms(data.platforms);
@@ -5592,9 +6188,10 @@
         renderAgentBenchmark(data.agentBenchmark, "trends" in data ? data.trends.trends || [] : []);
       }
     } catch (e) {
-      toast("Не удалось обновить данные: " + e.message, "err");
+      updateRefreshError(e);
     } finally {
       state.inFlight = false;
+      setRefreshBusy(false);
     }
   }
 
@@ -5691,7 +6288,7 @@
     try {
       await post(`/api/posts/${encodeURIComponent(id)}/reconcile`, body);
       toast(action === "confirm_published" ? "Публикация отмечена как подтверждённая" : "Пост возвращён в очередь", "ok");
-      $("#drawer").hidden = true;
+      closeDrawer();
       refresh();
     } catch (e) {
       toast("Не удалось сверить публикацию: " + (e && e.message ? e.message : e), "err");
@@ -5963,7 +6560,7 @@
         toast("Не удалось опубликовать: " + detail, "err");
       } else {
         toast("Опубликовано", "ok");
-        $("#drawer").hidden = true;
+        closeDrawer();
         refresh();
       }
     } catch (e) {
@@ -5988,7 +6585,7 @@
     try {
       await post("/api/posts/reject", { post_public_ids: [id], reason: "manual" });
       toast("Отклонено", "ok");
-      $("#drawer").hidden = true;
+      closeDrawer();
       refresh();
     } catch (e) { toast("Ошибка", "err"); }
   };
@@ -6056,8 +6653,14 @@
   }
 
   function renderReviewCard(item) {
-    const age = Number(item.age_hours || 0);
-    const ageLabel = age >= 48 ? Math.round(age / 24) + " дн" : Math.round(age) + " ч";
+    const age = typeof item.age_hours === "number" && Number.isFinite(item.age_hours)
+      ? item.age_hours : null;
+    const ageLabel = age === null
+      ? "возраст не измерен"
+      : age >= 48 ? Math.round(age / 24) + " дн" : Math.round(age) + " ч";
+    const attemptsLabel = typeof item.attempts === "number" && Number.isFinite(item.attempts)
+      ? "попыток " + n(item.attempts)
+      : "попыток: нет отчёта";
     const actions = (item.actions || [])
       .map((action) => {
         const label = REVIEW_ACTION_LABELS[action] || action;
@@ -6068,10 +6671,13 @@
       .join("");
     return '<article class="review-card">'
       + '<div class="review-card-head"><span class="tag">' + esc(item.platform) + "</span>"
-      + '<span class="review-age">' + esc(ageLabel) + " · попыток " + Number(item.attempts || 0) + "</span></div>"
+      + '<span class="review-age">' + esc(ageLabel) + " · " + esc(attemptsLabel) + "</span></div>"
       + '<p class="review-hook">' + esc(item.hook || "Без заголовка") + "</p>"
       + '<p class="review-reason">' + esc(item.reason || "") + "</p>"
-      + '<div class="review-actions">' + actions + "</div></article>";
+      + '<div class="review-actions">'
+      + '<button class="btn btn-ghost btn-sm" type="button" data-review-open="'
+      + esc(item.public_id) + '">Открыть материал</button>'
+      + actions + "</div></article>";
   }
 
   function renderReviewBoard() {
@@ -6100,17 +6706,22 @@
   async function runReviewAction(publicId, action) {
     try {
       if (action === "confirm_published") {
+        if (!confirm("Подтверждаете, что этот пост уже появился на целевой площадке?")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", { action: "confirm_published" });
       } else if (action === "retry_after_check") {
+        if (!confirm("Вы лично проверили целевую площадку и убедились, что этого поста там нет? Только после этой проверки разрешён повтор.")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/reconcile", {
           action: "retry_after_check",
           confirm_not_published: true,
         });
       } else if (action === "retry") {
+        if (!confirm("Повторить доставку этого материала?")) return;
         await post("/api/posts/" + encodeURIComponent(publicId) + "/retry", {});
       } else if (action === "publish_now") {
+        if (!confirm("Отправить этот материал на публикацию сейчас?")) return;
         await post("/api/posts/publish", { post_public_ids: [publicId] });
       } else if (action === "reject") {
+        if (!confirm("Отклонить этот материал? Он не попадёт в обычную очередь публикации.")) return;
         await post("/api/posts/reject", {
           post_public_ids: [publicId],
           reason: "operator review board",
@@ -6243,9 +6854,15 @@
       const data = await api("/api/connect/matrix");
       state.connections = data || { platforms: [] };
       state.connectLoaded = true;
+      state.connectFresh = true;
       renderConnections();
+      renderPlatformCards();
     } catch (error) {
-      if (grid) grid.innerHTML = '<div class="empty">Не удалось получить список площадок: ' + esc(error?.message || error) + "</div>";
+      state.connectFresh = false;
+      renderPlatformCards();
+      if (grid) grid.innerHTML = state.connections
+        ? '<div class="empty">Показан последний успешный снимок подключений. Он может устареть.</div>'
+        : '<div class="empty">Не удалось получить список площадок: ' + esc(error?.message || error) + "</div>";
       toast("Подключения не загрузились: " + (error?.message || error), "err");
     } finally {
       state.connectBusy = false;
@@ -6277,9 +6894,8 @@
     const monogram = String(row.name || row.id).replace(/[^A-Za-zА-Яа-я0-9]/g, "").slice(0, 2).toUpperCase() || "??";
     const primary = status.key === "ready" ? "Переподключить" : "Подключить";
     const monogramStyle = "color:" + brand + ";border-color:" + brand + ";background:color-mix(in srgb, " + brand + " 14%, transparent)";
-    const pill = status.key === "needs"
-      ? '<span class="connect-mode-chip">' + esc(mode) + "</span>"
-      : '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
+    const pill = '<span class="connect-mode-chip">Вход: ' + esc(mode) + "</span>"
+      + '<span class="connect-pill connect-pill--' + esc(status.key) + '">' + esc(status.label) + "</span>";
     return '<article class="connect-card connect-card--' + esc(status.key) + '">'
       + '<div class="connect-card-top"><span class="connect-monogram" style="' + monogramStyle + '">' + esc(monogram) + "</span>"
       + '<div class="connect-card-title"><strong>' + esc(row.name || row.id) + "</strong>"
@@ -6372,7 +6988,8 @@
         : "";
       body.innerHTML = '<ol class="connect-steps"><li>Откроется окно браузера с профилем площадки.</li>'
         + "<li>Войди в аккаунт и вернись сюда — окно можно закрыть.</li>"
-        + "<li>Панель проверит сессию и сохранит её для публикаций.</li></ol>"
+        + "<li>Панель проверит доступность сессии и сохранит профиль.</li></ol>"
+        + '<p class="connect-dialog-note">Важно: успешный вход ещё не гарантирует возможность публикации. Отправка выполняется тем способом, который поддерживает адаптер площадки: API, браузерная сессия, штатный редактор или ручная подготовка.</p>'
         + '<p class="connect-dialog-text">' + esc(row.hint) + "</p>" + extra
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть окно входа</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
@@ -6498,22 +7115,59 @@
   /* ---------------------------------------------------------------- wiring */
   const VIEW_TITLES = {
     overview: ["Command Center", "Состояние фермы, команда и площадки в одном окне"],
-    connect: ["Подключения", "Один клик: сайт площадки, вход, сохранение сессии и токенов"],
+    connect: ["Подключения", "Способ входа, состояние доступа и доступный маршрут авторизации для каждой площадки"],
+    team: ["AI Team", "Редакционные роли и реальные стадии работы конвейера"],
     platforms: ["Центр площадок", "Каталог площадок, статусы подключения и готовность к публикации"],
     plan: ["Планирование", "Редакционный план: темы, слоты и ревизии"],
     trends: ["Тренды", "Кластеры выше порога тепла и объяснение, почему они горячие"],
     posts: ["Очередь публикаций", "Материалы, их статусы и расписание"],
-    review: ["Требует внимания", "Неопределённые результаты, финальные отказы и материалы без слота"],
+    review: ["Центр доставки", "Сверка неопределённых результатов, ошибки и история по площадкам"],
     memory: ["Память публикаций", "Что уже вышло и что нельзя повторять"],
     channels: ["Каналы", "Подключённые каналы и их персона"],
     sources: ["Источники", "Флот сборщиков и их здоровье"],
     runs: ["Запуски", "Журнал прогонов конвейера по стадиям"],
   };
 
+  // Keep the tablist and its panels as one explicit accessibility contract.
+  // The sidebar's visual group labels are presentation-only children; every
+  // actual tab controls exactly one named panel.
+  function syncTabSemantics(selectedView = state.view) {
+    const tablist = $(".tabs");
+    if (tablist) tablist.setAttribute("aria-label", "Разделы TgFarm");
+    $$( ".nav-group", tablist || document).forEach((group) => {
+      group.setAttribute("role", "presentation");
+      group.setAttribute("aria-hidden", "true");
+    });
+    $$( ".tab").forEach((tab) => {
+      const view = tab.dataset.view;
+      const panel = view ? $(`.view[data-view="${view}"]`) : null;
+      if (!view || !panel) return;
+      const tabId = `tab-${view}`;
+      const panelId = `panel-${view}`;
+      tab.id = tabId;
+      tab.setAttribute("aria-controls", panelId);
+      panel.id = panelId;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+      panel.tabIndex = 0;
+      panel.setAttribute("aria-hidden", String(view !== selectedView));
+    });
+  }
+
   function switchView(view) {
     state.view = view;
-    $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === view));
-    $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === view));
+    syncTabSemantics(view);
+    $$( ".tab").forEach((t) => {
+      const selected = t.dataset.view === view;
+      t.classList.toggle("is-active", selected);
+      t.setAttribute("aria-selected", String(selected));
+      t.tabIndex = selected ? 0 : -1;
+    });
+    $$( ".view").forEach((v) => {
+      const selected = v.dataset.view === view;
+      v.classList.toggle("is-active", selected);
+      v.setAttribute("aria-hidden", String(!selected));
+    });
     const meta = VIEW_TITLES[view];
     if (meta) {
       const title = $("#view-title");
@@ -6522,9 +7176,12 @@
       if (sub) sub.textContent = meta[1];
     }
     if (view === "plan" && !state.planLoaded) loadEditorialPlan();
-    if (view === "review" && !state.reviewLoaded) loadReviewBoard();
+    if (view === "review") {
+      loadReviewBoard(true);
+      refresh();
+    }
     if (view === "sources") loadSourcesHealth();
-    if (view === "connect" && !state.connectLoaded) loadConnections();
+    if ((view === "connect" || view === "platforms") && !state.connectLoaded) loadConnections();
     if (view === "sources") loadReprintBackfill();
   }
 
@@ -6540,11 +7197,44 @@
     return runCycle();
   };
   $("#run-cycle").addEventListener("click", window.tgfarmHostCycle);
+  $("#refresh-data")?.addEventListener("click", () => refresh());
 
-  $$(".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+  syncTabSemantics();
+  $$( ".view").forEach((panel) => {
+    const selected = panel.dataset.view === state.view;
+    panel.setAttribute("aria-hidden", String(!selected));
+  });
+  $$( ".tab").forEach((tab) => {
+    const selected = tab.dataset.view === state.view;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  });
+  $$( ".tab").forEach((t) => t.addEventListener("click", () => switchView(t.dataset.view)));
+
+  // WAI-ARIA tablist keyboard model: arrow keys move between views, while
+  // Home/End jump to the first/last tab. Focus and selected state stay aligned.
+  $$( ".tab").forEach((tab) => tab.addEventListener("keydown", (event) => {
+    const tabs = $$(".tab");
+    const index = tabs.indexOf(tab);
+    let next = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    tabs[next].focus();
+    switchView(tabs[next].dataset.view);
+  }));
   const reviewBoard = $("#review-board");
   if (reviewBoard) {
     reviewBoard.addEventListener("click", (event) => {
+      const open = event.target.closest("[data-review-open]");
+      if (open) {
+        event.preventDefault();
+        openDrawer(open.dataset.reviewOpen);
+        return;
+      }
       const button = event.target.closest("[data-review-action]");
       if (!button) return;
       event.preventDefault();
@@ -6554,9 +7244,25 @@
   // The overview's unresolved worklist offers the drawer's action, not a new one:
   // `tgfarmReconcile` is the only path from here to `/api/posts/{id}/reconcile`, and
   // it asks the operator to confirm before anything is written (§80).
+  const deliveryJournal = $("#delivery-center-journal");
+  if (deliveryJournal) {
+    deliveryJournal.addEventListener("click", (event) => {
+      const button = event.target.closest(".js-crosspost-reconcile");
+      if (button) return;
+      const card = event.target.closest(".delivery-card");
+      const postId = card?.querySelector(".item-title")?.textContent?.trim();
+      if (postId) openDrawer(postId);
+    });
+  }
   const unresolvedList = $("#overview-unresolved");
   if (unresolvedList) {
     unresolvedList.addEventListener("click", (event) => {
+      const open = event.target.closest("[data-unresolved-open]");
+      if (open) {
+        event.preventDefault();
+        openDrawer(open.dataset.unresolvedOpen);
+        return;
+      }
       const button = event.target.closest("[data-unresolved-action]");
       if (!button) return;
       event.preventDefault();
@@ -6630,6 +7336,20 @@
 
   const reviewRefresh = $("#review-refresh");
   if (reviewRefresh) reviewRefresh.addEventListener("click", () => loadReviewBoard(true));
+  $("#delivery-center-refresh")?.addEventListener("click", () => {
+    loadReviewBoard(true);
+    refresh();
+  });
+  const deliveryCenterFilters = $(".delivery-center-filters");
+  if (deliveryCenterFilters) deliveryCenterFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delivery-filter]");
+    if (!button || !deliveryCenterFilters.contains(button)) return;
+    state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
+    $$("[data-delivery-filter]", deliveryCenterFilters).forEach((item) =>
+      item.classList.toggle("is-active", item === button));
+    const entries = state.data.crossposts?.crossposts || [];
+    renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
+  });
   const reviewRequeue = $("#review-requeue");
   if (reviewRequeue) reviewRequeue.addEventListener("click", () => requeueFailedBatch());
   $$("#review-filters button").forEach((button) =>
@@ -6642,18 +7362,29 @@
   if (planRefresh) planRefresh.addEventListener("click", () => loadEditorialPlan(true));
   const planApply = $("#plan-apply");
   if (planApply) planApply.addEventListener("click", async () => {
-    planApply.disabled = true;
+    if (!state.editorialPlanFresh || state.editorialPlanBusy || state.editorialPlanApplyBusy) {
+      toast("План не подтверждён актуальным чтением. Обнови его перед фиксацией.", "warn");
+      return;
+    }
+    state.editorialPlanApplyBusy = true;
+    syncEditorialPlanActions();
     try {
       const res = await fetch(API + "/api/editorial/plan/refresh", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error("HTTP " + res.status);
       await loadEditorialPlan(true);
-      toast("План зафиксирован", "ok");
+      if (!state.editorialPlanFresh) {
+        toast("Сервер ответил успешно, но повторное чтение плана не подтвердило результат. Состояние помечено устаревшим; обнови его перед следующим действием.", "warn");
+        return;
+      }
+      toast("План зафиксирован и повторно прочитан", "ok");
     } catch (err) {
       toast("Не удалось зафиксировать план: " + (err && err.message ? err.message : err), "err");
     } finally {
-      planApply.disabled = false;
+      state.editorialPlanApplyBusy = false;
+      syncEditorialPlanActions();
     }
   });
+  syncEditorialPlanActions();
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.goto)));
 
   $("#crosspost-filter")?.addEventListener("change", (event) => {
@@ -6747,6 +7478,10 @@
     state.platformQuery = event.target.value || "";
     renderPlatformCards();
   });
+  $("#platform-capability-filter")?.addEventListener("change", (event) => {
+    state.platformCapabilityFilter = event.target.value || "all";
+    renderPlatformCards();
+  });
   $("#platform-filters")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-platform-filter]");
     if (!button) return;
@@ -6763,6 +7498,12 @@
     renderPlatformCards();
   });
   $("#platforms-grid")?.addEventListener("click", async (event) => {
+    const staleAction = event.target.closest("[data-platform-toggle], [data-platform-plan], [data-platform-auth], [data-platform-auth-config], [data-platform-auth-check], [data-platform-browser-auth], [data-platform-destinations], [data-platform-max-webhook]");
+    if (staleAction && !state.platformCatalogFresh) {
+      event.preventDefault();
+      toast("Каталог площадок устарел. Обнови данные перед изменением настроек.", "warn");
+      return;
+    }
     const maxWebhook = event.target.closest("[data-platform-max-webhook]");
     if (maxWebhook) {
       await registerMaxWebhook(maxWebhook);
@@ -6807,8 +7548,10 @@
     if (event.target.closest("[data-platform-reset]")) {
       state.platformQuery = "";
       state.platformFilter = "all";
+      state.platformCapabilityFilter = "all";
       state.platformCategory = "Все";
       $("#platform-search").value = "";
+      if ($("#platform-capability-filter")) $("#platform-capability-filter").value = "all";
       $$("#platform-filters [data-platform-filter]").forEach((item) =>
         item.classList.toggle("is-active", item.dataset.platformFilter === "all"));
       renderPlatformCategories(state.platformData?.platforms || []);
@@ -6851,7 +7594,33 @@
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") $("#drawer").hidden = true;
+    const drawer = $("#drawer");
+    if (!drawer.hidden && e.key === "Escape") {
+      e.preventDefault();
+      closeDrawer();
+      return;
+    }
+    if (!drawer.hidden && e.key === "Tab") {
+      const focusable = [...drawer.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])")]
+        .filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        e.preventDefault();
+        drawer.focus();
+      } else {
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!drawer.contains(document.activeElement)) {
+          e.preventDefault();
+          first.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
     if (e.key === "/" && state.view === "platforms" && !e.ctrlKey && !e.metaKey
       && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
       e.preventDefault();

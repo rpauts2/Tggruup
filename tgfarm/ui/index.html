@@ -6,6 +6,7 @@
 <title>tgfarm — панель управления фермой</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌾</text></svg>">
 <link rel="stylesheet" href="/ui/app.css">
+<link rel="stylesheet" href="/ui/command-center.css">
 </head>
 <body>
 <div class="bg-grid" aria-hidden="true"></div>
@@ -22,23 +23,24 @@
 
     <nav class="tabs" role="tablist">
       <div class="nav-group">Главная</div>
-      <button class="tab is-active" data-view="overview" role="tab"><span class="tab-label">Command Center</span></button>
-      <button class="tab" data-view="review" role="tab"><span class="tab-label">Требует внимания</span><span class="tab-counter" id="review-nav-count">0</span></button>
+      <button class="tab is-active" data-view="overview" role="tab" aria-selected="true" tabindex="0"><span class="tab-label">Command Center</span></button>
+      <button class="tab" data-view="review" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Центр доставки</span><span class="tab-counter" id="review-nav-count">0</span></button>
+      <button class="tab" data-view="team" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">AI Team</span></button>
 
       <div class="nav-group">Редакция</div>
-      <button class="tab" data-view="plan" role="tab"><span class="tab-label">Планирование</span></button>
-      <button class="tab" data-view="posts" role="tab"><span class="tab-label">Очередь публикаций</span></button>
-      <button class="tab" data-view="trends" role="tab"><span class="tab-label">Тренды</span></button>
-      <button class="tab" data-view="memory" role="tab"><span class="tab-label">Память публикаций</span></button>
+      <button class="tab" data-view="plan" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Планирование</span></button>
+      <button class="tab" data-view="posts" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Очередь публикаций</span></button>
+      <button class="tab" data-view="trends" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Тренды</span></button>
+      <button class="tab" data-view="memory" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Память публикаций</span></button>
 
       <div class="nav-group">Распространение</div>
-      <button class="tab" data-view="channels" role="tab"><span class="tab-label">Каналы</span></button>
-      <button class="tab" data-view="platforms" role="tab"><span class="tab-label">Центр площадок</span><span class="tab-counter" id="platforms-nav-count">5</span></button>
-      <button class="tab" data-view="connect" role="tab"><span class="tab-label">Подключения</span><span class="tab-counter" id="connect-nav-count">0</span></button>
+      <button class="tab" data-view="channels" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Каналы</span></button>
+      <button class="tab" data-view="platforms" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Центр площадок</span><span class="tab-counter" id="platforms-nav-count">5</span></button>
+      <button class="tab" data-view="connect" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Подключения</span><span class="tab-counter" id="connect-nav-count">0</span></button>
 
       <div class="nav-group">Система</div>
-      <button class="tab" data-view="sources" role="tab"><span class="tab-label">Источники</span></button>
-      <button class="tab" data-view="runs" role="tab"><span class="tab-label">Запуски</span></button>
+      <button class="tab" data-view="sources" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Источники</span></button>
+      <button class="tab" data-view="runs" role="tab" aria-selected="false" tabindex="-1"><span class="tab-label">Запуски</span></button>
     </nav>
 
     <div class="sidebar-foot">
@@ -60,36 +62,113 @@
         <p id="view-sub">Состояние фермы, команда и площадки в одном окне</p>
       </div>
       <div class="topbar-right">
+        <div class="data-sync" id="data-sync" data-state="loading" aria-busy="true"
+             role="group" aria-label="Состояние обновления данных">
+          <span class="data-sync-dot" aria-hidden="true"></span>
+          <span class="data-sync-copy">
+            <strong id="data-sync-label">Загружаю данные…</strong>
+            <small id="data-sync-detail">Проверяю состояние рабочих разделов</small>
+          </span>
+          <button class="data-sync-refresh" id="refresh-data" type="button"
+                  aria-label="Обновить данные" title="Обновить данные" disabled>
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
         <button class="btn btn-primary" id="run-cycle">
           <span class="spinner" aria-hidden="true"></span><span>Запустить цикл</span>
         </button>
       </div>
+      <div class="sr-only" id="data-sync-announcement" role="status"
+           aria-live="polite" aria-atomic="true"></div>
     </header>
 
 
 <main>
   <!-- ============================================================ OVERVIEW -->
   <section class="view is-active" data-view="overview">
+    <section class="command-status" id="command-status" aria-label="Операционный статус">
+      <div class="command-status-head">
+        <div>
+          <span class="command-status-kicker">LIVE OPERATIONS</span>
+          <h2>Состояние фермы</h2>
+          <p>Режим, планировщик, право публикации и последний цикл — из текущего статуса сервера</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="command-next-action" type="button" data-goto="review">
+          Открыть задачи <span aria-hidden="true">↗</span>
+        </button>
+      </div>
+      <div class="command-status-freshness" id="command-status-freshness" role="status" aria-live="polite" hidden></div>
+      <div class="command-status-grid" id="command-status-grid" aria-live="polite">
+        <div class="command-status-item is-loading"><span>Режим</span><strong>Читаю…</strong><small>Получаю статус сервера</small></div>
+        <div class="command-status-item is-loading"><span>Планировщик</span><strong>Читаю…</strong><small>Получаю статус сервера</small></div>
+        <div class="command-status-item is-loading"><span>Публикация</span><strong>Читаю…</strong><small>Получаю статус сервера</small></div>
+        <div class="command-status-item is-loading"><span>Последний цикл</span><strong>Читаю…</strong><small>Получаю статус сервера</small></div>
+      </div>
+    </section>
+
+    <section class="platform-readiness" aria-label="Готовность площадок">
+      <div class="platform-readiness-head"><div><span>ДОСТУП И ДОСТАВКА</span><h2>Готовность площадок</h2><p>Включение, наличие настроек и подтверждение доступа — разные состояния</p></div>
+        <button type="button" class="btn btn-ghost btn-sm" data-goto="platforms">Открыть центр площадок ↗</button></div>
+      <div id="platform-readiness" data-state="loading" aria-live="polite">
+        <div class="platform-readiness-empty">Читаю каталог площадок…</div>
+      </div>
+    </section>
+
     <div class="kpis" id="kpis"></div>
 
-    <div class="grid-2">
+
+
+    <section class="command-shortcuts" aria-label="Быстрый доступ">
+      <div class="command-shortcuts-heading"><div><span>WORKSPACE</span><strong>Быстрый доступ</strong></div><p>Главные рабочие зоны редакции</p></div>
+      <div class="command-shortcuts-grid">
+        <button type="button" data-goto="review"><span class="shortcut-icon">!</span><span><b>Требует внимания</b><small>Блокировки и сверка</small></span><span class="shortcut-arrow">↗</span></button>
+        <button type="button" data-goto="plan"><span class="shortcut-icon">▦</span><span><b>Планирование</b><small>Темы и расписание</small></span><span class="shortcut-arrow">↗</span></button>
+        <button type="button" data-goto="posts"><span class="shortcut-icon">▤</span><span><b>Публикации</b><small>Очередь и статусы</small></span><span class="shortcut-arrow">↗</span></button>
+        <button type="button" data-goto="connect"><span class="shortcut-icon">⌘</span><span><b>Подключения</b><small>Доступ к площадкам</small></span><span class="shortcut-arrow">↗</span></button>
+      </div>
+    </section>
+
+    <section class="grid-2" aria-label="Операционная картина">
       <article class="card">
-        <header class="card-head">
-          <h2>Эффективность</h2>
-          <span class="card-sub">последние <b id="report-days">7</b> дней</span>
-        </header>
-        <div id="report-chart" class="chart"></div>
-        <div id="report-breakdown" class="kv"></div>
-      </article>
+              <header class="card-head">
+                <h2>Состояние конвейера</h2>
+                <span class="card-sub">последние прогоны</span>
+              </header>
+              <div id="pipeline-visual" class="pipeline"></div>
+            </article>
 
       <article class="card">
-        <header class="card-head">
-          <h2>Конвейер</h2>
-          <span class="card-sub">последние прогоны</span>
-        </header>
-        <div id="pipeline-visual" class="pipeline"></div>
-      </article>
-    </div>
+              <header class="card-head">
+                <h2>Результаты редакции</h2>
+                <span class="card-sub">последние <b id="report-days">7</b> дней</span>
+              </header>
+              <div id="report-chart" class="chart"></div>
+              <div id="report-breakdown" class="kv"></div>
+            </article>
+    </section>
+
+    <section class="grid-2" aria-label="Публикации и доставка">
+      <article class="card">
+            <header class="card-head">
+              <h2>Почему ферма публикует или молчит</h2>
+              <span class="card-sub" id="publication-decision-meta">Решение последнего publish-тика из журнала прогонов</span>
+            </header>
+            <div id="publication-decision" class="list">
+              <div class="empty">Читаю последнее решение о публикации…</div>
+            </div>
+          </article>
+
+      <article class="card">
+            <header class="card-head">
+              <h2>Очередь публикации</h2>
+              <span class="card-sub" id="backlog-meta">Что вошло, что забронировано, что вышло и что ещё ждёт — по площадкам.
+                Число без скорости не объясняет проблему: 300 забронированных постов это буфер на неделю или долг в 4 суток</span>
+            </header>
+            <div id="backlog-list" class="list">
+              <div class="empty">Читаю состояние очереди…</div>
+            </div>
+          </article>
+    </section>
 
     <article class="card">
       <header class="card-head">
@@ -112,26 +191,13 @@
       <div id="ai-usage-breakdown" class="kv"></div>
     </article>
 
-    <article class="card">
-      <header class="card-head">
-        <h2>Почему ферма публикует или молчит</h2>
-        <span class="card-sub" id="publication-decision-meta">Решение последнего publish-тика из журнала прогонов</span>
-      </header>
-      <div id="publication-decision" class="list">
-        <div class="empty">Читаю последнее решение о публикации…</div>
-      </div>
-    </article>
+    
 
-    <article class="card">
-      <header class="card-head">
-        <h2>Очередь публикации</h2>
-        <span class="card-sub" id="backlog-meta">Что вошло, что забронировано, что вышло и что ещё ждёт — по площадкам.
-          Число без скорости не объясняет проблему: 300 забронированных постов это буфер на неделю или долг в 4 суток</span>
-      </header>
-      <div id="backlog-list" class="list">
-        <div class="empty">Читаю состояние очереди…</div>
-      </div>
-    </article>
+
+
+    
+
+
 
     <article class="card">
       <header class="card-head">
@@ -249,6 +315,8 @@
           <button id="crosspost-export" class="btn btn-ghost btn-sm" type="button">Экспорт диагностики</button>
         </div>
       </header>
+      <div id="crossposts-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+      <div id="crosspost-health-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="crosspost-health" class="delivery-health" aria-live="polite"></div>
       <div id="crossposts-list" class="list"></div>
     </article>
@@ -260,7 +328,7 @@
     <div class="connect-head">
       <div>
         <h2>Подключения</h2>
-        <p class="connect-lead">Один клик: панель откроет сайт площадки, ты войдёшь — сессия и токены сохранятся сами.</p>
+        <p class="connect-lead">Выбери площадку и доступный для неё способ входа. Авторизация и способ публикации показываются отдельно: API нужен не каждой сети.</p>
       </div>
       <div class="connect-stats" id="connect-stats"></div>
     </div>
@@ -277,20 +345,62 @@
     <div id="connect-grid" class="connect-grid"></div>
   </section>
 
+  <section class="view" data-view="team">
+    <div class="team-hero">
+      <div class="team-hero-copy">
+        <span class="team-kicker">EDITORIAL OPERATIONS</span>
+        <h2>Редакционная команда</h2>
+        <p>Единая картина работы конвейера: от разведки тем до публикации и анализа результата. Здесь отображаются реальные стадии последнего прогона, а не выдуманные статусы отдельных агентов.</p>
+      </div>
+      <button class="btn btn-primary" type="button" data-goto="runs">Открыть журнал прогонов</button>
+    </div>
+    <div class="team-stage-intro">
+      <div><strong>Рабочий процесс</strong><span>Состояние последнего цикла по журналу TgFarm</span></div>
+      <span class="team-live-note"><i></i> Синхронизация с журналом прогонов</span>
+    </div>
+    <article class="card team-pipeline-card">
+      <header class="card-head">
+        <h2>Стадии редакционного конвейера</h2>
+        <span class="card-sub">Сбор · стратегия · создание · проверка · доставка · обучение</span>
+      </header>
+      <div id="team-pipeline" class="pipeline team-pipeline">
+        <div class="empty">Ожидаю первый отчёт о прогоне.</div>
+      </div>
+    </article>
+    <div class="team-role-grid">
+      <article class="team-role-card"><span class="team-role-icon">⌕</span><div><strong>Исследователь</strong><p>Собирает сигналы, темы и материалы из источников.</p><small>Связанные стадии: S1 · S2</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✳</span><div><strong>Стратег</strong><p>Помогает выбрать угол подачи, приоритет и маршрут материала.</p><small>Редакционное планирование</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✎</span><div><strong>Автор и редактор</strong><p>Создаёт материал и адаптирует его под формат площадки.</p><small>Связанная стадия: S4</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">✓</span><div><strong>Фактчекер и критик</strong><p>Проверяет качество, фактические утверждения и риски.</p><small>Связанная стадия: S5</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">▧</span><div><strong>Визуальный редактор</strong><p>Подготавливает визуальное сопровождение материала.</p><small>Связанная стадия: S6</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">↗</span><div><strong>Менеджер площадок</strong><p>Учитывает формат, правила и доступный способ доставки каждой сети.</p><small>Связанные стадии: S7 · S9</small></div></article>
+      <article class="team-role-card"><span class="team-role-icon">⌁</span><div><strong>Аналитик</strong><p>Собирает результаты и возвращает измеримые выводы в редакционный цикл.</p><small>Связанная стадия: S8</small></div></article>
+      <article class="team-role-card team-role-card--note"><span class="team-role-icon">◎</span><div><strong>Общий контекст</strong><p>Роли описывают редакционные функции. Фактические запуски, доступные инструменты и результаты определяются текущими модулями и журналом.</p><small>Без фиктивной индикации активности</small></div></article>
+    </div>
+    <article class="card team-quality-card">
+      <header class="card-head"><h2>Контроль качества команды</h2><span class="card-sub">Существующие парные эксперименты</span></header>
+      <p>В Command Center уже доступно сравнение обычного автора и версии со стратегом на одном материале и маршруте. Оно помогает оценивать практический эффект, не выдавая эксперимент за доказательство.</p>
+      <button class="btn btn-ghost btn-sm" type="button" data-goto="overview">Открыть эксперименты в Command Center</button>
+    </article>
+  </section>
+
   <section class="view" data-view="plan">
     <article class="card">
       <header class="card-head">
         <h2>План тем</h2>
         <button class="btn btn-ghost" id="plan-refresh" type="button">Обновить</button>
-        <button class="btn" id="plan-apply" type="button">Зафиксировать план</button>
+        <button class="btn" id="plan-apply" type="button" disabled title="Сначала получи актуальный план">Зафиксировать план</button>
       </header>
+      <div id="plan-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <p id="plan-meta">Ещё не загружено.</p>
       <div id="plan-summary" class="plan-chips"></div>
       <h3>Исполнитель плана</h3>
       <p class="card-sub">Переключатель PLAN_EXECUTION_ENABLED решает, регистрируются ли задачи исполнителя и двигаются ли записи плана. «неизвестно» здесь — это не «выключен» и не «ноль»: панель не может это измерить.</p>
       <div id="plan-execution"></div>
+      <div id="plan-open-orders-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="plan-entries"></div>
       <h3>История ревизий</h3>
+      <div id="plan-history-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="plan-history"></div>
     </article>
   </section>
@@ -303,6 +413,7 @@
       </header>
       <p class="card-sub">Кнопка «Почему?» показывает числа: скорость, свежесть, насыщенность. Фаза и ускорение сравнивают текущее окно наблюдений с предыдущим; «нет данных» — это не ноль, предыдущего окна ещё не было.</p>
       <p class="card-sub">Кнопка «Пропуски?» показывает площадки, которые маршрутизатор убрал из плана кластера, и записанную причину. Отчёт живёт в памяти процесса: после перезапуска или вытеснения по LRU записи нет, и «нет данных» в этом блоке не означает «ничего не пропущено».</p>
+      <div id="trends-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="trends-list" class="list list-rich"></div>
     </article>
   </section>
@@ -315,6 +426,8 @@
         <button data-status="gated">прошли</button>
         <button data-status="scheduled">в очереди</button>
         <button data-status="publish_unknown">нужна сверка</button>
+        <button data-status="failed">ошибки</button>
+        <button data-status="draft">черновики</button>
         <button data-status="published">опубликованы</button>
         <button data-status="rejected">отклонены</button>
       </div>
@@ -324,6 +437,32 @@
 
   <!-- ============================================================= REVIEW -->
   <section class="view" data-view="review">
+    <section class="delivery-center-hero">
+      <div>
+        <span class="delivery-center-kicker">DISTRIBUTION OPERATIONS</span>
+        <h2>Центр доставки</h2>
+        <p>Единая точка контроля: неопределённые результаты, ошибки, активные отправки и подтверждённые публикации. Здесь используются существующие журналы и безопасные действия сверки.</p>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" id="delivery-center-refresh">Обновить доставки</button>
+    </section>
+    <div id="delivery-center-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
+    <div class="delivery-center-grid">
+      <article class="card">
+        <header class="card-head"><h2>Состояние доставки</h2><span class="card-sub">сводка адаптеров</span></header>
+        <div id="delivery-center-health" class="delivery-health"><div class="empty">Читаю состояние доставок…</div></div>
+      </article>
+      <article class="card">
+        <header class="card-head"><h2>Журнал по площадкам</h2><span class="card-sub">последнее состояние каждой пары материал × площадка</span></header>
+        <div class="delivery-center-filters" role="group" aria-label="Фильтр журнала доставок">
+          <button type="button" class="is-active" data-delivery-filter="all">Все</button>
+          <button type="button" data-delivery-filter="attention">Внимание</button>
+          <button type="button" data-delivery-filter="errors">Ошибки</button>
+          <button type="button" data-delivery-filter="pending">В процессе</button>
+          <button type="button" data-delivery-filter="published">Опубликовано</button>
+        </div>
+        <div id="delivery-center-journal" class="list"><div class="empty">Читаю журнал доставок…</div></div>
+      </article>
+    </div>
     <div class="toolbar">
       <div class="segmented" id="review-filters">
         <button class="is-active" data-bucket="">все</button>
@@ -440,6 +579,17 @@
           <input id="platform-search" type="search" placeholder="Найти сеть, например Reddit или VK…" autocomplete="off">
           <kbd>/</kbd>
         </label>
+        <label class="platform-capability-select">
+          <span>Возможность</span>
+          <select id="platform-capability-filter" class="input input-sm" aria-label="Фильтр по возможностям площадки">
+            <option value="all">Любой способ</option>
+            <option value="publish">Автопубликация</option>
+            <option value="draft_only">Черновик в редакторе</option>
+            <option value="manual_upload">Ручная загрузка / согласие</option>
+            <option value="read_only">Только чтение</option>
+            <option value="unsupported">Нет интеграции</option>
+          </select>
+        </label>
         <div class="segmented platform-filter-tabs" id="platform-filters" role="group" aria-label="Фильтр площадок">
           <button class="is-active" data-platform-filter="all">Все</button>
           <button data-platform-filter="enabled">Включены</button>
@@ -450,6 +600,7 @@
       <div class="platform-categories" id="platform-categories" aria-label="Категории площадок"></div>
     </article>
 
+    <div class="workspace-freshness" id="platforms-freshness" role="status" aria-live="polite" hidden></div>
     <div class="platform-grid" id="platforms-grid">
       <div class="platform-loading"><span class="platform-loading-ring"></span><strong>Подключаю каталог</strong><span>Читаю состояние интеграций и настройки площадок.</span></div>
     </div>
@@ -571,6 +722,7 @@
         <h2>Источники</h2>
         <span class="card-sub">сводка здоровья и статус бэкфилла репринтов сверху, список сборщиков ниже</span>
       </header>
+      <div id="sources-freshness" class="workspace-freshness" role="status" aria-live="polite" hidden></div>
       <div id="sources-health" class="list">
         <div class="empty">Читаю здоровье источников…</div>
       </div>
@@ -668,7 +820,7 @@
 
 <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 
-<aside class="drawer" id="drawer" hidden>
+<aside class="drawer" id="drawer" hidden role="dialog" aria-modal="true" aria-label="Карточка материала" tabindex="-1">
   <div class="drawer-inner" id="drawer-inner"></div>
 </aside>
 

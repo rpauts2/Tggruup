@@ -169,15 +169,57 @@ def test_error_field_is_checked_before_any_totals(client):
     assert body.index("payload.error") < body.index("из очереди")
 
 
-def test_refresh_renders_the_card_before_the_all_failed_throw(client):
-    """A fully dead backend must leave «сеть не отвечает», not a frozen old verdict."""
+def test_refresh_renders_the_card_before_the_all_failed_return(client):
+    """A full outage is rendered explicitly and returns without generic error handling."""
     script = _script(client)
     body = _chunk(script, "async function refresh()", "async function runCycle()")
     assert 'renderPublicationDecision("status" in data' in body
-    assert body.index("renderPublicationDecision") < body.index('throw new Error("API недоступен")')
+    full_outage_return = 'if (failed.length === Object.keys(endpoints).length) return;'
+    assert full_outage_return in body
+    assert body.index("renderPublicationDecision") < body.index(full_outage_return)
+    assert 'throw new Error("API недоступен")' not in body
     # The rejection reason travels, so HTTP and network wordings can differ.
     assert "reasons[key] = outcome.reason" in body
     assert "Promise.allSettled(" in body
+
+
+def test_review_board_does_not_turn_missing_age_or_attempts_into_zero(client):
+    script = _script(client)
+    body = _chunk(script, "function renderReviewCard(item)", "function renderReviewBoard()")
+    assert "typeof item.age_hours === \"number\"" in body
+    assert "возраст не измерен" in body
+    assert "typeof item.attempts === \"number\"" in body
+    assert "попыток: нет отчёта" in body
+    assert "Number(item.age_hours || 0)" not in body
+    assert "Number(item.attempts || 0)" not in body
+
+
+def test_review_board_confirms_every_operator_action(client):
+    script = _script(client)
+    body = _chunk(script, "async function runReviewAction(", "// Rows one click may return to the queue")
+    for phrase in (
+        "Подтверждаете, что этот пост уже появился",
+        "Вы лично проверили целевую площадку",
+        "Повторить доставку этого материала",
+        "Отправить этот материал на публикацию сейчас",
+        "Отклонить этот материал",
+    ):
+        assert phrase in body
+
+
+def test_review_and_unresolved_worklists_open_the_shared_material_drawer(client):
+    script = _script(client)
+    review = _chunk(script, "function renderReviewCard(item)", "function renderReviewBoard()")
+    assert 'data-review-open="' in review
+    assert "Открыть материал" in review
+    handlers = _chunk(script, 'const reviewBoard = $("#review-board")', 'const trendsList = $("#trends-list")')
+    assert 'closest("[data-review-open]")' in handlers
+    assert "openDrawer(open.dataset.reviewOpen)" in handlers
+    unresolved = _chunk(script, "function renderUnresolvedWorklist(payload, failure)", "const NICHE_COLOR")
+    assert 'data-unresolved-open="' in unresolved
+    assert "Открыть материал" in unresolved
+    assert 'closest("[data-unresolved-open]")' in handlers
+    assert "openDrawer(open.dataset.unresolvedOpen)" in handlers
 
 
 # ------------------------------------------------------------------- the hygiene
@@ -201,3 +243,142 @@ def test_publication_text_reaches_the_dom_escaped(client):
         assert field in body
     for raw in ("${decision.", "${code}", "+ code", "${label}", "${counters"):
         assert raw not in body, f"raw interpolation of {raw!r}"
+
+
+def test_queue_cards_and_overview_rows_are_keyboard_entry_points(client):
+    script = _script(client)
+    card = _chunk(script, "function postCard(p)", "function renderPosts(posts)")
+    assert 'role="button" tabindex="0" aria-label="Открыть материал:' in card
+    assert '$$(".pcard, #overview-queue .item").forEach' in _chunk(script, "function renderPosts(posts)", "// «Ближайшие публикации»")
+    rows = _chunk(script, "function renderPosts(posts)", "// «Ближайшие публикации»")
+    assert 'role="button" tabindex="0" aria-label="Открыть материал:' in rows
+    assert rows.count('role="button" tabindex="0"') == 2
+    assert 'event.key !== "Enter" && event.key !== " "' in rows
+    assert 'openDrawer(el.dataset.post)' in rows
+
+
+def test_material_drawer_is_modal_and_loads_trace_separately(client):
+    html = client.get("/").text
+    assert 'id="drawer" hidden role="dialog" aria-modal="true"' in html
+    script = _script(client)
+    drawer = _chunk(script, "function closeDrawer()", "function setTikTokPublishStatus")
+    assert "state.drawerReturnFocus = document.activeElement" in drawer
+    assert "const requestId = ++state.drawerRequestId" in drawer
+    assert "requestId !== state.drawerRequestId || drawer.hidden" in drawer
+    assert "state.drawerRequestId += 1" in drawer
+    assert 'data-drawer-close' in drawer
+    assert 'drawer.setAttribute("aria-labelledby", "drawer-title")' in drawer
+    assert '<h3 id="drawer-title">' in drawer
+    assert 'closeButton.focus()' in drawer
+    assert 'window.tgfarmTrace(p.id)' in drawer
+    assert 'id="trace-slot" aria-live="polite"' in drawer
+    trace = _chunk(script, "window.tgfarmTrace = async (id)", "window.tgfarmPolish =")
+    assert 'const slot = $("#trace-slot")' in trace
+    assert "slot.isConnected" in trace
+    assert "slot.dataset.tracePostId !== tracePostId" in trace
+    assert 'if (!drawer.hidden && e.key === "Tab")' in script
+    assert 'if (!drawer.hidden && e.key === "Escape")' in script
+    assert "if (restore && restore.isConnected" in drawer
+
+
+# ---------------------------------------------------------------- queue filters
+def test_post_queue_exposes_all_operational_status_groups(client):
+    """Every visible filter maps to an existing Post.status value."""
+    html = client.get("/").text
+    script = _script(client)
+    for status, label in (
+        ("", "все"),
+        ("gated", "прошли"),
+        ("scheduled", "в очереди"),
+        ("publish_unknown", "нужна сверка"),
+        ("failed", "ошибки"),
+        ("draft", "черновики"),
+        ("published", "опубликованы"),
+        ("rejected", "отклонены"),
+    ):
+        assert ('data-status="' + status + '"') in html
+        assert label in html
+    assert 'state.postFilter ? "&status=" + state.postFilter : ""' in script
+    assert 'state.postFilter = b.dataset.status' in script
+
+def test_specialist_workspaces_expose_local_freshness_states(client):
+    html = client.get("/").text
+    assert 'id="trends-freshness"' in html
+    assert 'id="sources-freshness"' in html
+    assert html.index('id="trends-freshness"') < html.index('id="trends-list"')
+    assert html.index('id="sources-freshness"') < html.index('id="sources-health"')
+
+    script = _script(client)
+    freshness = _chunk(script, "function renderWorkspaceFreshness", "function renderKPIs")
+    assert "state.workspaceFreshness[key]" in freshness
+    assert 'root.dataset.state = "stale"' in freshness
+    assert 'root.dataset.state = "error"' in freshness
+    assert "esc(failure.message || failure)" in freshness
+    assert "dt(lastSuccessAt)" in freshness
+
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("trends"' in refresh
+    assert 'renderWorkspaceFreshness("sources"' in refresh
+
+def test_delivery_workspace_exposes_independent_freshness_states(client):
+    html = client.get("/").text
+    assert 'id="crossposts-freshness"' in html
+    assert 'id="crosspost-health-freshness"' in html
+    assert html.index('id="crossposts-freshness"') < html.index('id="crosspost-health"')
+    assert html.index('id="crosspost-health-freshness"') < html.index('id="crosspost-health"')
+
+    script = _script(client)
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("crossposts"' in refresh
+    assert 'renderWorkspaceFreshness("deliveryHealth"' in refresh
+
+
+def test_platform_catalog_freshness_blocks_stale_state_changes(client):
+    html = client.get("/").text
+    assert 'id="platforms-freshness"' in html
+    assert html.index('id="platforms-freshness"') < html.index('id="platforms-grid"')
+
+    script = _script(client)
+    refresh = _chunk(script, "async function refresh()", "async function runCycle()")
+    assert 'renderWorkspaceFreshness("platforms", "platforms-freshness"' in refresh
+    assert 'state.platformCatalogFresh = "platforms" in data' in refresh
+    assert 'container.classList.toggle("is-stale", !state.platformCatalogFresh)' in script
+    for guard in (
+        "async function updatePlatformSwitch(platformId, enabled)",
+        "async function updatePlatformPlan(platformId)",
+        "async function openPlatformAuthorization(platformId, forceCredentials = false)",
+        "async function checkPlatformAuthorization(platformId, button = null)",
+    ):
+        body = _chunk(script, guard, "\n  }")
+        assert "if (!state.platformCatalogFresh)" in body
+        assert "return" in body
+
+
+def test_editorial_plan_sources_have_independent_freshness_and_apply_gate(client):
+    html = client.get("/").text
+    for notice, anchor in (
+        ("plan-freshness", 'id="plan-meta"'),
+        ("plan-open-orders-freshness", 'id="plan-entries"'),
+        ("plan-history-freshness", 'id="plan-history"'),
+    ):
+        assert f'id="{notice}"' in html
+        assert html.index(f'id="{notice}"') < html.index(anchor)
+    assert 'id="plan-apply" type="button" disabled' in html
+
+    script = _script(client)
+    loader = _chunk(script, "async function loadEditorialPlan(force = false)", "function renderEditorialPlan(plan)")
+    assert "Promise.allSettled" in loader
+    assert 'renderWorkspaceFreshness("editorialPlan", "plan-freshness"' in loader
+    assert 'renderWorkspaceFreshness("editorialPlanHistory", "plan-history-freshness"' in loader
+    assert "Array.isArray(planResult.value.entries)" in loader
+    assert "Array.isArray(historyResult.value.plans)" in loader
+
+    queue = _chunk(script, "async function loadOpenOrderQueue()", "window.tgfarmSetRuntimeMode")
+    assert 'renderWorkspaceFreshness("editorialOpenOrders", "plan-open-orders-freshness"' in queue
+    assert "hadSnapshot" in queue
+    assert "if (!hadSnapshot) renderOpenOrderQueue(null, error)" in queue
+
+    actions = _chunk(script, 'const planRefresh = $("#plan-refresh")', '$$("[data-goto]")')
+    assert "if (!state.editorialPlanFresh" in actions
+    assert 'toast("План не подтверждён актуальным чтением. Обнови его перед фиксацией."' in actions
+    assert "syncEditorialPlanActions();" in actions

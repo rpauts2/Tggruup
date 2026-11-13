@@ -43,7 +43,7 @@ EXEC_START = "  // ── Исполнитель плана: работает л
 EXEC_RENDER_END = "  async function loadPlanExecution() {"
 EXEC_END = "  function renderDistributionPlan(payload) {"
 LOAD_PLAN_START = "  async function loadEditorialPlan(force = false) {"
-LOAD_PLAN_END = "  function renderEditorialPlan(plan, history) {"
+LOAD_PLAN_END = "  function renderEditorialPlan(plan) {"
 EXEC_LOAD_START = "  async function loadPlanExecution() {"
 EXEC_LOAD_END = "  function renderDistributionPlan(payload) {"
 
