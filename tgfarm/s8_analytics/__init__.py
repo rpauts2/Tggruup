@@ -59,19 +59,19 @@ class PostMetrics:
         return self.reactions + self.comments + self.forwards
 
     @property
-    def er(self) -> float:
-        return round(self.engagement / self.views, 4) if self.views else 0.0
+    def er(self) -> float | None:
+        return round(self.engagement / self.views, 4) if self.views > 0 else None
 
     @property
-    def ctr(self) -> float:
-        return round(min(1.0, self.opens / self.impressions), 4) if self.impressions else 0.0
+    def ctr(self) -> float | None:
+        return round(min(1.0, self.opens / self.impressions), 4) if self.impressions > 0 else None
 
     @property
-    def read_rate(self) -> float:
-        return round(min(1.0, self.views / self.opens), 4) if self.opens else 0.0
+    def read_rate(self) -> float | None:
+        return round(min(1.0, self.views / self.opens), 4) if self.opens > 0 else None
 
     @property
-    def quality(self) -> float:
+    def quality(self) -> float | None:
         """One comparable score for channels that expose a feed.
 
         Dzen often has impressions and openings before it has any reactions, so
@@ -79,7 +79,12 @@ class PostMetrics:
         channels without impressions keep using ER.
         """
         if self.impressions >= 100:
-            return round(self.ctr * self.read_rate, 4)
+            ctr, read_rate = self.ctr, self.read_rate
+            if ctr == 0.0:
+                return 0.0  # No opens is a real feed zero, even without read-through.
+            if ctr is not None and read_rate is not None:
+                return round(ctr * read_rate, 4)
+            return None
         return self.er
 
     def as_dict(self) -> dict:
@@ -99,7 +104,7 @@ class ChannelReport:
     title: str
     posts_7d: int = 0
     #: How many of ``posts_7d`` ever got a ``post_stats`` snapshot — the
-    #: denominator of ``avg_views``/``avg_er`` below.
+    #: denominator of ``avg_views``; each rate needs its own valid denominator.
     measured_7d: int = 0
     #: A rate is ``None`` when its own denominator is empty: an unmeasured post
     #: did not earn zero views, it never reported any (see ``_rate`` in
@@ -180,26 +185,29 @@ def channel_report(channel_id: str, days: int = 7) -> ChannelReport:
         return report
 
     report.posts_7d = len(metrics)
-    # The denominator of a rate is the set of posts that were actually measured.
-    # `posts_7d`, `views_total` and `impressions_total` keep counting every
-    # published post, as they always did; only the averages move to the measured
-    # subset, because a post nobody collected stats for did not earn zero views.
+    # Counts and totals still cover every published post. Average views includes
+    # measured zeroes, but each rate averages only its own defined values.
     measured = [m for m in metrics if m.measured]
     report.measured_7d = len(measured)
     report.avg_views = _rate(sum(m.views for m in measured), len(measured))
-    report.avg_er = _rate(sum(m.er for m in measured), len(measured))
-    reported = [m for m in metrics if m.impressions]
+    ers = [m.er for m in metrics if m.er is not None]
+    ctrs = [m.ctr for m in metrics if m.ctr is not None]
+    read_rates = [m.read_rate for m in metrics if m.read_rate is not None]
+    report.avg_er = _rate(sum(ers), len(ers))
     report.impressions_total = sum(m.impressions for m in metrics)
-    report.avg_ctr = _rate(sum(m.ctr for m in reported), len(reported))
-    report.avg_read_rate = _rate(sum(m.read_rate for m in reported), len(reported))
+    report.avg_ctr = _rate(sum(ctrs), len(ctrs))
+    report.avg_read_rate = _rate(sum(read_rates), len(read_rates))
 
     angles: dict[str, list[float]] = defaultdict(list)
     hours: dict[int, list[float]] = defaultdict(list)
     for m in metrics:
-        if m.views or m.impressions:
-            angles[m.angle].append(m.quality)
-        if ensure_utc(m.published_at):
-            hours[ensure_utc(m.published_at).hour].append(m.quality)
+        quality = m.quality
+        if quality is None:
+            continue
+        angles[m.angle].append(quality)
+        published = ensure_utc(m.published_at)
+        if m.measured and published:
+            hours[published.hour].append(quality)
 
     report.by_angle = {k: round(sum(v) / len(v), 4) for k, v in angles.items() if v}
     report.by_hour = {k: round(sum(v) / len(v), 4) for k, v in hours.items() if v}
@@ -212,11 +220,10 @@ def fleet_summary(days: int = 7) -> dict:
     """Per-channel and fleet totals over the window.
 
     Counts (``posts``, ``views_total``, ``engagement_total``) keep covering every
-    published post; the rates divide by the measured subset only. ``measured``
-    travels beside each row so the panel can say what the rate was taken over —
-    and ``avg_views``/``avg_er`` are ``None``, never ``0.0``, when that subset is
-    empty. ``unmeasured_posts`` names the difference explicitly instead of
-    letting a fabricated zero speak for it.
+    published post. ``avg_views`` uses measured posts; ``avg_er`` uses only defined
+    ERs (positive views). An empty subset yields ``None``, not a fabricated zero.
+    ``measured`` and ``unmeasured_posts`` retain the snapshot coverage alongside
+    those rates.
     """
     metrics = recent_metrics(days)
     by_channel: dict[str, list[PostMetrics]] = defaultdict(list)
@@ -226,6 +233,7 @@ def fleet_summary(days: int = 7) -> dict:
     channels = []
     for channel_id, items in by_channel.items():
         measured = [i for i in items if i.measured]
+        ers = [i.er for i in items if i.er is not None]
         channels.append(
             {
                 "channel_id": channel_id,
@@ -234,12 +242,13 @@ def fleet_summary(days: int = 7) -> dict:
                 "unmeasured_posts": len(items) - len(measured),
                 "views_total": sum(i.views for i in items),
                 "avg_views": _rate(sum(i.views for i in measured), len(measured)),
-                "avg_er": _rate(sum(i.er for i in measured), len(measured)),
+                "avg_er": _rate(sum(ers), len(ers)),
             }
         )
     channels.sort(key=lambda c: c["views_total"], reverse=True)
 
     measured_all = [m for m in metrics if m.measured]
+    ers_all = [m.er for m in metrics if m.er is not None]
     return {
         "window_days": days,
         "posts": len(metrics),
@@ -247,7 +256,7 @@ def fleet_summary(days: int = 7) -> dict:
         "unmeasured_posts": len(metrics) - len(measured_all),
         "views_total": sum(m.views for m in metrics),
         "engagement_total": sum(m.engagement for m in metrics),
-        "avg_er": _rate(sum(m.er for m in measured_all), len(measured_all)),
+        "avg_er": _rate(sum(ers_all), len(ers_all)),
         "channels": channels,
     }
 
@@ -255,7 +264,7 @@ def fleet_summary(days: int = 7) -> dict:
 # ------------------------------------------------------------- feedback loop
 def angle_performance(
     days: int = 14, channel_id: str | None = None
-) -> dict[str, dict[str, float | int]]:
+) -> dict[str, dict[str, float | int | None]]:
     """Aggregate a comparable quality score by angle.
 
     Dzen exposes impressions long before it has enough views for a stable ER,
@@ -268,22 +277,25 @@ def angle_performance(
             continue
         if m.impressions >= 100 or m.views >= 30:
             buckets[m.angle].append(m)
-    out: dict[str, dict[str, float | int]] = {}
+    out: dict[str, dict[str, float | int | None]] = {}
     for angle, values in buckets.items():
-        impressions = sum(v.impressions for v in values)
-        opens = sum(v.opens for v in values)
+        ers = [v.er for v in values if v.er is not None]
+        qualities = [v.quality for v in values if v.quality is not None]
+        reported = [v for v in values if v.ctr is not None]
+        impressions = sum(v.impressions for v in reported)
+        opens = sum(v.opens for v in reported)
         out[angle] = {
             "n": len(values),
-            "er": round(sum(v.er for v in values) / len(values), 4),
-            "ctr": round(opens / impressions, 4) if impressions else 0.0,
-            "quality": round(sum(v.quality for v in values) / len(values), 4),
+            "er": _rate(sum(ers), len(ers)),
+            "ctr": _rate(opens, impressions),
+            "quality": _rate(sum(qualities), len(qualities)),
         }
     return out
 
 
 def hook_style_performance(
     days: int = 14, channel_id: str | None = None
-) -> dict[str, dict[str, float | int]]:
+) -> dict[str, dict[str, float | int | None]]:
     """Same aggregation as angles, keyed by the learned hook style.
 
     Hook patterns compete for the same reader attention, so the reward is the
@@ -297,20 +309,23 @@ def hook_style_performance(
             continue
         if m.impressions >= 100 or m.views >= 30:
             buckets[m.hook_style].append(m)
-    out: dict[str, dict[str, float | int]] = {}
+    out: dict[str, dict[str, float | int | None]] = {}
     for style, values in buckets.items():
-        impressions = sum(v.impressions for v in values)
-        opens = sum(v.opens for v in values)
+        ers = [v.er for v in values if v.er is not None]
+        qualities = [v.quality for v in values if v.quality is not None]
+        reported = [v for v in values if v.ctr is not None]
+        impressions = sum(v.impressions for v in reported)
+        opens = sum(v.opens for v in reported)
         out[style] = {
             "n": len(values),
-            "er": round(sum(v.er for v in values) / len(values), 4),
-            "ctr": round(opens / impressions, 4) if impressions else 0.0,
-            "quality": round(sum(v.quality for v in values) / len(values), 4),
+            "er": _rate(sum(ers), len(ers)),
+            "ctr": _rate(opens, impressions),
+            "quality": _rate(sum(qualities), len(qualities)),
         }
     return out
 
 
-def holdout_report(days: int = 30) -> dict[str, dict[str, float | int]]:
+def holdout_report(days: int = 30) -> dict[str, dict[str, float | int | None]]:
     """Treatment vs holdout: is the few-shot voice actually better?
 
     Holdout posts are generated without the examples; comparing their quality
@@ -320,11 +335,12 @@ def holdout_report(days: int = 30) -> dict[str, dict[str, float | int]]:
     buckets: dict[str, list[PostMetrics]] = defaultdict(list)
     for m in recent_metrics(days):
         buckets[m.variant or "a"].append(m)
-    out: dict[str, dict[str, float | int]] = {}
+    out: dict[str, dict[str, float | int | None]] = {}
     for variant, values in buckets.items():
+        qualities = [v.quality for v in values if v.quality is not None]
         out[variant] = {
             "n": len(values),
-            "quality": round(sum(v.quality for v in values) / len(values), 4),
+            "quality": _rate(sum(qualities), len(qualities)),
             "views": round(sum(v.views for v in values) / len(values), 1),
         }
     return out
@@ -406,8 +422,14 @@ def slot_performance(days: int = 14) -> dict[int, float]:
     buckets: dict[int, list[float]] = defaultdict(list)
     for m in recent_metrics(days):
         published = ensure_utc(m.published_at)
-        if published and (m.impressions >= 100 or m.views >= 30):
-            buckets[published.hour].append(m.quality)
+        quality = m.quality
+        if (
+            m.measured
+            and published
+            and quality is not None
+            and (m.impressions >= 100 or m.views >= 30)
+        ):
+            buckets[published.hour].append(quality)
     return {hour: round(sum(v) / len(v), 4) for hour, v in buckets.items() if v}
 
 
