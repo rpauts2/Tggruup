@@ -197,16 +197,15 @@ async def complete_youtube_oauth(state: str, code: str) -> dict[str, str]:
     )
     access_token = str(token.get("access_token") or "")
     refresh_token = str(token.get("refresh_token") or "")
+    if not access_token:
+        raise RuntimeError("Google не вернул access token. Повтори подключение YouTube через OAuth.")
     if not refresh_token:
-        # Google only issues a refresh token for some consent events. Reuse an
-        # existing one if the operator reconnects the same app/account.
-        from tgfarm.core.settings import get_settings
-
-        refresh_token = str(get_settings().youtube_refresh_token or "").strip()
-    if not access_token or not refresh_token:
+        # Never pair a new account's access token/channel with a refresh token
+        # left by a previous account. Installed-app OAuth must return a refresh
+        # token; absence is a failed connection, not a reason to reuse old data.
         raise RuntimeError(
-            "Google не выдал долговременный refresh token. Проверь access_type=offline, "
-            "отзови старый grant в Google Account и подключи YouTube снова."
+            "Google не вернул refresh token для YouTube Desktop OAuth. "
+            "Старый токен не переиспользован; проверь тип OAuth-клиента и повтори подключение."
         )
     try:
         expires_in = max(60, int(token.get("expires_in") or 3600))

@@ -107,6 +107,37 @@ async def test_youtube_oauth_uses_state_offline_access_and_verifies_channel(monk
 
 
 @pytest.mark.asyncio
+async def test_youtube_oauth_does_not_reuse_a_previous_account_refresh_token(monkeypatch):
+    from tgfarm import youtube_oauth
+    import tgfarm.core.settings as settings_module
+
+    async def exchange(_data):
+        return {"access_token": "new-account-access", "expires_in": 3600}
+
+    async def verify(_access_token):
+        raise AssertionError("channel verification must not run without this OAuth grant's refresh token")
+
+    monkeypatch.setattr(youtube_oauth, "_exchange_token", exchange)
+    monkeypatch.setattr(youtube_oauth, "_verify_channel", verify)
+    monkeypatch.setattr(
+        settings_module,
+        "get_settings",
+        lambda: SimpleNamespace(youtube_refresh_token="previous-account-refresh"),
+    )
+    started = await youtube_oauth.begin_youtube_oauth(
+        "google-client-id",
+        "google-client-secret",
+        "http://127.0.0.1:8000/api/platforms/youtube/auth/callback",
+    )
+    state = parse_qs(urlsplit(started["authorize_url"]).query)["state"][0]
+
+    with pytest.raises(RuntimeError, match="Старый токен не переиспользован"):
+        await youtube_oauth.complete_youtube_oauth(state, "new-account-code")
+
+    assert state not in youtube_oauth._PENDING
+
+
+@pytest.mark.asyncio
 async def test_youtube_oauth_rejects_untrusted_redirect_uris():
     from tgfarm import youtube_oauth
 
