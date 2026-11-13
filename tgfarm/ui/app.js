@@ -7340,10 +7340,10 @@
     loadReviewBoard(true);
     refresh();
   });
-  $(".delivery-center-filters [data-delivery-filter]").forEach((button) =>
+  $("#delivery-center-filters [data-delivery-filter]").forEach((button) =>
     button.addEventListener("click", () => {
       state.deliveryCenterFilter = button.dataset.deliveryFilter || "all";
-      $(".delivery-center-filters [data-delivery-filter]").forEach((item) =>
+      $("#delivery-center-filters [data-delivery-filter]").forEach((item) =>
         item.classList.toggle("is-active", item === button));
       const entries = state.data.crossposts?.crossposts || [];
       renderCrossposts(entries, "#delivery-center-journal", state.deliveryCenterFilter);
