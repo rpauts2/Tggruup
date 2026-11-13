@@ -1499,6 +1499,10 @@ def test_delivery_center_unifies_health_journal_filters_and_material_drawer(dash
         page.locator('[data-delivery-filter="attention"]').click()
         assert journal.get_by_text("delivery-post-001").is_visible()
         assert journal.get_by_text("delivery-post-003").is_visible()
+        attention_filter = page.locator('[data-delivery-filter="attention"]')
+        assert "is-active" in (attention_filter.get_attribute("class") or "")
+        attention_cards = journal.locator(".delivery-card .item-title").all_text_contents()
+        assert attention_cards == ["delivery-post-001", "delivery-post-003"], f"unexpected attention cards: {attention_cards}"
         assert journal.get_by_text("delivery-post-002").count() == 0
 
         page.locator('[data-delivery-filter="published"]').click()
