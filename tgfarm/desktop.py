@@ -42,16 +42,17 @@ WINDOW_TITLE = "TgFarm — автономная ферма Telegram-канало
 
 # --------------------------------------------------------------------- single instance
 class SingleInstance:
-    """One farm per machine.
+    """Hold an OS-level lock so two starts cannot pass the same check.
 
-    Two schedulers publishing to the same channels would fight over slots and
-    quotas, and two windows on one SQLite file invites lock contention. The lock
-    holds a pid; a stale one (crash, reboot) is detected and taken over.
+    The lock file is intentionally persistent. The kernel releases the advisory
+    lock on normal exit or crash; a PID in the file is diagnostic only, never the
+    synchronization primitive.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._held = False
+        self._lock_handle = None
 
     def _running_pid(self) -> int | None:
         if not self.path.exists():
@@ -65,20 +66,68 @@ class SingleInstance:
         return pid if _process_alive(pid) else None
 
     def acquire(self) -> bool:
-        existing = self._running_pid()
-        if existing is not None:
-            log.warning("another instance is already running (pid %d)", existing)
-            return False
+        if self._held:
+            return True
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(str(os.getpid()), encoding="utf-8")
-        self._held = True
-        return True
+        handle = self.path.open("a+b")
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, BlockingIOError):
+                existing = self._running_pid()
+                if existing is not None:
+                    log.warning("another TgFarm instance is already running (pid %d)", existing)
+                else:
+                    log.warning("another TgFarm instance currently holds the desktop lock")
+                handle.close()
+                return False
+
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()).encode("ascii"))
+            handle.flush()
+            os.fsync(handle.fileno())
+            self._lock_handle = handle
+            self._held = True
+            return True
+        except BaseException:
+            handle.close()
+            raise
 
     def release(self) -> None:
-        if not self._held:
+        handle = self._lock_handle
+        if not self._held or handle is None:
             return
-        self.path.unlink(missing_ok=True)
-        self._held = False
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(b"0")
+            handle.flush()
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+            self._lock_handle = None
+            self._held = False
 
 
 def _process_alive(pid: int) -> bool:
@@ -121,21 +170,34 @@ def _port_available(port: int) -> bool:
 
 
 def _store_desktop_port(data_root: Path, port: int) -> None:
-    """Persist the actual listener port atomically for the next desktop start."""
+    """Persist the actual listener port with a unique atomic temporary file."""
+    import tempfile
+
     root = Path(data_root)
     root.mkdir(parents=True, exist_ok=True)
     path = root / "desktop.port"
-    temp = path.with_suffix(".tmp")
-    temp.write_text(str(int(port)), encoding="ascii")
+    fd, temp_name = tempfile.mkstemp(prefix=".desktop.port.", suffix=".tmp", dir=root)
+    temp = Path(temp_name)
     try:
-        temp.chmod(0o600)
-    except OSError:
-        pass
-    temp.replace(path)
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(str(int(port)))
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            temp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def stable_desktop_port(data_root: Path) -> int:
-    """Reuse one per-install loopback port so OAuth redirect URIs stay stable."""
+    """Reuse the per-install callback port, even if another process occupies it.
+
+    Availability is enforced at bind time. Replacing a registered redirect port
+    automatically would make the OAuth provider reject the callback.
+    """
     root = Path(data_root)
     root.mkdir(parents=True, exist_ok=True)
     path = root / "desktop.port"
@@ -143,7 +205,7 @@ def stable_desktop_port(data_root: Path) -> int:
         saved = int(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         saved = 0
-    if 1024 < saved < 65536 and _port_available(saved):
+    if 1024 < saved < 65536:
         return saved
     selected = free_port()
     _store_desktop_port(root, selected)
@@ -151,12 +213,7 @@ def stable_desktop_port(data_root: Path) -> int:
 
 
 def _bind_desktop_socket(data_root: Path, preferred_port: int | None) -> socket.socket:
-    """Bind the loopback listener before starting Uvicorn, closing the port race.
-
-    If another process takes the remembered port between the preliminary check
-    and this bind, fall back to an OS-assigned port and persist the port that is
-    actually reserved. The returned socket stays open and is handed to Uvicorn.
-    """
+    """Reserve the exact configured callback port before starting Uvicorn."""
     root = Path(data_root)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -172,14 +229,14 @@ def _bind_desktop_socket(data_root: Path, preferred_port: int | None) -> socket.
             raise
 
     try:
-        listener = bind(int(preferred_port or 0))
-    except OSError:
-        if preferred_port:
-            log.warning(
-                "saved desktop OAuth port %s was claimed before bind; selecting a new loopback port",
-                preferred_port,
-            )
-        listener = bind(0)
+        listener = bind(int(preferred_port)) if preferred_port else bind(0)
+    except OSError as exc:
+        log.error("configured Desktop OAuth callback port %s is unavailable", preferred_port)
+        raise RuntimeError(
+            f"Порт OAuth callback TgFarm {preferred_port} занят. "
+            "Закрой другое приложение, использующее этот порт, и перезапусти TgFarm. "
+            "Порт не будет изменён автоматически, чтобы не сломать Redirect URI у OAuth-провайдеров."
+        ) from exc
 
     actual_port = int(listener.getsockname()[1])
     _store_desktop_port(root, actual_port)

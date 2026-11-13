@@ -7112,12 +7112,15 @@
         ? '<div class="connect-oauth-setup"><h4>Настройка приложения</h4><p class="connect-dialog-note">Это реквизиты приложения разработчика, а не пароль личного аккаунта. Заполни их один раз.</p>'
           + fields + (row.keys_present ? '<p class="connect-dialog-note">Реквизиты приложения сохранены.</p>' : '<button class="btn btn-primary btn-sm" type="button" data-connect-save-oauth="' + esc(row.id) + '">Сохранить и продолжить</button>') + "</div>"
         : "";
-      const oauthButton = row.keys_present
+      const oauthButton = row.keys_present && row.oauth_allowed !== false
         ? '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-oauth="' + esc(row.id) + '">Войти на ' + esc(row.name || row.id) + "</button></div>"
+        : "";
+      const oauthBlocker = row.oauth_blocker
+        ? '<p class="connect-dialog-note connect-dialog-note--warning">' + esc(row.oauth_blocker) + "</p>"
         : "";
       body.innerHTML = '<ol class="connect-steps"><li>Откроется официальный сайт площадки.</li><li>Войди в аккаунт и подтверди необходимые разрешения.</li><li>TgFarm примет callback, сохранит токены на backend и проверит API.</li></ol>'
         + setup + '<div class="connect-callback"><span>Redirect URI для кабинета разработчика</span><code>' + esc(callback) + '</code></div>'
-        + docs + oauthButton + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
+        + docs + oauthBlocker + oauthButton + '<p class="connect-dialog-status" id="connect-dialog-status"></p>';
     } else if (row.mode === "vkhost") {
       body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ, TgFarm перехватит только официальный OAuth redirect и сохранит токен на backend.</p>'
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'

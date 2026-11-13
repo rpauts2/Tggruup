@@ -222,6 +222,58 @@ def test_all_oauth_providers_expose_only_their_application_setup_fields():
         assert all("value" not in field for field in row["fields"])
 
 
+
+
+
+def test_reddit_oauth_requires_explicit_data_api_approval(monkeypatch):
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        reddit_client_id="reddit-client",
+        reddit_client_secret="reddit-secret",
+        reddit_api_approved=False,
+        vk_access_token="saved-vk-token",
+    )
+    monkeypatch.setattr(pa, "get_settings", lambda: settings)
+    monkeypatch.setattr(pa, "_read_auth_checks", lambda: {})
+    monkeypatch.setattr(pa, "browser_session_status", lambda _pid: {})
+
+    rows = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    reddit = rows["reddit"]
+    assert reddit["keys_present"] is True
+    assert reddit["oauth_allowed"] is False
+    assert reddit["oauth_blocker"]
+    assert reddit["statuses"]["api"]["state"] == "blocked"
+    assert reddit["statuses"]["publish"]["state"] == "blocked"
+
+    settings.reddit_api_approved = True
+    approved = {row["id"]: row for row in pa.auth_matrix()["platforms"]}["reddit"]
+    assert approved["oauth_allowed"] is True
+    assert approved["oauth_blocker"] == ""
+
+
+def test_saved_vkhost_token_is_pending_not_missing_until_verified(monkeypatch):
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        reddit_client_id="",
+        reddit_client_secret="",
+        reddit_api_approved=False,
+        vk_access_token="saved-vk-token",
+    )
+    monkeypatch.setattr(pa, "get_settings", lambda: settings)
+    monkeypatch.setattr(pa, "_read_auth_checks", lambda: {})
+    monkeypatch.setattr(pa, "browser_session_status", lambda _pid: {})
+
+    vk = {row["id"]: row for row in pa.auth_matrix()["platforms"]}["vk"]
+    assert vk["mode"] == "vkhost"
+    assert vk["keys_present"] is True
+    assert vk["keys_absent"] == []
+    assert vk["statuses"]["auth"]["state"] == "pending"
+    assert vk["statuses"]["api"]["state"] == "pending"
+    assert vk["statuses"]["publish"]["state"] == "blocked"
+
+
 def test_dzen_auth_check_unlocks_its_dedicated_browser_delivery(monkeypatch):
     monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
     # Dzen's own login endpoint records a verified auth check from

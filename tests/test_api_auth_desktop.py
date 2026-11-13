@@ -205,8 +205,10 @@ def test_single_instance_blocks_a_second_holder(tmp_path):
     assert second.acquire() is False
 
     first.release()
-    assert not lock.exists()
+    assert lock.exists()
+    assert lock.read_text(encoding="ascii") == "0"
     assert second.acquire() is True
+    second.release()
 
 
 def test_single_instance_takes_over_a_stale_lock(tmp_path):
@@ -345,17 +347,54 @@ def test_desktop_oauth_port_is_stable_between_restarts(tmp_path):
     assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(first)
 
 
-def test_desktop_oauth_port_replaces_a_port_already_in_use(tmp_path):
+def test_desktop_oauth_port_is_not_changed_when_already_in_use(tmp_path):
     import socket
-    from tgfarm.desktop import stable_desktop_port
+
+    from tgfarm.desktop import _bind_desktop_socket, stable_desktop_port
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
         occupied.bind(("127.0.0.1", 0))
-        blocked = occupied.getsockname()[1]
+        occupied.listen()
+        blocked = int(occupied.getsockname()[1])
         (tmp_path / "desktop.port").write_text(str(blocked), encoding="ascii")
-        selected = stable_desktop_port(tmp_path)
-        assert selected != blocked
-        assert 1024 < selected < 65536
+        assert stable_desktop_port(tmp_path) == blocked
+        with pytest.raises(RuntimeError, match="Redirect URI"):
+            _bind_desktop_socket(tmp_path, blocked)
+        assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(blocked)
+
+
+def test_desktop_port_writes_use_unique_atomic_temp_files(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tgfarm.desktop import _store_desktop_port
+
+    values = [31000 + index for index in range(20)]
+    with ThreadPoolExecutor(max_workers=len(values)) as pool:
+        list(pool.map(lambda value: _store_desktop_port(tmp_path, value), values))
+    persisted = int((tmp_path / "desktop.port").read_text(encoding="ascii"))
+    assert persisted in values
+    assert list(tmp_path.glob(".desktop.port.*.tmp")) == []
+
+
+def test_single_instance_lock_is_atomic_under_concurrent_starts(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from tgfarm.desktop import SingleInstance
+
+    barrier = Barrier(12)
+    instances = [SingleInstance(tmp_path / "desktop.lock") for _ in range(12)]
+
+    def compete(instance):
+        barrier.wait()
+        return instance if instance.acquire() else None
+
+    with ThreadPoolExecutor(max_workers=len(instances)) as pool:
+        winners = [winner for winner in pool.map(compete, instances) if winner is not None]
+    assert len(winners) == 1
+    winners[0].release()
+    assert instances[0].acquire() is True
+    instances[0].release()
 
 
 def test_editorial_command_center_workspaces_are_wired_to_real_ui(client):
@@ -390,6 +429,8 @@ def test_oauth_and_desktop_auth_workspaces_keep_secrets_out_of_client_contract(c
     script = client.get("/ui/app.js").text
     assert "data-connect-save-oauth" in script
     assert "window.pywebview.api.open_url" in script
+    assert "row.oauth_allowed !== false" in script
+    assert "row.oauth_blocker" in script
     matrix = client.get("/api/connect/matrix", headers={apiauth.HEADER: ensure_token()})
     assert matrix.status_code == 200
     assert "profile_saved" in matrix.text
@@ -413,7 +454,7 @@ def test_desktop_listener_reserves_the_selected_oauth_port(tmp_path):
         listener.close()
 
 
-def test_desktop_listener_falls_back_if_saved_port_is_claimed(tmp_path):
+def test_desktop_listener_refuses_to_change_registered_redirect_if_claimed(tmp_path):
     import socket
 
     from tgfarm.desktop import _bind_desktop_socket
@@ -422,10 +463,7 @@ def test_desktop_listener_falls_back_if_saved_port_is_claimed(tmp_path):
         occupied.bind(("127.0.0.1", 0))
         occupied.listen()
         blocked = int(occupied.getsockname()[1])
-        listener = _bind_desktop_socket(tmp_path, blocked)
-        try:
-            selected = int(listener.getsockname()[1])
-            assert selected != blocked
-            assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(selected)
-        finally:
-            listener.close()
+        (tmp_path / "desktop.port").write_text(str(blocked), encoding="ascii")
+        with pytest.raises(RuntimeError, match="Redirect URI"):
+            _bind_desktop_socket(tmp_path, blocked)
+        assert (tmp_path / "desktop.port").read_text(encoding="ascii") == str(blocked)

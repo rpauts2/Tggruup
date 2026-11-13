@@ -218,6 +218,7 @@ def platform_statuses(
     keys_present: bool,
     session_verified: bool = False,
     profile_saved: bool = False,
+    authorization_blocked: bool = False,
 ) -> dict[str, dict[str, str]]:
     """Four independent statuses instead of one green tick.
 
@@ -260,6 +261,9 @@ def platform_statuses(
     else:
         api = {"state": "unknown", "label": "Способ доступа не подтверждён"}
 
+    if authorization_blocked:
+        api = {"state": "blocked", "label": "Нужно одобрение API площадки"}
+
     dest_state, dest_label = _destination_state(platform_id)
     destination = {
         "state": "ready" if dest_state == "selected" else dest_state,
@@ -274,6 +278,8 @@ def platform_statuses(
         publish = {"state": "ready", "label": "Готово к публикации"}
     elif auth["state"] == "failed":
         publish = {"state": "blocked", "label": "Публикация заблокирована"}
+    elif authorization_blocked:
+        publish = {"state": "blocked", "label": "Нужно одобрение API площадки"}
     else:
         publish = {"state": "blocked", "label": "Рано публиковать"}
 
@@ -297,7 +303,7 @@ def auth_matrix() -> dict[str, Any]:
                 session = {}
         keys_present = False
         keys_absent: list[str] = []
-        if mode in {"token", "oauth"}:
+        if mode in {"token", "oauth"} or pid == "vk":
             settings = get_settings()
             required = list(
                 OAUTH_REQUIRED_FIELDS.get(pid, ())
@@ -315,12 +321,31 @@ def auth_matrix() -> dict[str, Any]:
                     missing.append(key)
             keys_present = bool(required) and not missing
             keys_absent = missing
+        reddit_approved = bool(getattr(settings, "reddit_api_approved", False)) if mode == "oauth" and pid == "reddit" else True
+        oauth_allowed = bool(mode == "oauth" and keys_present and reddit_approved)
+        oauth_blocker = (
+            "Reddit Data API не одобрен для этого приложения. OAuth и публикация останутся заблокированы, пока Reddit явно не одобрит доступ и владелец не включит REDDIT_API_APPROVED=true."
+            if pid == "reddit" and not reddit_approved
+            else ""
+        )
+        statuses = platform_statuses(
+            pid,
+            mode=mode,
+            authorized=authorized,
+            keys_present=keys_present,
+            session_verified=bool(session.get("verified")),
+            profile_saved=bool(session.get("profile_saved")),
+            authorization_blocked=bool(pid == "reddit" and not reddit_approved),
+        )
         platforms.append(
             {
                 "id": pid,
                 "keys_present": keys_present,
                 "keys_absent": keys_absent,
-                "configured": keys_present,
+                "configured": keys_present and (mode != "oauth" or oauth_allowed),
+                "oauth_allowed": oauth_allowed,
+                "oauth_blocker": oauth_blocker,
+                "reddit_api_approved": reddit_approved if pid == "reddit" else None,
                 "docs_url": str(item.get("docs_url") or ""),
                 "requirements": str(item.get("requirements") or ""),
                 "instance_url": (
@@ -334,14 +359,7 @@ def auth_matrix() -> dict[str, Any]:
                 "login_url": PLATFORM_LOGIN_URLS.get(pid, "") if mode == "browser" else "",
                 "fields": _fields(pid),
                 "capability": capability_of(pid),
-                "statuses": platform_statuses(
-                    pid,
-                    mode=mode,
-                    authorized=authorized,
-                    keys_present=keys_present,
-                    session_verified=bool(session.get("verified")),
-                    profile_saved=bool(session.get("profile_saved")),
-                ),
+                "statuses": statuses,
                 "authorized": authorized,
                 "account": check.get("account") or "",
                 "checked_at": check.get("checked_at") or "",
