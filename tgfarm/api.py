@@ -3265,6 +3265,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/threads/auth/callback": "tgfarm_threads_oauth_params",
             "/api/platforms/linkedin/auth/callback": "tgfarm_linkedin_oauth_params",
             "/api/platforms/youtube/auth/callback": "tgfarm_youtube_oauth_params",
+            "/": "tgfarm_youtube_oauth_params",
             "/api/platforms/tiktok/auth/callback": "tgfarm_tiktok_oauth_params",
             "/api/platforms/douyin/auth/callback": "tgfarm_douyin_oauth_params",
             "/api/platforms/instagram/auth/callback": "tgfarm_instagram_oauth_params",
@@ -3274,6 +3275,10 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/tumblr/auth/callback": "tgfarm_tumblr_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
+        if request.url.path == "/" and not ({"code", "state", "error"} & set(request.query_params.keys())):
+            # The root path is also the dashboard URL. Only treat it as a
+            # YouTube desktop callback when Google actually sent OAuth params.
+            callback_scope = None
         if callback_scope:
             from urllib.parse import parse_qs
 
@@ -3305,7 +3310,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
             "/api/platforms/tumblr/auth/callback",
-        }:
+        } or request.scope.get("tgfarm_youtube_oauth_params") is not None:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -3318,7 +3323,11 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
     NO_STORE = {"Cache-Control": "no-store, must-revalidate"}
 
     @app.get("/")
-    async def index():
+    async def index(request: Request):
+        # Google Desktop OAuth uses the loopback origin as its redirect URI.
+        # The middleware captures and strips its code/state before dispatch.
+        if request.scope.get("tgfarm_youtube_oauth_params"):
+            return await youtube_oauth_callback(request)
         html = (UI_DIR / "index.html").read_text(encoding="utf-8")
         bootstrap = (
             "<script>window.__TGFARM__ = "
@@ -4692,7 +4701,15 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
         from tgfarm.youtube_oauth import begin_youtube_oauth
 
         settings = get_settings()
-        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/youtube/auth/callback"
+        base_url = str(request.base_url).rstrip("/")
+        parsed_base = urlsplit(base_url)
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        if parsed_base.scheme == "http" and (parsed_base.hostname or "").lower() in loopback_hosts:
+            # Google Desktop OAuth documents a loopback origin:port redirect.
+            redirect_uri = base_url
+        else:
+            # Hosted HTTPS deployments use a conventional registered callback path.
+            redirect_uri = base_url + "/api/platforms/youtube/auth/callback"
         try:
             return await begin_youtube_oauth(
                 settings.youtube_client_id,

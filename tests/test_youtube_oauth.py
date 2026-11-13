@@ -222,11 +222,17 @@ def test_youtube_oauth_callback_persists_tokens_without_echoing_secrets(monkeypa
         lambda *args, **kwargs: checked.append((args, kwargs)) or {"status": "authorized"},
     )
     with TestClient(create_app(with_scheduler=False), base_url="http://127.0.0.1:8000") as client:
+        # Desktop Google OAuth redirects to the loopback origin, not an
+        # application callback path. The middleware captures and strips the
+        # credentials before the dashboard route dispatches to the handler.
         response = client.get(
-            "/api/platforms/youtube/auth/callback?code=private-one-time-code&state=valid-state"
+            "/?code=private-one-time-code&state=valid-state"
         )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["content-security-policy"].startswith("default-src 'none'")
     assert "TgFarm Demo Channel" in response.text
     assert "private-one-time-code" not in response.text
     assert "private-access-token" not in response.text
