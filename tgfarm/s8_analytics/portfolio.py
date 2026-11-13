@@ -28,7 +28,16 @@ def _utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _quality(value) -> float:
+def _quality(value) -> float | None:
+    """Clamp a *measured* quality into [0, 1]; absence (None) stays absent.
+
+    None means unmeasured, not a measured zero: coercing it to 0.0 here would
+    let an absent quality drag a baseline down and inflate the sample count,
+    the exact fabrication the P34 rule («absence is not zero») forbids. Callers
+    exclude None before averaging; this helper never re-introduces it as 0.0.
+    """
+    if value is None:
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -40,7 +49,7 @@ def _quality(value) -> float:
 
 def estimate_group(scores: Iterable[float], baseline: float) -> dict:
     """Estimate a group's quality with an eight-post prior from its channel."""
-    values = [_quality(value) for value in scores]
+    values = [quality for value in scores if (quality := _quality(value)) is not None]
     n = len(values)
     base = _quality(baseline)
     observed = sum(values) / n if n else base
@@ -104,10 +113,12 @@ def build_portfolio_report(
 
     channel_reports = []
     for channel_id, items in by_channel.items():
-        baseline = sum(_quality(getattr(item, "quality", 0.0)) for item in items) / len(items)
+        # Keep distribution coverage separate from the defined quality evidence.
+        scored = [item for item in items if getattr(item, "quality", None) is not None]
+        baseline = sum(_quality(item.quality) for item in scored) / len(scored) if scored else None
         observation_times = [
             published
-            for item in items
+            for item in scored
             if (published := _utc(getattr(item, "published_at", None))) is not None
         ]
         observation_span_days = (
@@ -131,10 +142,10 @@ def build_portfolio_report(
         recommendations = []
         for dimension, key_fn in dimensions.items():
             groups: dict[str, list[float]] = defaultdict(list)
-            for item in items:
+            for item in scored:
                 key = key_fn(item)
                 if key:
-                    groups[key].append(_quality(getattr(item, "quality", 0.0)))
+                    groups[key].append(_quality(item.quality))
             for key, scores in groups.items():
                 if len(scores) < MIN_GROUP_SAMPLES:
                     continue
@@ -179,7 +190,8 @@ def build_portfolio_report(
             "channel_id": channel_id,
             "title": channel_titles.get(channel_id, channel_id),
             "measured_posts": len(items),
-            "baseline_quality": round(baseline, 4),
+            "scored_posts": len(scored),
+            "baseline_quality": round(baseline, 4) if baseline is not None else None,
             "observation_span_days": round(observation_span_days, 1),
             "minimum_observation_days": MIN_OBSERVATION_DAYS,
             "recommendations_ready": recommendations_ready,
@@ -196,6 +208,7 @@ def build_portfolio_report(
         "minimum_observation_days": MIN_OBSERVATION_DAYS,
         "confidence_definition": "sample_size / (sample_size + prior_strength), a shrinkage weight rather than a probability",
         "measured_posts": len(mature),
+        "scored_posts": sum(channel["scored_posts"] for channel in channel_reports),
         "immature_posts": immature,
         "unmeasured_posts": unmeasured,
         "channels": channel_reports,

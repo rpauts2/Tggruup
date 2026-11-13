@@ -126,14 +126,14 @@ def test_channel_report_reports_no_rate_when_nothing_was_measured():
     assert report.avg_read_rate is None
 
 
-def test_a_measured_zero_is_still_a_real_zero():
+def test_measured_zero_views_are_real_but_er_has_no_denominator():
     channel_id = _channel()
     _publish(channel_id, views=0, reactions=0)
 
     report = channel_report(channel_id, days=7)
     assert report.measured_7d == 1
     assert report.avg_views == 0.0, "a snapshot exists, and it says zero"
-    assert report.avg_er == 0.0
+    assert report.avg_er is None, "zero views cannot define an engagement rate"
 
 
 def test_fleet_summary_divides_by_measured_posts_only():

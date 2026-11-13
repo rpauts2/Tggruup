@@ -1076,9 +1076,12 @@ def _learn_channel(channel_id):
     qualified_scores = []
     for metric in channel_metrics:
         published = ensure_utc(metric.published_at)
-        if published and (metric.impressions >= 100 or metric.views >= 30):
-            buckets[published.hour].append(metric.quality)
-            qualified_scores.append(metric.quality)
+        quality = metric.quality
+        if metric.measured and published and quality is not None and (
+            metric.impressions >= 100 or metric.views >= 30
+        ):
+            buckets[published.hour].append(quality)
+            qualified_scores.append(quality)
     slot_baseline = (
         sum(qualified_scores) / len(qualified_scores) if qualified_scores else 0.5
     )
