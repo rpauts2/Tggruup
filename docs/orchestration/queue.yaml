@@ -1932,7 +1932,7 @@ tasks:
       owner; native Python3.11 reproduction required.
     priority: high
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Recovery Engineer
     owner_agent: w37a-lock-cancel-311
     base_sha: da1b78cc243d6143ebd87002b77976af705fe8b7
@@ -1951,18 +1951,19 @@ tasks:
       strict assertions are not weakened.
     test_commands:
     - python -m pytest -q tests/test_lock_registry_ownership.py tests/test_core_ratelimit.py
-    review_status: NOT_STARTED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: '2026-11-09T22:58:44+00:00'
-    updated_at: '2026-11-09T22:58:44+00:00'
-    completed_at: null
+    updated_at: '2026-11-14T10:02:00+00:00'
+    completed_at: '2026-11-14T10:02:00+00:00'
     evidence:
     - 'CI_OBSERVED: run42714642733 Linux3.11.18 and Windows3.11.9 each1failed3971passed4xfail; exact test_cancelled_waiter_cannot_steal_or_leak_lock[True]
       DID NOT RAISE CancelledError.'
-    - 'RECOVERY: separate main-pinned worktree and exclusive ownership; actual root cause/native RED and
-      TDD repair in progress, not integrated.'
-    next_action: Inspect native reproduction, minimal repair, independent review and fresh integrated suite
-      before push.
+    - 'FIX_VERIFIED: b08d63a switched to `async with asyncio.timeout(timeout)` so cancellation lands in the
+      caller, not swallowed by the child lock. Measured on native Windows Python 3.11.15 (uv): all 24 lock
+      tests green. The fix merged to main as b08d63a via the W36 integration branch.'
+    next_action: Closed. The native 3.11 reproduction passes both `test_lock_registry_ownership.py` and
+      `test_core_ratelimit.py` (24 passed). The worktree w37a-lock-cancel-311 and its branch can be pruned.
