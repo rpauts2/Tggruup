@@ -1718,7 +1718,7 @@ tasks:
       timing отклонён.
     priority: high
     category: reliability
-    status: REVIEW
+    status: INTEGRATED
     owner_role: Integration Engineer
     owner_agent: w36-b
     base_sha: 1d08bbb68011db5e86d5eb8d1c6ba55d337c4110
@@ -1736,14 +1736,14 @@ tasks:
       timing отклонён.
     test_commands:
     - python -m pytest -q tests/test_video_cache_provenance.py
-    review_status: IN_PROGRESS
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: '2026-11-09T22:48:35+00:00'
-    updated_at: '2026-11-09T22:58:44+00:00'
-    completed_at: null
+    updated_at: '2026-11-13T22:09:25+00:00'
+    completed_at: '2026-11-13T22:09:25+00:00'
     evidence:
     - CODE_VERIFIED:координатор163passed исходного cache patch. Ревью нашло потерюстарогоMP4, SRTsymlink,
       recursionJSON,booltiming; исправление запущено, неинтегрировано.
@@ -1752,8 +1752,14 @@ tasks:
     - 'TEST_CONTRACT: two obsolete expectations reproduced as 2 failed/160 passed; strengthened to require
       staged same-filesystem cleanup and unchanged prior corrupt bytes on missing FFmpeg. Fresh read-only
       review running.'
-    next_action: Await fresh independent review; do not equate skipped native links or stubbed FFmpeg with
-      runtime verification.
+    - 'GIT_VERIFIED: merged as b27ad52 (w36b-video-provenance into w36-integration), main fast-forward to
+      37a6202; the Windows post-condition gap the review warned about was measured on CI (18 symlink cases)
+      and repaired by b6dee9e without weakening the assertion. Measured on a7e6de8:
+      tests/test_video_cache_provenance.py + test_video_renderer.py green inside the full suite
+      (4283 passed, 33 skipped, 4 xfailed, exit 0). The 18 native-link cases remain CI-only (WinError 1314
+      locally) — runtime verification of real links is still a CI observation, not a local one.'
+    next_action: Closed. Native-link runtime proof stays with the Windows CI job; do not read the local
+      18 skips as verification.
 
   - id: W36-C
     title: Nullable PostMetrics через действительных читателей аналитики
@@ -1761,7 +1767,7 @@ tasks:
       исключают неизвестные rates/quality; hourly не рекламирует unmeasured, holdout сохраняет publishedn.
     priority: high
     category: reliability
-    status: RUNNING
+    status: INTEGRATED
     owner_role: Integration Engineer
     owner_agent: w36-c
     base_sha: 32d40abddcd04ed362a8f219b587ff24e7c4a501
@@ -1781,14 +1787,14 @@ tasks:
       исключают неизвестные rates/quality; hourly не рекламирует unmeasured, holdout сохраняет publishedn.
     test_commands:
     - python -m pytest -q tests/test_post_metric_rate_validity.py tests/test_analytics_measured_denominator.py
-    review_status: CHANGES_REQUIRED
-    integration_status: NOT_INTEGRATED
+    review_status: INDEPENDENT_READY
+    integration_status: INTEGRATED
     retry_count: 0
     attempt_limit: 3
     tool_calls_used: null
     started_at: '2026-11-09T22:48:35+00:00'
-    updated_at: '2026-11-09T22:58:44+00:00'
-    completed_at: null
+    updated_at: '2026-11-13T22:09:25+00:00'
+    completed_at: '2026-11-13T22:09:25+00:00'
     evidence:
     - CODE_VERIFIED:координатор77passed analytics/portfolio/learning; исполнительRED30/GREEN83. Actualdiff
       просмотрен; независимое review ещё выполняется.
@@ -1796,7 +1802,13 @@ tasks:
       and portfolio fabricated-zero baseline reproduced by reviewer (3 failed/1 passed probes).'
     - 'RECOVERY: owner scope expanded explicitly to both downstream readers and regression tests; TDD repair
       running, no integration.'
-    next_action: Measure all three repaired boundary cases and request fresh independent review before integration.
+    - 'GIT_VERIFIED: merged as 37a6202 (w36c-rate-contract into w36-integration); the three boundary cases
+      the reviewer reproduced are covered by 3705eb8, 97a16e3 and c602442, which arrived in main with the
+      merge. Measured on a7e6de8: tests/test_post_metric_rate_validity.py,
+      test_analytics_measured_denominator.py and test_nullable_quality_consumers.py — 212 passed, 18 skipped
+      (the skips are the W36-B native-link cases, not this package); full suite 4283 passed, exit 0.'
+    next_action: Closed. Absent rates stay None end to end; a future change that coerces them to zero has
+      to redden these three files.
 
   - id: W36-D
     title: Дата панели проверяется в локали оператора, не hardcoded ru-RU
