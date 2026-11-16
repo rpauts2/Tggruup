@@ -313,6 +313,38 @@ async def _reddit_preflight(
 _publish_budget_seconds: ContextVar[float] = ContextVar("crosspost_publish_budget", default=60.0)
 _publish_tasks: set[asyncio.Task] = set()
 
+#: The optional AI adaptation gets at most this share of the per-delivery budget,
+#: so a stalled LLM cannot consume the window the publish itself still needs.
+AI_ADAPTATION_BUDGET_SHARE = 0.5
+
+
+def _remaining_budget(deadline: float) -> float:
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+async def _journal_cancelled_preparation(
+    public_id: str, platform: str, attempt: int, budget_s: float
+) -> None:
+    """Resolve a claimed attempt when the batch stops before any publish request.
+
+    No external action happened, so the outcome is a retryable ``failed``, not
+    ``unknown``. Shielded like pipeline._journal: a second cancel while unwinding
+    must not erase the row this handler exists to write.
+    """
+    result = CrosspostResult(
+        platform=platform,
+        status="failed",
+        error=(
+            f"Delivery cancelled during preparation ({budget_s:.0f}s budget); "
+            "no publish request was made."
+        ),
+        retry_after_seconds=30 * 60,
+    )
+    try:
+        await asyncio.shield(to_thread(log_result, public_id, result, attempt))
+    except asyncio.CancelledError:
+        pass
+
 
 def _consume_publish_task(task: asyncio.Task) -> None:
     _publish_tasks.discard(task)
@@ -320,13 +352,16 @@ def _consume_publish_task(task: asyncio.Task) -> None:
         task.exception()
 
 
-async def _publish_with_deadline(adapter: Any, payload: CrosspostPayload) -> CrosspostResult:
+async def _publish_with_deadline(
+    adapter: Any, payload: CrosspostPayload, *, timeout_s: float | None = None
+) -> CrosspostResult:
     task = asyncio.create_task(adapter.publish(payload))
     # Retain abandoned sends until cleanup finishes without letting late outcomes rewrite the journal.
     _publish_tasks.add(task)
     task.add_done_callback(_consume_publish_task)
+    budget = _publish_budget_seconds.get() if timeout_s is None else timeout_s
     try:
-        done, _pending = await asyncio.wait({task}, timeout=_publish_budget_seconds.get())
+        done, _pending = await asyncio.wait({task}, timeout=budget)
     except asyncio.CancelledError:
         task.cancel()
         raise
@@ -355,6 +390,7 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         return []
 
     settings = get_settings()
+    delivery_budget = _publish_budget_seconds.get()
     post = await to_thread(_load_post, post_pk)
     if post is None:
         return []
@@ -407,6 +443,10 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
         if adapter is None:
             log.warning("unknown crosspost platform %s", name)
             continue
+        # One deadline per destination covers selection, adaptation, the rules
+        # recheck and the publish wait, so a slow preparation cannot spend the
+        # window the publish needs and push the batch into the outer guard.
+        deadline = asyncio.get_running_loop().time() + delivery_budget
         if await to_thread(already_done, post.public_id, name):
             continue
         if not adapter.configured():
@@ -429,7 +469,18 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
             )
 
             try:
-                reddit_submission = await build_automatic_submission(post.public_id)
+                reddit_submission = await asyncio.wait_for(
+                    build_automatic_submission(post.public_id),
+                    timeout=_remaining_budget(deadline),
+                )
+            except TimeoutError:
+                reddit_submission = {
+                    "ok": False,
+                    "reason": (
+                        f"Community selection exceeded the {delivery_budget:.0f}s delivery "
+                        "budget; no submit was made."
+                    ),
+                }
             except RedditScoutError as exc:
                 reddit_submission = {
                     "ok": False,
@@ -552,14 +603,37 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 "reason": "Площадка использует отдельный workflow выбора цели или согласия.",
             }
         else:
-            adaptation_result = await adapt_payload_with_ai(payload, allow_ai=settings.live)
+            adaptation_timed_out = False
+            try:
+                adaptation_result = await asyncio.wait_for(
+                    adapt_payload_with_ai(payload, allow_ai=settings.live),
+                    timeout=min(
+                        _remaining_budget(deadline),
+                        delivery_budget * AI_ADAPTATION_BUDGET_SHARE,
+                    ),
+                )
+            except TimeoutError:
+                adaptation_timed_out = True
+                adaptation_result = None
+            except asyncio.CancelledError:
+                await _journal_cancelled_preparation(
+                    post.public_id, name, attempt, delivery_budget
+                )
+                raise
             adaptation = (
                 dict(adaptation_result)
                 if isinstance(adaptation_result, dict)
                 else {
-                    "status": "deterministic",
+                    "status": "timeout_fallback" if adaptation_timed_out else "deterministic",
                     "used_ai": False,
-                    "reason": "Нативный редактор не вернул результат; сохранена базовая адаптация.",
+                    "reason": (
+                        (
+                            f"AI adaptation exceeded its share of the {delivery_budget:.0f}s "
+                            "delivery budget; kept the deterministic adaptation."
+                        )
+                        if adaptation_timed_out
+                        else "Нативный редактор не вернул результат; сохранена базовая адаптация."
+                    ),
                 }
             )
             adaptation_meta = (payload.meta or {}).get("editorial_adaptation") or {}
@@ -648,13 +722,48 @@ async def crosspost_post(post_pk: int, platforms: list[str]) -> list[CrosspostRe
                 # before this attempt was claimed. An external action is
                 # authorised by the rules as they are now, not as they were
                 # twenty minutes ago, so the live facts are read again here.
-                blocked = await _reddit_preflight(payload, reddit_submission)
+                try:
+                    blocked = await asyncio.wait_for(
+                        _reddit_preflight(payload, reddit_submission),
+                        timeout=_remaining_budget(deadline),
+                    )
+                except TimeoutError:
+                    blocked = CrosspostResult(
+                        platform=name,
+                        status="skipped",
+                        error=(
+                            f"Rules recheck exceeded the {delivery_budget:.0f}s delivery "
+                            "budget; no submit was made."
+                        ),
+                        retry_after_seconds=6 * 60 * 60,
+                    )
+                except asyncio.CancelledError:
+                    await _journal_cancelled_preparation(
+                        post.public_id, name, attempt, delivery_budget
+                    )
+                    raise
                 if blocked is not None:
                     await to_thread(log_result, post.public_id, blocked, attempt)
                     results.append(blocked)
                     continue
+            remaining = _remaining_budget(deadline)
+            if remaining <= 0:
+                # Preparation spent the whole window. Nothing was sent, so this
+                # is a retryable failure, not an unknown publication.
+                result = CrosspostResult(
+                    platform=name,
+                    status="failed",
+                    error=(
+                        f"Delivery budget ({delivery_budget:.0f}s) exhausted during "
+                        "preparation; no publish request was made."
+                    ),
+                    retry_after_seconds=30 * 60,
+                )
+                await to_thread(log_result, post.public_id, result, attempt)
+                results.append(result)
+                continue
             try:
-                result = await _publish_with_deadline(adapter, payload)
+                result = await _publish_with_deadline(adapter, payload, timeout_s=remaining)
             except asyncio.CancelledError:
                 publish_cancelled = True
                 result = CrosspostResult(

@@ -144,7 +144,9 @@ async def test_slow_first_target_does_not_monopolize_second_and_is_not_republish
     try:
         await asyncio.wait_for(started.wait(), 2)
         budget, expired = await clock.next()
-        assert budget == 150
+        # W34-B: preparation and publish share one per-delivery deadline, so the
+        # publish wait gets the share minus fast preparation, never more than it.
+        assert 140 < budget <= 150
         expired.set()
         await asyncio.wait_for(second_started.wait(), 2)
         summary = await asyncio.wait_for(asyncio.shield(task), 2)
@@ -194,7 +196,8 @@ async def test_deadline_returns_before_cancellation_cleanup_and_consumes_late_ou
     try:
         await asyncio.wait_for(started.wait(), 2)
         budget, expired = await clock.next()
-        assert budget == 60
+        # W34-B: the publish wait gets the delivery share minus preparation.
+        assert 55 < budget <= 60
         expired.set()
         results = await asyncio.wait_for(asyncio.shield(task), 2)
         await asyncio.wait_for(cleaning.wait(), 2)
@@ -374,10 +377,15 @@ async def test_batch_publish_budget_uses_clamped_outer_share_and_restores_direct
     plan_for(monkeypatch, delivery, ["bluesky", "mastodon"])
     summary = await s9_growth.run_crossposts(limit=limit)
     assert summary["posted"] == 2
-    assert (await clock.next())[0] == want
-    assert (await clock.next())[0] == want
+    # W34-B: preparation and publish share one delivery deadline, so each publish
+    # wait gets the clamped outer share minus fast preparation, never more.
+    first = (await clock.next())[0]
+    second = (await clock.next())[0]
+    assert want * 0.9 < first <= want
+    assert want * 0.9 < second <= want
     assert [result.status for result in await s9_growth.crosspost_post(delivery.id, ["x"])] == ["posted"]
-    assert (await clock.next())[0] == 60
+    direct = (await clock.next())[0]
+    assert 55 < direct <= 60
 
 
 @pytest.mark.asyncio
@@ -451,7 +459,16 @@ async def test_reddit_preflight_cancellation_is_not_an_unknown_publish(delivery,
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert journal(delivery, "reddit")[:2] == (["publishing"], 1)
+        # W34-B resolves the claimed attempt as a retryable failed — still not
+        # unknown, because nothing was submitted. The row lands via a shielded
+        # thread, so give it a moment instead of racing it.
+        for _ in range(40):
+            statuses, _claims = journal(delivery, "reddit")[:2]
+            if statuses[-1] == "failed":
+                break
+            await asyncio.sleep(0.05)
+        assert statuses == ["publishing", "failed"]
+        assert "unknown" not in statuses
     finally:
         release.set()
         await stop(task)
@@ -477,7 +494,15 @@ async def test_ai_preparation_is_not_wrapped_in_publish_deadline(delivery, monke
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert journal(delivery)[:2] == (["publishing"], 1)
+        # W34-B: the AI share timeout is not the publish deadline (clock stays
+        # empty), and cancellation resolves the claim as retryable failed.
+        for _ in range(40):
+            statuses, _claims = journal(delivery)[:2]
+            if statuses[-1] == "failed":
+                break
+            await asyncio.sleep(0.05)
+        assert statuses == ["publishing", "failed"]
+        assert "unknown" not in statuses
     finally:
         release.set()
         await stop(task)
