@@ -4,7 +4,7 @@
 
 **Дата:** 2026-11-16  
 **Основная ветка:** `main`  
-**Последний функциональный checkpoint:** `f4b9496c6919584abb46860b95502186afedcb02`
+**Последний функциональный checkpoint:** `6ada5cbff53691aa727d889f635535f07c79ad6c` (vc.ru gated auto-publisher; HEAD `db75dfa` — docs). Предыдущий: `f4b9496c6919584abb46860b95502186afedcb02`
 
 ## Что перенесено в main в этом заходе
 
@@ -92,3 +92,26 @@ CodeAnt замечания по PR #60 (4 пункта) и #56 (3 пункта) 
 CI: run #43489547500 на `a7e6de8` — **GREEN** (Linux test + Windows, 4301 passed/15 skipped/4 xfailed), подтверждает `b6dee9e`. Текущий локальный checkpoint `f4b9496` (+queue/docs) **ещё не запушен**: полный suite → push github → чтение нового CI per-job → запись run (задача 6 RELEASE_PLAN). Не объявлять новый checkpoint зелёным до чтения CI.
 
 Следующее: задача 6 (верификация/push/CI), задача 7 (offline релизная приёмка), задача 8 (операторские гейты: подтверждение закрытия PR #60/#56, OPS-1/OPS-2 чек-лист, рекомендация по ротации токена, финальный отчёт). Live-публикации, production DB, секреты, LIVE mode — без отдельного подтверждения владельца не трогать.
+
+## Последнее продолжение — 2026-11-16 (Волна A auth + Волна C vc.ru gated)
+
+Функциональный checkpoint: `6ada5cb` (vc.ru gated auto-publisher), HEAD `db75dfa` (docs). Push `github` fast-forward `cd1faa1..db75dfa` (без force); remote SHA сверен == `db75dfae4d78a0ca87250fd66278d1d71d486022`. Субагенты в этой сессии недоступны — исполнение и review последовательные, координатором; независимое субагентное ревью НЕ выполнялось.
+
+**Волна A (auth-апгрейды, закрыта):**
+- `5a0b262` telegraph — авто-выдача access-token через `createAccount` (анонимный, без login).
+- `2027845` OK (odnoklassniki) — серверный OAuth 2.0 (ключи приложения→authorize→callback→token→MD5-сессия→`users.getCurrentUser`); токен локально, не эхо в браузер; TDD 8+seam.
+- bluesky AT Proto OAuth — ОТЛОЖЕН (verify-first: hosted client-metadata URL + DPoP + PKCE блокер для локальной фермы; app-password `createSession`+`createRecord` уже авто-постит).
+- Docs `cd1faa1`. CI run [#43841607366](https://github.com/rpauts2/Tggruup/actions/runs/43841607366) на `cd1faa1` — **independently verified per-job: `test`=success, `windows`=success**.
+
+**Волна C (vc.ru браузерный авто-publish, gated):**
+- `6ada5cb` — `community_drafts.publish_vc_ru` + `_vc_article_url` + `s9_growth.adapters.VcRuAdapter` по образцу pikabu: rules-proof гейт, fingerprint+state-machine (preparing/submitting/published/unknown/failed), verified-session, финальная перечитка правил перед кликом, confirm по URL статьи `vc.ru/{topic}/{id}-{slug}` (редактор не считается), `unknown` без слепого повтора. 7 TDD-тестов RED→GREEN. Полный suite **4323 passed, 33 skipped, 4 xfailed, 0 failed**. Ruff-паритет HEAD=WORK (20/25/3/1), ноль новых ошибок.
+- **GATED (честно, §2.1/§4):** `VcRuAdapter` НЕ зарегистрирован в `ADAPTERS`; `DRAFT_ONLY` по-прежнему `{vc_ru}`; `platforms.py` **net-zero** (без promotion). Capability vc.ru = `draft_only`, НЕ `publish`. Селекторы кнопки publish требуют LIVE-verify (операторский гейт; live-тест отложен владельцем). Promotion до `publish` сломал бы ~20 `test_maintenance_vc_rules_watch.py` (vc_ru switch-less draft-only). **Шаг активации** (после live-verify + согласия): зарегистрировать адаптер + promote CATALOG + пересмотреть rules-watch тесты.
+- CI run [#43848029942](https://github.com/rpauts2/Tggruup/actions/runs/43848029942) на `db75dfa` — **GREEN, independently verified per-job:** `test`=success/completed, `windows`=success/completed, overall conclusion=success, headSha=`db75dfae4d78a0ca87250fd66278d1d71d486022`. Подтверждает vc.ru gated-код `6ada5cb` + docs `db75dfa`.
+
+**Оставшиеся пробелы (честно `manual_upload`, auto=False; research в [PLATFORM_POSTING_RESEARCH.md](PLATFORM_POSTING_RESEARCH.md)):**
+- habr/tenchat/rednote — greenfield браузерные publish-пакеты (6–8 файлов). habr auto-auth УЖЕ есть в `browser_auth` (`habr_session_id`); publish требует `community_targets` hub-support + verified WYSIWYG/hub(1–5)/tag-селекторов + 24h rate-limit + karma-eligibility. tenchat — публичного API постинга НЕТ, только BROWSER-сессия. Селекторы под LIVE-verify; capability НЕ повышается вслепую (verify-first).
+- tiktok/douyin — consent-gated адаптеры существуют (`publish()`=skipped), capability `manual_upload`; реальный постинг = per-video согласие владельца + официальный API (live-гейт).
+- vk_clips/rutube — video browser studio (clip-specific publish-API не существует, verify-first).
+- twitch/whatsapp_channels/snapchat — надёжного авто-пост пути нет (twitch не текстовая лента; whatsapp Baileys неофициальный/хрупкий; snapchat allowlist/хрупкий) → честное `manual_upload` ограничение, не unfinished gap.
+
+**Операторские гейты (pending, отдельное согласие):** закрытие PR #60/#56 как superseded; OPS-1/OPS-2 чек-лист полевых испытаний; рекомендация по ротации токена (факт потенциальной экспозиции зафиксирован — ротация за оператором, §9); финальное сообщение о готовности. Live-публикации/production DB/секреты/LIVE mode не трогать без отдельного подтверждения; `publish_unknown` не повторять вслепую; токен/сессия ≠ publish-ready; offline/CI ≠ live-proof.
