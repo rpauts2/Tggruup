@@ -75,10 +75,78 @@
 
 - **Волна A (API auth-апгрейды):** telegraph createAccount ✅ (5a0b262), OK OAuth ✅ (2027845). bluesky AT Proto OAuth оценён и ОТЛОЖЕН (verify-first: hosted client-metadata + DPoP блокер для локальной фермы; app-password API уже авто-постит). Волна A закрыта.
 - **Волна B (BROWSER video, средний риск):** vk_clips (редактор Клипов, НЕ video API — verify-first подтвердил отсутствие clip-API), rutube studio. capability честно не гарантируется для Клипов.
-- **Волна C (BROWSER post, средний риск, общий фреймворк):** vc_ru авто-publish → habr → tenchat → rednote → douyin → tiktok → whatsapp_channels. Последовательно (общий community_drafts).
+- **Волна C (BROWSER post, средний риск, общий фреймворк):** vc_ru авто-publish ✅ реализован+offline-протестирован (gated, см. ниже) → habr → tenchat → rednote → douyin → tiktok → whatsapp_channels. Последовательно (общий community_drafts).
 - **Волна D (MTPROTO/USERBOT авто-вход):** telegram Telethon, max PyMax, discord/medium BROWSER-вход.
 - **Волна E (verify-first сложные):** snapchat SnapWrap, twitch Helix clips. Честный fallback.
 - **Волна F (циклы + приёмка):** S1–S12 offline, CI/EXE, операторские гейты, сообщение о готовности.
+
+## Статус реализации Волны C: vc.ru (gated-activation)
+
+**Реализовано и offline-протестировано, но НЕ активировано.** Авто-publish vc.ru написан по
+проверенному образцу pikabu (`community_drafts.publish_pikabu_scheduled`) и покрыт TDD-тестами
+(7 новых, RED→GREEN):
+
+- `tgfarm/community_drafts.py`: `publish_vc_ru(post_public_id, *, title, body)` + helper
+  `_vc_article_url(url)` (честное подтверждение успеха: URL статьи `vc.ru/{topic}/{id}-{slug}`,
+  редактор `vc.ru/editor` НЕ считается публикацией).
+- `tgfarm/s9_growth/adapters.py`: `VcRuAdapter` (`published`→`posted`, `unknown`→`unknown`
+  без слепого повтора, `CommunityDraftError`→`skipped`+retry 6h).
+
+Гейты безопасности (как у pikabu): rules-proof (`check_destination_rules_proof` + `policy_verdict`),
+защита от дублей (fingerprint + state-machine preparing/submitting/published/unknown/failed),
+проверка сессии (`browser_session_status` verified+profile_saved), отказ без playwright,
+финальная перечитка правил перед кликом, `unknown` никогда не повторяется вслепую.
+
+**Почему gated (vc.ru остаётся `draft_only`):** селекторы кнопки publish в редакторе vc.ru ещё
+НЕ подтверждены вживую (операторский гейт; live-тестирование отложено владельцем). Поэтому:
+
+1. `VcRuAdapter` НЕ зарегистрирован в `ADAPTERS` (регистрация = шаг активации после live-verify).
+2. `platform_capability.DRAFT_ONLY` по-прежнему содержит `vc_ru`; `platforms.py` CATALOG vc_ru
+   остаётся `mode="planned"` (net-zero, без promotion). Capability честно `draft_only`, НЕ `publish`.
+3. Повышение vc.ru до `publish` изменило бы `rules_watch_switch` (производная от `capability_of`)
+   и сломало бы ~20 тестов `test_maintenance_vc_rules_watch.py`, построенных на vc_ru как
+   switch-less draft-only под непрерывным наблюдением. Активация — отдельный осознанный шаг.
+
+**Шаг активации (после live-verify селекторов, с согласия оператора):** зарегистрировать
+`VcRuAdapter` в `ADAPTERS` + promote CATALOG vc_ru (`built_in`/crosspost) + пересмотреть
+rules-watch тесты. До этого момента код НЕ притворяется, что vc.ru авто-постит (§2.1/§4).
+
+## Волна C — verify-first разведка следующих площадок (greenfield)
+
+В отличие от vc.ru/pikabu (черновик-подготовка УЖЕ существует в `community_drafts.PLATFORMS`),
+habr/tenchat/rednote в браузерном publishing-контуре отсутствуют: нет записи в `PLATFORMS`,
+нет domain-allowlist в `_safe_target_url`, нет editor-entry селекторов, нет targeting/rules
+в `community_targets`, нет профиля в `browser_auth`. Каждая — полноценный пакет на 6–8 файлов,
+и селекторы редактора требуют LIVE-верификации (операторский гейт) до активации capability.
+
+### habr (статьи) — источник: официальная справка «Публикации»
+
+Механика (извлечено как недоверенные данные, только структура; §45):
+- Вход в редактор: кнопка **«Написать»** справа в шапке.
+- Обязательно: выбрать **1–5 хабов** по тематике; указать **теги**; заголовок + тело
+  (HTML или Habr Flavored Markdown / WYSIWYG-редактор).
+- Кнопка **«Предпросмотр»**, затем зелёная **«Опубликовать»**.
+- Черновики видны только владельцу (иконка замка).
+- Публичный URL статьи: `habr.com/ru/articles/{id}/` (корп-блог: `/ru/companies/{alias}/articles/{id}/`).
+
+Ограничения (ДОЛЖНЫ быть учтены publisher'ом, как pikabu hour-gap/day/pending):
+- Публиковать без премодерации могут **полноправные аккаунты с положительной кармой**;
+  у части хабов свой порог кармы. Новички → «Песочница» (`/ru/sandbox/`), не основные хабы.
+- **Rate-limit:** 3 материала с интервалом <24ч → следующий не ранее чем через 24ч от последнего.
+- Нельзя 2+ публикации подряд в хаб «Я пиарюсь».
+- WYSIWYG-тело сложнее plain textarea — generic `_fill_editor_fields` может не подойти.
+
+Вывод: habr auto-publish реализуем по образцу vc.ru, но требует hub-targeting + обязательных
+тегов + karma-eligibility + 24h-rate-limit scheduler + WYSIWYG-fill + confirm по `/ru/articles/{id}/`.
+Селекторы «Написать»/хабы/«Опубликовать» — LIVE-verify до активации. Capability остаётся
+`manual_upload` (gated), НЕ `publish`, пока редактор не подтверждён вживую.
+
+### tenchat — verify-first ограничение
+
+Публичного API для публикации постов **нет** (подтверждено разведкой). Отложенная публикация
+в самом сервисе — только на платном тарифе. Единственный путь авто-постинга — BROWSER-сессия
+владельца (login→cookies→редактор). Capability честно `manual_upload`/`draft_only` до
+live-verify селекторов; никакого официального API не существует (не выдумывать).
 
 ## Источники
 
@@ -95,3 +163,5 @@
 - [RuTube: нет публичного upload-API](https://github.com/orgs/community/discussions/165690).
 - [TikTok Content Posting API](https://zernio.com/blog/tiktok-posting-api) — Direct Post, consent.
 - [browser-use](https://github.com/browser-use/browser-use) — референс браузерной автоматизации.
+- [Хабр: Публикации (официальная справка)](https://habr.com/ru/docs/help/publications/) — механика редактора («Написать»→хабы→теги→«Опубликовать»), karma-eligibility, 24h rate-limit.
+- [Хабр: WYSIWYG-редактор](https://habr.com/ru/docs/help/wysiwyg/) / [Habr Flavored Markdown](https://habr.com/ru/docs/help/markdown/) — форматирование тела статьи.
