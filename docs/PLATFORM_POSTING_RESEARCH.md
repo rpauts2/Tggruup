@@ -18,14 +18,14 @@
 | max | API platform-api2.max.ru/messages | MAX Bot API (dev.max.ru); `PyMax` userbot-альтернатива | bot-token вручную; PyMax login→сессия |
 | x | API /2/tweets | X API v2 + OAuth | OAuth ✓ |
 | reddit | API oauth.reddit.com/api/submit | Reddit OAuth Data API | OAuth ✓ (REDDIT_API_APPROVED gate) |
-| bluesky | API createSession+createRecord | AT Protocol; **апгрейд: AT Proto OAuth** | app-password вручную → OAuth авто |
+| bluesky | API createSession+createRecord | AT Protocol app-password API (работает) | OAuth отложен: hosted client-metadata+DPoP блокер для локальной фермы (verify-first) |
 | youtube | API resumable upload videos.insert | YouTube Data API v3 + OAuth | OAuth ✓ |
 | instagram | API Graph container publish | Instagram Graph API + OAuth | OAuth ✓ |
 | threads | API two-step threads/threads_publish | Threads API + OAuth | OAuth ✓ |
 | facebook | API Page feed publish | Facebook Graph API + OAuth | OAuth ✓ |
 | linkedin | API rest/posts | LinkedIn API + OAuth | OAuth ✓ |
 | pinterest | API pin create | Pinterest API v5 + OAuth | OAuth ✓ |
-| odnoklassniki | API wall.post | OK API; **апгрейд: OK OAuth** | token вручную → OAuth авто |
+| odnoklassniki | API mediatopic.post GROUP_THEME | OK API + **OK OAuth ✅** (2027845) | OAuth авто-вход; GROUP_CONTENT требует одобрения OK |
 | discord | API webhook execute | Discord webhook; **альтернатива: BROWSER posting в канал** | webhook URL вручную |
 | mastodon | API /api/v1/statuses + idempotency | Mastodon API + OAuth | OAuth ✓ |
 | medium | API legacy /v1/users/posts | Medium API (deprecated); **альтернатива: BROWSER редактор** | legacy-token вручную |
@@ -54,8 +54,8 @@
 
 | Площадка | Текущий | **Лучший авто-вход** | Метод |
 |---|---|---|---|
-| bluesky | app-password вручную | **AT Protocol OAuth** | OAUTH consent→авто-token (bsky.social OAuth client metadata) |
-| odnoklassniki | access-token вручную | **OK OAuth 2.0** | OAUTH (application key/secret→redirect→token) |
+| bluesky | app-password вручную | **app-password API (оставлен)** | createSession+createRecord уже авто-постит. AT Proto OAuth оценён и ОТЛОЖЕН (verify-first): требует hosted client-metadata URL + DPoP + PKCE — блокер для локальной фермы без публичного домена |
+| odnoklassniki | access-token вручную | **OK OAuth 2.0** ✅ | OAUTH (application key/secret→redirect→token), коммит 2027845 |
 | telegraph | token вручную | **createAccount авто-token** | API createAccount (анонимный, без login)→авто-сохранение |
 | telegram | bot-token вручную | **Telethon MTProto userbot** | MTPROTO: телефон→код→2FA→сессия (login→захват). Постинг в каналы user-аккаунтом |
 | max | bot-token вручную | **PyMax userbot** | USERBOT login→сессия (async Python wrapper). Bot-API остаётся для постинга |
@@ -66,14 +66,14 @@
 ## Выбранный стек реализации
 
 1. **BROWSER-путь (основной для пробелов):** расширить собственный `community_drafts.py`/`browser_auth.py` (playwright + сохранённый профиль). Референс структуры редакторов — `social-auto-upload` (douyin/rednote/tiktok/wechat-channels) и `xhs_ai_publisher` (rednote). НЕ копировать код (лицензия/чистота) — реализовать свои селекторы по образцу. Уже работает для pikabu/vc_ru/dzen.
-2. **API-путь (где официальный API есть):** twitch (Helix), bluesky/OK (OAuth), telegraph (createAccount). По образцу существующих адаптеров. vk_clips ИСКЛЮЧЁН: clip-specific publish-API не существует (verify-first).
+2. **API-путь (где официальный API есть):** twitch (Helix), OK (OAuth ✅), telegraph (createAccount ✅), bluesky (app-password createSession+createRecord — уже работает; AT Proto OAuth отложен из-за hosted client-metadata/DPoP). По образцу существующих адаптеров. vk_clips ИСКЛЮЧЁН: clip-specific publish-API не существует (verify-first).
 3. **MTPROTO/USERBOT (авто-вход telegram/max):** Telethon/PyMax — отдельный login-flow (телефон→код→сессия), требует нового UI-шага. Постинг telegram остаётся Bot API (каналы) или user-аккаунт.
 4. **Consent-gated (tiktok/douyinофициальный):** per-video согласие владельца; capability НЕ повышается до publish вслепую.
 5. **Честные ограничения:** snapchat (неофициальный хрупкий/allowlist), twitch (не текстовая лента) — verify-first; если надёжного пути нет, manual_upload с зафиксированным ограничением.
 
 ## Порядок (пересмотренный под выбранные методы)
 
-- **Волна A (API auth-апгрейды, высокая уверенность):** bluesky OAuth, OK OAuth, telegraph createAccount (✅ реализован, коммит 5a0b262).
+- **Волна A (API auth-апгрейды):** telegraph createAccount ✅ (5a0b262), OK OAuth ✅ (2027845). bluesky AT Proto OAuth оценён и ОТЛОЖЕН (verify-first: hosted client-metadata + DPoP блокер для локальной фермы; app-password API уже авто-постит). Волна A закрыта.
 - **Волна B (BROWSER video, средний риск):** vk_clips (редактор Клипов, НЕ video API — verify-first подтвердил отсутствие clip-API), rutube studio. capability честно не гарантируется для Клипов.
 - **Волна C (BROWSER post, средний риск, общий фреймворк):** vc_ru авто-publish → habr → tenchat → rednote → douyin → tiktok → whatsapp_channels. Последовательно (общий community_drafts).
 - **Волна D (MTPROTO/USERBOT авто-вход):** telegram Telethon, max PyMax, discord/medium BROWSER-вход.

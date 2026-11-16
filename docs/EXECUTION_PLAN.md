@@ -34,7 +34,7 @@
 - YouTube reconnect не должен подставлять refresh token предыдущего аккаунта, если новый OAuth grant его не вернул.
 - Реквизиты приложения и токены сохраняются на backend; UI не получает сохранённые секреты.
 - Площадка показывает отдельно: авторизацию аккаунта, доступ API/transport, назначение и готовность публикации. Сессия браузера или заполненный Client Secret не означает готовую публикацию.
-- Medium, WeChat Official Account и Odnoklassniki используют их credential-based flows; VKHost и browser profile остаются отдельными способами доступа.
+- Medium и WeChat Official Account используют их credential-based flows; Odnoklassniki переведён на серверный OAuth (ключи приложения → login → авто-захват токена, `2027845`); VKHost и browser profile остаются отдельными способами доступа.
 - Реальный OAuth по-прежнему требует credentials приложения и интерактивного согласия владельца аккаунта.
 
 ### S12 — обучение на сбоях
@@ -203,3 +203,10 @@ AI Team показывает сохранённые run/trace данные. Не
 
 - **CI GREEN:** run [#43489547500](https://github.com/rpauts2/Tggruup/actions/runs/43489547500) на `a7e6de8` — Linux `test` success, Windows success (`4301 passed, 15 skipped, 4 xfailed`). Это подтверждает checkpoint `b6dee9e` (lock + symlink).
 - Текущий локальный checkpoint `f4b9496` (+ queue `8069985`, docs) — **ещё не запушен**; полный suite, push `github`, чтение нового CI per-job и запись run выполняются в задаче 6 RELEASE_PLAN. Не объявлять новый checkpoint зелёным до завершения и чтения CI.
+
+### Волна A — auth-апгрейды площадок (API) — 2026-11-16
+
+- **telegraph `5a0b262`** — авто-выдача access-token через `createAccount` (анонимный, без login): токен захватывается и сохраняется локально, не возвращается в браузер. CI Linux green.
+- **OK (odnoklassniki) `2027845`** — серверный OAuth 2.0: владелец сохраняет только ключи приложения OK, жмёт «войти» → `connect.ok.ru/oauth/authorize` → callback меняет код на `api.ok.ru/oauth/token.do`, выводит секрет сессии `MD5(access_token+application_secret)` и подтверждает профиль (`users.getCurrentUser`). Токен хранится локально, не эхо в браузер. Площадка переведена из token-режима в oauth в auth-матрице; start/callback endpoints подключены к общему redaction-middleware и public-path exemption (`apiauth.PUBLIC_PATHS`). TDD: 8 модульных тестов RED→GREEN + API-callback seam-тест (RED 401 → root-cause `PUBLIC_PATHS` → GREEN). Контур 155+66 passed; полный suite **4316 passed, 33 skipped, 4 xfailed, 0 failed**. Ruff: новые файлы чисты; api.py +9 ошибок того же baseline-паттерна, что у всех 12 sibling-callback (I001 `import html` + E501 HTML-строки), CI ruff не запускает. Публикация в группу требует одобрения OK `GROUP_CONTENT` — токен сам по себе права не даёт (ограничение зафиксировано).
+- **bluesky — verify-first, ОТЛОЖЕН.** AT Proto OAuth требует hosted client-metadata URL + DPoP + PKCE — блокер для локальной фермы без публичного домена. Существующий app-password API (`createSession`+`createRecord`) уже авто-постит и остаётся лучшим практическим методом. Коррекция внесена в [PLATFORM_POSTING_RESEARCH.md](PLATFORM_POSTING_RESEARCH.md) (по образцу vk_clips verify-first).
+- **Итог Волны A:** API auth-апгрейды закрыты. `capability_of`: bluesky/odnoklassniki/telegraph = `publish`. Остальные 11 пробелов (vc_ru draft_only; twitch/whatsapp_channels/snapchat/vk_clips/rutube/habr/tenchat/rednote/douyin/tiktok manual_upload) честно классифицированы и НЕ притворяются publish. Их авто-publish — браузерные селекторы, требующие LIVE-верификации (операторский гейт, отложен до сообщения о готовности).
