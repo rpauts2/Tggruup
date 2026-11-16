@@ -48,13 +48,14 @@ OAUTH_PLATFORMS: frozenset[str] = frozenset(
         "tiktok",
         "tumblr",
         "douyin",
+        "odnoklassniki",
     }
 )
 
 #: Token/webhook and legacy-credential platforms. A browser session is not a
 #: substitute for these explicit API credentials.
 TOKEN_PLATFORMS: frozenset[str] = frozenset(
-    {"telegram", "max", "bluesky", "telegraph", "discord", "medium", "wechat", "odnoklassniki"}
+    {"telegram", "max", "bluesky", "telegraph", "discord", "medium", "wechat"}
 )
 
 #: Destinations whose current publishing path depends on an isolated browser
@@ -100,6 +101,7 @@ OAUTH_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "linkedin": ("LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"),
     "tumblr": ("TUMBLR_CLIENT_ID", "TUMBLR_CLIENT_SECRET"),
     "douyin": ("DOUYIN_CLIENT_KEY", "DOUYIN_CLIENT_SECRET"),
+    "odnoklassniki": ("OK_APPLICATION_KEY", "OK_APPLICATION_SECRET"),
 }
 
 #: Fields shown in the first step of OAuth setup. OAuth-issued tokens and

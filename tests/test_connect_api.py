@@ -48,6 +48,13 @@ def test_authorize_oauth_platform_returns_the_start_url():
     assert body["start_url"] == "/api/platforms/reddit/auth/start"
 
 
+def test_authorize_odnoklassniki_returns_the_oauth_start_url():
+    with _client() as client:
+        body = client.post("/api/connect/odnoklassniki/authorize").json()
+    assert body["state"] == "awaiting_oauth"
+    assert body["start_url"] == "/api/platforms/odnoklassniki/auth/start"
+
+
 def test_authorize_unknown_platform_is_400():
     with TestClient(
         create_app_without_raising(), base_url="http://127.0.0.1"

@@ -3273,6 +3273,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/facebook/auth/callback": "tgfarm_facebook_oauth_params",
             "/api/platforms/reddit/auth/callback": "tgfarm_reddit_oauth_params",
             "/api/platforms/tumblr/auth/callback": "tgfarm_tumblr_oauth_params",
+            "/api/platforms/odnoklassniki/auth/callback": "tgfarm_ok_oauth_params",
         }
         callback_scope = callback_scopes.get(request.url.path)
         if request.url.path == "/" and not ({"code", "state", "error"} & set(request.query_params.keys())):
@@ -3310,6 +3311,7 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
             "/api/platforms/facebook/auth/callback",
             "/api/platforms/reddit/auth/callback",
             "/api/platforms/tumblr/auth/callback",
+            "/api/platforms/odnoklassniki/auth/callback",
         } or request.scope.get("tgfarm_youtube_oauth_params") is not None:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -5345,6 +5347,99 @@ def create_app(with_scheduler: bool = False) -> FastAPI:
                 "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
                 "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
                 "<h1>Ошибка подключения Tumblr</h1><p>Проверь настройки OAuth-приложения и журнал диагностики.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
+                status_code=500,
+                headers=page_headers,
+            )
+
+    @app.post("/api/platforms/odnoklassniki/auth/start")
+    async def odnoklassniki_oauth_start(request: Request) -> dict:
+        from tgfarm.ok_oauth import begin_ok_oauth
+
+        settings = get_settings()
+        redirect_uri = str(request.base_url).rstrip("/") + "/api/platforms/odnoklassniki/auth/callback"
+        try:
+            return await begin_ok_oauth(
+                settings.ok_application_key,
+                settings.ok_application_secret,
+                redirect_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc, limit=300)) from exc
+
+    @app.get("/api/platforms/odnoklassniki/auth/callback")
+    async def odnoklassniki_oauth_callback(request: Request) -> HTMLResponse:
+        import html
+
+        from tgfarm.ok_oauth import cancel_ok_oauth, complete_ok_oauth
+        from tgfarm.platforms import record_auth_check, save_platform_credentials as save_credentials
+
+        params = request.scope.get("tgfarm_ok_oauth_params") or {}
+        state_value = str(params.get("state") or "")
+        code = str(params.get("code") or "")
+        provider_error = str(params.get("error") or "")
+        page_headers = {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        }
+        if provider_error or not state_value or not code:
+            cancel_ok_oauth(state_value)
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Подключение Одноклассников не завершено</h1><p>Авторизация отменена или ответ сервера неполный. "
+                "Вернись в панель и запусти подключение заново.</p><p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        try:
+            credentials = await complete_ok_oauth(state_value, code)
+            await io(
+                save_credentials,
+                "odnoklassniki",
+                {
+                    "OK_APPLICATION_KEY": credentials["application_key"],
+                    "OK_APPLICATION_SECRET": credentials["application_secret"],
+                    "OK_ACCESS_TOKEN": credentials["access_token"],
+                    "OK_SESSION_SECRET_KEY": credentials["session_secret_key"],
+                },
+            )
+            await io(
+                record_auth_check,
+                "odnoklassniki",
+                True,
+                account=credentials["account"],
+                detail="OK OAuth подтвердил профиль; токен и секрет сессии сохранены локально.",
+            )
+            _operator("platform-auth-check", "odnoklassniki", "OAuth connected")
+            account = html.escape(credentials["account"])
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · подключено</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Одноклассники подключены</h1><p>Доступ подтверждён для <strong>" + account + "</strong>.</p>"
+                "<p>Токен сохранён локально. Публикация в группу требует права GROUP_CONTENT от OK.</p>"
+                "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=200, headers=page_headers)
+        except (ValueError, RuntimeError) as exc:
+            cancel_ok_oauth(state_value)
+            log.warning("OK OAuth callback rejected (%s)", type(exc).__name__)
+            message = html.escape(redact_sensitive_text(exc, limit=240))
+            body = (
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · OAuth</title>"
+                "<meta name='referrer' content='no-referrer'><body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Не удалось подключить Одноклассники</h1><p>" + message + "</p>"
+                "<p><a href='/'>Вернуться в TgFarm и повторить подключение</a></p></body></html>"
+            )
+            return HTMLResponse(body, status_code=400, headers=page_headers)
+        except Exception as exc:  # noqa: BLE001 - never echo OAuth material
+            cancel_ok_oauth(state_value)
+            log.warning("OK OAuth callback failed (%s)", type(exc).__name__)
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><title>TgFarm · ошибка</title>"
+                "<body style='font:16px system-ui;max-width:680px;margin:12vh auto;padding:24px'>"
+                "<h1>Ошибка подключения Одноклассников</h1><p>Проверь настройки OAuth-приложения и журнал диагностики.</p>"
                 "<p><a href='/'>Вернуться в TgFarm</a></p></body></html>",
                 status_code=500,
                 headers=page_headers,

@@ -34,24 +34,22 @@ def test_modes_match_the_real_mechanism():
     assert matrix["wechat"]["mode"] == "token"
     assert matrix["medium"]["keys_absent"] == ["MEDIUM_ACCESS_TOKEN"]
     assert matrix["wechat"]["keys_absent"] == ["WECHAT_APP_ID", "WECHAT_APP_SECRET"]
-    # Odnoklassniki publishes through its API credentials, not a saved website session.
-    assert matrix["odnoklassniki"]["mode"] == "token"
+    # Odnoklassniki captures its access token through server OAuth: the owner saves
+    # only the application keys, the login callback issues and stores the token.
+    assert matrix["odnoklassniki"]["mode"] == "oauth"
     assert matrix["odnoklassniki"]["keys_absent"] == [
-        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET",
     ]
-    assert {
-        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN",
-        "OK_SESSION_SECRET_KEY", "OK_GROUP_ID",
-    } <= {field["key"] for field in matrix["odnoklassniki"]["fields"]}
+    assert {field["key"] for field in matrix["odnoklassniki"]["fields"]} == {
+        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET",
+    }
 
 
-def test_odnoklassniki_authorization_uses_api_credentials():
+def test_odnoklassniki_authorization_uses_oauth():
     result = asyncio.run(pa.authorize("odnoklassniki"))
-    assert result["mode"] == "token"
-    assert result["state"] == "awaiting_token"
-    assert {
-        "OK_APPLICATION_KEY", "OK_APPLICATION_SECRET", "OK_ACCESS_TOKEN", "OK_GROUP_ID",
-    } <= {field["key"] for field in result["fields"]}
+    assert result["mode"] == "oauth"
+    assert result["state"] == "awaiting_oauth"
+    assert result["start_url"] == "/api/platforms/odnoklassniki/auth/start"
 
 
 def test_odnoklassniki_group_is_reported_as_the_destination(monkeypatch):
@@ -61,7 +59,7 @@ def test_odnoklassniki_group_is_reported_as_the_destination(monkeypatch):
     monkeypatch.setattr(pa, "capability_of", lambda platform_id: "publish")
     statuses = pa.platform_statuses(
         "odnoklassniki",
-        mode="token",
+        mode="oauth",
         authorized=True,
         keys_present=True,
     )
