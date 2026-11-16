@@ -1628,6 +1628,78 @@ class PikabuAdapter:
 
 
 
+class VcRuAdapter:
+    """Publish a vc.ru article through the owner's verified browser session.
+
+    Implemented and offline-tested, but deliberately NOT registered in ADAPTERS
+    yet: the editor publish selectors still need live verification (operator
+    gate). Until then vc.ru stays draft_only — registration plus the catalogue
+    promotion is the activation step that follows that verification, mirroring
+    how the Dzen/Pikabu browser publishers were activated. See
+    docs/PLATFORM_POSTING_RESEARCH.md (Wave C).
+    """
+
+    platform = "vc_ru"
+    max_title = 140
+    max_body = 100_000
+
+    def configured(self) -> bool:
+        try:
+            from tgfarm.browser_auth import browser_session_status
+            status = browser_session_status("vc_ru")
+            return bool(status.get("verified") and status.get("profile_saved"))
+        except Exception:
+            return False
+
+    async def publish(self, payload: CrosspostPayload) -> CrosspostResult:
+        if not self.configured():
+            return CrosspostResult(platform=self.platform, status="skipped")
+        post_public_id = str((payload.meta or {}).get("post_public_id") or "").strip()
+        if not post_public_id:
+            return CrosspostResult(
+                platform=self.platform,
+                status="permanent",
+                error="vc.ru delivery requires the saved TgFarm post identifier.",
+            )
+        try:
+            from tgfarm.community_drafts import CommunityDraftError, publish_vc_ru
+            outcome = await publish_vc_ru(
+                post_public_id, title=str(payload.title or ""), body=str(payload.text or "")
+            )
+        except CommunityDraftError as exc:
+            return CrosspostResult(
+                platform=self.platform, status="skipped",
+                error=redact_sensitive_text(exc, limit=280),
+                retry_after_seconds=6 * 60 * 60,
+            )
+        status = str(outcome.get("status") or "")
+        if status == "published":
+            return CrosspostResult(
+                platform=self.platform,
+                status="posted",
+                url=str(outcome.get("url") or "") or None,
+                error=redact_sensitive_text(
+                    outcome.get("detail") or "Статья опубликована на vc.ru.", limit=280
+                ),
+            )
+        if status == "unknown":
+            return CrosspostResult(
+                platform=self.platform,
+                status="unknown",
+                error=redact_sensitive_text(
+                    outcome.get("detail") or "vc.ru submit outcome is unknown.", limit=280
+                ),
+            )
+        return CrosspostResult(
+            platform=self.platform,
+            status="skipped" if status == "skipped" else "failed",
+            error=redact_sensitive_text(
+                outcome.get("detail") or "vc.ru has no eligible automatic destination.", limit=280
+            ),
+            retry_after_seconds=6 * 60 * 60,
+        )
+
+
 class MediumAdapter:
     """Publish Markdown articles with a pre-existing Medium legacy API token."""
 

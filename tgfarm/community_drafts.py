@@ -1301,3 +1301,286 @@ async def publish_pikabu_scheduled(
         }
     finally:
         lock.release()
+
+
+def _vc_article_url(url: str) -> str | None:
+    """Return the URL only when it is a published vc.ru article, not the editor.
+
+    A published article lives at ``vc.ru/<topic>/<numeric-id>-<slug>``. The editor
+    (``vc.ru/editor``) and topic pages never match, so this is the honest success
+    signal: the publish button alone is not proof of publication.
+    """
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme != "https" or parsed.hostname not in {"vc.ru", "www.vc.ru"}:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and re.fullmatch(r"\d+-[^/]+", parts[1]):
+        return str(url)
+    return None
+
+
+async def publish_vc_ru(
+    post_public_id: str,
+    *,
+    title: str,
+    body: str,
+) -> dict[str, Any]:
+    """Publish one vc.ru article through the owner's verified browser session.
+
+    Mirrors the Pikabu publisher's safety contract: a stored rules proof must
+    authorise the destination, duplicates are refused, an ambiguous submit is
+    never retried, and success is confirmed by the published article URL rather
+    than by the button click. The editor selectors are role/text based and still
+    require live verification before unattended publication (operator gate).
+    """
+    from tgfarm.browser_auth import _launch_context, browser_session_status
+    from tgfarm.community_targets import (
+        check_destination_rules_proof,
+        recommend_community_target,
+    )
+
+    post_public_id = str(post_public_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", post_public_id):
+        raise CommunityDraftError("Некорректный идентификатор поста vc.ru.")
+    title = _clean_markup_text(title)
+    body = _clean_markup_text(body)
+    if not 2 <= len(title) <= 140:
+        raise CommunityDraftError("Заголовок vc.ru должен содержать от 2 до 140 символов.")
+    if not body or len(body) > 100_000:
+        raise CommunityDraftError("Текст vc.ru пустой или превышает 100 000 символов.")
+
+    plan = await recommend_community_target("vc_ru", post_public_id)
+    candidate = None
+    for item in plan.get("candidates", []):
+        if not isinstance(item, dict) or not item.get("recommended"):
+            continue
+        if item.get("blockers") or not item.get("rules_available"):
+            continue
+        candidate = item
+        break
+    if candidate is None:
+        return {
+            "ok": False, "status": "skipped",
+            "detail": "Не найдено темы vc.ru с прочитанными правилами без блокировок. Публикация пропущена.",
+        }
+    target_url = _safe_target_url("vc_ru", str(candidate.get("url") or ""))
+    target_name = str(candidate.get("name") or candidate.get("title") or "").strip()[:120]
+    if not target_url or not target_name:
+        raise CommunityDraftError("Не удалось подтвердить тему vc.ru.")
+
+    key = f"vc_ru:{post_public_id}"
+    fingerprint = _fingerprint("vc_ru", title, body, [])
+    state = _read_state()
+    previous = state.get(key) if isinstance(state.get(key), dict) else {}
+    if previous and previous.get("fingerprint") == fingerprint:
+        status = str(previous.get("status") or "")
+        if status == "published":
+            return {
+                "ok": True, "status": "published", "url": previous.get("url"),
+                "target_name": target_name, "detail": "Статья уже опубликована на vc.ru.",
+            }
+        if status in {"submitting", "unknown"}:
+            return {
+                "ok": False, "status": status, "url": previous.get("url"),
+                "detail": (
+                    "Результат предыдущей отправки vc.ru неоднозначен; "
+                    "повтор не выполнялся во избежание дубля."
+                ),
+            }
+    if previous and previous.get("status") == "published":
+        raise CommunityDraftError(
+            "Для этого материала уже есть опубликованная статья vc.ru. "
+            "Новую версию автоматически не дублирую; измени материал или отмени прежнюю публикацию."
+        )
+    if previous and previous.get("status") in {"submitting", "unknown"}:
+        raise CommunityDraftError(
+            "Предыдущая отправка vc.ru имеет неоднозначный результат; повтор заблокирован."
+        )
+
+    rules_source = str(plan.get("rules_source") or "")
+    rules_proof = await asyncio.to_thread(
+        check_destination_rules_proof, "vc_ru", candidate, rules_source=rules_source,
+    )
+    verdict = plan.get("policy_verdict") or {}
+    if not verdict.get("allow_publish"):
+        return {
+            "ok": False, "status": "skipped",
+            "detail": (
+                "Публикация на vc.ru пропущена: правила темы не подтверждены "
+                f"({verdict.get('reason') or 'unknown'})."
+            ),
+            "policy_verdict": verdict,
+        }
+    if not rules_proof.get("publishable"):
+        rejection = rules_proof.get("rejection") or {}
+        return {
+            "ok": False, "status": "skipped",
+            "detail": (
+                "Публикация на vc.ru пропущена: проверка правил не подтверждена сохранённым снимком "
+                f"({rejection.get('reason_code') or 'unknown'}: "
+                f"{rejection.get('reason') or 'нет подробности'})."
+            ),
+            "policy_verdict": verdict,
+            "rules_proof": rules_proof,
+            "rejected": [rejection] if rejection else [],
+        }
+    policy_state = {"policy_assessment": verdict, "rules_proof": rules_proof}
+
+    lock = _LOCKS["vc_ru"]
+    if not lock.acquire(blocking=False):
+        raise CommunityDraftError("Браузер vc.ru уже используется другой операцией.")
+    try:
+        session = browser_session_status("vc_ru")
+        if not session.get("verified") or not session.get("profile_saved"):
+            raise CommunityDraftError("Сначала подключи и проверь авторизованный профиль vc.ru.")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise CommunityDraftError(
+                "Браузерная автоматизация vc.ru недоступна: не установлен playwright "
+                '(pip install -e ".[dzen]").'
+            ) from exc
+        profile = get_settings().data_root() / "platform_profiles" / "vc_ru"
+        _write_state_entry(key, {
+            "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+            "status": "preparing", "created_at": datetime.now(UTC).isoformat(),
+            "target_url": target_url, "target_name": target_name, **policy_state,
+        })
+        submitted = False
+        context = None
+        try:
+            async with async_playwright() as playwright:
+                context = await _launch_context(playwright, profile)
+                pages = [page for page in context.pages if not page.is_closed()]
+                page = pages[0] if pages else await context.new_page()
+                existing_url = str(previous.get("url") or "")
+                if existing_url and _safe_editor_url("vc_ru", existing_url):
+                    await page.goto(existing_url, wait_until="domcontentloaded", timeout=60_000)
+                else:
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+                    await _click_editor_entry(page, "vc_ru")
+                if not _safe_editor_url("vc_ru", page.url):
+                    raise CommunityDraftError("vc.ru не открыл редактор в сохранённом профиле.")
+
+                body_text = (await page.locator("body").inner_text()).casefold()
+                if re.search(r"войдите|авторизуйтесь|необходимо войти", body_text):
+                    raise CommunityDraftError("Сессия vc.ru закончилась. Повторно войди в браузере.")
+                if re.search(r"captcha|подтвердите,?\s*что вы не робот", body_text):
+                    raise CommunityDraftError(
+                        "vc.ru запросил проверку человека. Автоматическая отправка остановлена."
+                    )
+
+                await _fill_editor_fields(page, "vc_ru", title, body)
+                images = _image_candidates(_load_post(post_public_id).get("media", []), "vc_ru")
+                if images:
+                    await _upload_images(page, "vc_ru", images)
+                await page.wait_for_timeout(12_000)
+
+                # Last-moment rules re-read: everything above was minutes of page
+                # work, so the stored proof is re-checked right before the click.
+                latest_proof = await asyncio.to_thread(
+                    check_destination_rules_proof, "vc_ru", candidate, rules_source=rules_source,
+                )
+                if not latest_proof.get("publishable"):
+                    raise CommunityDraftError(
+                        "vc.ru: финальная перечитка правил остановила публикацию."
+                    )
+                policy_state = {"policy_assessment": verdict, "rules_proof": latest_proof}
+
+                publish_action = page.get_by_role("button", name=re.compile(r"^опубликовать$", re.I))
+                if not await publish_action.count() or not await publish_action.last.is_visible():
+                    raise CommunityDraftError("vc.ru не показал кнопку «Опубликовать» в редакторе.")
+                _write_state_entry(key, {
+                    "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+                    "status": "submitting", "created_at": datetime.now(UTC).isoformat(),
+                    "target_url": target_url, "target_name": target_name,
+                    "draft_url": page.url if _safe_editor_url("vc_ru", page.url) else "",
+                    **policy_state,
+                })
+                submitted = True
+                await publish_action.last.click(timeout=12_000)
+                await page.wait_for_timeout(2_500)
+                # A confirmation dialog may repeat the publish action; press it
+                # only when it is a distinct visible confirm button.
+                confirm = page.get_by_role("button", name=re.compile(r"^(опубликовать|подтвердить)$", re.I))
+                if (
+                    await confirm.count()
+                    and await confirm.last.is_visible()
+                    and _vc_article_url(page.url) is None
+                ):
+                    await confirm.last.click(timeout=8_000)
+                    await page.wait_for_timeout(2_500)
+
+                result_url = _vc_article_url(page.url)
+                if result_url is None:
+                    alert_text = ""
+                    for selector in ("[role='alert']", "[class*='toast']", "[class*='notification']"):
+                        locator = page.locator(selector)
+                        if await locator.count():
+                            try:
+                                alert_text += "\n" + "\n".join(await locator.all_inner_texts())
+                            except Exception:
+                                continue
+                    if re.search(
+                        r"не удалось|произошла ошибка|исправьте ошиб|ошибка публикации", alert_text, re.I
+                    ):
+                        submitted = False
+                        raise CommunityDraftError("vc.ru отклонил публикацию статьи.")
+                    _write_state_entry(key, {
+                        "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+                        "status": "unknown", "created_at": datetime.now(UTC).isoformat(),
+                        "target_url": target_url, "target_name": target_name,
+                        "draft_url": page.url if _safe_editor_url("vc_ru", page.url) else "",
+                        **policy_state,
+                    })
+                    return {
+                        "ok": False, "status": "unknown", "url": None,
+                        "detail": (
+                            "Кнопка публикации нажата, но vc.ru не показал URL статьи. "
+                            "Повтор заблокирован для защиты от дубля."
+                        ),
+                    }
+        except Exception as exc:
+            if submitted:
+                _write_state_entry(key, {
+                    "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+                    "status": "unknown", "created_at": datetime.now(UTC).isoformat(),
+                    "target_url": target_url, "target_name": target_name, "draft_url": "",
+                    **policy_state,
+                })
+                return {
+                    "ok": False, "status": "unknown", "url": None,
+                    "detail": (
+                        f"После отправки vc.ru возникла неоднозначная ошибка ({type(exc).__name__}); "
+                        "автоматический повтор заблокирован."
+                    ),
+                }
+            _write_state_entry(key, {
+                "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+                "status": "failed", "created_at": datetime.now(UTC).isoformat(),
+                "target_url": target_url, "target_name": target_name, "error": str(exc)[:300],
+                **policy_state,
+            })
+            if isinstance(exc, CommunityDraftError):
+                raise
+            raise CommunityDraftError(
+                f"Не удалось опубликовать статью vc.ru ({type(exc).__name__})."
+            ) from exc
+        finally:
+            if context is not None:
+                await context.close()
+
+        _write_state_entry(key, {
+            "platform": "vc_ru", "post_public_id": post_public_id, "fingerprint": fingerprint,
+            "status": "published", "created_at": datetime.now(UTC).isoformat(),
+            "target_url": target_url, "target_name": target_name, "url": result_url,
+            **policy_state,
+        })
+        return {
+            "ok": True, "status": "published", "url": result_url,
+            "target_url": target_url, "target_name": target_name,
+            "policy_assessment": verdict,
+            "detail": "Статья опубликована на vc.ru после перечитки правил; URL статьи подтверждён.",
+        }
+    finally:
+        lock.release()

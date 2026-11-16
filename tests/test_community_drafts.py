@@ -204,3 +204,183 @@ def test_pikabu_changed_material_cannot_duplicate_an_existing_scheduled_item(mon
                 body="A changed article body about Python programming.",
             )
         )
+
+
+def _vc_plan():
+    return {
+        "platform": "vc_ru",
+        "candidates": [{
+            "recommended": True, "rules_available": True, "blockers": [],
+            "url": "https://vc.ru/technology", "name": "Технологии",
+            "slug": "technology", "path": "/technology",
+        }],
+        "rules_source": "https://vc.ru/rules",
+        "auto_publish_supported": True,
+        "policy_verdict": {"allow_publish": True, "status": "ok", "reason": "", "blockers": []},
+    }
+
+
+def test_vc_ru_publish_skips_when_rules_proof_missing(monkeypatch):
+    import asyncio
+
+    from tgfarm import community_targets
+
+    async def plan(*_args, **_kwargs):
+        return _vc_plan()
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", plan)
+    monkeypatch.setattr(
+        community_targets, "check_destination_rules_proof",
+        lambda *_a, **_k: {
+            "publishable": False, "proof": {}, "verdict": {},
+            "rejection": {"reason_code": "no_rules_snapshot", "reason": "нет снимка"},
+        },
+    )
+    monkeypatch.setattr(community_drafts, "_read_state", lambda: {})
+    writes = []
+    monkeypatch.setattr(community_drafts, "_write_state_entry", lambda k, v: writes.append((k, v)))
+
+    result = asyncio.run(community_drafts.publish_vc_ru(
+        "vc_post_1", title="Заголовок статьи", body="Текст статьи о технологиях и бизнесе.",
+    ))
+    assert result["ok"] is False
+    assert result["status"] == "skipped"
+    assert not any(v.get("status") == "submitting" for _, v in writes)
+
+
+def test_vc_ru_publish_requires_verified_session(monkeypatch):
+    import asyncio
+
+    from tgfarm import community_targets
+
+    async def plan(*_args, **_kwargs):
+        return _vc_plan()
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", plan)
+    monkeypatch.setattr(
+        community_targets, "check_destination_rules_proof",
+        lambda *_a, **_k: {"publishable": True, "proof": {}, "verdict": {}, "rejection": None},
+    )
+    monkeypatch.setattr(community_drafts, "_read_state", lambda: {})
+    monkeypatch.setattr(community_drafts, "_write_state_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "tgfarm.browser_auth.browser_session_status",
+        lambda _p: {"verified": False, "profile_saved": False},
+    )
+
+    with pytest.raises(community_drafts.CommunityDraftError, match="профиль"):
+        asyncio.run(community_drafts.publish_vc_ru(
+            "vc_post_1", title="Заголовок статьи", body="Текст статьи о технологиях и бизнесе.",
+        ))
+
+
+def test_vc_ru_changed_material_cannot_duplicate_published(monkeypatch):
+    import asyncio
+
+    from tgfarm import community_targets
+
+    async def plan(*_args, **_kwargs):
+        return _vc_plan()
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", plan)
+    monkeypatch.setattr(
+        community_drafts, "_read_state",
+        lambda: {"vc_ru:vc_post_1": {
+            "status": "published", "fingerprint": "old-version-fingerprint",
+            "url": "https://vc.ru/technology/123-old",
+        }},
+    )
+    monkeypatch.setattr(
+        community_drafts, "_write_state_entry",
+        lambda *_a, **_k: pytest.fail("must not replace the existing published entry"),
+    )
+
+    with pytest.raises(community_drafts.CommunityDraftError, match="уже есть опубликованная"):
+        asyncio.run(community_drafts.publish_vc_ru(
+            "vc_post_1", title="Совершенно другой заголовок", body="Другой текст статьи.",
+        ))
+
+
+def test_vc_ru_same_material_already_published_is_idempotent(monkeypatch):
+    import asyncio
+
+    from tgfarm import community_targets
+
+    title = "Заголовок статьи"
+    body = "Текст статьи о технологиях и бизнесе."
+    fingerprint = community_drafts._fingerprint("vc_ru", title, body, [])
+
+    async def plan(*_args, **_kwargs):
+        return _vc_plan()
+
+    monkeypatch.setattr(community_targets, "recommend_community_target", plan)
+    monkeypatch.setattr(
+        community_drafts, "_read_state",
+        lambda: {"vc_ru:vc_post_1": {
+            "status": "published", "fingerprint": fingerprint,
+            "url": "https://vc.ru/technology/123-story",
+        }},
+    )
+    monkeypatch.setattr(
+        community_drafts, "_write_state_entry",
+        lambda *_a, **_k: pytest.fail("idempotent return must not rewrite state"),
+    )
+
+    result = asyncio.run(community_drafts.publish_vc_ru("vc_post_1", title=title, body=body))
+    assert result["ok"] is True
+    assert result["status"] == "published"
+    assert result["url"] == "https://vc.ru/technology/123-story"
+
+
+def test_vc_ru_adapter_skips_when_not_configured(monkeypatch):
+    import asyncio
+
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth.adapters import VcRuAdapter
+
+    monkeypatch.setattr(VcRuAdapter, "configured", lambda _self: False)
+    payload = CrosspostPayload(
+        platform="vc_ru", title="Заголовок", text="Текст", meta={"post_public_id": "vc_post_1"},
+    )
+    result = asyncio.run(VcRuAdapter().publish(payload))
+    assert result.status == "skipped"
+
+
+def test_vc_ru_adapter_maps_confirmed_publication_to_posted(monkeypatch):
+    import asyncio
+
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth import adapters
+
+    monkeypatch.setattr(adapters.VcRuAdapter, "configured", lambda _self: True)
+
+    async def fake_publish(*_a, **_k):
+        return {"ok": True, "status": "published", "url": "https://vc.ru/technology/123-story",
+                "target_name": "Технологии", "detail": "Статья опубликована."}
+
+    monkeypatch.setattr("tgfarm.community_drafts.publish_vc_ru", fake_publish)
+    payload = CrosspostPayload(
+        platform="vc_ru", title="Заголовок", text="Текст", meta={"post_public_id": "vc_post_1"},
+    )
+    result = asyncio.run(adapters.VcRuAdapter().publish(payload))
+    assert result.status == "posted"
+    assert result.url == "https://vc.ru/technology/123-story"
+
+
+def test_vc_ru_adapter_maps_unknown_outcome_without_retry(monkeypatch):
+    import asyncio
+
+    from tgfarm.core.schemas import CrosspostPayload
+    from tgfarm.s9_growth import adapters
+
+    monkeypatch.setattr(adapters.VcRuAdapter, "configured", lambda _self: True)
+
+    async def fake_publish(*_a, **_k):
+        return {"ok": False, "status": "unknown", "detail": "Подтверждение не получено."}
+
+    monkeypatch.setattr("tgfarm.community_drafts.publish_vc_ru", fake_publish)
+    payload = CrosspostPayload(
+        platform="vc_ru", title="Заголовок", text="Текст", meta={"post_public_id": "vc_post_1"},
+    )
+    result = asyncio.run(adapters.VcRuAdapter().publish(payload))
+    assert result.status == "unknown"

@@ -51,6 +51,9 @@ CAPABILITY_NOTES: dict[str, str] = {
 PRIMARY_PUBLISHERS: frozenset[str] = frozenset({"telegram", "vk", "dzen"})
 
 #: Destinations where the farm fills the site editor but never presses "publish".
+#: vc.ru has a confirming browser publisher implemented (community_drafts.publish_vc_ru
+#: + VcRuAdapter), but it is not registered until the editor selectors are live-verified
+#: (operator gate), so vc.ru is still honestly draft_only today.
 DRAFT_ONLY: frozenset[str] = frozenset({"vc_ru"})
 
 #: Destinations with a read-only integration only.  None today: metrics readers
