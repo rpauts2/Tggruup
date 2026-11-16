@@ -759,10 +759,16 @@ def _build_primary_platform_plan(
         active = [persona for persona in personas if persona.platform == platform_id]
         if not active:
             continue
-        if platform_id == "dzen":
-            daily_cap = clamp_channel_daily_cap(2)
-        elif platform_id == "vk":
-            daily_cap = clamp_channel_daily_cap(3)
+        if platform_id in ("dzen", "vk"):
+            # Read from s7 rather than restating the figure: this function's own
+            # promise is that the plan shows the cap the publisher enforces, and
+            # the enforceable number now moves with PRIMARY_VK_DAILY_CAP /
+            # PRIMARY_DZEN_DAILY_CAP. A literal here would report yesterday's
+            # budget while the queue obeyed today's. Imported lazily because
+            # s7 imports this module for the clamp.
+            from tgfarm.s7_publish import primary_platform_daily_cap
+
+            daily_cap = clamp_channel_daily_cap(primary_platform_daily_cap(platform_id))
         else:
             # The ceiling is per channel, and this branch reports a platform
             # budget: it has to be clamped once per persona, because s7 and s3

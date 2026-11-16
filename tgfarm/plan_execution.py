@@ -730,7 +730,9 @@ def _decide_schedule(
     if used >= cap:
         return _OUTCOME_HELD, REASON_DAILY_CAP, None
     if platform in s7_publish.PRIMARY_PLATFORM_DAILY_CAPS:
-        platform_cap = clamp_channel_daily_cap(s7_publish.PRIMARY_PLATFORM_DAILY_CAPS[platform])
+        platform_cap = clamp_channel_daily_cap(
+            s7_publish.primary_platform_daily_cap(platform)
+        )
         platform_used = (
             state.platform_day_count(session, channel, platform)
             + state.pending_platform.get(platform, 0)

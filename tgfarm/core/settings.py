@@ -538,6 +538,14 @@ class Settings(BaseSettings):
     max_posts_per_channel_day: int = Field(
         default=1000, alias="MAX_POSTS_PER_CHANNEL_DAY"
     )
+    # Daily cap for the two primary platforms that publish through S7 directly
+    # (the persona quota is clamped by MAX_POSTS_PER_CHANNEL_DAY instead). The
+    # code default is the conservative anti-spam figure — VK 3, Dzen 2 — because
+    # a wall or a browser editor fed at persona speed (48, 120) trips platform
+    # rate limits and spam blocks. The operator raises these deliberately once
+    # an account is warmed up; `s7_publish.primary_platform_daily_cap` reads them.
+    primary_vk_daily_cap: int = Field(default=3, ge=1, alias="PRIMARY_VK_DAILY_CAP")
+    primary_dzen_daily_cap: int = Field(default=2, ge=1, alias="PRIMARY_DZEN_DAILY_CAP")
     source_adaptive_cadence: bool = Field(
         default=True, alias="SOURCE_ADAPTIVE_CADENCE"
     )

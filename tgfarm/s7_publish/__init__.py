@@ -430,7 +430,7 @@ def schedule_ready_posts(
                         session, platform, now
                     )
                 today_count = platform_daily_counts[platform]
-                daily_cap = clamp_channel_daily_cap(PRIMARY_PLATFORM_DAILY_CAPS[platform])
+                daily_cap = clamp_channel_daily_cap(primary_platform_daily_cap(platform))
             else:
                 today_count = _posts_today(session, post.channel_id, now)
                 daily_cap = clamp_channel_daily_cap(max(1, int(persona.posts_per_day)))
@@ -528,10 +528,45 @@ def schedule_capacity() -> int:
     return max(1, get_config().schedule.fleet_posts_per_hour)
 
 
-PRIMARY_PLATFORM_DAILY_CAPS = {
+# The code default: the conservative anti-spam figure an account starts on.
+# `PRIMARY_PLATFORM_DAILY_CAPS` below is a copy of this, and the copy is what a
+# test or an operator edits to force a number; the difference between the two is
+# how `primary_platform_daily_cap` tells "someone set this explicitly" from
+# "leave it to the environment".
+_PRIMARY_DAILY_CAP_DEFAULTS = {
     "dzen": 2,
     "vk": 3,
 }
+PRIMARY_PLATFORM_DAILY_CAPS = dict(_PRIMARY_DAILY_CAP_DEFAULTS)
+
+# Which `Settings` field moves each default. Keyed by the same platforms the
+# dict names, so membership stays with the constant and a typo in the
+# environment cannot retire a platform's cap entirely.
+_PRIMARY_DAILY_CAP_SETTINGS = {
+    "dzen": "primary_dzen_daily_cap",
+    "vk": "primary_vk_daily_cap",
+}
+
+
+def primary_platform_daily_cap(platform: str) -> int:
+    """The daily cap S7 grants one primary platform, read on every call.
+
+    Three sources in priority order. An explicit value in
+    `PRIMARY_PLATFORM_DAILY_CAPS` that differs from the code default wins — that
+    is how a test (or a future operator editing the dict) forces a number, and
+    the environment must not be able to undo it. Next the operator's
+    `PRIMARY_*_DAILY_CAP` setting, which is how a warmed-up account reaches the
+    persona quota (a wall fed at 48/day trips VK's own rate limits). Otherwise
+    the conservative default. Read per call like every other tunable.
+    """
+    default = int(_PRIMARY_DAILY_CAP_DEFAULTS[platform])
+    explicit = int(PRIMARY_PLATFORM_DAILY_CAPS.get(platform, default))
+    if explicit != default:
+        return explicit
+    field = _PRIMARY_DAILY_CAP_SETTINGS.get(platform)
+    if field is None:
+        return default
+    return int(getattr(get_settings(), field, default))
 
 
 def _day_bucket_expression():
