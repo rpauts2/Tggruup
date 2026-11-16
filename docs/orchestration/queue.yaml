@@ -216,7 +216,7 @@ tasks:
     title: "Сборка должна уметь назвать себя сама"
     priority: high
     category: release
-    status: FAILED
+    status: CANCELLED
     owner_role: "DevOps / Release Engineer"
     owner_agent: "ageneral-purpose-93a90529ccdc2ee5"
     base_sha: 91029a38e28b14057e118cfbeeaa8a4b06d7cb94
@@ -232,19 +232,22 @@ tasks:
     test_commands:
       - "python -m pytest -q tests/test_w24b_buildinfo.py"
     review_status: RETURNED_TO_AUTHOR
-    integration_status: NOT_INTEGRATED
+    integration_status: NOT_APPLICABLE
     retry_count: 1
     attempt_limit: 3
     tool_calls_used: 30
     started_at: "2026-11-06T11:29:00+03:00"
-    updated_at: "2026-11-06T14:35:00+03:00"
-    completed_at: null
+    updated_at: "2026-11-16T01:10:00+00:00"
+    completed_at: "2026-11-16T01:10:00+00:00"
     evidence:
       - "OBSERVED: смерть на credit limit; 718 строк незакоммиченными во вложенном дереве; спасено как 14c165a (buildinfo.py 535, stamp_build_info.py 183, ci.yml +25, spec +12)"
       - "OBSERVED: тестов — ноль"
+      - "GIT_VERIFIED: superseded карточкой W24-BR (INTEGRATED): артефакты 14c165a прошли независимое ревью, tests/test_w24b_buildinfo.py существует и зелёный (33 теста)"
+      - "CI_VERIFIED: run #43489547500 на a7e6de8 — Windows шаги Stamp Windows build identity / Verify Windows build identity зелёные; сборка называет себя сама"
     next_action: >
-      Исполнитель мёртв (credit limit), артефакты спасены в 14c165a. Пути больше не
-      заняты: их ведёт W24-BR, иначе очередь утверждала бы двух владельцев одного файла.
+      Закрыта как superseded: FAILED описывал смерть исполнителя на credit limit,
+      а не дефект продукта. Работа спасена в 14c165a и принята через W24-BR;
+      paths больше не заняты этой карточкой.
 
   - id: W24-BR
     description: "Спасённый W24-B без единого теста: ревью 718 строк и проверка, что build-time SHA неотличим от runtime-догадки"
@@ -1484,9 +1487,9 @@ tasks:
       ничего не интегрировать.
     priority: high
     category: reliability
-    status: RECOVERY_REQUIRED
+    status: INTEGRATED
     owner_role: Recovery Engineer
-    owner_agent: w34b read-only recovery review
+    owner_agent: coordinator
     base_sha: d13b5640b36da0d5cd0af026620b547ff2b2e42f
     worktree: .qoder/worktrees/w34b-delivery-budget
     branch: w34b-delivery-budget
@@ -1499,13 +1502,13 @@ tasks:
       ничего не интегрировать.
     test_commands:
     - python -m pytest -q tests/test_crosspost_delivery_budget.py
-    review_status: CHANGES_REQUIRED
-    integration_status: RECOVERY_REQUIRED
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: INTEGRATED
     retry_count: 1
     attempt_limit: 3
     started_at: '2026-11-09T22:09:14+00:00'
-    updated_at: '2026-11-09T22:48:35+00:00'
-    completed_at: null
+    updated_at: '2026-11-16T01:10:00+00:00'
+    completed_at: '2026-11-16T01:10:00+00:00'
     evidence:
     - 'OBSERVED: агент w34b завершился ошибкой сервиса; сохранены M __init__.py и новый тест, коммитов нет; независимый
       read-only reviewer запущен.'
@@ -1513,8 +1516,17 @@ tasks:
       отмены claim/log, неверный unknown при подготовке. Исходные байты сохранены.'
     - 'GIT_VERIFIED: узкий безопасный publish-await инкремент32d40ab принят отдельно какW36-A; весь batch/preparation/DB
       всё ещё не ограничен.'
-    next_action: Не интегрировать исходный diff. Продолжить общий batch/preparation/DB budget отдельным пакетом;
-      узкий W36-A уже принят.
+    - 'GIT_VERIFIED: f4b9496 — новый пакет поверх main: один deadline на доставку покрывает scout/AI/rules/publish;
+      AI-доля 0.5 бюджета; timeout подготовки = failed/skipped с Retry-After, никогда unknown; отмена после claim
+      пишет shielded failed-строку и разрешает attempt.'
+    - 'OBSERVED: TDD RED 4 failed → GREEN 20 passed (4 новых + 16 W36-A, эволюция 5 assertions с сохранением инвариантов);
+      широкий контур 125 passed + 640 passed/4 xfailed/0 failed; ruff-паритет точный (те же 5 pre-existing ошибок).'
+    - 'CODE_VERIFIED: исходный отклонённый diff НЕ интегрировался (байты сохранены в worktree); dry-run ветка и
+      publish-phase unknown контракт W36-A не тронуты; review-проход координатора подтвердил claim после scout,
+      rendering до claim, короткие DB-write вне long-await.'
+    next_action: Закрыта. Preparation ограничен per-delivery deadline; batch-budget остаётся за внешним guard
+      _run_crossposts_once (W36-A). Индивидуальные короткие to_thread DB-write не обёрнуты deadline — это осознанный
+      остаток, не unbounded rendering/DB исходного diff.
 
   - id: W35-A
     title: 'S12: новейшее ограниченное окно ошибок вместо oldest-20'
@@ -1967,3 +1979,89 @@ tasks:
       tests green. The fix merged to main as b08d63a via the W36 integration branch.'
     next_action: Closed. The native 3.11 reproduction passes both `test_lock_registry_ownership.py` and
       `test_core_ratelimit.py` (24 passed). The worktree w37a-lock-cancel-311 and its branch can be pruned.
+
+  # Wave 38 (2026-11-16): принятие пользовательского WIP и единственный настоящий
+  # пробел аудита веток. Субагенты в этой сессии недоступны — исполнение и
+  # review-проходы последовательные, координатором; независимое субагентное ревью
+  # не выполнялось (зафиксировано в RELEASE_PLAN.md).
+
+  - id: W38-A
+    title: Operator-tunable primary platform daily caps (VK/Dzen)
+    description: Пользовательский WIP в рабочем дереве — трёхисточниковый приоритет дневных лимитов VK/Dzen;
+      верифицировать, отревьюить и принять без переписывания.
+    priority: high
+    category: product
+    status: INTEGRATED
+    owner_role: Integrating Engineer
+    owner_agent: coordinator
+    base_sha: a7e6de8a9d44ce74b1e0d9c2272961d56daf04ae
+    worktree: .
+    branch: main
+    allowed_paths:
+    - tgfarm/s7_publish/__init__.py
+    - tgfarm/core/settings.py
+    - tgfarm/distribution.py
+    - tgfarm/plan_execution.py
+    - tests/test_primary_platform_daily_cap_setting.py
+    - tests/conftest.py
+    - .env.example
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: primary_platform_daily_cap(platform) — explicit override ≠ default → Settings field → code default
+      {dzen 2, vk 3}; unknown platform = KeyError; plan report и publisher читают одну функцию; Settings ge=1.
+    test_commands:
+    - python -m pytest -q tests/test_primary_platform_daily_cap_setting.py
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-16T00:20:00+00:00'
+    updated_at: '2026-11-16T01:10:00+00:00'
+    completed_at: '2026-11-16T01:10:00+00:00'
+    evidence:
+    - 'GIT_VERIFIED: 8e31c30 — 7 файлов; lazy import в distribution разрывает цикл s7↔distribution; второй потребитель
+      plan_execution ~800 — membership-only counter, seam проверен, не тронут.'
+    - 'OBSERVED: 337 тестов затронутого контура зелёные; 8 новых тестов; nit ревью исправлен (unknown platform
+      renamed to raises_keyerror, комментарий приведён к assertion, I001 пофиксен).'
+    next_action: Closed. Лимиты настраиваются оператором через PRIMARY_VK_DAILY_CAP / PRIMARY_DZEN_DAILY_CAP или
+      явный override; дефолты dzen=2 vk=3 сохранены.
+
+  - id: W38-B
+    title: Analytics format rows + evidence note CSS (единственный пробел аудита веток)
+    description: Повторный content-аудит веток нашёл один настоящий пробел — analytics CSS, который панель уже
+      рендерит, но app.css не определяет. Портировать через TDD.
+    priority: medium
+    category: ui
+    status: INTEGRATED
+    owner_role: Frontend Engineer
+    owner_agent: coordinator
+    base_sha: 8e31c30ae29a61cfe146631b7c0b4dcf6a5fbb71
+    worktree: .
+    branch: main
+    allowed_paths:
+    - tgfarm/ui/app.css
+    - tests/test_ui_analytics_format_styles.py
+    depends_on: []
+    blocked_by: []
+    p_refs: []
+    acceptance: .analytics-format-row / .analytics-evidence-note определены в app.css; container-query и media
+      fallback присутствуют; markup в app.js не меняется; offline UI contract tests зелёные.
+    test_commands:
+    - python -m pytest -q tests/test_ui_analytics_format_styles.py
+    review_status: RETURNED_TO_COORDINATOR
+    integration_status: INTEGRATED
+    retry_count: 0
+    attempt_limit: 3
+    tool_calls_used: null
+    started_at: '2026-11-16T00:40:00+00:00'
+    updated_at: '2026-11-16T01:10:00+00:00'
+    completed_at: '2026-11-16T01:10:00+00:00'
+    evidence:
+    - 'GIT_VERIFIED: 15c14c9 — app.css блок + tests/test_ui_analytics_format_styles.py (3 теста).'
+    - 'OBSERVED: TDD RED 2 failed → GREEN 41 passed; container-type inline-size + @container max-width 560px +
+      @media max-width 700px fallback.'
+    - 'CODE_VERIFIED: аудит 17 github-веток подтвердил — уникального кода вне main не осталось после этого порта;
+      whole-branch merge по-прежнему запрещён (net-negative).'
+    next_action: Closed. Единственный настоящий пробел аудита веток закрыт; остальные ветки merged/ported/superseded.
