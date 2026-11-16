@@ -385,15 +385,15 @@ def test_dashboard_views_render_without_browser_runtime_errors(dashboard_url):
         team_tab = page.locator('.tab[data-view="team"]')
         team_tab.focus()
         team_tab.press("ArrowRight")
+        assert page.locator("#tab-studio").get_attribute("aria-selected") == "true"
+        assert page.evaluate("document.activeElement.id") == "tab-studio"
+        assert page.locator("#panel-studio").is_visible()
+        page.locator("#tab-studio").press("ArrowDown")
         assert page.locator("#tab-plan").get_attribute("aria-selected") == "true"
         assert page.evaluate("document.activeElement.id") == "tab-plan"
-        assert page.locator("#panel-plan").is_visible()
-        page.locator("#tab-plan").press("ArrowDown")
-        assert page.locator("#tab-posts").get_attribute("aria-selected") == "true"
-        assert page.evaluate("document.activeElement.id") == "tab-posts"
-        page.locator("#tab-posts").press("ArrowLeft")
-        assert page.locator("#tab-plan").get_attribute("aria-selected") == "true"
-        page.locator("#tab-plan").press("ArrowUp")
+        page.locator("#tab-plan").press("ArrowLeft")
+        assert page.locator("#tab-studio").get_attribute("aria-selected") == "true"
+        page.locator("#tab-studio").press("ArrowUp")
         assert page.locator("#tab-team").get_attribute("aria-selected") == "true"
         page.locator("#tab-team").press("End")
         assert page.locator("#tab-runs").get_attribute("aria-selected") == "true"
