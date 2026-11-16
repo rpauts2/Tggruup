@@ -15,6 +15,40 @@
 `tgfarm.db` (strict `mode=ro`) и журнала `farm_serve25.log`. Точные команды —
 в приложении; матрицу можно переснять, не доверяя этому тексту.
 
+## Повторная офлайн-верификация — 2026-11-16 (checkpoint `39161a2`)
+
+Контур S1–S12 с базы `183daa4` не менялся (Волна A auth и Волна C vc.ru — это
+авторизация/постинг, не циклы). Колонки **Implemented / Offline-tested /
+Scheduler-reachable** ниже переподтверждены на текущем checkpoint; колонка
+**Live-observed** НЕ переснималась (операторский гейт OPS-1, живая сборка не
+менялась) и остаётся историческим замером 2026-11-06.
+
+- `tests/test_autonomy_chain_offline.py` на `39161a2`: **17 passed, 4 xfailed**
+  (11.77 s). 4 xfail — strict-xfail недостижимых офлайн звеньев (реальный сбор
+  S1, реальная отправка S7, реальные метрики S8, урок с живой выборкой S12);
+  маркеры не сняты, unexpected-pass не было.
+- Автономный прогон харнесса на temp DB (offline-env как в `conftest.py`:
+  `TGFARM_MODE=off`, `PLAN_EXECUTION_ENABLED=true`, `IMAGE_ENABLED=false`,
+  `VIDEO_ENABLED=false`, `LLM_PROVIDERS=offline`, `EMBEDDING_PROVIDER=local`),
+  отчёт `tools/autonomy_chain_report.py` run `fafe7a009b`: **terminal=held,
+  errors=[], outbound=0, seeded 7/7**. 10 строк журнала, все стадии `ok`
+  (s2_trends, s4_generate, s5_quality, s6_visual, s7_publish, s7_publish_due,
+  s9_crosspost, s8_analytics, s12_learning, s4_plan_booking). `s1_collect` и
+  `maintenance` — **absent** (честно: офлайн недостижимы, не выдуманный ноль).
+  Счётчики трёхсостоящие: `measured`/`partial`/`not_reported` с именами
+  неизмеренных колонок (`items_in`/`items_out`) — absent/unknown ≠ measured-zero.
+  Editorial plan: 2 build + 2 apply, entries осуждены, причины названы
+  (`produce_entry_not_generated_here`, `dzen_needs_online_model`, `slot_not_due`),
+  слоты 1/2 читаются `scheduled`. Posts: gated=1, scheduled=1, attempts=0,
+  published_at=None; crosspost vk=`dry_run` (не отправлен). `post_stats=0`,
+  `learning_memory=0` — честный офлайн-ноль (ни одна площадка не контактировала).
+- CI: run [#43848029942](https://github.com/rpauts2/Tggruup/actions/runs/43848029942)
+  на `db75dfa` — GREEN per-job (`test`=success, `windows`=success). Docs-checkpoint
+  `39161a2` run [#43851040661](https://github.com/rpauts2/Tggruup/actions/runs/43851040661)
+  на момент записи в работе — читать per-job после завершения.
+- Пересъёмка: команды A1/A2 ниже; для офлайн-отчёта pointing `--db` на temp DB
+  харнесса (не на живую `tgfarm.db`). Live-колонки UNKNOWN до OPS-1.
+
 ## Колонки и теги
 
 | Колонка | Вопрос |
