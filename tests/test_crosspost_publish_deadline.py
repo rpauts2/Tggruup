@@ -146,7 +146,8 @@ async def test_slow_first_target_does_not_monopolize_second_and_is_not_republish
         budget, expired = await clock.next()
         # W34-B: preparation and publish share one per-delivery deadline, so the
         # publish wait gets the share minus fast preparation, never more than it.
-        assert 140 < budget <= 150
+        # +1e-6 absorbs the same IEEE-754 share noise as the batch bounds below.
+        assert 140 < budget <= 150 + 1e-6
         expired.set()
         await asyncio.wait_for(second_started.wait(), 2)
         summary = await asyncio.wait_for(asyncio.shield(task), 2)
@@ -197,7 +198,8 @@ async def test_deadline_returns_before_cancellation_cleanup_and_consumes_late_ou
         await asyncio.wait_for(started.wait(), 2)
         budget, expired = await clock.next()
         # W34-B: the publish wait gets the delivery share minus preparation.
-        assert 55 < budget <= 60
+        # +1e-6 absorbs the same IEEE-754 share noise as the batch bounds below.
+        assert 55 < budget <= 60 + 1e-6
         expired.set()
         results = await asyncio.wait_for(asyncio.shield(task), 2)
         await asyncio.wait_for(cleaning.wait(), 2)
