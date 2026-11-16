@@ -44,7 +44,7 @@
 | **vc_ru** | BROWSER редактор (community_drafts уже ЗАПОЛНЯЕТ черновик) | **BROWSER** — дожать заполнение→авто-publish | собственный `community_drafts.py` (vc_ru spec есть) | Низкий риск (свой фреймворк); нужно подтвердить кнопку publish. Реализуемо |
 | **habr** | BROWSER редактор habr.com; нет публичного publish-API | **BROWSER** (playwright сессия, расширить community_drafts) | собственный фреймворк + [browser-use](https://github.com/browser-use/browser-use) как референс | ToS-риск умеренный; редактор доступен. Реализуемо |
 | **tenchat** | BROWSER редактор tenchat.ru; нет публичного API | **BROWSER** (playwright сессия) | собственный фреймворк | Редактор доступен. Реализуемо |
-| **vk_clips** | API VK video.save+upload (клипы через VK video); BROWSER vk.com/clips | **API** (VK video upload, существующий VK token) | [vk-api-video-upload](https://github.com/yaroslavzinchenko/vk-api-video-upload); [VK API](https://pypi.org/project/vk/) | Низкий риск (официальный VK API). Verify: clips-публикация через video.save. Реализуемо |
+| **vk_clips** | BROWSER редактор vk.com/clips (собственная сессия); API video.save загружает ОБЫЧНОЕ видео | **BROWSER** (загрузка вертикального ≤60с через редактор Клипов). API video.save — НЕ гарантированный Клип | [PostMyPost FAQ: VK Clips не поддерживается API](https://help.postmypost.io/docs/tools/publications/faq/vk-clip-published-as-video); [VK API](https://dev.vk.com/) | **Verify-first ВЫПОЛНЕН:** официального clip-specific publish-API НЕТ. Размещение в «Клипах» решает алгоритм VK (формат/длительность/аспект/метаданные); vertical ≤60с ОБЫЧНО попадает в Клипы, но гарантии нет. Generic video.save нельзя помечать `publish` в Клипы (§2.1/§4). capability остаётся manual_upload до гарантированного пути |
 | **rutube** | нет публичного upload-API (только по запросу в поддержку); BROWSER rutube studio | **BROWSER** (playwright сессия, загрузка видео) | [RuTube: нет публичного API](https://github.com/orgs/community/discussions/165690); playwright | ToS-риск; API только партнёрский. BROWSER — единственный self-hosted путь |
 | **twitch** | Helix API Create Clip / Modify Channel Information; нет текстовых постов | **API** (Helix clips/channel-update) — «постинг» = клип/обновление канала, НЕ текст | [Twitch Helix API](https://dev.twitch.tv/docs/api/reference/) | Twitch — стриминг, не текстовая лента. Честно: авто-клипы/channel-info, не посты. OAuth |
 | **whatsapp_channels** | Baileys (Node.js WebSocket, newsletters/channels); BROWSER web.whatsapp.com | **BROWSER** (playwright сессия) для Python-стека; Baileys-sidecar как опция | [Baileys](https://github.com/whiskeysockets/Baileys); [whatsapp-channels REST](https://github.com/topics/whatsapp-channels) | Baileys — Node.js (sidecar); channel-posting нестабильно ([#549](https://github.com/WhiskeySockets/Baileys/issues/549)). BROWSER проще для Python. ToS-риск |
@@ -66,16 +66,16 @@
 ## Выбранный стек реализации
 
 1. **BROWSER-путь (основной для пробелов):** расширить собственный `community_drafts.py`/`browser_auth.py` (playwright + сохранённый профиль). Референс структуры редакторов — `social-auto-upload` (douyin/rednote/tiktok/wechat-channels) и `xhs_ai_publisher` (rednote). НЕ копировать код (лицензия/чистота) — реализовать свои селекторы по образцу. Уже работает для pikabu/vc_ru/dzen.
-2. **API-путь (где официальный API есть):** vk_clips (VK video), twitch (Helix), bluesky/OK (OAuth), telegraph (createAccount). По образцу существующих адаптеров.
+2. **API-путь (где официальный API есть):** twitch (Helix), bluesky/OK (OAuth), telegraph (createAccount). По образцу существующих адаптеров. vk_clips ИСКЛЮЧЁН: clip-specific publish-API не существует (verify-first).
 3. **MTPROTO/USERBOT (авто-вход telegram/max):** Telethon/PyMax — отдельный login-flow (телефон→код→сессия), требует нового UI-шага. Постинг telegram остаётся Bot API (каналы) или user-аккаунт.
 4. **Consent-gated (tiktok/douyinофициальный):** per-video согласие владельца; capability НЕ повышается до publish вслепую.
 5. **Честные ограничения:** snapchat (неофициальный хрупкий/allowlist), twitch (не текстовая лента) — verify-first; если надёжного пути нет, manual_upload с зафиксированным ограничением.
 
 ## Порядок (пересмотренный под выбранные методы)
 
-- **Волна A (API auth-апгрейды, высокая уверенность):** bluesky OAuth, OK OAuth, telegraph createAccount.
-- **Волна B (API video, высокая уверенность):** vk_clips (VK video upload).
-- **Волна C (BROWSER post, средний риск, общий фреймворк):** vc_ru авто-publish → habr → tenchat → rednote → douyin → tiktok → rutube → whatsapp_channels. Последовательно (общий community_drafts).
+- **Волна A (API auth-апгрейды, высокая уверенность):** bluesky OAuth, OK OAuth, telegraph createAccount (✅ реализован, коммит 5a0b262).
+- **Волна B (BROWSER video, средний риск):** vk_clips (редактор Клипов, НЕ video API — verify-first подтвердил отсутствие clip-API), rutube studio. capability честно не гарантируется для Клипов.
+- **Волна C (BROWSER post, средний риск, общий фреймворк):** vc_ru авто-publish → habr → tenchat → rednote → douyin → tiktok → whatsapp_channels. Последовательно (общий community_drafts).
 - **Волна D (MTPROTO/USERBOT авто-вход):** telegram Telethon, max PyMax, discord/medium BROWSER-вход.
 - **Волна E (verify-first сложные):** snapchat SnapWrap, twitch Helix clips. Честный fallback.
 - **Волна F (циклы + приёмка):** S1–S12 offline, CI/EXE, операторские гейты, сообщение о готовности.
