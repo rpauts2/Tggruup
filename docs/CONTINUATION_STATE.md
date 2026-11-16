@@ -2,9 +2,9 @@
 
 > Этот файл — краткая передача следующему инженерному циклу. Единственный подробный реестр статуса: [EXECUTION_PLAN.md](EXECUTION_PLAN.md). Для всех требований см. [MASTER_REQUIREMENTS_TRACEABILITY.md](MASTER_REQUIREMENTS_TRACEABILITY.md).
 
-**Дата:** 2026-11-13  
+**Дата:** 2026-11-16  
 **Основная ветка:** `main`  
-**Последний функциональный checkpoint:** `b6dee9e4efb8a67c46b9d2dd5e6c1038a8e6ad59`
+**Последний функциональный checkpoint:** `f4b9496c6919584abb46860b95502186afedcb02`
 
 ## Что перенесено в main в этом заходе
 
@@ -24,7 +24,7 @@ Run [#43484978287](https://github.com/rpauts2/Tggruup/actions/runs/43484978287) 
 - `073e22f` — flaky SingleInstance lock Windows (placeholder write в loser guard; ~48% → 30/30).
 - `b6dee9e` — symlink readlink `//?/` префикс (as_posix + removeprefix; no-op POSIX, assertion не ослаблен).
 
-Локальная полная suite на `b6dee9e`: `4283 passed, 33 skipped, 4 xfailed, 0 failed`. Новый CI run запускается после push; не объявлять checkpoint зелёным, пока workflow не завершится и результат не будет прочитан.
+Локальная полная suite на `b6dee9e`: `4283 passed, 33 skipped, 4 xfailed, 0 failed`. **CI GREEN:** run [#43489547500](https://github.com/rpauts2/Tggruup/actions/runs/43489547500) на `a7e6de8` завершён — Linux `test` success, Windows success (`4301 passed, 15 skipped, 4 xfailed`); 18 symlink-случаев прошли на CI Windows, подтверждая `b6dee9e`.
 
 ## Что уже есть в UI
 
@@ -37,12 +37,13 @@ Run [#43484978287](https://github.com/rpauts2/Tggruup/actions/runs/43484978287) 
 
 ## Следующие действия
 
-1. Проверить завершение нового CI run на checkpoint `b6dee9e` (после push) и все неуспешные шаги; run #43484978287 на `37a6202` уже завершён (Windows 18 symlink) и исправлен `073e22f`/`b6dee9e`.
+1. Полная верификация текущего checkpoint `f4b9496` (+ queue `8069985`, docs) → push `github` → прочитать новый CI per-job → записать run. CI на `a7e6de8` (#43489547500) уже зелёный (Linux + Windows), подтверждает `b6dee9e`.
 2. Исправить регрессии, если появятся, не переписывая UI/backend целиком.
-3. При зелёном CI закрыть PR #60 и #56 как superseded, указав main commits.
-4. Составить платформенную матрицу полевых испытаний; credentials вводятся локально, live публикации — только с отдельным согласием.
-5. Пройти полный цикл S1–S12 на изолированных тестовых аккаунтах и проверить восстановление после остановки/перезапуска.
-6. Проверить чистую установку Windows EXE и Linux server deployment/backup/restore.
+3. При зелёном CI закрыть PR #60 и #56 как superseded, указав main commits — **только с подтверждением владельца**.
+4. Техническая релизная приёмка offline: demo smoke, recovery-сценарии, autonomy chain report на temp DB, ui-visual-qa, Windows EXE артефакт + build identity.
+5. Составить платформенную матрицу полевых испытаний; credentials вводятся локально, live публикации — только с отдельным согласием (OPS-1/OPS-2).
+6. Пройти полный цикл S1–S12 на изолированных тестовых аккаунтах и проверить восстановление после остановки/перезапуска.
+7. Проверить чистую установку Windows EXE и Linux server deployment/backup/restore.
 
 ## Ограничения
 
@@ -70,10 +71,24 @@ Run [#43484978287](https://github.com/rpauts2/Tggruup/actions/runs/43484978287) 
 - `073e22f` — flaky SingleInstance lock Windows: placeholder write внесён в loser guard; PermissionError на byte 0 больше не крашит конкурентный старт (~48% → 30/30).
 - `b6dee9e` — symlink readlink NT-префикс: тест-пост-условие W36-B сравнивает `as_posix()` со снятым `//?/`; чинит 18 падений CI Windows, скрытых локальными WinError 1314 skips.
 
-Аудит всех пользовательских веток (4 read-only агента, content-level): уникального кода вне main не осталось; whole-branch merge запрещён (net-negative). Ничего повторно не портировалось.
+Аудит всех пользовательских веток (4 read-only агента, content-level): уникального кода вне main не осталось; whole-branch merge запрещён (net-negative). Ничего повторно не портировалось. **Коррекция 2026-11-16:** повторный content-аудит нашёл один настоящий пробел — analytics CSS (W38-B `15c14c9`), который панель рендерит, но app.css не определял. После этого порта пробел закрыт.
 
 CodeAnt замечания по PR #60 (4 пункта) и #56 (3 пункта) перенесены в исправления; новые regression tests покрывают эти контракты.
 
-Текущий CI: run #43484978287 на `37a6202` завершён (Linux success, Windows failure — 18 symlink). Исправлено `073e22f` + `b6dee9e`; новый run запускается после push `b6dee9e`. Не закрывать PR #60/#56 до зелёного CI.
+Текущий CI: run #43484978287 на `37a6202` завершён (Linux success, Windows failure — 18 symlink). Исправлено `073e22f` + `b6dee9e`. **CI GREEN:** run #43489547500 на `a7e6de8` завершён — Linux `test` success, Windows success (`4301 passed, 15 skipped, 4 xfailed`); 18 symlink-случаев прошли на CI Windows. Checkpoint `b6dee9e` зелёный. PR #60/#56 закрывать только с подтверждением владельца.
 
 Открытый остаток: flaky lock и symlink-префикс ПОЧИНЕНЫ (см. выше). Локальный Windows-аккаунт без symlink privilege (WinError 1314) — 18 symlink-случаев локально SKIP, проверяются только на CI Windows; легитимный skip, но скрывает дефекты пост-условий от ревью. После зелёного CI закрыть PR #60/#56 как superseded (подтвердить перед закрытием).
+
+## Последнее продолжение — 2026-11-16 (финальная волна к релизу)
+
+Функциональный checkpoint: `f4b9496c6919584abb46860b95502186afedcb02`. Субагенты в этой сессии недоступны — исполнение и review-проходы последовательные, координатором; независимое субагентное ревью не выполнялось (см. [RELEASE_PLAN.md](RELEASE_PLAN.md)).
+
+Коммиты этого захода (поверх `a7e6de8`, который уже зелёный на CI #43489547500):
+- `8e31c30` — W38-A: operator-tunable дневные лимиты VK/Dzen (пользовательский WIP принят). `primary_platform_daily_cap`: explicit override → Settings (`PRIMARY_VK_DAILY_CAP`/`PRIMARY_DZEN_DAILY_CAP`, ge=1) → default {dzen:2, vk:3}; unknown = KeyError. 337 тестов контура, 8 новых.
+- `15c14c9` — W38-B: analytics CSS (единственный настоящий пробел аудита веток). TDD RED 2 → GREEN 41; container-query + media fallback; 3 UI contract теста.
+- `f4b9496` — W34-B: per-delivery preparation budget. Один deadline на доставку (scout/AI/rules/publish); AI-доля 0.5; timeout подготовки = failed/skipped, никогда unknown; отмена после claim → shielded failed-строка. TDD RED 4 → GREEN 20; контур 125 + 640 passed/4 xfailed/0 failed; ruff-паритет точный. Исходный отклонённый diff не интегрировался.
+- `8069985` — реконсиляция очереди: W24-B FAILED→CANCELLED (superseded W24-BR), W34-B→INTEGRATED, карточки W38-A/W38-B. queue_check 49 tasks/0 problems; test_w25a_queue 43 passed.
+
+CI: run #43489547500 на `a7e6de8` — **GREEN** (Linux test + Windows, 4301 passed/15 skipped/4 xfailed), подтверждает `b6dee9e`. Текущий локальный checkpoint `f4b9496` (+queue/docs) **ещё не запушен**: полный suite → push github → чтение нового CI per-job → запись run (задача 6 RELEASE_PLAN). Не объявлять новый checkpoint зелёным до чтения CI.
+
+Следующее: задача 6 (верификация/push/CI), задача 7 (offline релизная приёмка), задача 8 (операторские гейты: подтверждение закрытия PR #60/#56, OPS-1/OPS-2 чек-лист, рекомендация по ротации токена, финальный отчёт). Live-публикации, production DB, секреты, LIVE mode — без отдельного подтверждения владельца не трогать.
