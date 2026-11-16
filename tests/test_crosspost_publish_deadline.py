@@ -381,11 +381,13 @@ async def test_batch_publish_budget_uses_clamped_outer_share_and_restores_direct
     # wait gets the clamped outer share minus fast preparation, never more.
     first = (await clock.next())[0]
     second = (await clock.next())[0]
-    assert want * 0.9 < first <= want
-    assert want * 0.9 < second <= want
+    # +1e-6 absorbs IEEE-754 noise in the share formula (CI Windows py3.11 yields
+    # 450.00000000000006 for want=450); a microsecond is far below any real budget overflow.
+    assert want * 0.9 < first <= want + 1e-6
+    assert want * 0.9 < second <= want + 1e-6
     assert [result.status for result in await s9_growth.crosspost_post(delivery.id, ["x"])] == ["posted"]
     direct = (await clock.next())[0]
-    assert 55 < direct <= 60
+    assert 55 < direct <= 60 + 1e-6
 
 
 @pytest.mark.asyncio
