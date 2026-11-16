@@ -44,6 +44,50 @@ def _inline_nodes(value: str) -> list[str | dict[str, Any]]:
     return result or [""]
 
 
+async def create_telegraph_account(
+    short_name: str = "TgFarm",
+    author_name: str = "",
+    author_url: str = "",
+) -> dict[str, str]:
+    """Provision a Telegraph account through the official createAccount API.
+
+    Returns the access token plus public account metadata. The token is never
+    logged or printed; the caller stores it locally. Raises ValueError when the
+    request fails, the API rejects it, or no token comes back.
+    """
+    name = str(short_name or "").strip()
+    if not 1 <= len(name) <= 32:
+        raise ValueError("Telegraph short_name must contain between 1 and 32 characters.")
+
+    import httpx
+
+    form = {"short_name": name}
+    if str(author_name or "").strip():
+        form["author_name"] = str(author_name).strip()[:128]
+    if str(author_url or "").strip():
+        form["author_url"] = str(author_url).strip()[:512]
+    try:
+        async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": USER_AGENT}) as client:
+            response = await client.post(f"{API_BASE}/createAccount", data=form)
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPError as exc:
+        raise ValueError("Telegraph createAccount request failed.") from exc
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        error = str((data or {}).get("error") or "TELEGRAPH_API_ERROR")[:100]
+        raise ValueError(f"Telegraph rejected createAccount ({error}).")
+    result = data.get("result") or {}
+    token = str(result.get("access_token") or "").strip()
+    if not token:
+        raise ValueError("Telegraph createAccount did not return an access token.")
+    return {
+        "access_token": token,
+        "short_name": str(result.get("short_name") or name),
+        "author_name": str(result.get("author_name") or ""),
+        "auth_url": str(result.get("auth_url") or ""),
+    }
+
+
 def build_telegraph_content(title: str, body: str) -> list[dict[str, Any]]:
     """Convert TgFarm Markdown into Telegraph Node objects within the 64 KiB limit."""
     if not str(title or "").strip() or len(str(title).strip()) > 256:

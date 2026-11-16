@@ -28,7 +28,7 @@ def test_matrix_endpoint_lists_every_platform_with_a_mode():
     assert {row["id"]: row["mode"] for row in rows}["vk"] == "vkhost"
     assert {row["id"]: row["mode"] for row in rows}["reddit"] == "oauth"
     for row in rows:
-        assert row["mode"] in {"oauth", "vkhost", "browser", "token", "manual"}
+        assert row["mode"] in {"oauth", "vkhost", "browser", "token", "auto", "manual"}
         assert row["hint"]
 
 

@@ -123,6 +123,62 @@ def test_vk_flow_stores_the_token_without_returning_it(monkeypatch):
     assert "secret-token-value" not in str(result)
 
 
+def test_telegraph_uses_auto_provisioning_mode():
+    matrix = {row["id"]: row for row in pa.auth_matrix()["platforms"]}
+    assert matrix["telegraph"]["mode"] == "auto"
+
+
+def test_telegraph_authorize_provisions_and_stores_the_token(monkeypatch):
+    from types import SimpleNamespace
+
+    stored: dict[str, str] = {}
+    record: dict[str, object] = {}
+
+    async def fake_create(short_name="TgFarm", author_name="", author_url=""):
+        return {
+            "access_token": "secret-provisioned", "short_name": "TgFarm",
+            "author_name": "", "auth_url": "",
+        }
+
+    def fake_save(platform_id, values):
+        stored.update(values)
+        return {"saved": sorted(values)}
+
+    def fake_record(platform_id, authorized, *, account="", detail=""):
+        record.update({"platform": platform_id, "authorized": authorized})
+        return {}
+
+    monkeypatch.setattr(pa, "get_settings", lambda: SimpleNamespace(telegraph_access_token=""))
+    monkeypatch.setattr("tgfarm.s9_growth.telegraph.create_telegraph_account", fake_create)
+    monkeypatch.setattr("tgfarm.platforms.save_platform_credentials", fake_save)
+    monkeypatch.setattr("tgfarm.platforms.record_auth_check", fake_record)
+
+    result = asyncio.run(pa.authorize("telegraph"))
+    assert result["state"] == "authorized"
+    assert result["mode"] == "auto"
+    assert stored == {"TELEGRAPH_ACCESS_TOKEN": "secret-provisioned"}
+    assert record["authorized"] is True
+    assert "secret-provisioned" not in str(result)
+
+
+def test_telegraph_authorize_reuses_an_existing_token(monkeypatch):
+    from types import SimpleNamespace
+
+    called: list[bool] = []
+
+    async def fake_create(*args, **kwargs):
+        called.append(True)
+        return {"access_token": "new-token"}
+
+    monkeypatch.setattr(pa, "get_settings", lambda: SimpleNamespace(telegraph_access_token="already-saved"))
+    monkeypatch.setattr("tgfarm.s9_growth.telegraph.create_telegraph_account", fake_create)
+
+    result = asyncio.run(pa.authorize("telegraph"))
+    assert result["state"] == "authorized"
+    assert called == []
+    assert "already-saved" not in str(result)
+
+
 def test_dzen_browser_flow_points_at_its_own_window():
     result = asyncio.run(pa.authorize("dzen"))
     assert result["state"] == "separate_window"

@@ -6936,7 +6936,7 @@
   }
 
   /* ------------------------------------------------------------ connections */
-  const CONNECT_MODES = { oauth: "OAuth", vkhost: "VK", browser: "Браузер", token: "Токен", manual: "Вручную" };
+  const CONNECT_MODES = { oauth: "OAuth", vkhost: "VK", browser: "Браузер", token: "Токен", auto: "Авто", manual: "Вручную" };
 
   function connectStatusOf(row) {
     const proof = row.statuses || {};
@@ -7124,6 +7124,11 @@
     } else if (row.mode === "vkhost") {
       body.innerHTML = '<p class="connect-dialog-text">Откроется VKHost. Подтверди доступ, TgFarm перехватит только официальный OAuth redirect и сохранит токен на backend.</p>'
         + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Открыть VKHost</button></div>'
+        + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
+    } else if (row.mode === "auto") {
+      body.innerHTML = '<p class="connect-dialog-text">' + esc(row.hint) + "</p>"
+        + '<p class="connect-dialog-note">TgFarm создаст аккаунт через официальный API площадки и сохранит токен локально. Вводить ключи вручную не нужно; ранее сохранённый токен используется повторно.</p>'
+        + '<div class="connect-dialog-actions"><button class="btn btn-primary btn-sm" type="button" data-connect-browser="' + esc(row.id) + '">Подключить автоматически</button></div>'
         + '<p class="connect-dialog-status" id="connect-dialog-status"></p>' + docs;
     } else if (row.mode === "browser") {
       body.innerHTML = '<ol class="connect-steps"><li>Откроется отдельный профиль браузера для этой площадки.</li>'

@@ -132,6 +132,7 @@ MODE_HINTS: dict[str, str] = {
     "vkhost": "Откроется VKHost: подтверди доступ, токен перехватится и сохранится автоматически.",
     "browser": "Откроется окно браузера с профилем площадки: войди в аккаунт, сессия сохранится.",
     "token": "Нужен ключ площадки: вставь значения ниже, ферма сохранит их локально.",
+    "auto": "Ферма сама создаст аккаунт площадки и сохранит токен: вводить ключи не нужно.",
     "manual": "Автоматического входа нет: материал для этой площадки готовится вручную.",
 }
 
@@ -140,6 +141,8 @@ def _mode_for(platform_id: str) -> str:
     pid = str(platform_id or "").strip().lower()
     if pid == "vk":
         return "vkhost"
+    if pid == "telegraph":
+        return "auto"  # createAccount provisions a token with no owner input
     if pid in OAUTH_PLATFORMS:
         return "oauth"
     if pid in TOKEN_PLATFORMS:
@@ -256,7 +259,7 @@ def platform_statuses(
         api = {"state": "ready", "label": "Доступ API подтверждён"}
     elif keys_present:
         api = {"state": "pending", "label": "Реквизиты сохранены, доступ не проверен"}
-    elif mode in {"oauth", "vkhost", "token"}:
+    elif mode in {"oauth", "vkhost", "token", "auto"}:
         api = {"state": "missing", "label": "Нужен доступ API"}
     else:
         api = {"state": "unknown", "label": "Способ доступа не подтверждён"}
@@ -303,7 +306,7 @@ def auth_matrix() -> dict[str, Any]:
                 session = {}
         keys_present = False
         keys_absent: list[str] = []
-        if mode in {"token", "oauth"} or pid == "vk":
+        if mode in {"token", "oauth", "auto"} or pid == "vk":
             settings = get_settings()
             required = list(
                 OAUTH_REQUIRED_FIELDS.get(pid, ())
@@ -459,6 +462,46 @@ async def authorize(platform_id: str, *, timeout_s: int = 420) -> dict[str, Any]
             "state": "awaiting_oauth",
             "start_url": f"/api/platforms/{pid}/auth/start",
             "detail": "Откроется страница согласия; токен сохранит callback площадки.",
+        }
+
+    if mode == "auto":
+        if pid == "telegraph":
+            from tgfarm.platforms import record_auth_check, save_platform_credentials
+            from tgfarm.s9_growth.telegraph import create_telegraph_account
+
+            if str(get_settings().telegraph_access_token or "").strip():
+                return {
+                    "platform": pid,
+                    "mode": mode,
+                    "state": "authorized",
+                    "detail": "Telegraph уже подключён: сохранённый токен используется повторно.",
+                }
+            account = await create_telegraph_account("TgFarm")
+            await asyncio.to_thread(
+                save_platform_credentials, "telegraph", {"TELEGRAPH_ACCESS_TOKEN": account["access_token"]}
+            )
+            await asyncio.to_thread(
+                record_auth_check,
+                "telegraph",
+                True,
+                account=account.get("short_name") or "TgFarm",
+                detail="Аккаунт создан через официальный createAccount; токен сохранён локально.",
+            )
+            return {
+                "platform": pid,
+                "mode": mode,
+                "state": "authorized",
+                "account": account.get("short_name") or "TgFarm",
+                "detail": (
+                    "Аккаунт Telegraph создан автоматически, токен сохранён. "
+                    "Сам токен в интерфейс не возвращается."
+                ),
+            }
+        return {
+            "platform": pid,
+            "mode": mode,
+            "state": "manual_only",
+            "detail": "Автоматическое создание аккаунта для этой площадки не настроено.",
         }
 
     if mode == "token":
